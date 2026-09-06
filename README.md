@@ -33,6 +33,11 @@ Run the desktop shell with:
 npm run dev
 ```
 
+Desktop-affecting merges to `main` are batched into signed Preview releases for
+macOS Apple silicon, Windows x64, and Linux x64. An installed Preview checks for
+updates automatically. See [Desktop releases](docs/desktop-releases.md) for the
+one-time signing setup and release behavior.
+
 Run all checks with:
 
 ```bash

@@ -1,0 +1,329 @@
+name: Desktop release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - shared/**
+      - scripts/**
+      - Cargo.toml
+      - Cargo.lock
+      - package.json
+      - package-lock.json
+      - rust-toolchain.toml
+      - .github/workflows/desktop-release.yml
+  workflow_dispatch:
+
+concurrency:
+  group: caper-desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  queue:
+    name: Select next desktop batch
+    runs-on: ubuntu-24.04
+    outputs:
+      release_sha: ${{ steps.target.outputs.release_sha }}
+      release_timestamp: ${{ steps.target.outputs.release_timestamp }}
+      should_release: ${{ steps.scope.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Snapshot current main
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          release_sha="$(git rev-parse origin/main^{commit})"
+          release_timestamp="$(git show -s --format=%cI "$release_sha")"
+          {
+            echo "release_sha=$release_sha"
+            echo "release_timestamp=$release_timestamp"
+          } >> "$GITHUB_OUTPUT"
+      - name: Check for unreleased desktop changes
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_SHA: ${{ steps.target.outputs.release_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          previous_tag="$(git describe --tags --abbrev=0 --match 'v20??.??.??.*' "$RELEASE_SHA" 2>/dev/null || true)"
+          if [[ -z "$previous_tag" ]] || ! git diff --quiet "$previous_tag" "$RELEASE_SHA" -- \
+            apps/desktop shared scripts Cargo.toml Cargo.lock package.json package-lock.json rust-toolchain.toml .github/workflows/desktop-release.yml; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  prepare:
+    name: Stage release
+    needs: queue
+    if: needs.queue.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      display_version: ${{ steps.version.outputs.display_version }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_sha: ${{ needs.queue.outputs.release_sha }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.queue.outputs.release_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Choose release version
+        id: version
+        env:
+          CAPER_RELEASE_TIMESTAMP: ${{ needs.queue.outputs.release_timestamp }}
+        run: node scripts/release-version.mjs
+      - name: Create draft release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPLAY_VERSION: ${{ steps.version.outputs.display_version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            -f tag_name="$TAG" \
+            -f target_commitish="${{ needs.queue.outputs.release_sha }}" \
+            -f name="Caper Preview $DISPLAY_VERSION" \
+            -f body="Automated batched desktop build of commit ${{ needs.queue.outputs.release_sha }}." \
+            -F draft=true)"
+          echo "release_id=$(jq -er .id <<< "$release")" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package ${{ matrix.name }}
+    needs: prepare
+    environment: release
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            os: macos-26
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - name: Windows x64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: Linux x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+    env:
+      CAPER_RELEASE_CHANNEL: preview
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            patchelf \
+            pkg-config \
+            xdg-utils
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.94.0
+      - run: npm ci
+      - name: Prepare release configuration
+        if: runner.os != 'macOS'
+        run: node scripts/prepare-desktop-release.mjs "${{ needs.prepare.outputs.app_version }}"
+      - name: Prepare release configuration and Apple credentials
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: node scripts/prepare-desktop-release.mjs "${{ needs.prepare.outputs.app_version }}"
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/caper-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security default-keychain -d user -s "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -t 3600 -u "$keychain"
+          security import "$APPLE_CERTIFICATE_PATH" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$keychain"
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -F\" '/Developer ID Application/{print $2; exit}')"
+          test -n "$identity" || { echo "No Developer ID Application identity found." >&2; exit 1; }
+          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          args: >-
+            --target ${{ matrix.target }}
+            --bundles ${{ matrix.bundles }}
+            --config src-tauri/tauri.release.conf.json
+          projectPath: apps/desktop
+          releaseBody: Automated Caper desktop build.
+          releaseDraft: true
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          retryAttempts: 5
+          tagName: ${{ needs.prepare.outputs.tag }}
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+      - name: Notarize, staple, and validate DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="target/${{ matrix.target }}/release/bundle/macos/Caper.app"
+          dmg="$(find "target/${{ matrix.target }}/release/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -d "$app" && test -n "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple -v "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+          xcrun stapler validate "$dmg"
+          GH_TOKEN="${{ github.token }}" node scripts/finalize-desktop-release.mjs \
+            upload "${{ needs.prepare.outputs.release_id }}" "$dmg"
+
+  publish:
+    name: Validate and publish
+    needs: [prepare, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate artifacts and finalize updater manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/finalize-desktop-release.mjs
+          "${{ needs.prepare.outputs.release_id }}"
+          "${{ needs.prepare.outputs.tag }}"
+          "${{ needs.prepare.outputs.app_version }}"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${{ needs.prepare.outputs.release_id }}" \
+            -F draft=false -F prerelease=true -f make_latest=false --silent
+
+  channel:
+    name: Update latest Preview
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Synchronize rolling Preview assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_TAG: ${{ needs.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/preview-assets"
+          mkdir "$assets"
+          gh release download "$SOURCE_TAG" \
+            --pattern '*.dmg' \
+            --pattern '*-setup.exe' \
+            --pattern '*_setup.exe' \
+            --pattern '*.AppImage' \
+            --pattern '*.deb' \
+            --pattern latest.json \
+            --dir "$assets"
+
+          if ! gh release view preview >/dev/null 2>&1; then
+            gh release create preview \
+              --target "${{ needs.prepare.outputs.release_sha }}" \
+              --title "Caper Preview — Latest" \
+              --prerelease \
+              --notes "Latest validated Caper desktop preview."
+          fi
+          while IFS= read -r path; do
+            gh release upload preview "$path" --clobber
+          done < <(find "$assets" -maxdepth 1 -type f ! -name latest.json -print | sort)
+          gh release upload preview "$assets/latest.json" --clobber
+          while IFS=$'\t' read -r asset_id asset_name; do
+            if [[ ! -f "$assets/$asset_name" ]]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" --silent
+            fi
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/preview" --jq '.assets[] | [.id, .name] | @tsv')
+          channel_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/preview" --jq .id)"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${channel_id}" \
+            -f target_commitish="${{ needs.prepare.outputs.release_sha }}" \
+            -f name="Caper Preview — Latest" \
+            -f body="Latest validated build: ${SOURCE_TAG}." \
+            -F draft=false -F prerelease=true -f make_latest=false --silent
+
+  cleanup:
+    name: Remove incomplete release
+    if: ${{ always() && needs.prepare.result == 'success' && needs.channel.result != 'success' }}
+    needs: [prepare, package, publish, channel]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Remove failed draft and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${{ needs.prepare.outputs.release_id }}" 2>/dev/null || true)"
+          if [[ -n "$release" && "$(jq -r .draft <<< "$release")" == true ]]; then
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${{ needs.prepare.outputs.release_id }}" --silent
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${{ needs.prepare.outputs.tag }}" --silent 2>/dev/null || true
+          fi
