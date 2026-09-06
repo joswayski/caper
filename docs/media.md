@@ -145,13 +145,72 @@ September 6, 2026 investigation (not a post-deployment performance guarantee):
   These tests did not provision TURN credentials or connect to a live SFU session.
 - The API now excludes port 53 from both STUN and TURN, including string/list
   forms, while preserving the supported UDP/TCP/TLS relay routes and credentials.
-  The bounded gathering wait remains: do not remove it without TURN-only testing.
+  This alone did not eliminate Jose's later five-second stall; see the follow-up below.
 - Chromium UI check with generated microphone, real DeepFilterNet and local
   WebRTC signaling fixture: before Join, zero captures and one WASM compilation;
   after join and rejoin, two captures but still only two asset requests and one
   compilation. Both publications used a processed track. Muted rejoin kept the
   sender detached; leave ended the raw track. This is not live SFU, physical
   speech-quality, remote first-decoded-audio, or native desktop validation.
+
+### ICE-gathering follow-up: signal before every probe completes
+
+After the port-53 fix deployed, Jose measured 5,631 ms total, with 246 ms in
+microphone/session setup and 5,226 ms in ICE/signaling. A fresh Chromium probe
+using production-issued ICE settings confirmed no port-53 URLs remained. With
+all configured servers, direct and relay candidates appeared within 126 ms, yet
+gathering still had not completed at 6,500 ms. STUN-only port 3478 and TURN/UDP
+also remained pending; TLS-only gathering completed in 129 ms. These observations
+identify the application-level wait for global gathering completion, not the
+particular unanswered network probe or Jose's device/network topology.
+
+`localDescription()` now returns the current SDP immediately after
+`setLocalDescription()` rather than waiting up to five seconds. This follows
+[Cloudflare's browser echo example](https://github.com/cloudflare/realtime-examples/blob/main/echo/index.html),
+which posts the offer before gathering completes. It adds no undocumented
+candidate endpoint, drops no TURN URLs, and retains the same WebRTC connection
+and microphone readiness checks. ICE gathering can continue in the browser;
+SDP availability alone never enables public microphone audio.
+
+Live SFU verification used private sender/receiver monitor sessions, a synthetic
+oscillator (no hardware microphone or public audio publication), and an audio
+sink with volume zero. Both the initial offer and receiver answer contained zero
+candidate lines when submitted. Chromium received decoded samples with normal
+routing and forced relay-only UDP, TCP, and TLS-on-443 configurations:
+
+| Route configuration | Publication HTTP + offer setup | Both transports connected | First nonzero received-sample observation |
+| --- | ---: | ---: | ---: |
+| Normal (selected server-reflexive UDP) | 244 ms | 1,840 ms | 2,144 ms |
+| Relay-only TURN/UDP | 289 ms | 1,864 ms | 2,066 ms |
+| Relay-only TURN/TCP | 214 ms | 1,816 ms | 2,018 ms |
+| Relay-only TURN/TLS, port 443 | 273 ms | 2,881 ms | 2,982 ms |
+
+These are single samples from one Linux orb's Chromium/network, measured from
+sender offer creation, **not** full UI join times, model initialization costs,
+physical speech-quality tests, latency percentiles, or native webview validation.
+TCP/TLS stats confirmed relay candidate selection on both peers; the first UDP
+sample returned no nominated-pair rows, although relay-only policy was enforced
+and decoded samples arrived. All temporary sessions were released. Receiver
+subscription was requested after sender transport connected. An initial probe
+with a suspended AudioContext returned subscription HTTP 502; enabling the test
+context resolved that fixture failure. Safari/Firefox, real restrictive networks,
+sustained voice, and Jose's own join-to-heard timing still need acceptance checks.
+
+The actual modified `PublicCallClient`, served by local Vite and using the
+production API through the same-origin adapter, also completed a warm join with
+real DPDFNet-2 processing of synthetic silence: 1,576 ms total; microphone/session
+468 ms, live updates 107 ms, ICE/signaling 447 ms, transport 345 ms, roster/state
+208 ms. The selected filter reported active; no observed pre-connected state had
+an enabled sender. An earlier cold attempt failed at 23,580 ms with a live-update
+disconnect; its underlying cause was not isolated. This is not a cold-start or
+all-networks success guarantee. Additional private probes subscribing immediately
+after the publisher's answer also received decoded samples (normal and TLS-only).
+Two intervening probes failed during Join with HTTP 502 around an API rollout;
+later probes succeeded, but the errors were not conclusively attributed.
+
+Rollout: this follow-up changes web only. First deploy the API from the merged
+SSE/readiness PR #45 (or a later API image containing it), then deploy the web
+image from this fix's merge commit. A web-only merge does not publish an API image.
 
 ### Required live-update and audio readiness
 

@@ -475,6 +475,7 @@ test("Join gates publication on SSE and audio on transport, initial roster, and 
   assert.equal(states.at(-1)?.phase, "joining");
   assert.equal(calls.includes("publish"), false, "HTTP headers alone are not an SSE handshake");
   Peer.latest.connectionState = "connecting";
+  Peer.latest.iceGatheringState = "gathering"; // A stalled probe must not delay publication.
   events[0].enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
   await tick();
   assert.equal(calls.includes("publish"), true);
