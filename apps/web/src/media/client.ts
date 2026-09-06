@@ -234,9 +234,13 @@ export class PublicCallClient {
     this.muted = muted;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = !muted;
-    const replacement = microphone?.sender.replaceTrack(muted ? null : microphone.track);
     this.emit();
-    await replacement;
+    await this.serialize(async () => {
+      const current = this.senders.get("microphone");
+      if (!current) return;
+      current.track.enabled = !this.muted;
+      await current.sender.replaceTrack(this.muted ? null : current.track);
+    });
     if (this.token) await this.setState(muted, this.deafened);
   }
 
