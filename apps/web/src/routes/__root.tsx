@@ -14,10 +14,10 @@ export const Route = createRootRoute({
       { name: "viewport", content: "width=device-width, initial-scale=1.0" },
       {
         name: "description",
-        content: "Caper — good company and great conversations, together in one calm space.",
+        content: "Chat, call, and share in a space that feels like yours.",
       },
-      { name: "theme-color", content: "#0c0d0f" },
-      { title: "Caper — Good company. Great conversations." },
+      { name: "theme-color", content: "#f3f4f5" },
+      { title: "Caper — A place for your people" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
@@ -44,11 +44,9 @@ function RootComponent() {
 function NotFound() {
   return (
     <main className="not-found">
-      <p className="eyebrow">404 / OFF THE TRAIL</p>
-      <h1>Nothing to see here.</h1>
-      <a className="button button-primary" href="/">
-        Return home
-      </a>
+      <p>404</p>
+      <h1>Nothing here.</h1>
+      <a href="/">Return home</a>
     </main>
   );
 }
