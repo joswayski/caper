@@ -305,9 +305,8 @@ such as [GTCRN](https://github.com/Xiaobin-Rong/gtcrn) is worth tracking, but it
 16 kHz reference path and extra streaming integration are not an automatic upgrade
 for natural full-band voice. These are specialist neural audio models, not LLMs.
 RNNoise provenance/reproduction is in `apps/web/public/audio/rnnoise-v1/README.md`.
-The shared adapter lives at `/audio/noise-v1/`; previously published immutable
-DeepFilter assets are unchanged. Normal web deployment includes all new assets;
-no operator configuration commands are required.
+The shared adapter lives at `/audio/noise-v1/`. Normal web deployment includes
+all new assets; no operator configuration commands are required.
 
 An in-channel noise-suppression selector offers DPDFNet-2 HR (default) and
 DPDFNet-8 HR (experimental) for comparison. Speakers/Headphones stays fixed to
