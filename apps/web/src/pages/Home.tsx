@@ -7,11 +7,17 @@ export default function Home() {
     <main className="page">
       <header className="site-header shell">
         <a className="wordmark" href="/" aria-label="Caper home">caper</a>
+        <a className="header-link" href={repositoryUrl} target="_blank" rel="noreferrer">
+          GitHub <span aria-hidden="true">↗</span>
+        </a>
       </header>
 
       <section className="hero shell">
         <div className="hero-copy">
-          <h1>A place for <span>your people</span></h1>
+          <h1>
+            <span>A place for</span>
+            <span>your people</span>
+          </h1>
           <p>
             Chat, call, and share in a space that feels like yours. For friends,
             teams, and everything in between.
@@ -27,6 +33,10 @@ export default function Home() {
 
         <LowPolyChat />
       </section>
+
+      <footer className="site-footer shell">
+        <p>Early days. More soon.</p>
+      </footer>
     </main>
   );
 }

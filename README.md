@@ -1,22 +1,15 @@
 # Caper
 
-Good company. Great conversations.
+Website: [caper.chat](https://caper.chat)
 
-Caper is an open-source space for messages, calls, threads, and the useful
-context around them. It is in its earliest stage today.
-
-- Website: [caper.chat](https://caper.chat)
-- Source: [github.com/joswayski/caper](https://github.com/joswayski/caper)
+Caper is a space for messages, calls, threads, and the useful context around
+them. It is in its earliest stage today (and an active work in progress)!
 
 ## Repository layout
 
 - `apps/web` — TanStack Start website and health endpoint
 - `apps/desktop` — React UI inside a minimal Tauri 2 shell
 - `shared` — framework-neutral design tokens shared by both clients
-
-A dedicated Rust API will be added as a separate service when the messaging,
-presence, authentication, and WebRTC signaling contracts are defined. Realtime
-voice and screen-sharing media will use WebRTC rather than pass through the API.
 
 ## Development
 
