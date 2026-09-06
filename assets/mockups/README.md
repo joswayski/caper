@@ -32,3 +32,7 @@ pop when the live canvas takes over. Recapture the live canvas at rest pose
 a <=1000px viewport for `chat-preview-stacked.webp`. Keep each file's aspect
 equal to its container's, and update the `width`/`height` on the poster `<img>`
 in `LowPolyChat.tsx` to match the wide file.
+
+The hero preview keeps `aspect-ratio: 1.42` at every breakpoint, including
+phones, so `object-fit: fill` is 1:1 with the live camera. Do not give the
+phone container a shorter ratio unless you also recapture a matching poster.

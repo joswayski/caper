@@ -32,10 +32,10 @@ export default function LowPolyChat() {
       aria-label="Interactive 3D Caper chat preview. Drag to rotate; on touch screens, drag with two fingers."
     >
       <picture aria-hidden="true">
-        <source media="(max-width: 1000px)" srcSet="/images/chat-preview-stacked.webp" type="image/webp" />
+        <source media="(max-width: 1000px)" srcSet="/images/chat-preview-stacked.webp?v=20260906" type="image/webp" />
         <img
           className="low-poly-chat-poster"
-          src="/images/chat-preview-wide.webp"
+          src="/images/chat-preview-wide.webp?v=20260906"
           alt=""
           width={1720}
           height={1211}
