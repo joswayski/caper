@@ -75,6 +75,9 @@ body {
 .coming-soon i { width: 7px; height: 7px; border-radius: 50%; background: var(--terracotta-bright); box-shadow: 0 0 0 4px rgba(219,104,73,.12); }
 .action-separator { color: var(--text-muted); }
 .low-poly-chat { position: relative; width: min(100%, 860px); justify-self: center; aspect-ratio: 1.42; cursor: grab; touch-action: pan-y pinch-zoom; user-select: none; outline: none; }
+/* Keep 1.42 at every breakpoint so the rest-pose poster is 1:1 with the live
+   camera. A shorter phone ratio stretches the stacked poster, then the canvas
+   pops to the correct framing. */
 /* Keep one-finger vertical scroll and pinch-zoom native: single drags rotate only
    horizontally, and two-finger drags rotate (see mountChatPreview). Do not set
    touch-action: none here, it would trap page scroll on touch screens. */
@@ -117,5 +120,5 @@ body {
   .hero-actions { flex-wrap: wrap; gap: 16px; margin-top: 32px; }
   .action-separator { display: none; }
   .github-button { min-height: 50px; padding-inline: 17px; }
-  .low-poly-chat { width: min(100%, 560px); aspect-ratio: 1.28; }
+  .low-poly-chat { width: min(100%, 560px); }
 }
