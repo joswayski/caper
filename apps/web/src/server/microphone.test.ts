@@ -27,6 +27,8 @@ class Port {
   onmessage: ((event: { data: unknown }) => void) | null = null;
   messages: unknown[] = [];
   closed = false;
+  addEventListener() {}
+  start() {}
   postMessage(message: unknown) { this.messages.push(message); }
   close() { this.closed = true; }
   emit(data: unknown) { this.onmessage?.({ data }); }
@@ -97,10 +99,51 @@ function setup(t: TestContext, options: {
   const compile = options.compile ?? (async () => ({}) as WebAssembly.Module);
   t.mock.method(WebAssembly, "compile", compile);
   t.after(() => restore.reverse().forEach((fn) => fn()));
-  return { raw, stream, fetches };
+  return { raw, stream, fetches, install };
 }
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("DPDFNet readiness comes from its worker; runtime failure preserves the published track", async (t) => {
+  const { install } = setup(t);
+  let worker!: { onmessage?: (event: { data: unknown }) => void; terminated: boolean };
+  install("Worker", class {
+    onmessage?: (event: { data: unknown }) => void;
+    terminated = false;
+    constructor() { worker = this; }
+    terminate() { this.terminated = true; }
+  });
+  const capturing = captureMicrophone(undefined, "dpdfnet2", new AbortController().signal, () => undefined);
+  await tick();
+  worker.onmessage!({ data: { type: "ready" } });
+  const microphone = await capturing;
+  assert.equal(microphone.track, Context.latest!.processed);
+  assert.match(microphone.status, /^DPDFNet-2 HR active/);
+  microphone.track.enabled = false;
+  WorkletNode.latest!.port.emit("failed");
+  await tick();
+  assert.equal(microphone.track, Context.latest!.processed);
+  assert.equal(microphone.track.enabled, false);
+  assert.match(microphone.status, /browser suppression/);
+  assert.equal(worker.terminated, true);
+  microphone.stop();
+});
+
+test("headphones opt out of echo and automatic level processing; speakers retain both", async (t) => {
+  setup(t);
+  const captured: MediaTrackConstraints[] = [];
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {
+    mediaDevices: { getUserMedia: async ({ audio }: MediaStreamConstraints) => {
+      captured.push(audio as MediaTrackConstraints);
+      return new Stream([new Track()]);
+    } },
+  } });
+  for (const setup of ["headphones", "speakers"] as const) {
+    const microphone = await captureMicrophone(undefined, "off", new AbortController().signal, () => undefined, setup);
+    microphone.stop();
+  }
+  assert.deepEqual(captured.map((c) => [c.echoCancellation, c.autoGainControl, c.noiseSuppression]), [[false, false, false], [true, true, false]]);
+});
 
 test("every enhanced mode selects the intended engine and preset", async (t) => {
   for (const [mode, attenuation] of [["deepfilter", 20], ["deepfilter-gentle", 12], ["deepfilter-strong", 40], ["rnnoise", 20]] as const) {

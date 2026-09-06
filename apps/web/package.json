@@ -16,6 +16,7 @@
     "@tanstack/react-router": "^1.170.29",
     "@tanstack/react-start": "^1.168.46",
     "nitro": "3.0.260610-beta",
+    "onnxruntime-web": "1.23.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "three": "^0.185.1"

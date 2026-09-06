@@ -12,6 +12,7 @@ struct Mock {
     closes: Mutex<Vec<(String, String)>>,
     revocations: Mutex<Vec<String>>,
     remote_offer: AtomicBool,
+    block_provision: AtomicBool,
 }
 impl Mock {
     fn new() -> Self {
@@ -21,6 +22,7 @@ impl Mock {
             closes: Mutex::new(vec![]),
             revocations: Mutex::new(vec![]),
             remote_offer: AtomicBool::new(true),
+            block_provision: AtomicBool::new(false),
         }
     }
 }
@@ -31,11 +33,17 @@ impl Provider for Mock {
         while self.provisioning.load(Ordering::SeqCst) & 2 == 0 {
             tokio::task::yield_now().await;
         }
+        while self.block_provision.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
         Ok(format!("s{}", self.next.fetch_add(1, Ordering::SeqCst)))
     }
     async fn turn(&self, _: &Config) -> Result<Vec<IceServer>, ProviderError> {
         self.provisioning.fetch_or(2, Ordering::SeqCst);
         while self.provisioning.load(Ordering::SeqCst) & 1 == 0 {
+            tokio::task::yield_now().await;
+        }
+        while self.block_provision.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
         }
         Ok(vec![IceServer {
@@ -120,6 +128,16 @@ async fn joined(s: &AppState, name: &str) -> Value {
     .expect("session and TURN provisioning should run concurrently")
     .1
 }
+async fn monitor_joined(s: &AppState, token: &str, role: &str) -> (StatusCode, Value) {
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        Some(token),
+        json!({"name":"Microphone test","monitor":role}),
+    )
+    .await
+}
 
 #[tokio::test]
 async fn disabled_and_invalid_bodies() {
@@ -138,6 +156,262 @@ async fn disabled_and_invalid_bodies() {
             .0,
         StatusCode::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn private_monitor_authorization_visibility_and_media_permissions() {
+    let (s, _) = state();
+    let parent = joined(&s, "parent").await;
+    let other = joined(&s, "other").await;
+    let parent_token = parent["token"].as_str().unwrap();
+    let other_token = other["token"].as_str().unwrap();
+
+    assert_eq!(
+        monitor_joined(&s, "invalid", "sender").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, sender) = monitor_joined(&s, parent_token, "sender").await;
+    assert_eq!(status, StatusCode::OK);
+    let sender_token = sender["token"].as_str().unwrap();
+    assert_eq!(
+        monitor_joined(&s, parent_token, "sender").await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        monitor_joined(&s, sender_token, "receiver").await.0,
+        StatusCode::FORBIDDEN
+    );
+    let receiver = monitor_joined(&s, parent_token, "receiver").await.1;
+    let receiver_token = receiver["token"].as_str().unwrap();
+    let other_receiver = monitor_joined(&s, other_token, "receiver").await.1;
+    let other_sender = monitor_joined(&s, other_token, "sender").await.1;
+
+    let normal_snapshot = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/snapshot",
+        Some(parent_token),
+        json!({}),
+    )
+    .await
+    .1;
+    assert_eq!(normal_snapshot["participants"].as_array().unwrap().len(), 2);
+    let private_snapshot = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/snapshot",
+        Some(sender_token),
+        json!({}),
+    )
+    .await
+    .1;
+    assert!(
+        private_snapshot["participants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/publish",
+            Some(receiver_token),
+            json!({"kind":"microphone","mid":"r","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, published) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/publish",
+        Some(sender_token),
+        json!({"kind":"microphone","mid":"s","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let track_id = published["trackId"].clone();
+    assert!(track_id.is_string());
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/subscribe",
+            Some(parent_token),
+            json!({"trackId":track_id})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/subscribe",
+            Some(other_sender["token"].as_str().unwrap()),
+            json!({"trackId":track_id})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/subscribe",
+            Some(other_receiver["token"].as_str().unwrap()),
+            json!({"trackId":track_id})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/subscribe",
+            Some(receiver_token),
+            json!({"trackId":track_id})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let public_track = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/publish",
+        Some(parent_token),
+        json!({"kind":"microphone","mid":"p","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+    )
+    .await
+    .1["trackId"]
+        .clone();
+    assert_eq!(
+        call(
+            app(s),
+            "POST",
+            "/api/media/subscribe",
+            Some(receiver_token),
+            json!({"trackId":public_track})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn parent_leave_rejects_in_flight_monitor_and_cascades_children() {
+    let (s, mock) = state();
+    let parent = joined(&s, "parent").await;
+    let parent_token = parent["token"].as_str().unwrap().to_owned();
+    let child = monitor_joined(&s, &parent_token, "sender").await.1;
+    let child_token = child["token"].as_str().unwrap().to_owned();
+
+    mock.block_provision.store(true, Ordering::SeqCst);
+    let join_state = s.clone();
+    let join_parent_token = parent_token.clone();
+    let joining =
+        tokio::spawn(
+            async move { monitor_joined(&join_state, &join_parent_token, "receiver").await },
+        );
+    while s.registry.lock().await.joining == 0 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        monitor_joined(&s, &parent_token, "receiver").await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/leave",
+            Some(&parent_token),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/snapshot",
+            Some(&child_token),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    mock.block_provision.store(false, Ordering::SeqCst);
+    assert_eq!(joining.await.unwrap().0, StatusCode::UNAUTHORIZED);
+    assert!(
+        s.registry
+            .lock()
+            .await
+            .participants
+            .values()
+            .all(|p| p.monitor.is_none())
+    );
+    assert_eq!(mock.revocations.lock().await.len(), 3);
+}
+
+#[tokio::test]
+async fn parent_expiry_cascades_monitor_cleanup() {
+    let (s, mock) = state();
+    let parent = joined(&s, "parent").await;
+    let parent_token = parent["token"].as_str().unwrap();
+    let sender = monitor_joined(&s, parent_token, "sender").await.1;
+    let sender_token = sender["token"].as_str().unwrap();
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/publish",
+        Some(sender_token),
+        json!({"kind":"microphone","mid":"s","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+    )
+    .await;
+    {
+        let parent_id = parent["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+        s.registry
+            .lock()
+            .await
+            .participants
+            .get_mut(&parent_id)
+            .unwrap()
+            .lease = Instant::now() - LEASE;
+    }
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/snapshot",
+            Some(sender_token),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    spawn_cleanup(s.clone());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !s.registry.lock().await.participants.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(mock.closes.lock().await.iter().any(|(_, mid)| mid == "s"));
+    assert_eq!(mock.revocations.lock().await.len(), 2);
 }
 #[tokio::test]
 async fn capacity_is_enforced() {
