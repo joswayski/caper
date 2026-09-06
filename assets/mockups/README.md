@@ -24,3 +24,11 @@ WebGL cannot ship in the first HTML response, so rest-pose posters live at
 `apps/web/public/images/chat-preview-wide.webp` and
 `chat-preview-stacked.webp`. They are the first paint; the live canvas replaces
 them after the avatar atlas is ready.
+
+Any change to the hero container size or the camera framing in
+`mountChatPreview.ts` must re-sync these files, or first paint will visibly
+pop when the live canvas takes over. Recapture the live canvas at rest pose
+(reduced motion, 2x DPR): wide viewport for `chat-preview-wide.webp`,
+a <=1000px viewport for `chat-preview-stacked.webp`. Keep each file's aspect
+equal to its container's, and update the `width`/`height` on the poster `<img>`
+in `LowPolyChat.tsx` to match the wide file.
