@@ -41,6 +41,8 @@ export interface CallViewState {
   phase: CallPhase;
   muted: boolean;
   deafened: boolean;
+  monitoring: boolean;
+  monitorStream?: MediaStream;
   selfId?: string;
   participants: Participant[];
   remoteMedia: RemoteMedia[];
