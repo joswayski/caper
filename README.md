@@ -12,32 +12,6 @@ its earliest stage today (and an active work in progress)!
 - `apps/desktop` — React UI inside a minimal Tauri 2 shell
 - `shared` — framework-neutral design tokens shared by both clients
 
-## Browser MVP
-
-`/live` (https://caper.chat/live after deployment) provides one public **General voice channel** using Cloudflare Realtime
-SFU/TURN. Join or leave whenever; there are no outgoing calls or invitations.
-No account or installation is required; joining requests microphone permission.
-Faker generates an adjective/animal nickname on join, shared through the roster
-and retained on automatic reconnect. Names are not verified or guaranteed unique.
-Mute, deafen, microphone and
-speaker selection are available. DeepFilterNet3 cleans outgoing microphone audio
-on-device by default, with an Off option and visible fallback when unavailable.
-No text chat, camera or screen sharing.
-Nothing is recorded by Caper. This is transport-encrypted, not E2EE; other
-participants can record what they hear.
-
-Voice is **disabled by default** unless server credentials are configured.
-The temporary Cloudflare SFU app and TURN key have been provisioned; AWS
-production activation is separate. See [media setup and runbook](docs/media.md) for the
-remaining activation and acceptance checks. The desktop app is independent;
-browser support does not establish Tauri media support. Messaging, accounts,
-and persistent channels are not part of this MVP.
-
-The web replicas use one dedicated Rust media-control instance on AWS; media
-travels directly to Cloudflare, not through AWS. The API optionally connects to
-PlanetScale Postgres when `DATABASE_URL` is set and applies migrations on
-startup; the voice lobby itself remains in-memory.
-
 Brand references and the owner's style guide are in [docs/brand](docs/brand).
 
 ## Development
