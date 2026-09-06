@@ -5,6 +5,7 @@ on:
       - apps/api/**
       - Cargo.toml
       - Cargo.lock
+      - apps/desktop/src-tauri/Cargo.toml
       - .github/workflows/api-image.yml
   push:
     branches: [main]
@@ -12,6 +13,7 @@ on:
       - apps/api/**
       - Cargo.toml
       - Cargo.lock
+      - apps/desktop/src-tauri/Cargo.toml
       - .github/workflows/api-image.yml
 permissions:
   contents: read

@@ -70,7 +70,9 @@ The active web Deployment/Service remains `caper` with two replicas: renaming it
 to `caper-web` requires a separate reviewed rollout and SSM deployment-target update.
 
 Web and API images publish independently. `api-image.yml` runs only when
-`apps/api`, workspace Cargo files, or that workflow change. `aws-image.yml`
+`apps/api`, workspace Cargo files, the unused desktop crate manifest, or that
+workflow change. The API Dockerfile stubs Tauri sources so a desktop-only
+refactor cannot skip API image CI and then break the next API build. `aws-image.yml`
 runs only when the website Docker context, `apps/web`, `shared`, npm workspace
 manifests, or that workflow change. An API-only merge does not publish a website image or
 send a **Deploy Caper web** notification, and a website-only merge does not

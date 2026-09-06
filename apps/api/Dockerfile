@@ -3,14 +3,14 @@ FROM rust:1.94-bookworm AS builder
 WORKDIR /build
 
 # Cargo must be able to load every workspace member even though only caper-api is built.
+# Stub the unused desktop crate so API image CI does not depend on Tauri sources.
 COPY Cargo.toml Cargo.lock ./
 COPY apps/api/Cargo.toml apps/api/Cargo.toml
 COPY apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.toml
-COPY apps/desktop/src-tauri/build.rs apps/desktop/src-tauri/build.rs
-COPY apps/desktop/src-tauri/src apps/desktop/src-tauri/src
-COPY apps/desktop/src-tauri/capabilities apps/desktop/src-tauri/capabilities
-COPY apps/desktop/src-tauri/icons apps/desktop/src-tauri/icons
-COPY apps/desktop/src-tauri/tauri.conf.json apps/desktop/src-tauri/tauri.conf.json
+RUN mkdir -p apps/desktop/src-tauri/src \
+    && printf 'fn main() {}\n' > apps/desktop/src-tauri/build.rs \
+    && printf 'fn main() {}\n' > apps/desktop/src-tauri/src/main.rs \
+    && printf '\n' > apps/desktop/src-tauri/src/lib.rs
 COPY apps/api/src apps/api/src
 COPY apps/api/build.rs apps/api/build.rs
 RUN mkdir -p apps/api/migrations
