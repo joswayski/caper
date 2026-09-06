@@ -55,6 +55,7 @@ export class PublicCallClient {
   private senders = new Map<MediaKind, { sender: RTCRtpSender; mid: string; track: MediaStreamTrack }>();
   private subscriptions = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
+  private mediaQueue: Promise<unknown> = Promise.resolve();
   private pollTimer?: number;
   private reconnectTimer?: number;
   private generation = 0;
@@ -94,6 +95,18 @@ export class PublicCallClient {
     };
     const result = this.queue.then(guarded, guarded);
     this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  private serializeMedia<T>(operation: () => Promise<T>, generation = this.generation): Promise<T> {
+    const guarded = async () => {
+      if (generation !== this.generation) throw new Error("Call session changed.");
+      const value = await operation();
+      if (generation !== this.generation) throw new Error("Call session changed.");
+      return value;
+    };
+    const result = this.mediaQueue.then(guarded, guarded);
+    this.mediaQueue = result.catch(() => undefined);
     return result;
   }
 
@@ -247,7 +260,7 @@ export class PublicCallClient {
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = !muted;
     this.emit();
-    await this.serialize(async () => {
+    await this.serializeMedia(async () => {
       const current = this.senders.get("microphone");
       if (!current) return;
       current.track.enabled = !this.muted;
@@ -272,7 +285,7 @@ export class PublicCallClient {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, echoCancellation: true, noiseSuppression: true } });
     const track = stream.getAudioTracks()[0]!;
     if (generation !== this.generation || !this.senders.has("microphone")) { track.stop(); return; }
-    await this.serialize(async () => {
+    await this.serializeMedia(async () => {
       const microphone = this.senders.get("microphone");
       if (!microphone) { track.stop(); return; }
       const old = microphone.track;

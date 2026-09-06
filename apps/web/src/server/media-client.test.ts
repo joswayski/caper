@@ -121,6 +121,30 @@ test("mute and deafen update local media and view state without waiting for rost
   await deafening;
 });
 
+test("mute media changes are not queued behind roster synchronization", async (t) => {
+  const { client, install } = setup(t);
+  await client.join("Guest");
+  const finishStates: Array<() => void> = [];
+  install("fetch", async (url: string) => {
+    if (url.endsWith("/state")) return new Promise<Response>((resolve) => { finishStates.push(() => resolve(new Response(null, { status: 204 }))); });
+    return new Response(null, { status: 204 });
+  });
+
+  const deafening = client.setDeafened(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(finishStates.length, 1);
+  const muting = client.setMuted(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(finishStates.length, 1);
+
+  finishStates.shift()!();
+  await deafening;
+  await new Promise((resolve) => setImmediate(resolve));
+  finishStates.shift()!();
+  await muting;
+});
+
 test("unmute during a pending microphone switch attaches the new track", async (t) => {
   const { client, track, states, install } = setup(t);
   await client.join("Guest");
