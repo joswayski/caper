@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
@@ -31,6 +32,10 @@ const JOIN_LIMIT_PER_MINUTE: usize = 30;
 const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
 const BODY_LIMIT: usize = 256 * 1024;
+
+mod db;
+
+pub use db::connect_database;
 
 #[derive(Clone)]
 pub struct Config {
@@ -347,14 +352,29 @@ pub struct AppState {
     config: Config,
     provider: Arc<dyn Provider>,
     registry: Arc<Mutex<Registry>>,
+    database: Option<PgPool>,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
+        Self::with_database(config, provider, None)
+    }
+
+    pub fn with_database(
+        config: Config,
+        provider: Arc<dyn Provider>,
+        database: Option<PgPool>,
+    ) -> Self {
         Self {
             config,
             provider,
             registry: Arc::new(Mutex::new(Registry::default())),
+            database,
         }
+    }
+
+    #[must_use]
+    pub fn database(&self) -> Option<&PgPool> {
+        self.database.as_ref()
     }
 }
 

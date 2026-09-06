@@ -3,12 +3,12 @@
 ## Scope and architecture
 
 One public **General voice channel**, always available to join while the service
-is enabled. This is not a dial/invite/call flow. No accounts, text chat, database,
+is enabled. This is not a dial/invite/call flow. No accounts, text chat,
 camera, screen sharing, channel creation, or recording by Caper. Faker generates
 an adjective/animal nickname once per explicit join in the browser; the Rust
 registry stores it and distributes the same name to every participant. Automatic
-reconnect keeps the nickname; explicit leave/join generates another. No database
-or browser storage is needed. Names can collide or be impersonated; participant
+reconnect keeps the nickname; explicit leave/join generates another. The lobby
+does not persist presence. Names can collide or be impersonated; participant
 IDs, not names, distinguish people. Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 
@@ -47,6 +47,7 @@ Keep this temporary test separate from any future production app/key.
 | `MEDIA_BIND` | Default `0.0.0.0:3001` |
 | `RUST_LOG` | Suggested `caper_api=info` |
 | `MEDIA_API_URL` | Web-process-only local/orb adapter target |
+| `DATABASE_URL` | Optional PlanetScale Postgres URL. When set, the API connects and applies `apps/api/migrations` on startup. Use a direct primary URL on port `5432` (`sslmode=verify-full`). Leave empty to boot without a database. |
 
 Use `.env.example`; Rust does not auto-load dotenv files. Export a private env
 file before `cargo run -p caper-api`. Run the web process with
