@@ -37,7 +37,7 @@ export default function Call() {
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
-  const idle = state.phase === "idle" || state.phase === "failed";
+  const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const controlsDisabled = !connected || actionPending || state.monitorConnecting;
 
   useEffect(() => {
@@ -99,7 +99,7 @@ export default function Call() {
             <p>One shared voice channel. No invites, accounts, or ringing anyone.</p>
             <p>You’ll get a random nickname when you join. Everyone sees the same name.</p>
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
-              <button className="primary-button" disabled={available !== true} type="submit">{available === undefined ? "Checking voice…" : "Join voice"}</button>
+              <button className="primary-button" disabled={available !== true || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. No text chat or recording by Caper; other visitors may record. Not end-to-end encrypted.</div>
           </div> : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Mic test · received audio" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Your microphone travels through the call service and back to you. Other people in the channel cannot hear the test. Use headphones to avoid feedback." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
