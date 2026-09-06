@@ -1,12 +1,9 @@
 # Caper
 
-Good company. Great conversations.
+Website: [caper.chat](https://caper.chat)
 
-Caper is an open-source space for messages, calls, threads, and the useful
-context around them. It is in its earliest stage today.
-
-- Website: [caper.chat](https://caper.chat)
-- Source: [github.com/joswayski/caper](https://github.com/joswayski/caper)
+Caper is a space for messages, calls, threads, and the useful context around
+them. It is in its earliest stage today (and an active work in progress)!
 
 ## Repository layout
 
@@ -54,6 +51,11 @@ Run the desktop shell with:
 ```bash
 npm run dev
 ```
+
+Desktop-affecting merges to `main` are batched into signed Preview releases for
+macOS Apple silicon, Windows x64, and Linux x64. An installed Preview checks for
+updates automatically. See [Desktop releases](docs/desktop-releases.md) for the
+one-time signing setup and release behavior.
 
 Run all checks with:
 

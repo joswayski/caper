@@ -23,6 +23,7 @@ export default defineConfig({
   ],
   server: {
     port: 5174,
+    allowedHosts: [".onamp.dev"],
     fs: { allow: [searchForWorkspaceRoot(import.meta.dirname)] },
   },
 });
