@@ -17,7 +17,7 @@ context around them. It is in its earliest stage today.
 
 ## Browser MVP
 
-`/call` provides one public **General voice channel** using Cloudflare Realtime
+`/live` (https://caper.chat/live after deployment) provides one public **General voice channel** using Cloudflare Realtime
 SFU/TURN. Join or leave whenever; there are no outgoing calls or invitations.
 No account or installation is required; joining requests microphone permission.
 Faker generates an adjective/animal nickname on join, shared through the roster

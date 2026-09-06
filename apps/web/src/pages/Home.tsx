@@ -17,7 +17,7 @@ export default function Home() {
             No accounts, no invites. Just good company.
           </p>
           <div className="hero-actions">
-            <a className="github-button" href="/call">Open voice channel</a>
+            <a className="github-button" href="/live">Open voice channel</a>
             <span className="action-separator" aria-hidden="true">·</span>
             <a className="coming-soon" href={repositoryUrl} target="_blank" rel="noreferrer">
               Follow on GitHub <span aria-hidden="true">↗</span>

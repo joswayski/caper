@@ -10,7 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as CallRouteImport } from './routes/call'
+import { Route as LiveRouteImport } from './routes/live'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiMediaSplatRouteImport } from './routes/api/media/$'
 
@@ -19,9 +19,9 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const CallRoute = CallRouteImport.update({
-  id: '/call',
-  path: '/call',
+const LiveRoute = LiveRouteImport.update({
+  id: '/live',
+  path: '/live',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
@@ -37,34 +37,34 @@ const ApiMediaSplatRoute = ApiMediaSplatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/call': typeof CallRoute
+  '/live': typeof LiveRoute
   '/api/health': typeof ApiHealthRoute
   '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/call': typeof CallRoute
+  '/live': typeof LiveRoute
   '/api/health': typeof ApiHealthRoute
   '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/call': typeof CallRoute
+  '/live': typeof LiveRoute
   '/api/health': typeof ApiHealthRoute
   '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/call' | '/api/health' | '/api/media/$'
+  fullPaths: '/' | '/live' | '/api/health' | '/api/media/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/call' | '/api/health' | '/api/media/$'
-  id: '__root__' | '/' | '/call' | '/api/health' | '/api/media/$'
+  to: '/' | '/live' | '/api/health' | '/api/media/$'
+  id: '__root__' | '/' | '/live' | '/api/health' | '/api/media/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  CallRoute: typeof CallRoute
+  LiveRoute: typeof LiveRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiMediaSplatRoute: typeof ApiMediaSplatRoute
 }
@@ -78,11 +78,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/call': {
-      id: '/call'
-      path: '/call'
-      fullPath: '/call'
-      preLoaderRoute: typeof CallRouteImport
+    '/live': {
+      id: '/live'
+      path: '/live'
+      fullPath: '/live'
+      preLoaderRoute: typeof LiveRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/health': {
@@ -104,7 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  CallRoute: CallRoute,
+  LiveRoute: LiveRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiMediaSplatRoute: ApiMediaSplatRoute,
 }
