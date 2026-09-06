@@ -241,6 +241,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
