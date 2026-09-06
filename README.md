@@ -2,9 +2,8 @@
 
 Website: [caper.chat](https://caper.chat)
 
-Caper is a place for your people — text and voice channels in a space that
-feels like yours. It is in its earliest stage today (and an active work in
-progress)!
+Caper is a place for your people — messages and voice, together in the same
+channel. It is in its earliest stage today (and an active work in progress)!
 
 ## Repository layout
 

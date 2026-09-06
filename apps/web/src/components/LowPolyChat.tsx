@@ -162,8 +162,6 @@ export default function LowPolyChat() {
   }, []);
 
   return (
-    <div className="low-poly-chat" ref={hostRef} tabIndex={0} role="group" aria-label="Interactive 3D Caper chat preview" aria-describedby="chat-tilt-help">
-      <span className="chat-tilt-help" id="chat-tilt-help">Drag to tilt · Arrow keys to rotate · Esc to reset</span>
-    </div>
+    <div className="low-poly-chat" ref={hostRef} tabIndex={0} role="group" aria-label="Interactive 3D Caper chat preview" />
   );
 }

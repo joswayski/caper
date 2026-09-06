@@ -21,7 +21,7 @@ export default function Home() {
             </span>
           </h1>
           <p>
-            Chat and voice channels, in a space that feels like yours.
+            Messages and voice, together in the same channel.
           </p>
           <div className="hero-actions">
             <a className="github-button" href="/live">Open voice channel</a>
