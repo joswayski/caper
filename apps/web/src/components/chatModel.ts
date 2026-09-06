@@ -75,7 +75,14 @@ export function createChatModel(invalidate: () => void) {
       group.add(new Line(geometry, iconSurface));
     });
   };
-  const atlas = new TextureLoader().load("/images/caper-avatars.webp", invalidate);
+  let settle: () => void = () => {};
+  const whenReady = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  const atlas = new TextureLoader().load("/images/caper-avatars.webp", () => {
+    invalidate();
+    settle();
+  }, undefined, settle);
   atlas.colorSpace = SRGBColorSpace;
   textures.push(atlas);
   const portraitMaterial = new MeshBasicMaterial({ map: atlas });
@@ -260,6 +267,7 @@ export function createChatModel(invalidate: () => void) {
 
   return {
     group,
+    whenReady,
     dispose() {
       geometries.forEach((geometry) => geometry.dispose());
       materials.forEach((surface) => surface.dispose());

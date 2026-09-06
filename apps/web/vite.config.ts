@@ -18,6 +18,9 @@ export default defineConfig({
         "/assets/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
+        "/images/**": {
+          headers: { "cache-control": "public, max-age=86400" },
+        },
         "/brand/**": {
           headers: { "cache-control": "public, max-age=86400" },
         },
