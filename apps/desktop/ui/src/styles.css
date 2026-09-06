@@ -1,0 +1,8 @@
+body { min-height: 100vh; }
+.desktop-shell { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; padding: 34px; background: radial-gradient(circle at 70% 30%, rgba(99,122,67,.2), transparent 35%), var(--blackout); }
+.desktop-mark { position: relative; width: max-content; font-size: 2rem; font-weight: 900; letter-spacing: -.08em; }
+.desktop-mark span { position: absolute; left: 2px; bottom: -8px; width: 34px; height: 4px; border-radius: 9px; background: var(--terracotta-bright); }
+.desktop-shell section { max-width: 650px; align-self: center; }
+.desktop-shell section > p { color: var(--terracotta-bright); font-size: .75rem; font-weight: 700; letter-spacing: .18em; }
+.desktop-shell h1 { margin: 16px 0; font-size: clamp(3rem, 7vw, 5.5rem); line-height: .95; letter-spacing: -.06em; }
+.desktop-shell section > span { color: var(--text-muted); font-size: 1.15rem; }

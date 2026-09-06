@@ -1,0 +1,41 @@
+:root {
+  --blackout: #0c0d0f;
+  --surface: #151719;
+  --surface-raised: #1c1f21;
+  --border: #34383b;
+  --text: #f3f4f5;
+  --text-muted: #b9bcbe;
+  --terracotta: #b64d32;
+  --terracotta-bright: #db6849;
+  --caper: #637a43;
+  --radius: 8px;
+  font-family: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--blackout);
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--blackout);
+}
+
+button,
+a {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+}

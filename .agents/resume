@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "No services or authentication to restore."
+echo "[resume] Caper requires no wake-time repair."
