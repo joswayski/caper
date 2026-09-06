@@ -37,8 +37,8 @@ export default function LowPolyChat() {
           className="low-poly-chat-poster"
           src="/images/chat-preview-wide.webp"
           alt=""
-          width={1752}
-          height={1298}
+          width={1720}
+          height={1211}
           fetchPriority="high"
         />
       </picture>
