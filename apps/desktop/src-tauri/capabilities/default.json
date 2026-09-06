@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Capabilities for the Caper desktop window",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

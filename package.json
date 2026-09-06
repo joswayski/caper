@@ -1,0 +1,21 @@
+{
+  "name": "caper",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/desktop",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run tauri:dev --workspace @caper/desktop",
+    "dev:web": "npm run dev --workspace @caper/web",
+    "build": "npm run tauri:build --workspace @caper/desktop",
+    "build:web": "npm run build --workspace @caper/web",
+    "start:web": "npm run start --workspace @caper/web",
+    "check": "npm run build --workspace @caper/desktop && npm run build:web"
+  },
+  "engines": {
+    "node": "24.x",
+    "npm": ">=11"
+  }
+}

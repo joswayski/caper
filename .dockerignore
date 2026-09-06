@@ -1,0 +1,15 @@
+.git
+.github
+.amp
+.agents
+node_modules
+**/node_modules
+**/.output
+**/dist
+target
+apps/desktop/ui
+apps/desktop/src-tauri
+.env
+.env.*
+README.md
+LICENSE

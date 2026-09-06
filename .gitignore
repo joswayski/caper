@@ -1,1 +1,16 @@
 .amp/portals/*
+node_modules/
+**/node_modules/
+.output/
+**/.output/
+dist/
+**/dist/
+target/
+**/src-tauri/gen/
+*.tsbuildinfo
+**/.dev.vars
+**/.dev.vars.*
+.env
+.env.*
+!.env.example
+.DS_Store
