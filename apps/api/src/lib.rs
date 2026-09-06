@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -385,6 +385,7 @@ struct Registry {
     joins: VecDeque<Instant>,
     cleanup: VecDeque<CleanupJob>,
     joining: usize,
+    monitor_reservations: HashSet<(Uuid, MonitorRole)>,
 }
 struct Participant {
     id: Uuid,
@@ -401,6 +402,18 @@ struct Participant {
     pending_offer: bool,
     operation: bool,
     operations: VecDeque<Instant>,
+    monitor: Option<Monitor>,
+}
+#[derive(Clone, Copy)]
+struct Monitor {
+    parent: Uuid,
+    role: MonitorRole,
+}
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+enum MonitorRole {
+    Sender,
+    Receiver,
 }
 #[derive(Clone)]
 struct CleanupJob {
@@ -507,6 +520,19 @@ fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
     if p.lease.elapsed() >= LEASE || p.joined.elapsed() >= MAX_CALL_DURATION {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "session expired"));
     }
+    if let Some(monitor) = p.monitor {
+        let parent = r
+            .participants
+            .get(&monitor.parent)
+            .filter(|parent| parent.monitor.is_none())
+            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "parent session ended"))?;
+        if parent.lease.elapsed() >= LEASE || parent.joined.elapsed() >= MAX_CALL_DURATION {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "parent session ended",
+            ));
+        }
+    }
     Ok(id)
 }
 
@@ -537,14 +563,19 @@ fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {
 #[serde(deny_unknown_fields)]
 struct Join {
     name: String,
+    monitor: Option<MonitorRole>,
 }
-async fn join(State(s): State<AppState>, Json(input): Json<Join>) -> Result<Json<Value>, ApiError> {
+async fn join(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<Join>,
+) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
     let name = input.name.trim();
     if name.is_empty() || name.chars().count() > 40 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
-    {
+    let monitor = {
         let mut r = s.registry.lock().await;
         let now = Instant::now();
         while r
@@ -563,9 +594,34 @@ async fn join(State(s): State<AppState>, Json(input): Json<Join>) -> Result<Json
         if r.participants.len() + r.joining >= MAX_PARTICIPANTS {
             return Err(ApiError::new(StatusCode::CONFLICT, "lobby full"));
         }
+        let monitor = if let Some(role) = input.monitor {
+            let parent = authenticate(&r, bearer(&headers)?)?;
+            if r.participants.get(&parent).unwrap().monitor.is_some() {
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "monitor sessions cannot create monitors",
+                ));
+            }
+            if r.monitor_reservations.contains(&(parent, role))
+                || r.participants.values().any(|p| {
+                    p.monitor
+                        .is_some_and(|m| m.parent == parent && m.role == role)
+                })
+            {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "monitor role already active",
+                ));
+            }
+            r.monitor_reservations.insert((parent, role));
+            Some(Monitor { parent, role })
+        } else {
+            None
+        };
         r.joins.push_back(now);
         r.joining += 1;
-    }
+        monitor
+    };
     // These independent provider requests run together. Session creation is intentionally
     // never retried: an ambiguous create could orphan a session.
     let (session, ice) = tokio::join!(
@@ -575,7 +631,7 @@ async fn join(State(s): State<AppState>, Json(input): Json<Join>) -> Result<Json
     let session = match session {
         Ok(session) => session,
         Err(error) => {
-            s.registry.lock().await.joining -= 1;
+            release_join_reservation(&s, monitor).await;
             if let Ok(servers) = ice {
                 for username in servers
                     .iter()
@@ -592,7 +648,7 @@ async fn join(State(s): State<AppState>, Json(input): Json<Join>) -> Result<Json
     let ice = match ice {
         Ok(ice) => ice,
         Err(error) => {
-            s.registry.lock().await.joining -= 1;
+            release_join_reservation(&s, monitor).await;
             return Err(error.into());
         }
     };
@@ -616,12 +672,39 @@ async fn join(State(s): State<AppState>, Json(input): Json<Join>) -> Result<Json
         pending_offer: false,
         operation: false,
         operations: VecDeque::new(),
+        monitor,
     };
     let mut r = s.registry.lock().await;
     r.joining -= 1;
+    if let Some(monitor) = monitor {
+        r.monitor_reservations
+            .remove(&(monitor.parent, monitor.role));
+        let parent_valid = r.participants.get(&monitor.parent).is_some_and(|parent| {
+            parent.monitor.is_none()
+                && parent.lease.elapsed() < LEASE
+                && parent.joined.elapsed() < MAX_CALL_DURATION
+        });
+        if !parent_valid {
+            drop(r);
+            revoke_participant_turn(&s, &p).await;
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "parent session ended",
+            ));
+        }
+    }
     r.tokens.insert(token.clone(), id);
     r.participants.insert(id, p);
     Ok(Json(json!({"token":token,"id":id,"iceServers":ice})))
+}
+
+async fn release_join_reservation(s: &AppState, monitor: Option<Monitor>) {
+    let mut r = s.registry.lock().await;
+    r.joining -= 1;
+    if let Some(monitor) = monitor {
+        r.monitor_reservations
+            .remove(&(monitor.parent, monitor.role));
+    }
 }
 
 #[derive(Serialize)]
@@ -647,9 +730,13 @@ async fn snapshot(
     let mut r = s.registry.lock().await;
     let id = authenticate(&r, token)?;
     r.participants.get_mut(&id).unwrap().lease = Instant::now();
+    if r.participants.get(&id).unwrap().monitor.is_some() {
+        return Ok(Json(json!({"participants":[]})));
+    }
     let participants: Vec<_> = r
         .participants
         .values()
+        .filter(|p| p.monitor.is_none())
         .map(|p| View {
             id: p.id,
             name: &p.name,
@@ -712,6 +799,13 @@ async fn publish(
         let id = authenticate(&r, token)?;
         let p = r.participants.get_mut(&id).unwrap();
         begin_operation(p)?;
+        if p.monitor.is_some_and(|m| m.role != MonitorRole::Sender) {
+            p.operation = false;
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "monitor receiver cannot publish",
+            ));
+        }
         if p.pending_offer {
             p.operation = false;
             return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
@@ -764,6 +858,10 @@ async fn publish(
             provider_name,
         },
     );
+    let mut result = result;
+    if let Some(object) = result.as_object_mut() {
+        object.insert("trackId".into(), json!(track_id));
+    }
     Ok(Json(result))
 }
 
@@ -797,6 +895,20 @@ async fn subscribe(
                 StatusCode::CONFLICT,
                 "cannot subscribe to own track",
             ));
+        }
+        let subscriber_monitor = r.participants.get(&me).unwrap().monitor;
+        let source_monitor = r.participants.get(&source.0).unwrap().monitor;
+        let authorized = match (subscriber_monitor, source_monitor) {
+            (None, None) => true,
+            (Some(subscriber), Some(owner)) => {
+                subscriber.role == MonitorRole::Receiver
+                    && owner.role == MonitorRole::Sender
+                    && subscriber.parent == owner.parent
+            }
+            _ => false,
+        };
+        if !authorized {
+            return Err(ApiError::new(StatusCode::FORBIDDEN, "track is private"));
         }
         let p = r.participants.get_mut(&me).unwrap();
         begin_operation(p)?;
@@ -1052,13 +1164,23 @@ async fn close_dependents(s: &AppState, source: Uuid) {
 async fn remove_participant(s: &AppState, id: Uuid) {
     let removed = {
         let mut r = s.registry.lock().await;
-        let p = r.participants.remove(&id);
-        if let Some(ref p) = p {
-            r.tokens.remove(&p.token);
+        let mut ids = vec![id];
+        if r.participants.get(&id).is_some_and(|p| p.monitor.is_none()) {
+            ids.extend(r.participants.values().filter_map(|p| {
+                p.monitor
+                    .filter(|monitor| monitor.parent == id)
+                    .map(|_| p.id)
+            }));
         }
-        p
+        ids.into_iter()
+            .filter_map(|id| {
+                let p = r.participants.remove(&id)?;
+                r.tokens.remove(&p.token);
+                Some(p)
+            })
+            .collect::<Vec<_>>()
     };
-    if let Some(p) = removed {
+    for p in removed {
         revoke_participant_turn(s, &p).await;
         let sources: Vec<_> = p.tracks.values().map(|t| t.id).collect();
         let jobs = p
@@ -1146,14 +1268,20 @@ pub fn spawn_cleanup(s: AppState) {
             tick.tick().await;
             let expired = {
                 let mut r = s.registry.lock().await;
-                let expired = r
+                let mut expired = r
                     .participants
                     .values()
                     .filter(|p| {
                         p.lease.elapsed() >= LEASE || p.joined.elapsed() >= MAX_CALL_DURATION
                     })
                     .map(|p| p.id)
-                    .collect::<Vec<_>>();
+                    .collect::<HashSet<_>>();
+                let expired_parents = expired.clone();
+                expired.extend(r.participants.values().filter_map(|p| {
+                    p.monitor
+                        .filter(|monitor| expired_parents.contains(&monitor.parent))
+                        .map(|_| p.id)
+                }));
                 // Remove under the same lock used for the expiry decision, so a concurrent
                 // heartbeat cannot refresh a participant between checking and removal.
                 expired

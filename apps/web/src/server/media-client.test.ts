@@ -18,25 +18,31 @@ class Stream {
 }
 class Peer extends EventTarget {
   static latest: Peer;
+  static all: Peer[] = [];
   connectionState = "connected";
   iceGatheringState = "complete";
   localDescription?: { toJSON(): object };
+  ontrack?: (event: { track: Track }) => void;
   senders: Array<{ track: Track | null; replaceTrack(t: Track | null): Promise<void> }> = [];
-  constructor() { super(); Peer.latest = this; }
+  constructor() { super(); Peer.latest = this; Peer.all.push(this); }
   addTransceiver(track: Track) {
     const sender = { track: track as Track | null, async replaceTrack(t: Track | null) { this.track = t; } };
     this.senders.push(sender);
     return { mid: "0", sender };
   }
   async createOffer() { return { type: "offer", sdp: "v=0" }; }
+  async createAnswer() { return { type: "answer", sdp: "v=0" }; }
   async setLocalDescription(description: object) { this.localDescription = { toJSON: () => description }; }
-  async setRemoteDescription() {}
+  async setRemoteDescription(description?: { type: string }) {
+    if (description?.type === "offer") this.ontrack?.({ track: new Track() });
+  }
   getSenders() { return this.senders; }
   getReceivers() { return []; }
   close() { this.connectionState = "closed"; }
 }
 
 function setup(t: TestContext) {
+  Peer.all = [];
   const track = new Track();
   const calls: string[] = [];
   const joinedNames: string[] = [];
@@ -57,9 +63,11 @@ function setup(t: TestContext) {
     calls.push(op);
     if (op === "join") {
       joinedNames.push(JSON.parse(options.body as string).name);
-      return Response.json({ token: "capability", id: "self", iceServers: [] });
+      const role = JSON.parse(options.body as string).monitor;
+      return Response.json({ token: role ?? "capability", id: role ?? "self", iceServers: [] });
     }
-    if (op === "publish") return Response.json({ sessionDescription: { type: "answer", sdp: "v=0" } });
+    if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: "v=0" } });
+    if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: "v=0" } });
     if (op === "snapshot") return Response.json({ participants: [] });
     if (op === "state") stateUpdates.push(JSON.parse(options.body as string));
     return new Response(null, { status: 204 });
@@ -137,9 +145,10 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   assert.ok(calls.includes("leave"));
 });
 
-test("mic test detaches channel audio, loops back the live microphone, and restores prior state", async (t) => {
+test("mic test detaches channel audio, plays a separately received track, and restores prior state", async (t) => {
   const { client, track, states, stateUpdates } = setup(t);
   await client.join("Guest");
+  const channelPeer = Peer.latest;
   await client.setMuted(true);
   await client.setDeafened(false);
 
@@ -148,10 +157,10 @@ test("mic test detaches channel audio, loops back the live microphone, and resto
   assert.equal(states.at(-1)?.muted, true);
   assert.equal(states.at(-1)?.deafened, true);
   const monitorTrack = states.at(-1)?.monitorStream?.getAudioTracks()[0] as unknown as Track;
-  assert.equal(monitorTrack, track, "the processed outgoing track should feed local playback directly");
+  assert.notEqual(monitorTrack, track, "only the separately received/decoded track should feed playback");
   assert.equal(monitorTrack.enabled, true, "the local loopback track must remain audible");
   assert.equal(track.enabled, true, "sender detachment, not track disabling, isolates the channel");
-  assert.equal(Peer.latest.senders[0].track, null, "the microphone must not reach the channel");
+  assert.equal(channelPeer.senders[0].track, null, "the microphone must not reach the channel");
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
 
   await client.setMonitoring(false);
@@ -160,9 +169,74 @@ test("mic test detaches channel audio, loops back the live microphone, and resto
   assert.equal(states.at(-1)?.muted, true);
   assert.equal(states.at(-1)?.deafened, false);
   assert.equal(track.enabled, false);
-  assert.equal(monitorTrack.readyState, "live", "stopping the test must not stop the microphone capture");
-  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(monitorTrack.readyState, "ended", "stopping releases the received track");
+  assert.equal(track.readyState, "live", "stopping must not stop microphone capture");
+  assert.equal(channelPeer.senders[0].track, null);
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: false });
+});
+
+test("monitor capture replacement stays private and retains the same received stream", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.join();
+  await client.setMonitoring(true);
+  const received = states.at(-1)!.monitorStream;
+  await client.setMuted(false);
+  await client.setDeafened(false);
+  assert.equal(states.at(-1)!.muted, true);
+  assert.equal(states.at(-1)!.deafened, true);
+  const replacement = new Track();
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([replacement]) } });
+  await client.setNoiseSuppression("off");
+  assert.equal(Peer.all[0].senders[0].track, null);
+  assert.equal(Peer.all[1].senders[0].track, replacement);
+  assert.equal(track.readyState, "ended");
+  assert.equal(states.at(-1)!.monitorStream, received);
+  await client.setMonitoring(false);
+  assert.equal(Peer.all[0].senders[0].track, replacement);
+  assert.ok(Peer.all.slice(1).every((peer) => peer.connectionState === "closed"));
+});
+
+test("failed private join keeps channel isolated until explicit stop", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.join();
+  const originalFetch = fetch;
+  install("fetch", (url: string, options: RequestInit) => url.endsWith("/join")
+    ? Promise.resolve(Response.json({ error: "test unavailable" }, { status: 503 })) : originalFetch(url, options));
+  await assert.rejects(client.setMonitoring(true), /test unavailable/);
+  assert.equal(Peer.all[0].senders[0].track, null);
+  assert.equal(states.at(-1)!.monitorStream, undefined);
+  assert.equal(states.at(-1)!.monitoring, true);
+  assert.equal(states.at(-1)!.monitorConnecting, false);
+  await client.setMonitoring(false);
+  assert.equal(Peer.all[0].senders[0].track, track);
+});
+
+test("stop during pending test joins releases late capabilities without publishing", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.join();
+  const originalFetch = fetch;
+  const grants: Array<() => void> = [];
+  const left: string[] = [];
+  let published = 0;
+  install("fetch", (url: string, options: RequestInit) => {
+    if (url.endsWith("/join")) return new Promise<Response>((resolve) => {
+      const role = JSON.parse(options.body as string).monitor;
+      grants.push(() => resolve(Response.json({ token: role, iceServers: [] })));
+    });
+    if (url.endsWith("/publish")) published++;
+    if (url.endsWith("/leave")) left.push((options.headers as Record<string, string>).authorization);
+    return originalFetch(url, options);
+  });
+  const starting = client.setMonitoring(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(grants.length, 2);
+  await client.setMonitoring(false);
+  grants.forEach((grant) => grant());
+  await starting;
+  assert.equal(published, 0);
+  assert.deepEqual(left.sort(), ["Bearer receiver", "Bearer sender"]);
+  assert.equal(states.at(-1)!.monitorStream, undefined);
+  assert.equal(Peer.all[0].senders[0].track, track);
 });
 
 test("mute and deafen update local media and view state without waiting for roster sync", async (t) => {

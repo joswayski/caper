@@ -86,7 +86,8 @@ the feature flag; web `/api/health` is independent of provider availability.
 
 ## Limits and lifecycle
 
-- 12 simultaneous people, one microphone publication each, 11 subscriptions.
+- 12 registered sessions total, one microphone publication each, 11 subscriptions.
+  A running Mic test uses two additional private sessions within that same cap.
 - 30 joins/minute globally; 120 provider mutations/minute per participant;
   256 KiB request bodies. These are **not a spending cap or DDoS defense**.
 - One-hour session/TURN lifetime; 45-second presence lease, sweep every five
@@ -106,12 +107,65 @@ the feature flag; web `/api/health` is independent of provider availability.
   billing records. Output selection requires `HTMLMediaElement.setSinkId`;
   otherwise use OS settings. Joining requires microphone permission.
 
+## Received-audio microphone test
+
+Mic test no longer plays the microphone track directly. It creates a private
+sender and receiver, sending the selected processed microphone through WebRTC/Opus
+to Cloudflare SFU and receiving/decoding it on a separate PeerConnection. It uses
+the same codec preference and SFU/TURN provisioning as channel participants.
+Only the received track is played. This exercises the call path, **not the exact
+network conditions, headphones or volume of every other participant**.
+
+Starting detaches the public sender before enabling private test audio, saves
+mute/deafen and marks both true. Stopping restores those choices. Switching a
+filter/device replaces the private sender track without replacing the received
+stream. Reconnecting recreates the private return. Failure never falls back to
+direct local playback and leaves the channel muted until explicit Stop.
+
+Use headphones: delayed self-playback through speakers can feed back and provoke
+echo cancellation. This is not a useful way to judge speakerphone double-talk.
+Test normal speakerphone conversations with a second participant instead.
+
+Private sessions are tied to the authenticated channel capability. They are
+hidden from the roster, have sender/receiver roles, cannot subscribe to public
+tracks or another person's test, and are cleaned up on Stop/leave/expiry. They
+share global join/capacity limits and add normal SFU/TURN bandwidth charges.
+They use the existing routes: `join` accepts `monitor: "sender" | "receiver"`
+with the parent's bearer capability; `publish` returns the opaque `trackId`.
+The receiver can subscribe only to its sibling sender's publication. No provider
+session identifier or arbitrary provider operation is accepted from the browser.
+
+**Rollout:** deploy the updated API before the web image. Older APIs reject the
+private join field; the new client will show a failed test and stay muted safely.
+No database migration, new secret, or Cloudflare configuration is required.
+After merge and both image builds, the operator can deploy the exact merge SHA:
+
+```sh
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
+# Wait for the API rollout to finish successfully, then:
+gh workflow run deploy-caper.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
+```
+
+These are operator instructions, not commands automatically run by this change.
+
+### Audio setup and speech consistency
+
+Speakers (default) requests browser echo cancellation and automatic gain control.
+Headphones requests both **off**, independently of the chosen denoiser. Choose it
+only while wearing headphones; switch back before using speakers. This provides
+a comparison for pumping, robotic timbre or cut-off speech introduced before the
+neural filter. It may change volume; it does not repair a hardware-clipped input
+or guarantee clean speech. Browser/OS support varies and OS-level processing may
+still apply. Microphone selection and these settings are retained only for the
+page lifetime. Denoisers remain mutually exclusive; no new noise gate is added.
+
 ## On-device noise suppression
 
 DeepFilterNet3 balanced is the default microphone mode. Capture → browser echo cancellation
-and gain control → 48 kHz mono AudioWorklet/WASM DeepFilterNet or RNNoise → MediaStream output
-track → existing WebRTC Opus sender → Cloudflare SFU. The Rust control API, SFU
-configuration, and TURN path do not change. No LiveKit dependency, denoising API,
+and gain control (Speakers setup) → 48 kHz mono DeepFilterNet, RNNoise or experimental
+DPDFNet → MediaStream output track → existing WebRTC Opus sender → Cloudflare SFU.
+The new private test changes the control API as described above, not SFU configuration.
+No LiveKit dependency, external denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
 
 The model and WASM (~24 MB combined) are vendored and loaded from Caper's own
@@ -128,8 +182,9 @@ No new environment variables or infrastructure configuration are required.
 | DeepFilterNet gentle | 12 dB limit, retaining about 25% original amplitude; more voice **and noise** return. |
 | DeepFilterNet strong | Original 40 dB limit, retaining about 1% original amplitude. |
 | RNNoise | Independent lightweight 48 kHz neural model, 3.6 MB same-origin download. No VAD gating. |
+| DPDFNet-2 HR (experimental) | 48 kHz model; approximately 23 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
 | Browser suppression | Built-in baseline; implementation/support varies by browser/device. |
-| Off | No requested noise suppression; AEC and automatic gain control still enabled. |
+| Off | No requested noise suppression; Audio setup independently controls AEC and automatic gain. |
 
 DeepFilter presets blend the enhanced and time-aligned original spectrum; they do
 not retrain the model or change its speech decisions. Post-filter beta is explicitly
@@ -166,7 +221,42 @@ downloads and closes both capture and processed tracks; a late permission grant
 is released. Mode is in memory for the page lifetime, not persisted to storage.
 DeepFilter is not an echo canceller, voice gate, or guaranteed primary-speaker
 isolation. It can affect laughter, music, whispers, and natural voice timbre.
-The adapter adds 10 ms buffering **in addition to** model and system latency.
+The RNNoise/DeepFilter adapter adds 10 ms buffering **in addition to** model and
+system latency. DPDFNet uses a 20 ms analysis window, 10 ms hops and three output
+hops of startup buffering, plus scheduling/device/network latency. Its Worker
+warms up and resets state before readiness. An eight-hop backlog or output
+underrun causes explicit browser/raw fallback, not unbounded delay or intermittent
+zero-filled output. Do not judge DPDFNet quality when the status says fallback.
+
+DPDFNet model/runtime provenance, checksums, full licenses and reproduction are
+in `apps/web/public/audio/dpdfnet2-v1/README.md`. CEVA code/weights are Apache-2.0;
+ONNX Runtime is MIT with third-party notices. All assets load from Caper, lazily.
+No inference runs inside the AudioWorklet callback and no raw PCM goes to a
+denoising service. It is experimental, not the default or a proven Krisp replacement.
+
+Received-test / DPDFNet validation, September 6, 2026:
+
+- All 48 web tests, `npm run check`, Rust formatting, all 12 API tests and
+  workspace Clippy passed. API release build passed; Docker daemon unavailable.
+- Built-browser desktop and 390px mobile layouts inspected, including received
+  playback, headphones warning and DPDFNet fallback. Stop restored the public
+  sender. These UI interactions used the local relay fixture described below.
+- Real DPDFNet ONNX inference produces finite, nonzero audio. Identity-inference
+  FFT/window/OLA reconstruction has unity gain and a 480-sample delay. Adapter
+  tests verify startup, frame order with response jitter, overload and underrun.
+- This orb's CPU was slower than the 10 ms/hop real-time budget (roughly 25 ms/hop
+  in Node); generated-microphone Chromium triggered explicit fallback. Quality
+  has **not** been compared with Krisp or on physical microphones.
+- Rust private-session tests cover capability scope, hidden roster, sibling-only
+  subscription, duplicate/in-flight reservations and parent teardown/expiry.
+- Chromium with a local WebRTC relay fixture received actual Opus, nonzero decoded
+  audio and a distinct receive track while the public sender stayed detached.
+  This fixture re-encodes at its relay; it is **not a live Cloudflare SFU result**.
+  Provider credentials were not available for a fresh live SFU acceptance test.
+- Headphones capture requested and Chromium reported echo cancellation and AGC
+  off; Speakers keeps both requested on. Physical speakerphone double-talk,
+  sustained low-end-device performance, other browsers and native desktop remain
+  unverified. No promise of artifact-free speech is made.
 
 Alternative-engine validation, September 6, 2026:
 

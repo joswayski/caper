@@ -3,10 +3,12 @@ export const NOISE_SUPPRESSION_OPTIONS = [
   { value: "deepfilter-gentle", label: "DeepFilterNet · gentle", description: "Keeps more of your original voice, along with more room noise. Try this if quiet words or laughter get cut off." },
   { value: "deepfilter-strong", label: "DeepFilterNet · strong", description: "The original suppression strength. A quieter background, with more risk of changing your voice." },
   { value: "rnnoise", label: "RNNoise · lightweight", description: "A different on-device model with lower processing cost. Compare it with DeepFilterNet for fans and AC noise." },
+  { value: "dpdfnet2", label: "DPDFNet-2 HR · experimental", description: "Experimental 48 kHz on-device model. It may fall back to browser suppression when this device cannot process audio in real time." },
   { value: "browser", label: "Browser suppression", description: "Your browser’s built-in filter. Quality and availability depend on the browser and device." },
-  { value: "off", label: "Off", description: "No requested noise suppression. Echo cancellation and automatic microphone level stay on in every mode." },
+  { value: "off", label: "Off", description: "No requested noise suppression. Audio setup controls echo protection and automatic microphone level separately." },
 ] as const;
 export type NoiseSuppression = typeof NOISE_SUPPRESSION_OPTIONS[number]["value"];
+export type AudioSetup = "speakers" | "headphones";
 export interface Microphone {
   track: MediaStreamTrack;
   status: string;
@@ -25,20 +27,22 @@ export async function captureMicrophone(
   mode: NoiseSuppression,
   signal: AbortSignal,
   changed: () => void,
+  audioSetup: AudioSetup = "speakers",
 ): Promise<Microphone> {
   signal.throwIfAborted();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: {
     deviceId: deviceId ? { exact: deviceId } : undefined,
     channelCount: 1,
-    echoCancellation: true,
+    echoCancellation: audioSetup === "speakers",
     noiseSuppression: mode === "browser",
-    autoGainControl: true,
+    autoGainControl: audioSetup === "speakers",
   } });
   const raw = stream.getAudioTracks()[0];
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
   let destination: MediaStreamAudioDestinationNode | undefined;
   let node: AudioWorkletNode | undefined;
+  let worker: Worker | undefined;
   let stopped = false;
   const microphone: Microphone = {
     track: raw,
@@ -53,6 +57,7 @@ export async function captureMicrophone(
       node?.port.postMessage("stop");
       node?.disconnect();
       node?.port.close();
+      worker?.terminate();
       if (context && context.state !== "closed") void context.close().catch(() => undefined);
     },
   };
@@ -70,8 +75,8 @@ export async function captureMicrophone(
     return microphone;
   }
 
-  const engine = mode === "rnnoise" ? "rnnoise" : "deepfilter";
-  const engineName = engine === "rnnoise" ? "RNNoise" : "DeepFilterNet";
+  const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet2" ? "dpdfnet2" : "deepfilter";
+  const engineName = engine === "rnnoise" ? "RNNoise" : engine === "dpdfnet2" ? "DPDFNet-2 HR" : "DeepFilterNet";
   const attenuationLimit = mode === "deepfilter-gentle" ? 12 : mode === "deepfilter-strong" ? 40 : 20;
   const presetName = mode === "deepfilter-gentle" ? "gentle" : mode === "deepfilter-strong" ? "strong" : "balanced";
 
@@ -83,6 +88,8 @@ export async function captureMicrophone(
       node.port.postMessage("stop");
     }
     node?.disconnect();
+    worker?.terminate();
+    worker = undefined;
     source?.disconnect();
     // Preserve the outgoing track, including its mute state, after a worklet failure.
     if (destination) source?.connect(destination);
@@ -101,26 +108,47 @@ export async function captureMicrophone(
     // Resume immediately, before downloads, to retain the Join button's user activation.
     void context.resume().catch(() => undefined);
     const loadingSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
-    const [bytes, model] = await Promise.all([
+    const [bytes, model] = engine === "dpdfnet2" ? [] : await Promise.all([
       loadAsset(engine === "rnnoise" ? "/audio/rnnoise-v1/rnnoise.wasm" : "/audio/deepfilter-v1/df_bg.wasm", loadingSignal),
       engine === "deepfilter" ? loadAsset("/audio/deepfilter-v1/DeepFilterNet3.bin", loadingSignal) : undefined,
     ]);
-    const module = await WebAssembly.compile(bytes);
-    await context.audioWorklet.addModule("/audio/noise-v1/worklet.js");
+    const module = bytes ? await WebAssembly.compile(bytes) : undefined;
+    await context.audioWorklet.addModule(engine === "dpdfnet2" ? "/audio/dpdfnet2-v1/worklet.js" : "/audio/noise-v1/worklet.js");
     signal.throwIfAborted();
-    node = new AudioWorkletNode(context, "caper-noise", {
+    node = new AudioWorkletNode(context, engine === "dpdfnet2" ? "caper-dpdfnet2" : "caper-noise", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
       channelCount: 1, channelCountMode: "explicit",
       processorOptions: { engine, module, model, attenuationLimit },
     });
+    let workerReady: ((error?: Error) => void) | undefined;
+    if (engine === "dpdfnet2") {
+      worker = new Worker("/audio/dpdfnet2-v1/worker.js", { type: "module", name: "caper-dpdfnet2" });
+      worker.onmessage = ({ data }) => {
+        if (data?.type === "ready") workerReady?.();
+        else if (data?.type === "output") node?.port.postMessage(data, [data.samples]);
+        else if (workerReady) workerReady(new Error("Noise suppression failed"));
+        else node?.port.postMessage({ type: "failed" });
+      };
+      worker.onerror = () => {
+        if (workerReady) workerReady(new Error("Noise suppression failed"));
+        else node?.port.postMessage({ type: "failed" });
+      };
+      node.port.addEventListener("message", ({ data }) => {
+        if (data?.type === "process") worker?.postMessage(data, [data.samples]);
+      });
+      node.port.start();
+    }
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => finish(new Error("Noise suppression timed out")), 15_000);
+      // ORT's first model compile is substantially slower than the small WASM engines.
+      const timer = setTimeout(() => finish(new Error("Noise suppression timed out")), engine === "dpdfnet2" ? 60_000 : 15_000);
       const abort = () => finish(new Error("Microphone setup cancelled"));
       const finish = (error?: Error) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
+        workerReady = undefined;
         error ? reject(error) : resolve();
       };
+      if (engine === "dpdfnet2") workerReady = finish;
       signal.addEventListener("abort", abort, { once: true });
       node!.onprocessorerror = () => finish(new Error("Noise suppression failed"));
       node!.port.onmessage = ({ data }) => finish(data === "ready" ? undefined : new Error("Noise suppression failed"));
@@ -134,7 +162,7 @@ export async function captureMicrophone(
     source.connect(node);
     node.connect(destination);
     microphone.track = destination.stream.getAudioTracks()[0];
-    microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : `DeepFilterNet active · ${presetName} · on-device`;
+    microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet2" ? "DPDFNet-2 HR active · experimental · on-device" : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = () => void fallback();
     node.port.onmessage = ({ data }) => { if (data === "failed") void fallback(); };
     return microphone;
@@ -143,6 +171,7 @@ export async function captureMicrophone(
     node?.port.postMessage("stop");
     node?.disconnect();
     node?.port.close();
+    worker?.terminate();
     if (context && context.state !== "closed") await context.close().catch(() => undefined);
     await fallback();
     return microphone;

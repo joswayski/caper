@@ -1,4 +1,4 @@
-import type { NoiseSuppression } from "./microphone";
+import type { AudioSetup, NoiseSuppression } from "./microphone";
 
 export type CallPhase = "idle" | "joining" | "connected" | "reconnecting" | "leaving" | "failed";
 export type MediaKind = "microphone";
@@ -45,6 +45,8 @@ export interface CallViewState {
   deafened: boolean;
   monitoring: boolean;
   monitorStream?: MediaStream;
+  monitorConnecting?: boolean;
+  monitorStatus?: string;
   selfId?: string;
   participants: Participant[];
   remoteMedia: RemoteMedia[];
@@ -52,5 +54,6 @@ export interface CallViewState {
   error?: string;
   diagnostics?: string;
   noiseSuppression?: NoiseSuppression;
+  audioSetup?: AudioSetup;
   noiseSuppressionStatus?: string;
 }

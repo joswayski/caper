@@ -21,6 +21,9 @@ export default defineConfig({
         "/audio/rnnoise-v1/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
+        "/audio/dpdfnet2-v1/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
         "/assets/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
