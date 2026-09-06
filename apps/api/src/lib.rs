@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
-use futures_util::stream::{self, Stream};
+use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -601,7 +601,7 @@ async fn events(
             // even when the cleanup sweep is not running.
             let valid = {
                 let r = stream.state.registry.lock().await;
-                authenticate(&r, &stream.token).is_ok()
+                authenticate(&r, &stream.token).is_ok() && stream.cancellation.has_changed().is_ok()
             };
             valid.then(|| {
                 (
@@ -611,24 +611,12 @@ async fn events(
             })
         },
     );
-    Ok(Sse::new(stream).into_response_with_header())
-}
-
-trait SseResponseExt<S> {
-    fn into_response_with_header(self) -> Response;
-}
-impl<S> SseResponseExt<S> for Sse<S>
-where
-    S: Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static,
-{
-    fn into_response_with_header(self) -> Response {
-        let mut response = self.into_response();
-        response.headers_mut().insert(
-            "x-accel-buffering",
-            axum::http::HeaderValue::from_static("no"),
-        );
-        response
-    }
+    let mut response = Sse::new(stream).into_response();
+    response.headers_mut().insert(
+        "x-accel-buffering",
+        axum::http::HeaderValue::from_static("no"),
+    );
+    Ok(response)
 }
 
 fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {

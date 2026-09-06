@@ -1,11 +1,12 @@
-const operations = new Set(["status", "join", "snapshot", "publish", "subscribe", "negotiate", "close", "state", "leave"]);
+const operations = new Set(["status", "join", "snapshot", "events", "publish", "subscribe", "negotiate", "close", "state", "leave"]);
 
 // Development/orb adapter. Production ingress routes directly to the same single Rust service.
 export async function proxyMedia(request: Request): Promise<Response> {
   const operation = new URL(request.url).pathname.slice("/api/media/".length);
   const headers = { "cache-control": "no-store" };
   if (!operations.has(operation)) return new Response(null, { status: 404, headers });
-  if (request.method !== (operation === "status" ? "GET" : "POST")) {
+  const streaming = operation === "events";
+  if (request.method !== (operation === "status" || streaming ? "GET" : "POST")) {
     return new Response(null, { status: 405, headers });
   }
   if (request.headers.get("sec-fetch-site") === "cross-site") {
@@ -36,16 +37,25 @@ export async function proxyMedia(request: Request): Promise<Response> {
     let offset = 0;
     for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.length; }
   }
+  const controller = new AbortController();
+  // Limit time to headers, not the lifetime of a healthy SSE response.
+  const timer = streaming ? setTimeout(() => controller.abort(), 25_000) : undefined;
   try {
     const upstream = await fetch(`${base.replace(/\/$/, "")}/api/media/${operation}`, {
       method: request.method,
       headers: { "content-type": "application/json", authorization: request.headers.get("authorization") ?? "" },
       body: body as BodyInit | undefined,
-      signal: AbortSignal.timeout(25_000),
+      signal: AbortSignal.any([request.signal, streaming ? controller.signal : AbortSignal.timeout(25_000)]),
       redirect: "error",
     });
-    return new Response(upstream.body, { status: upstream.status, headers: { ...headers, "content-type": upstream.headers.get("content-type") ?? "application/json" } });
+    return new Response(upstream.body, { status: upstream.status, headers: {
+      ...headers,
+      "content-type": upstream.headers.get("content-type") ?? "application/json",
+      ...(streaming ? { "x-accel-buffering": "no" } : {}),
+    } });
   } catch {
     return Response.json({ error: "The call service is temporarily unavailable." }, { status: 503, headers });
+  } finally {
+    clearTimeout(timer);
   }
 }

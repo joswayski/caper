@@ -5,7 +5,7 @@ export const NOISE_SUPPRESSION_OPTIONS = [
   { value: "deepfilter-gentle", label: "DeepFilterNet · gentle", description: "Keeps more of your original voice, along with more room noise. Try this if quiet words or laughter get cut off." },
   { value: "deepfilter-strong", label: "DeepFilterNet · strong", description: "The original suppression strength. A quieter background, with more risk of changing your voice." },
   { value: "rnnoise", label: "RNNoise · lightweight", description: "A different on-device model with lower processing cost. Compare it with DeepFilterNet for fans and AC noise." },
-  { value: "dpdfnet2", label: "DPDFNet-2 HR · experimental", description: "Experimental 48 kHz on-device model. It may fall back to browser suppression when this device cannot process audio in real time." },
+  { value: "dpdfnet2", label: "DPDFNet-2 HR · experimental", description: "Experimental 48 kHz on-device model. Audio stops if this device cannot process the selected filter in real time." },
   { value: "browser", label: "Browser suppression", description: "Your browser’s built-in filter. Quality and availability depend on the browser and device." },
   { value: "off", label: "Off", description: "No requested noise suppression. Audio setup controls echo protection and automatic microphone level separately." },
 ] as const;
@@ -77,25 +77,11 @@ export async function captureMicrophone(
   const attenuationLimit = mode === "deepfilter-gentle" ? 12 : mode === "deepfilter-strong" ? 40 : 20;
   const presetName = mode === "deepfilter-gentle" ? "gentle" : mode === "deepfilter-strong" ? "strong" : "balanced";
 
-  const fallback = async () => {
+  const fail = () => {
     if (stopped) return;
-    if (node) {
-      node.onprocessorerror = null;
-      node.port.onmessage = null;
-      node.port.postMessage("stop");
-    }
-    node?.disconnect();
-    worker?.terminate();
-    worker = undefined;
-    source?.disconnect();
-    // Preserve the outgoing track, including its mute state, after a worklet failure.
-    if (destination) source?.connect(destination);
-    microphone.status = `${engineName} unavailable — noise suppression off`;
-    try {
-      await raw.applyConstraints({ noiseSuppression: true });
-      if (raw.getSettings().noiseSuppression) microphone.status = `${engineName} unavailable — browser suppression`;
-    } catch { /* Keep working audio, without pretending enhanced suppression is active. */ }
-    if (!stopped) changed();
+    microphone.status = `${engineName} failed — microphone stopped`;
+    microphone.stop();
+    changed();
   };
 
   try {
@@ -155,17 +141,12 @@ export async function captureMicrophone(
     node.connect(destination);
     microphone.track = destination.stream.getAudioTracks()[0];
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet2" ? "DPDFNet-2 HR active · experimental · on-device" : `DeepFilterNet active · ${presetName} · on-device`;
-    node.onprocessorerror = () => void fallback();
-    node.port.onmessage = ({ data }) => { if (data === "failed") void fallback(); };
+    node.onprocessorerror = fail;
+    node.port.onmessage = ({ data }) => { if (data === "failed") fail(); };
     return microphone;
   } catch {
-    if (signal.aborted) { microphone.stop(); signal.throwIfAborted(); }
-    node?.port.postMessage("stop");
-    node?.disconnect();
-    node?.port.close();
-    worker?.terminate();
-    if (context && context.state !== "closed") await context.close().catch(() => undefined);
-    await fallback();
-    return microphone;
+    microphone.stop();
+    signal.throwIfAborted();
+    throw new Error(`${engineName} could not start. New microphone audio was not enabled. Please try again.`);
   }
 }
