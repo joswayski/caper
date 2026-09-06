@@ -1,0 +1,59 @@
+name: Media image
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  media:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ECR: 395451633568.dkr.ecr.us-east-1.amazonaws.com/production/caper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: media
+          platforms: linux/arm64
+          load: true
+          tags: caper-media:test
+          cache-from: type=gha,scope=media
+          cache-to: type=gha,scope=media,mode=max
+      - name: Verify disabled service
+        run: |
+          set -euo pipefail
+          container="$(docker run -d -p 3001:3001 caper-media:test)"
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3001/health; then break; fi
+            sleep 1
+          done
+          test "$(curl --fail --silent http://127.0.0.1:3001/api/media/status)" = '{"enabled":false}'
+          test "$(curl --silent -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"name":"test"}' http://127.0.0.1:3001/api/media/join)" = 503
+      - name: Configure AWS credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::395451633568:role/production-caper-ecr-publisher
+          aws-region: us-east-1
+          allowed-account-ids: "395451633568"
+      - name: Check immutable tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: existing
+        run: |
+          digest="$(aws ecr describe-images --repository-name production/caper --image-ids "imageTag=media-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
+          if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo 'exists=true' >> "$GITHUB_OUTPUT"; fi
+      - uses: aws-actions/amazon-ecr-login@v2.1.6
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
+      - name: Publish separately from the website (no deployment)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
+        run: |
+          docker tag caper-media:test "$ECR:media-$GITHUB_SHA"
+          docker push "$ECR:media-$GITHUB_SHA"
