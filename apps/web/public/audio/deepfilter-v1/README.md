@@ -12,8 +12,8 @@ API key, license server, or audio upload is used for noise suppression.
 - `df.js`: unmodified generated bindings (including AudioWorklet UTF-8 shims)
   from `mezonai/mezon-noise-suppression`, commit
   `a5212661245a2184370fc3c3dd1f52dc4dffb2a5`, `src/df3/df.js`.
-- `worklet.js`: Caper-owned adapter with readiness/error messages and fixed-delay
-  sample buffering, not the MezonAI LiveKit wrapper.
+- The Caper-owned adapter shared with RNNoise lives in `../noise-v1/worklet.js`;
+  it is not the MezonAI LiveKit wrapper.
 - Selected license: MIT; upstream and MezonAI notices are in `LICENSE-MIT`.
 
 SHA-256:
