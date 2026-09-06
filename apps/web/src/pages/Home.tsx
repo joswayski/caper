@@ -41,9 +41,8 @@ export default function Home({ initialNow, latestChanges }: HomeProps) {
             Chat with anyone, about anything.
           </p>
           <p className="made-by">
-            A place for conversations by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a>.
+            Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a>.
           </p>
-          <p className="experimental-label">(experimental)</p>
           <div className="hero-actions">
             <a className="github-button" href="/live">Open voice channel</a>
             <span className="action-separator" aria-hidden="true">·</span>
