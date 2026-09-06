@@ -56,8 +56,8 @@ export class PublicCallClient {
   private statsTimer?: number;
   private speaking: string[] = [];
   private diagnostics = "";
-  private noiseSuppression: NoiseSuppression = "deepfilter";
-  private audioSetup: AudioSetup = "speakers";
+  private noiseSuppression: NoiseSuppression = "dpdfnet2";
+  private audioSetup: AudioSetup = "headphones";
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
   private joinTiming = "";

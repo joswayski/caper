@@ -23,8 +23,10 @@
 .join-card h1 { margin: 0; font-size: clamp(2rem, 3.5vw, 3rem); line-height: 1.08; letter-spacing: -.05em; }
 .join-card > p { color: var(--text-muted); line-height: 1.6; }
 .join-card form { display: grid; gap: 10px; margin-top: 30px; }
+.device-control { width: min(240px, 25vw); display: grid; gap: 5px; }
 .device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
-.device-control select { width: 100%; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
+.device-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
+.device-control select { width: 100%; height: 34px; padding: 0 8px; font-size: .8rem; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
 .call-page :focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 .primary-button { height: 48px; margin-top: 5px; border: 0; border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .primary-button:disabled { opacity: .5; cursor: wait; }
@@ -37,8 +39,6 @@
 .noise-status { color: var(--text-muted); font-size: .8rem; }
 .call-diagnostics { color: var(--text-muted); margin-top: 20px; font-size: .8rem; }
 .call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
-.device-control { width: min(240px, 25vw); display: grid; gap: 5px; }
-.device-control select { height: 34px; padding: 0 8px; font-size: .8rem; }
 .control-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .control-buttons button, .stage-placeholder button { min-height: 40px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font-size: .82rem; font-weight: 750; cursor: pointer; }
 .control-buttons button:hover, .control-buttons button.active { border-color: #805143; background: #39231e; }

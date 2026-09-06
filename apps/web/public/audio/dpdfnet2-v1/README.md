@@ -16,9 +16,9 @@ are vendored here for lazy, same-origin loading. One WASM thread avoids requirin
 cross-origin isolation. AudioWorklet callbacks only frame/copy audio. A Worker
 runs FFT and inference, transfers blocks, prebuffers three output hops, and fails
 over on underrun or an eight-hop backlog rather than accumulating unbounded latency.
-Warm-up happens before readiness and resets state before capture. This is experimental and is
-not the default. Synthetic tests establish execution and continuity, not speech
-quality.
+Warm-up happens before readiness and resets state before capture. Caper now uses
+this runtime by default following owner listening tests; device performance remains
+experimental. Synthetic tests establish execution and continuity, not speech quality.
 
 Reproduce from repository root with `npm ci`, Python's `onnx` package installed,
 then `node scripts/vendor-dpdfnet.mjs`. Normal builds do not download anything.
