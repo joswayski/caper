@@ -26,6 +26,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "category": "SocialNetworking",
+    "shortDescription": "Good company. Great conversations.",
+    "longDescription": "An open-source space for messages, calls, threads, and the useful context around them."
   }
 }
