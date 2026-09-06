@@ -14,7 +14,7 @@ export const Route = createRootRoute({
       { name: "viewport", content: "width=device-width, initial-scale=1.0" },
       {
         name: "description",
-        content: "Messages and voice, together in the same channel.",
+        content: "Chat with anyone, about anything.",
       },
       { name: "theme-color", content: "#0c0d0f" },
       { title: "Caper — A place for your people" },

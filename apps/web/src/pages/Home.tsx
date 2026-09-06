@@ -21,7 +21,7 @@ export default function Home() {
             </span>
           </h1>
           <p>
-            Messages and voice, together in the same channel.
+            Chat with anyone, about anything.
           </p>
           <div className="hero-actions">
             <a className="github-button" href="/live">Open voice channel</a>
