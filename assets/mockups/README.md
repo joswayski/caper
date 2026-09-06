@@ -19,3 +19,8 @@ Amp Puck artwork are used.
 meshes and canvas-text labels. The avatar sheet is the only downloaded texture;
 the game attachment is a procedural low-poly diorama, reused in the thread.
 This is an illustrative scene, not an interactive chat client.
+
+WebGL cannot ship in the first HTML response, so rest-pose posters live at
+`apps/web/public/images/chat-preview-wide.webp` and
+`chat-preview-stacked.webp`. They are the first paint; the live canvas replaces
+them after the avatar atlas is ready.
