@@ -70,7 +70,6 @@ body {
 .hero-copy > .made-by { margin-top: 16px; color: var(--text-muted); font-size: .9375rem; font-weight: 500; }
 .made-by a,
 .experimental-note a { color: var(--text); text-underline-offset: 4px; }
-.hero-copy > .experimental-label { margin-top: 4px; color: var(--text-muted); font-size: .75rem; font-weight: 400; }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 38px; }
 .github-button { min-height: 52px; width: max-content; flex-shrink: 0; white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; padding: 0 20px; border: 1px solid var(--terracotta); border-radius: 999px; color: var(--text); background: var(--terracotta); font-weight: 700; text-decoration: none; transition: color .2s ease-out, background-color .2s ease-out, border-color .2s ease-out; }
 .github-button:hover { color: #fff; border-color: #c8644c; background: #ad472d; }
@@ -79,12 +78,14 @@ body {
 .coming-soon i { width: 7px; height: 7px; border-radius: 50%; background: var(--terracotta-bright); box-shadow: 0 0 0 4px rgba(219,104,73,.12); }
 .action-separator { color: var(--text-muted); }
 .hero-copy > .experimental-note { max-width: 560px; margin-top: 24px; color: var(--text-muted); font-size: .8125rem; font-weight: 400; line-height: 1.55; }
-.feedback-x { display: inline-flex; width: 1em; height: 1em; vertical-align: -.12em; }
+.feedback-x { display: inline-flex; width: 1em; height: 1em; vertical-align: -.12em; margin: -2px -3px; padding: 2px 3px; transition: color .2s ease-out, transform .2s ease-out; }
+.feedback-x:hover { color: var(--terracotta-bright); transform: translateY(-1px); }
 .feedback-x svg { width: 100%; height: 100%; }
-.copy-email { display: inline-flex; flex-direction: column; vertical-align: middle; margin: 0 2px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: transparent; font: inherit; line-height: 1.15; text-align: left; cursor: pointer; }
-.copy-email:hover { border-color: var(--text-muted); }
+.copy-email { display: inline-flex; flex-direction: column; vertical-align: middle; margin: 0 2px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: transparent; font: inherit; line-height: 1.15; text-align: left; cursor: pointer; transition: border-color .2s ease-out, color .2s ease-out, background-color .2s ease-out, transform .2s ease-out; }
+.copy-email:hover { border-color: var(--terracotta); color: #fff; background: rgba(182,77,50,.14); transform: translateY(-1px); }
 .copy-email span { font-size: .75rem; }
-.copy-email small { color: var(--text-muted); font-size: .625rem; }
+.copy-email small { color: var(--text-muted); font-size: .625rem; transition: color .2s ease-out; }
+.copy-email:hover small { color: #d1d3d4; }
 .low-poly-chat { position: relative; width: min(100%, 860px); justify-self: center; aspect-ratio: 1.42; cursor: grab; touch-action: pan-y pinch-zoom; user-select: none; outline: none; }
 /* Keep 1.42 at every breakpoint so the rest-pose poster is 1:1 with the live
    camera. A shorter phone ratio stretches the stacked poster, then the canvas
@@ -138,7 +139,6 @@ body {
   .hero h1 { font-size: clamp(2.2rem, 9vw, 3rem); }
   .hero-copy > p { margin-top: 26px; font-size: 1.08rem; }
   .hero-copy > .made-by { margin-top: 14px; font-size: .875rem; }
-  .hero-copy > .experimental-label { margin-top: 4px; font-size: .75rem; }
   .hero-actions { flex-wrap: wrap; gap: 16px; margin-top: 32px; }
   .action-separator { display: none; }
   .coming-soon { order: -1; width: 100%; }
