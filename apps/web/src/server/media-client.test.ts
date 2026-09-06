@@ -10,6 +10,7 @@ class Track extends EventTarget {
   enabled = true;
   readyState = "live";
   stop() { this.readyState = "ended"; }
+  getSettings() { return { noiseSuppression: true }; }
 }
 class Stream {
   tracks: Track[];
@@ -23,7 +24,7 @@ class Peer extends EventTarget {
   connectionState = "connected";
   iceGatheringState = "complete";
   localDescription?: { toJSON(): object };
-  ontrack?: (event: { track: Track }) => void;
+  ontrack?: (event: { track: Track; transceiver: { mid: string }; streams: Stream[] }) => void;
   senders: Array<{ track: Track | null; replaceTrack(t: Track | null): Promise<void> }> = [];
   constructor() { super(); Peer.latest = this; Peer.all.push(this); }
   addTransceiver(track: Track) {
@@ -35,20 +36,21 @@ class Peer extends EventTarget {
   async createAnswer() { return { type: "answer", sdp: "v=0" }; }
   async setLocalDescription(description: object) { this.localDescription = { toJSON: () => description }; }
   async setRemoteDescription(description?: { type: string }) {
-    if (description?.type === "offer") this.ontrack?.({ track: new Track() });
+    if (description?.type === "offer") this.ontrack?.({ track: new Track(), transceiver: { mid: "1" }, streams: [] });
   }
   getSenders() { return this.senders; }
   getReceivers() { return []; }
   close() { this.connectionState = "closed"; }
 }
 
-function setup(t: TestContext) {
+function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   Peer.all = [];
   const track = new Track();
   const calls: string[] = [];
   const joinedNames: string[] = [];
   const stateUpdates: Array<{ muted: boolean; deafened: boolean }> = [];
   const states: CallViewState[] = [];
+  const events: ReadableStreamDefaultController<Uint8Array>[] = [];
   const restore: Array<() => void> = [];
   const install = (key: string, value: unknown) => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
@@ -56,7 +58,7 @@ function setup(t: TestContext) {
     restore.push(() => { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); });
   };
   install("window", globalThis);
-  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([track]) } });
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([track.readyState === "ended" ? new Track() : track]) } });
   install("MediaStream", Stream);
   install("RTCPeerConnection", Peer);
   install("fetch", async (url: string, options: RequestInit) => {
@@ -67,6 +69,19 @@ function setup(t: TestContext) {
       const role = JSON.parse(options.body as string).monitor;
       return Response.json({ token: role ?? "capability", id: role ?? "self", iceServers: [] });
     }
+    if (op === "events") {
+      let controller: ReadableStreamDefaultController<Uint8Array>;
+      const abort = () => controller.error(options.signal!.reason);
+      return new Response(new ReadableStream<Uint8Array>({
+        start(value) {
+          controller = value;
+          events.push(controller);
+          if (config.eventsReady !== false) controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
+          options.signal!.addEventListener("abort", abort, { once: true });
+        },
+        cancel() { options.signal!.removeEventListener("abort", abort); },
+      }), { headers: { "content-type": "text/event-stream" } });
+    }
     if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: "v=0" } });
     if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: "v=0" } });
     if (op === "snapshot") return Response.json({ participants: [] });
@@ -74,8 +89,10 @@ function setup(t: TestContext) {
     return new Response(null, { status: 204 });
   });
   const client = new PublicCallClient((state) => states.push(state));
+  // These tests isolate signaling with raw mock tracks; enhanced audio is tested separately.
+  void client.setNoiseSuppression("off");
   t.after(() => { client.leaveImmediately(); restore.reverse().forEach((fn) => fn()); });
-  return { client, track, calls, joinedNames, stateUpdates, states, install };
+  return { client, track, calls, joinedNames, stateUpdates, states, install, events };
 }
 
 test("preparation skips unused assets for DPDFNet and only warms the selected WASM engine", async (t) => {
@@ -84,7 +101,10 @@ test("preparation skips unused assets for DPDFNet and only warms the selected WA
     engines.push(engine);
     return { module: {} as WebAssembly.Module };
   });
-  const client = new PublicCallClient(() => undefined);
+  const states: CallViewState[] = [];
+  const client = new PublicCallClient((state) => states.push(state));
+  await client.setAudioSetup("headphones");
+  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet2");
   client.prepareMicrophone(); // The current DPDFNet-2 default has no shared WASM entry.
   await client.setNoiseSuppression("dpdfnet8");
   client.prepareMicrophone();
@@ -106,7 +126,7 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
     return new Stream([track]);
   } } });
   await client.join("Guest", "usb");
-  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet2");
+  assert.equal(states.at(-1)?.noiseSuppression, "off");
   assert.equal(states.at(-1)?.audioSetup, "headphones");
   assert.equal(constraints[0].echoCancellation, false);
   assert.equal(constraints[0].autoGainControl, false);
@@ -133,10 +153,10 @@ test("failed mode replacement keeps the old microphone and rolls back selection"
   const replacement = new Track();
   install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([replacement]) } });
   Peer.latest.senders[0].replaceTrack = async () => { throw new Error("replace failed"); };
-  await assert.rejects(client.setNoiseSuppression("off"), /replace failed/);
+  await assert.rejects(client.setNoiseSuppression("browser"), /replace failed/);
   assert.equal(track.readyState, "live");
   assert.equal(replacement.readyState, "ended");
-  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet2");
+  assert.equal(states.at(-1)?.noiseSuppression, "off");
 });
 
 test("random nicknames are submitted once per explicit join", async (t) => {
@@ -403,12 +423,11 @@ test("leave blocks a new session until slow server cleanup completes", async (t)
   const { client, states, install } = setup(t);
   let completeLeave!: () => void;
   let joins = 0;
-  install("fetch", (url: string) => {
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => {
     if (url.endsWith("/leave")) return new Promise<Response>((resolve) => { completeLeave = () => resolve(new Response(null, { status: 204 })); });
-    if (url.endsWith("/join")) { joins++; return Promise.resolve(Response.json({ token: "capability", id: "self", iceServers: [] })); }
-    if (url.endsWith("/publish")) return Promise.resolve(Response.json({ sessionDescription: { type: "answer", sdp: "v=0" } }));
-    if (url.endsWith("/state")) return Promise.resolve(new Response(null, { status: 204 }));
-    return Promise.resolve(Response.json({ participants: [] }));
+    if (url.endsWith("/join")) joins++;
+    return original(url, init);
   });
   await client.join("Guest");
   const leaving = client.leave();
@@ -436,6 +455,179 @@ test("leave during join closes the late capability and never creates a PeerConne
   await joining;
   assert.equal(track.readyState, "ended");
   assert.equal(leaveToken, "Bearer late");
+});
+
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+const changedEvent = () => new TextEncoder().encode("event: changed\ndata: {}\n\n");
+
+test("Join gates publication on SSE and audio on transport, initial roster, and state readiness", async (t) => {
+  const { client, track, calls, states, events, install } = setup(t, { eventsReady: false });
+  const original = fetch;
+  let snapshot!: () => void;
+  let state!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/snapshot")) return new Promise<Response>((resolve) => { snapshot = () => resolve(Response.json({ participants: [] })); });
+    if (url.endsWith("/state")) return new Promise<Response>((resolve) => { state = () => resolve(new Response(null, { status: 204 })); });
+    return original(url, init);
+  });
+  const joining = client.join();
+  await tick();
+  assert.equal(states.at(-1)?.phase, "joining");
+  assert.equal(calls.includes("publish"), false, "HTTP headers alone are not an SSE handshake");
+  Peer.latest.connectionState = "connecting";
+  events[0].enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
+  await tick();
+  assert.equal(calls.includes("publish"), true);
+  assert.equal(track.enabled, false, "publication establishes transport with silence");
+  assert.equal(typeof snapshot, "undefined");
+  Peer.latest.connectionState = "connected";
+  Peer.latest.dispatchEvent(new Event("connectionstatechange"));
+  await tick();
+  assert.equal(track.enabled, false);
+  snapshot();
+  await tick();
+  assert.equal(track.enabled, false, "state synchronization must finish before audio is enabled");
+  assert.equal(states.at(-1)?.phase, "joining");
+  events[0].enqueue(changedEvent());
+  await tick();
+  state();
+  await tick();
+  assert.equal(track.enabled, false, "an update during state sync must be reconciled before opening audio");
+  snapshot();
+  await joining;
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(track.enabled, true);
+});
+
+test("initial subscription negotiation completes before microphone audio is enabled", async (t) => {
+  const { client, track, states, install } = setup(t);
+  const original = fetch;
+  let negotiate!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }));
+    if (url.endsWith("/negotiate")) return new Promise<Response>((resolve) => { negotiate = () => resolve(new Response(null,{status:204})); });
+    return original(url, init);
+  });
+  const joining = client.join();
+  await tick();
+  assert.equal(typeof negotiate, "function");
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.phase, "joining");
+  negotiate();
+  await joining;
+  assert.equal(track.enabled, true);
+  assert.equal(states.at(-1)?.phase, "connected");
+});
+
+test("cancel before SSE readiness never publishes and releases capture", async (t) => {
+  const { client, track, calls, states } = setup(t, { eventsReady: false });
+  const joining = client.join();
+  await tick();
+  await client.leave();
+  await joining;
+  assert.equal(calls.includes("publish"), false);
+  assert.equal(track.readyState, "ended");
+  assert.equal(states.at(-1)?.phase, "idle");
+});
+
+test("an unavailable selected enhancer fails Join without publishing a fallback", async (t) => {
+  const { client, track, states, calls } = setup(t);
+  await client.setNoiseSuppression("deepfilter");
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.match(states.at(-1)!.error!, /DeepFilterNet could not start/);
+  assert.equal(calls.includes("publish"), false);
+  assert.equal(track.readyState, "ended");
+});
+
+test("SSE loss during startup fails closed and loss after connection stops audio", async (t) => {
+  const { client, track, events, states, install } = setup(t);
+  const original = fetch;
+  let publish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/publish")
+    ? new Promise<Response>((resolve) => { publish = () => resolve(Response.json({sessionDescription:{type:"answer",sdp:"v=0"}})); })
+    : original(url, init));
+  const joining = client.join();
+  await tick();
+  events[0].close();
+  await tick();
+  assert.equal(track.readyState, "ended");
+  publish();
+  await joining;
+  assert.equal(states.at(-1)?.phase, "failed");
+  install("fetch", original);
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "connected");
+  const outgoing = Peer.latest.senders[0].track!;
+  events.at(-1)!.close();
+  await tick();
+  assert.equal(outgoing.readyState, "ended");
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+});
+
+test("automatic rejoin reopens SSE and preserves mute until explicitly unmuted", async (t) => {
+  const { client, track, events, states } = setup(t);
+  await client.join();
+  await client.setMuted(true);
+  await (client as unknown as { rejoin(): Promise<void> }).rejoin();
+  assert.equal(events.length, 2);
+  assert.equal(track.readyState, "ended");
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(Peer.latest.senders[0].track, null);
+  await client.setMuted(false);
+  assert.equal(Peer.latest.getSenders()[0].track?.enabled, true);
+});
+
+test("rejoin restores private microphone testing without reattaching the public sender", async (t) => {
+  const { client, states } = setup(t);
+  await client.join();
+  await client.setMonitoring(true);
+  const previousPeers = Peer.all.length;
+  await (client as unknown as { rejoin(): Promise<void> }).rejoin();
+  const [publicPeer, privateSender] = Peer.all.slice(previousPeers);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.monitoring, true);
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(publicPeer.senders[0].track, null);
+  assert.equal(privateSender.senders[0].track?.enabled, true);
+  assert.ok(states.at(-1)?.monitorStream);
+});
+
+test("an SSE track notification subscribes without waiting for the heartbeat timer", async (t) => {
+  const { client, events, calls, states, install } = setup(t);
+  await client.join();
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? Promise.resolve(Response.json({ participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{id:"remote",kind:"microphone"}] }] }))
+    : original(url, init));
+  events[0].enqueue(changedEvent());
+  await tick();
+  assert.ok(calls.includes("subscribe"));
+  assert.ok(calls.includes("negotiate"));
+  assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
+});
+
+test("SSE invalidations reconcile immediately and retain changes arriving during a snapshot", async (t) => {
+  const { client, events, install } = setup(t);
+  await client.join();
+  const original = fetch;
+  const snapshots: Array<() => void> = [];
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? new Promise<Response>((resolve) => snapshots.push(() => resolve(Response.json({participants:[]}))))
+    : original(url, init));
+  events[0].enqueue(changedEvent());
+  await tick();
+  assert.equal(snapshots.length, 1);
+  events[0].enqueue(changedEvent());
+  events[0].enqueue(changedEvent());
+  await tick();
+  assert.equal(snapshots.length, 1, "coalesce while a fetch is pending");
+  snapshots[0]();
+  await tick();
+  assert.equal(snapshots.length, 2, "do not lose invalidation during an in-flight snapshot");
+  snapshots[1]();
+  await tick();
 });
 
 test("connection event wait ignores intermediate states", async (t) => {

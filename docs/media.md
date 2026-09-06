@@ -16,7 +16,9 @@ mute, deafen, choose devices, and leave. Other visitors may record audio.
 Browser → same-origin `/api/media/*` → single Rust Axum service → Cloudflare
 control API. Browser ↔ Cloudflare Realtime SFU/TURN for WebRTC audio. No media
 relays through AWS, Workers, Durable Objects, RealtimeKit or PlanetScale.
-Three-second HTTP snapshots provide presence/heartbeat; no WebSocket is needed.
+Authenticated SSE invalidations provide immediate public roster/track discovery.
+Fifteen-second HTTP snapshots renew presence leases and repair missed state; HTTP
+also carries commands. Audio still uses WebRTC, not SSE or WebSockets.
 
 The website has two AWS k3s replicas. A separate **single-replica** Rust service
 owns the in-memory participant registry. Do not scale that registry or use sticky
@@ -127,7 +129,9 @@ work after Join. WASM compilation can run concurrently with the model download.
 Join still opens the microphone and initializes a dedicated worklet/model
 instance, then waits for its ready acknowledgement before publication. A cold
 join waits for unfinished preparation; it does not temporarily publish raw audio.
-Existing honest browser-suppression fallback on actual processor failure remains.
+Enhanced-filter initialization failure now fails Join instead of silently
+publishing browser-filtered/raw audio. A runtime failure stops both capture and
+processed tracks and triggers the bounded reconnect flow with the same selection.
 Downloads have a 30-second timeout; failures are evicted so a later join can retry.
 Cancelling a join stops capture immediately without cancelling shared preparation.
 
@@ -149,15 +153,49 @@ September 6, 2026 investigation (not a post-deployment performance guarantee):
   sender detached; leave ended the raw track. This is not live SFU, physical
   speech-quality, remote first-decoded-audio, or native desktop validation.
 
-Three-second roster/track polling is still present and can delay an existing
-listener's subscription. Planned follow-up, not implemented here: bearer-authenticated
-SSE notifications from the same Rust registry, with initial/recovery snapshots,
-coalesced invalidation, reconnect backoff, and periodic heartbeat/snapshot fallback.
-HTTP retains mutations; SSE only tells clients to reconcile immediately. Do not
-put capability tokens in event-stream URLs. The development proxy must stream
-without its normal 25-second request deadline; production ingress must not buffer
-events. Validate publish/close/leave/expiry notifications, private monitor isolation,
-auth revocation, stream disconnects, and simultaneous joins before replacing polling.
+### Required live-update and audio readiness
+
+`GET /api/media/events` uses the existing Bearer capability in an Authorization
+header, not a query string or cookie. The browser consumes SSE with streaming
+Fetch so the capability never enters the URL. The server emits `ready` immediately,
+coalesced `changed` invalidations after public roster mutations, and `heartbeat`
+after ten seconds without another event; each event has `{}` data. Clients fetch
+the authoritative snapshot on a change and retain a dirty flag for changes during
+an in-flight reconciliation. No private monitor session is exposed or authorized
+to receive the public stream. One stream per participant is retained; a new one
+replaces the previous stream. Auth/expiry is rechecked for every event, and SSE
+alone never renews the lease. There is no durable event log or second registry.
+
+Join/rejoin waits for the selected audio processor and an actual SSE `ready`
+frame before publishing. Publication starts with the audio track disabled (silence).
+Only after transport connection, initial roster/subscription negotiation, state
+synchronization and a final live-stream/track check does the client enable audio
+and show Connected, respecting mute/monitor state. This gates the joining client's
+setup; it does not wait for an acknowledgement from every remote speaker device or
+guarantee another listener's autoplay, deafen, network or playout state.
+
+No handshake within ten seconds or no valid event within 25 seconds fails the
+stream. An SSE failure during startup fails Join; during an established call it
+stops capture and uses the existing bounded full-session reconnect with the same
+filter/mute selection. This deliberately sacrifices uninterrupted audio on a
+control-stream failure rather than transmitting while required state is unavailable.
+Cancel/leave aborts the stream and startup event waits. Fifteen-second snapshots
+remain a lease heartbeat/recovery mechanism, not the normal track-discovery delay.
+
+The development adapter forwards the streaming body and cancellation and limits
+only the wait for SSE response headers, not the stream's lifetime. The API and
+adapter send `X-Accel-Buffering: no`; production intermediaries must also stream
+without buffering. The infrastructure repository routes `/api/media` to the API
+through Traefik with no path/method restriction or explicit buffering middleware.
+Dashboard-managed Cloudflare Tunnel settings and running cluster settings were
+not verified; test the public stream through the deployed hostname after rollout.
+Deploy the new API before the new web image: new clients require the endpoint,
+while older clients remain compatible with the additive API. Keep one API replica.
+
+Readiness validation uses provider/router mocks, real streaming response bodies,
+client-controlled handshake/transport/negotiation/state delays, cancellation,
+stream watchdogs, coalesced changes, and enhanced-filter failure tests. These are
+not new live SFU/TURN or remote first-decoded-audio acceptance results.
 
 Acceptance remains actual received audio, not a faster connected label. Collect
 cold/warm join percentiles and first decoded remote audio on two devices/networks,
@@ -277,29 +315,28 @@ natural headphone input; no mode selector is shown.
 Microphone/output selectors remain; output selection also applies to live and
 recorded mic-test playback. New visitors use DPDFNet with natural headphone input.
 Changing a filter/device clears the old recording immediately and disables
-recording during initialization. Runtime fallback also discards any old recording.
+recording during initialization. Runtime failure also discards any old recording.
 Run a fresh mic test after the chosen model reports active. Model 8
 adds a lazy 14.9 MB model download and reuses model 2's vendored runtime/DSP.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
-The active status appears only after the worklet
-acknowledges initialization. If loading/initialization fails, capture falls back
-to browser suppression when supported, otherwise unsuppressed audio, with an
-explicit status. A runtime processor error bypasses the worklet without replacing
-or unmuting the outgoing track. This is failure recovery, not an assurance that
-all CPU overload or audio artifacts can be detected automatically.
+The active status appears only after the processor acknowledges initialization.
+Loading/initialization failure rejects capture and stops its tracks; runtime
+processor failure also stops audio and requests a reconnect with the same filter.
+There is no automatic browser/raw downgrade. This does not ensure that all CPU
+overload or audio artifacts can be detected.
 
 Device/mode changes replace the outgoing track and release the previous hardware
-track and AudioContext. Reconnect retains the selected mode. Cancel/leave aborts
-downloads and closes both capture and processed tracks; a late permission grant
-is released. Mode is in memory for the page lifetime, not persisted to storage.
+track and AudioContext. Reconnect retains the selected mode. Cancel/leave stops
+capture and processed tracks; bounded shared asset preparation can finish for reuse.
+A late permission grant is released. Mode is in memory for the page lifetime, not persisted to storage.
 DeepFilter is not an echo canceller, voice gate, or guaranteed primary-speaker
 isolation. It can affect laughter, music, whispers, and natural voice timbre.
 The RNNoise/DeepFilter adapter adds 10 ms buffering **in addition to** model and
 system latency. DPDFNet uses a 20 ms analysis window, 10 ms hops and three output
 hops of startup buffering, plus scheduling/device/network latency. Its Worker
 warms up and resets state before readiness. An eight-hop backlog or output
-underrun causes explicit browser/raw fallback, not unbounded delay or intermittent
-zero-filled output. Do not judge DPDFNet quality when the status says fallback.
+underrun stops the selected audio processor, rather than downgrading or building
+unbounded delay. Earlier validation below predates the fail-closed behavior.
 
 DPDFNet model/runtime provenance, checksums, full licenses and reproduction are
 in `apps/web/public/audio/dpdfnet2-v1/README.md`. CEVA code/weights are Apache-2.0;
@@ -445,7 +482,11 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
   and outbound HTTPS. Never print credentials, SDP or raw media in logs.
 - Silent: check microphone permission, mute/deafen, output selection and Play
   audio fallback, then incoming/outgoing RTP and selected ICE candidate stats.
-- Stale roster: verify exactly one Rust API instance, snapshots and lease sweep.
+- Stale roster: verify exactly one Rust API instance, an authenticated `/events`
+  stream with immediate `ready` and ten-second heartbeats, event flushing through
+  intermediaries, snapshots and lease sweep. Do not paste auth-bearing HAR files.
+- Startup failure after a rollout: new web clients require the SSE endpoint;
+  deploy the API first. Filter failures deliberately stop rather than downgrade.
 - Provider cleanup failure: use private operator credentials to inspect/close
   tracks, never a public admin proxy. Disable new joins during provider outages.
 - Rotation: create replacement app/key, update the private deployment secret,

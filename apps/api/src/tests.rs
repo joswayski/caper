@@ -3,6 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
+use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tower::ServiceExt;
 
@@ -137,6 +138,194 @@ async fn monitor_joined(s: &AppState, token: &str, role: &str) -> (StatusCode, V
         json!({"name":"Microphone test","monitor":role}),
     )
     .await
+}
+
+async fn event_response(s: &AppState, token: Option<&str>, cross_site: bool) -> Response {
+    let mut request = Request::builder().method("GET").uri("/api/media/events");
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    if cross_site {
+        request = request.header("sec-fetch-site", "cross-site");
+    }
+    app(s.clone())
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn next_event(stream: &mut axum::body::BodyDataStream) -> Option<String> {
+    tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("event should arrive")
+        .transpose()
+        .unwrap()
+        .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn events_enforce_access_and_emit_ready_immediately() {
+    let (s, _) = state();
+    assert_eq!(
+        event_response(&s, None, false).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        event_response(&s, Some("bad"), false).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let participant = joined(&s, "public").await;
+    let token = participant["token"].as_str().unwrap();
+    assert_eq!(
+        event_response(&s, Some(token), true).await.status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let monitor = monitor_joined(&s, token, "sender").await.1;
+    assert_eq!(
+        event_response(&s, Some(monitor["token"].as_str().unwrap()), false)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let response = event_response(&s, Some(token), false).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["x-accel-buffering"], "no");
+    let mut stream = response.into_body().into_data_stream();
+    assert_eq!(
+        next_event(&mut stream).await.as_deref(),
+        Some("event: ready\ndata: {}\n\n")
+    );
+
+    let (mut disabled, _) = state();
+    disabled.config.enabled = false;
+    assert_eq!(
+        event_response(&disabled, Some(token), false).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
+async fn public_events_are_coalesced_and_connections_are_replaced_or_revoked() {
+    let (s, _) = state();
+    let participant = joined(&s, "public").await;
+    let token = participant["token"].as_str().unwrap();
+    let mut first = event_response(&s, Some(token), false)
+        .await
+        .into_body()
+        .into_data_stream();
+    assert!(next_event(&mut first).await.unwrap().contains("ready"));
+
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/state",
+        Some(token),
+        json!({"muted":true,"deafened":false}),
+    )
+    .await;
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/state",
+        Some(token),
+        json!({"muted":true,"deafened":true}),
+    )
+    .await;
+    assert_eq!(
+        next_event(&mut first).await.as_deref(),
+        Some("event: changed\ndata: {}\n\n")
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), first.next())
+            .await
+            .is_err()
+    );
+
+    let mut replacement = event_response(&s, Some(token), false)
+        .await
+        .into_body()
+        .into_data_stream();
+    assert!(
+        next_event(&mut replacement)
+            .await
+            .unwrap()
+            .contains("ready")
+    );
+    assert!(next_event(&mut first).await.is_none());
+    remove_participant(&s, participant["id"].as_str().unwrap().parse().unwrap()).await;
+    assert!(next_event(&mut replacement).await.is_none());
+}
+
+#[tokio::test]
+async fn public_join_publish_close_and_leave_emit_changes() {
+    let (s, _) = state();
+    let observer = joined(&s, "observer").await;
+    let observer_token = observer["token"].as_str().unwrap();
+    let mut stream = event_response(&s, Some(observer_token), false)
+        .await
+        .into_body()
+        .into_data_stream();
+    assert!(next_event(&mut stream).await.unwrap().contains("ready"));
+
+    let subject = joined(&s, "subject").await;
+    let subject_token = subject["token"].as_str().unwrap();
+    assert!(next_event(&mut stream).await.unwrap().contains("changed"));
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/publish",
+        Some(subject_token),
+        json!({"kind":"microphone","mid":"mic","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+    )
+    .await;
+    assert!(next_event(&mut stream).await.unwrap().contains("changed"));
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/close",
+        Some(subject_token),
+        json!({"mid":"mic"}),
+    )
+    .await;
+    assert!(next_event(&mut stream).await.unwrap().contains("changed"));
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/leave",
+        Some(subject_token),
+        json!({}),
+    )
+    .await;
+    assert!(next_event(&mut stream).await.unwrap().contains("changed"));
+}
+
+#[tokio::test]
+async fn private_monitor_mutations_do_not_emit_public_events() {
+    let (s, _) = state();
+    let parent = joined(&s, "parent").await;
+    let token = parent["token"].as_str().unwrap();
+    let mut stream = event_response(&s, Some(token), false)
+        .await
+        .into_body()
+        .into_data_stream();
+    assert!(next_event(&mut stream).await.unwrap().contains("ready"));
+    let monitor = monitor_joined(&s, token, "sender").await.1;
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/state",
+        Some(monitor["token"].as_str().unwrap()),
+        json!({"muted":true,"deafened":true}),
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), stream.next())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

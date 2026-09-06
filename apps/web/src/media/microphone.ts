@@ -68,25 +68,11 @@ export async function captureMicrophone(
   const attenuationLimit = mode === "deepfilter-gentle" ? 12 : mode === "deepfilter-strong" ? 40 : 20;
   const presetName = mode === "deepfilter-gentle" ? "gentle" : mode === "deepfilter-strong" ? "strong" : "balanced";
 
-  const fallback = async () => {
+  const fail = () => {
     if (stopped) return;
-    if (node) {
-      node.onprocessorerror = null;
-      node.port.onmessage = null;
-      node.port.postMessage("stop");
-    }
-    node?.disconnect();
-    worker?.terminate();
-    worker = undefined;
-    source?.disconnect();
-    // Preserve the outgoing track, including its mute state, after a worklet failure.
-    if (destination) source?.connect(destination);
-    microphone.status = `${engineName} unavailable — noise suppression off`;
-    try {
-      await raw.applyConstraints({ noiseSuppression: true });
-      if (raw.getSettings().noiseSuppression) microphone.status = `${engineName} unavailable — browser suppression`;
-    } catch { /* Keep working audio, without pretending enhanced suppression is active. */ }
-    if (!stopped) changed();
+    microphone.status = `${engineName} failed — microphone stopped`;
+    microphone.stop();
+    changed();
   };
 
   try {
@@ -146,17 +132,12 @@ export async function captureMicrophone(
     node.connect(destination);
     microphone.track = destination.stream.getAudioTracks()[0];
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet2" ? `${engineName} active · experimental · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
-    node.onprocessorerror = () => void fallback();
-    node.port.onmessage = ({ data }) => { if (data === "failed") void fallback(); };
+    node.onprocessorerror = fail;
+    node.port.onmessage = ({ data }) => { if (data === "failed") fail(); };
     return microphone;
   } catch {
-    if (signal.aborted) { microphone.stop(); signal.throwIfAborted(); }
-    node?.port.postMessage("stop");
-    node?.disconnect();
-    node?.port.close();
-    worker?.terminate();
-    if (context && context.state !== "closed") await context.close().catch(() => undefined);
-    await fallback();
-    return microphone;
+    microphone.stop();
+    signal.throwIfAborted();
+    throw new Error(`${engineName} could not start. New microphone audio was not enabled. Please try again.`);
   }
 }
