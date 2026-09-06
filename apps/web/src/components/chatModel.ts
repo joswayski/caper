@@ -1,5 +1,5 @@
 import {
-  BoxGeometry, BufferGeometry, CanvasTexture, CircleGeometry, Group, IcosahedronGeometry,
+  BoxGeometry, BufferGeometry, CanvasTexture, CircleGeometry, CylinderGeometry, Group, IcosahedronGeometry,
   Line, LineBasicMaterial, Mesh, MeshBasicMaterial, MeshStandardMaterial, PlaneGeometry,
   SRGBColorSpace, TextureLoader, Vector3,
 } from "three";
@@ -8,6 +8,8 @@ import type { Material, Texture } from "three";
 /** A miniature app built in pixels (100px = one world unit), not a screenshot. */
 export function createChatModel(invalidate: () => void) {
   const group = new Group();
+  // Keep actual depth, but avoid exaggerated parallax between labels and controls.
+  group.scale.z = 0.45;
   const geometries: BufferGeometry[] = [];
   const materials: Material[] = [];
   const textures: Texture[] = [];
@@ -52,6 +54,7 @@ export function createChatModel(invalidate: () => void) {
     materials.push(surface);
     mesh(new PlaneGeometry(canvas.width / 300, canvas.height / 300), surface,
       x + canvas.width / 6, y + canvas.height / 6, z);
+    return canvas.width / 3;
   };
   const dot = (x: number, y: number, radius: number, color: number, z = 25) =>
     mesh(new IcosahedronGeometry(radius / 100, 1), material(color), x, y, z);
@@ -78,14 +81,15 @@ export function createChatModel(invalidate: () => void) {
   const portraitMaterial = new MeshBasicMaterial({ map: atlas });
   materials.push(portraitMaterial);
   const avatar = (person: number, x: number, y: number, size = 42, online = false) => {
-    dot(x, y, size / 2 + 2, 0x414a48, 22);
+    const rim = mesh(new CylinderGeometry((size / 2 + 2) / 100, (size / 2 + 2) / 100, 0.06, 16), material(0x414a48), x, y, 38);
+    rim.rotation.x = Math.PI / 2;
     const geometry = new CircleGeometry(size / 200, 16);
     const uv = geometry.attributes.uv;
     for (let i = 0; i < uv.count; i++) {
       uv.setXY(i, (uv.getX(i) + person % 2) / 2, (uv.getY(i) + (person < 2 ? 1 : 0)) / 2);
     }
-    mesh(geometry, portraitMaterial, x, y, 48);
-    if (online) dot(x + size * 0.35, y + size * 0.35, 4, 0x86b56d, 52);
+    mesh(geometry, portraitMaterial, x, y, 41.5);
+    if (online) dot(x + size * 0.35, y + size * 0.35, 4, 0x86b56d, 43);
   };
   const pill = (label: string, x: number, y: number, w: number, color = 0x252c2e, labelColor = ink) => {
     panel(x, y, w, 29, color, 42, 9);
@@ -93,8 +97,8 @@ export function createChatModel(invalidate: () => void) {
   };
   const message = (person: number, name: string, time: string, y: number, body: string) => {
     avatar(person, 259, y + 18);
-    text(name, 292, y, 17, ink, true);
-    text(time, 292 + name.length * 10 + 14, y + 3, 12, muted);
+    const nameWidth = text(name, 292, y, 17, ink, true);
+    text(time, 292 + nameWidth + 10, y + 4, 12, muted);
     text(body, 292, y + 27, 15);
   };
 
@@ -243,8 +247,8 @@ export function createChatModel(invalidate: () => void) {
   replies.forEach((reply, i) => {
     const y = 420 + i * 77;
     avatar(reply.person, 878, y + 15, 34);
-    text(reply.name, 906, y, 16, ink, true, 37);
-    text(reply.time, 960, y + 3, 11, muted, false, 37);
+    const nameWidth = text(reply.name, 906, y, 16, ink, true, 37);
+    text(reply.time, 906 + nameWidth + 10, y + 4, 11, muted, false, 37);
     text(reply.body, 906, y + 26, 12, ink, false, 37);
     pill(reply.reaction, 906, y + 48, 49);
   });

@@ -26,14 +26,15 @@ export default function LowPolyChat() {
     const chat = model.group;
     chat.rotation.set(0.10, -0.20, -0.035);
     scene.add(chat);
-    scene.add(new AmbientLight(0xffffff, 1.3));
-    const key = new DirectionalLight(0xfff1e4, 2.2);
+    scene.add(new AmbientLight(0xffffff, 1.7));
+    const key = new DirectionalLight(0xfff1e4, 1.6);
     key.position.set(-5, 8, 12);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
     Object.assign(key.shadow.camera, { left: -8, right: 8, top: 7, bottom: -7, near: 0.5, far: 30 });
     key.shadow.bias = -0.0002;
     key.shadow.normalBias = 0.015;
+    key.shadow.intensity = 0.35;
     scene.add(key);
     const fill = new DirectionalLight(0xa9c5c0, 1.1);
     fill.position.set(8, -3, 5);
@@ -42,9 +43,20 @@ export default function LowPolyChat() {
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let animationFrame = 0;
     let visible = true;
+    let pointer: { id: number; x: number; y: number; tiltX: number; tiltY: number } | null = null;
+    const target = { x: 0, y: 0 };
+    const tilt = { x: 0, y: 0 };
+    const limit = 0.14; // Eight degrees in each direction, on top of the resting pose.
+    const clamp = (value: number) => Math.max(-limit, Math.min(limit, value));
+    let previousTime = 0;
     const render = (time = 0) => {
+      const blend = motion.matches ? 1 : 1 - Math.exp(-Math.min(time - previousTime, 64) / 85);
+      previousTime = time;
+      tilt.x += (target.x - tilt.x) * blend;
+      tilt.y += (target.y - tilt.y) * blend;
       chat.position.y = motion.matches ? 0 : Math.sin(time * 0.0007) * 0.10;
-      chat.rotation.y = -0.20 + (motion.matches ? 0 : Math.sin(time * 0.00035) * 0.045);
+      chat.rotation.x = 0.10 + tilt.x;
+      chat.rotation.y = -0.20 + tilt.y + (motion.matches ? 0 : Math.sin(time * 0.00035) * 0.025);
       draw();
       if (!motion.matches && visible && !document.hidden) animationFrame = requestAnimationFrame(render);
     };
@@ -52,6 +64,50 @@ export default function LowPolyChat() {
       cancelAnimationFrame(animationFrame);
       render(performance.now());
     };
+    const reset = () => {
+      const activePointer = pointer;
+      pointer = null;
+      target.x = target.y = 0;
+      host.classList.remove("is-dragging");
+      if (activePointer && host.hasPointerCapture(activePointer.id)) host.releasePointerCapture(activePointer.id);
+      resume();
+    };
+    const pointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || !event.isPrimary || pointer) return;
+      pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, tiltX: tilt.x, tiltY: tilt.y };
+      host.setPointerCapture(event.pointerId);
+      host.classList.add("is-dragging");
+      host.focus({ preventScroll: true });
+    };
+    const pointerMove = (event: PointerEvent) => {
+      if (!pointer || pointer.id !== event.pointerId) return;
+      const { width, height } = host.getBoundingClientRect();
+      target.x = clamp(pointer.tiltX + (event.clientY - pointer.y) / height * 0.6);
+      target.y = clamp(pointer.tiltY + (event.clientX - pointer.x) / width * 0.6);
+      resume();
+    };
+    const pointerEnd = (event: PointerEvent) => {
+      if (pointer?.id === event.pointerId) reset();
+    };
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key === "Home") {
+        event.preventDefault();
+        reset();
+      } else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+        event.preventDefault();
+        target.x = clamp(target.x + (event.key === "ArrowDown" ? 0.035 : event.key === "ArrowUp" ? -0.035 : 0));
+        target.y = clamp(target.y + (event.key === "ArrowRight" ? 0.035 : event.key === "ArrowLeft" ? -0.035 : 0));
+        resume();
+      }
+    };
+    host.addEventListener("pointerdown", pointerDown);
+    host.addEventListener("pointermove", pointerMove);
+    host.addEventListener("pointerup", pointerEnd);
+    host.addEventListener("pointercancel", pointerEnd);
+    host.addEventListener("lostpointercapture", pointerEnd);
+    host.addEventListener("keydown", keyDown);
+    host.addEventListener("blur", reset);
+    window.addEventListener("blur", reset);
     const resize = () => {
       const { width, height } = host.getBoundingClientRect();
       if (!width || !height) return;
@@ -62,8 +118,8 @@ export default function LowPolyChat() {
       chat.updateWorldMatrix(true, true);
       const frame = new Box3().setFromObject(chat).getSize(new Vector3());
       camera.position.z = Math.max(
-        (frame.y + 0.3) / (2 * Math.tan(verticalFov / 2)),
-        (frame.x + 0.3) / (2 * Math.tan(horizontalFov / 2)),
+        (frame.y + 0.8) / (2 * Math.tan(verticalFov / 2)),
+        (frame.x + 0.8) / (2 * Math.tan(horizontalFov / 2)),
       ) + frame.z / 2 + 0.5;
       camera.updateProjectionMatrix();
       draw();
@@ -87,6 +143,15 @@ export default function LowPolyChat() {
       visibility.disconnect();
       motion.removeEventListener("change", resume);
       document.removeEventListener("visibilitychange", resume);
+      host.removeEventListener("pointerdown", pointerDown);
+      host.removeEventListener("pointermove", pointerMove);
+      host.removeEventListener("pointerup", pointerEnd);
+      host.removeEventListener("pointercancel", pointerEnd);
+      host.removeEventListener("lostpointercapture", pointerEnd);
+      host.removeEventListener("keydown", keyDown);
+      host.removeEventListener("blur", reset);
+      window.removeEventListener("blur", reset);
+      host.classList.remove("is-dragging");
       model.dispose();
       key.shadow.dispose();
       renderer.dispose();
@@ -94,5 +159,9 @@ export default function LowPolyChat() {
     };
   }, []);
 
-  return <div className="low-poly-chat" ref={hostRef} role="img" aria-label="A floating 3D Caper chat preview: Studio channels, a shared game clip, and a conversation between friends with colorful caper avatars." />;
+  return (
+    <div className="low-poly-chat" ref={hostRef} tabIndex={0} role="group" aria-label="Interactive 3D Caper chat preview" aria-describedby="chat-tilt-help">
+      <span className="chat-tilt-help" id="chat-tilt-help">Drag to tilt · Arrow keys to rotate · Esc to reset</span>
+    </div>
+  );
 }
