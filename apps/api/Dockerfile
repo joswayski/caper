@@ -13,7 +13,7 @@ COPY apps/desktop/src-tauri/icons apps/desktop/src-tauri/icons
 COPY apps/desktop/src-tauri/tauri.conf.json apps/desktop/src-tauri/tauri.conf.json
 COPY apps/api/src apps/api/src
 COPY apps/api/build.rs apps/api/build.rs
-COPY apps/api/migrations apps/api/migrations
+RUN mkdir -p apps/api/migrations
 
 RUN cargo build --locked --release --package caper-api
 
