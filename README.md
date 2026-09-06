@@ -48,3 +48,5 @@ The production web container exposes port `3000` and reports readiness at
 `/api/health`. The separate `apps/api/Dockerfile` API container (`caper-api`) exposes port
 `3001` with `/health`. Run `cargo run -p caper-api` alongside the web app and set
 `MEDIA_API_URL=http://127.0.0.1:3001` on the web process for local development.
+See the [media runbook](docs/media.md) for provider configuration, deployment,
+privacy guidance, and the validation matrix.

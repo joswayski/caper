@@ -211,6 +211,26 @@ test("failed private join keeps channel isolated until explicit stop", async (t)
   assert.equal(Peer.all[0].senders[0].track, track);
 });
 
+test("terminal reconnect failure stops mic monitoring before an explicit join", async (t) => {
+  const { client, states, install } = setup(t);
+  await client.join();
+  await client.setMonitoring(true);
+
+  const reconnectable = client as unknown as { reconnects: number; rejoin(): Promise<void> };
+  reconnectable.reconnects = 3;
+  await reconnectable.rejoin();
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.equal(states.at(-1)?.monitoring, false);
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(states.at(-1)?.deafened, false);
+
+  const retryTrack = new Track();
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([retryTrack]) } });
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(Peer.latest.senders[0].track, retryTrack);
+});
+
 test("stop during pending test joins releases late capabilities without publishing", async (t) => {
   const { client, track, states, install } = setup(t);
   await client.join();

@@ -527,6 +527,7 @@ export class PublicCallClient {
   private async rejoin() {
     if (++this.reconnects > MAX_REJOINS) {
       await this.teardown(true);
+      this.resetMonitoring();
       this.phase = "failed";
       this.emit("Connection lost. Please join again.");
       return;
