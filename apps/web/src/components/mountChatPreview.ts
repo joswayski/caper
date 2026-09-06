@@ -24,7 +24,10 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   const draw = () => { if (!disposed) renderer.render(scene, camera); };
   const model = createChatModel(draw);
   const chat = model.group;
-  chat.rotation.set(0.10, -0.20, -0.035);
+  const rest = { x: 0.10, y: -0.20, z: -0.035 };
+  const idle = { x: 0.018, y: 0.025, z: 0.009 };
+  const float = 0.08;
+  chat.rotation.set(rest.x, rest.y, rest.z);
   scene.add(chat);
   scene.add(new AmbientLight(0xffffff, 1.7));
   const key = new DirectionalLight(0xfff1e4, 1.6);
@@ -53,7 +56,7 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   let startTime = 0;
   const restPose = () => {
     chat.position.y = 0;
-    chat.rotation.set(0.10, -0.20, -0.035);
+    chat.rotation.set(rest.x, rest.y, rest.z);
     tilt.x = tilt.y = target.x = target.y = 0;
   };
   const render = (time = 0) => {
@@ -62,10 +65,10 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
     const elapsed = time - startTime;
     tilt.x += (target.x - tilt.x) * blend;
     tilt.y += (target.y - tilt.y) * blend;
-    chat.position.y = motion.matches ? 0 : Math.sin(elapsed * 0.0007) * 0.10;
-    chat.rotation.x = 0.10 + tilt.x + (motion.matches ? 0 : Math.sin(elapsed * 0.00027) * 0.018);
-    chat.rotation.y = -0.20 + tilt.y + (motion.matches ? 0 : Math.sin(elapsed * 0.00035) * 0.025);
-    chat.rotation.z = -0.035 + (motion.matches ? 0 : Math.sin(elapsed * 0.00022) * 0.009);
+    chat.position.y = motion.matches ? 0 : Math.sin(elapsed * 0.0007) * float;
+    chat.rotation.x = rest.x + tilt.x + (motion.matches ? 0 : Math.sin(elapsed * 0.00027) * idle.x);
+    chat.rotation.y = rest.y + tilt.y + (motion.matches ? 0 : Math.sin(elapsed * 0.00035) * idle.y);
+    chat.rotation.z = rest.z + (motion.matches ? 0 : Math.sin(elapsed * 0.00022) * idle.z);
     draw();
     if (!motion.matches && visible && !document.hidden) animationFrame = requestAnimationFrame(render);
   };
@@ -127,6 +130,11 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   host.addEventListener("keydown", keyDown);
   host.addEventListener("blur", reset);
   window.addEventListener("blur", reset);
+  const envelope = new Box3();
+  const sample = new Box3();
+  const frame = new Vector3();
+  const center = new Vector3();
+  const pose = { x: 0, y: 0, z: 0 };
   const resize = () => {
     const { width, height } = host.getBoundingClientRect();
     if (!width || !height) return;
@@ -134,22 +142,37 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
     camera.aspect = width / height;
     const verticalFov = camera.fov * Math.PI / 180;
     const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
-    chat.updateWorldMatrix(true, true);
-    const bounds = new Box3().setFromObject(chat);
-    const frame = bounds.getSize(new Vector3());
-    const center = bounds.getCenter(new Vector3());
-    camera.position.z = Math.max(
-      (frame.y + 0.8) / (2 * Math.tan(verticalFov / 2)),
-      (frame.x + 0.8) / (2 * Math.tan(horizontalFov / 2)),
-    ) + frame.z / 2 + 0.5;
-    camera.position.y = center.y;
-    const stacked = window.matchMedia("(max-width: 1000px)").matches;
-    if (stacked) {
-      camera.position.x = center.x;
-    } else {
-      const visibleWidth = 2 * Math.tan(horizontalFov / 2) * (camera.position.z - center.z);
-      camera.position.x = center.x - frame.x / 2 + visibleWidth / 2 + 0.42;
+    pose.x = chat.rotation.x;
+    pose.y = chat.rotation.y;
+    pose.z = chat.rotation.z;
+    const lift = chat.position.y;
+    envelope.makeEmpty();
+    for (const yaw of [-1, 1]) {
+      for (const pitch of [-1, 1]) {
+        chat.position.y = float;
+        chat.rotation.set(
+          rest.x + pitch * (limit + idle.x),
+          rest.y + yaw * (limit + idle.y),
+          rest.z + idle.z,
+        );
+        chat.updateWorldMatrix(true, true);
+        envelope.union(sample.setFromObject(chat));
+      }
     }
+    chat.position.y = lift;
+    chat.rotation.set(pose.x, pose.y, pose.z);
+    chat.updateWorldMatrix(true, true);
+    envelope.getSize(frame);
+    envelope.getCenter(center);
+    const pad = 1.6;
+    camera.position.set(
+      center.x,
+      center.y,
+      Math.max(
+        (frame.y + pad) / (2 * Math.tan(verticalFov / 2)),
+        (frame.x + pad) / (2 * Math.tan(horizontalFov / 2)),
+      ) + frame.z / 2 + 0.7,
+    );
     camera.updateProjectionMatrix();
     if (ready) draw();
   };
