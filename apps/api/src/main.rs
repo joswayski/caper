@@ -1,4 +1,4 @@
-use caper_api::{Cloudflare, Config, app, shutdown_cleanup, spawn_cleanup};
+use caper_api::{Cloudflare, Config, app, connect_database, shutdown_cleanup, spawn_cleanup};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -11,7 +11,11 @@ async fn main() {
         std::process::exit(2);
     });
     let bind = config.bind;
-    let state = caper_api::AppState::new(config, Arc::new(Cloudflare::new()));
+    let database = connect_database().await.unwrap_or_else(|error| {
+        eprintln!("database error: {error}");
+        std::process::exit(2);
+    });
+    let state = caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
     spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await

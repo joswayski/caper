@@ -22,7 +22,7 @@ and retained on automatic reconnect. Names are not verified or guaranteed unique
 Mute, deafen, microphone and
 speaker selection are available. DeepFilterNet3 cleans outgoing microphone audio
 on-device by default, with an Off option and visible fallback when unavailable.
-No text chat, database, camera or screen sharing.
+No text chat, camera or screen sharing.
 Nothing is recorded by Caper. This is transport-encrypted, not E2EE; other
 participants can record what they hear.
 
@@ -34,8 +34,9 @@ browser support does not establish Tauri media support. Messaging, accounts,
 and persistent channels are not part of this MVP.
 
 The web replicas use one dedicated Rust media-control instance on AWS; media
-travels directly to Cloudflare, not through AWS. There is no PlanetScale
-dependency for this ephemeral, account-free lobby.
+travels directly to Cloudflare, not through AWS. The API optionally connects to
+PlanetScale Postgres when `DATABASE_URL` is set and applies migrations on
+startup; the voice lobby itself remains in-memory.
 
 Brand references and the owner's style guide are in [docs/brand](docs/brand).
 

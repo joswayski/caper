@@ -494,3 +494,19 @@ async fn cloudflare_session_creation_sends_no_body() {
     server.abort();
     assert_eq!(result.unwrap(), "test-session");
 }
+
+#[test]
+fn database_url_requires_postgres_and_tls() {
+    let options = crate::db::connect_options(
+        "postgres://caper:secret@example.horizon.psdb.cloud:5432/caper?sslmode=disable",
+    )
+    .unwrap();
+    assert!(matches!(
+        options.get_ssl_mode(),
+        sqlx::postgres::PgSslMode::VerifyFull
+    ));
+    assert_eq!(
+        crate::db::connect_options("mysql://caper:secret@db/caper").unwrap_err(),
+        "DATABASE_URL must be a PostgreSQL URL"
+    );
+}
