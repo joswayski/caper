@@ -4,7 +4,8 @@
 
 One public **General voice channel**, always available to join while the service
 is enabled. This is not a dial/invite/call flow. No accounts, text chat,
-camera, screen sharing, channel creation, or recording by Caper. Faker generates
+camera, screen sharing, channel creation, or server-side recording. Mic test offers
+an explicit, tab-memory-only recording of up to ten seconds of received audio. Faker generates
 an adjective/animal nickname once per explicit join in the browser; the Rust
 registry stores it and distributes the same name to every participant. Automatic
 reconnect keeps the nickname; explicit leave/join generates another. The lobby
@@ -102,18 +103,20 @@ the feature flag; web `/api/health` is independent of provider availability.
   choice. Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
-  browser echo cancellation and gain control are requested. DTX is not guaranteed.
+  browser echo cancellation and gain control are off for headphones. DTX is not guaranteed.
 - Speaking indicators and diagnostics use browser stats where available, not
-  billing records. Output selection requires `HTMLMediaElement.setSinkId`;
-  otherwise use OS settings. Joining requires microphone permission.
+  billing records. Microphone/output selectors are available in-channel. Output
+  selection requires `setSinkId`; otherwise use OS settings. Joining requires microphone permission.
 
 ## Join startup and preparation
 
-The enabled `/live` screen starts downloading the default DeepFilterNet model
-and compiling its WASM before Join. The marketing page does not download these
-assets. A call-client-owned cache retains compiled code and model bytes across
-joins, reconnects, device changes, and DeepFilter preset switches on that screen.
-RNNoise has a separate lazily populated entry; DPDFNet initialization is unchanged.
+The enabled `/live` screen can download and compile DeepFilterNet or RNNoise
+before Join when selected by the client. The current UI defaults to DPDFNet-2
+and exposes DPDFNet-2/8 only, so it does not download unused DeepFilter assets.
+DPDFNet's worker-owned ONNX initialization still happens during Join; this WASM
+cache does not prewarm it. The marketing page does not download these assets.
+A call-client-owned cache retains compiled DeepFilter/RNNoise code and model
+bytes across joins, reconnects and device changes on that screen.
 The browser HTTP cache can reuse asset bytes after a full navigation, but the
 application does not persist compiled modules across page loads.
 
@@ -169,6 +172,15 @@ the same codec preference and SFU/TURN provisioning as channel participants.
 Only the received track is played. This exercises the call path, **not the exact
 network conditions, headphones or volume of every other participant**.
 
+Pressing **Mic test** establishes the private return and starts recording as soon
+as received audio is ready. A timer, received-audio meter and **Stop & play back**
+button make the active state visible. Stopping plays the recording automatically;
+recording also stops after ten seconds. The browser records the timestamped Opus
+return rather than rebuilding a WAV from manually counted PCM frames, preserving
+the received stream's real-time playback cadence. No recording is uploaded or
+persisted. Testing again, ending the test, leaving, reconnecting or unmounting
+discards the recording and cancels capture.
+
 Starting detaches the public sender before enabling private test audio, saves
 mute/deafen and marks both true. Stopping restores those choices. Switching a
 filter/device replaces the private sender track without replacing the received
@@ -200,42 +212,43 @@ gh workflow run deploy-caper.yml --repo joswayski/infrastructure -f git_sha=<mer
 ```
 
 These are operator instructions, not commands automatically run by this change.
+The later default-preset/snippet change is web-only and requires no further API
+deployment when private received tests are already deployed. After its web image
+build, use only the `deploy-caper.yml` command above with that merge SHA.
 
 ### Audio setup and speech consistency
 
-Speakers (default) requests browser echo cancellation and automatic gain control.
-Headphones requests both **off**, independently of the chosen denoiser. Choose it
-only while wearing headphones; switch back before using speakers. This provides
-a comparison for pumping, robotic timbre or cut-off speech introduced before the
-neural filter. It may change volume; it does not repair a hardware-clipped input
-or guarantee clean speech. Browser/OS support varies and OS-level processing may
-still apply. Microphone selection and these settings are retained only for the
-page lifetime. Denoisers remain mutually exclusive; no new noise gate is added.
+Headphones natural input is now the default, with browser echo cancellation and
+automatic gain control **off**. Use headphones: speakerphone echo protection is
+not enabled, and no selector remains to enable it. This preserves the preset Jose
+preferred rather than stacking processing. OS-level processing may still apply.
+It does not repair hardware-clipped input or guarantee clean speech.
 
 ## On-device noise suppression
 
-DeepFilterNet3 balanced is the default microphone mode. Capture → browser echo cancellation
-and gain control (Speakers setup) → 48 kHz mono DeepFilterNet, RNNoise or experimental
-DPDFNet → MediaStream output track → existing WebRTC Opus sender → Cloudflare SFU.
+DPDFNet-2 48 kHz HR is the default microphone mode. Capture (browser AEC, AGC and
+noise suppression off) → 48 kHz mono DPDFNet → MediaStream output track → existing
+WebRTC Opus sender → Cloudflare SFU. The model and DSP settings are unchanged from
+the experimental option Jose preferred; runtime performance limitations remain.
 The new private test changes the control API as described above, not SFU configuration.
 No LiveKit dependency, external denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
 
-The model and WASM (~24 MB combined) are vendored and loaded from Caper's own
-`/audio/deepfilter-v1/` path only when enhanced capture is requested. They are
+The default model and runtime (~23 MB combined) are vendored and loaded from Caper's
+`/audio/dpdfnet2-v1/` path when joining. They are
 versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
 
-### Comparing free filters
+### Retained engine implementations (no user-facing selectors)
 
 | Mode | Purpose |
 | --- | --- |
-| DeepFilterNet balanced (default) | 20 dB attenuation limit, retaining about 10% original spectral amplitude. |
+| DeepFilterNet balanced | 20 dB attenuation limit, retaining about 10% original spectral amplitude. |
 | DeepFilterNet gentle | 12 dB limit, retaining about 25% original amplitude; more voice **and noise** return. |
 | DeepFilterNet strong | Original 40 dB limit, retaining about 1% original amplitude. |
 | RNNoise | Independent lightweight 48 kHz neural model, 3.6 MB same-origin download. No VAD gating. |
-| DPDFNet-2 HR (experimental) | 48 kHz model; approximately 23 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
+| DPDFNet-2 HR (default) | 48 kHz model; approximately 23 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
 | Browser suppression | Built-in baseline; implementation/support varies by browser/device. |
 | Off | No requested noise suppression; Audio setup independently controls AEC and automatic gain. |
 
@@ -258,10 +271,17 @@ The shared adapter lives at `/audio/noise-v1/`; previously published immutable
 DeepFilter assets are unchanged. Normal web deployment includes all new assets;
 no operator configuration commands are required.
 
-The selector is available inside the channel, not before joining. New visitors
-start with Balanced without having to choose a filter. Off disables noise
-suppression, not echo cancellation. DeepFilter and RNNoise request browser suppression
-off to avoid double denoising. The active status appears only after the worklet
+An in-channel noise-suppression selector offers DPDFNet-2 HR (default) and
+DPDFNet-8 HR (experimental) for comparison. Speakers/Headphones stays fixed to
+natural headphone input; no mode selector is shown.
+Microphone/output selectors remain; output selection also applies to live and
+recorded mic-test playback. New visitors use DPDFNet with natural headphone input.
+Changing a filter/device clears the old recording immediately and disables
+recording during initialization. Runtime fallback also discards any old recording.
+Run a fresh mic test after the chosen model reports active. Model 8
+adds a lazy 14.9 MB model download and reuses model 2's vendored runtime/DSP.
+Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
+The active status appears only after the worklet
 acknowledges initialization. If loading/initialization fails, capture falls back
 to browser suppression when supported, otherwise unsuppressed audio, with an
 explicit status. A runtime processor error bypasses the worklet without replacing
@@ -285,7 +305,40 @@ DPDFNet model/runtime provenance, checksums, full licenses and reproduction are
 in `apps/web/public/audio/dpdfnet2-v1/README.md`. CEVA code/weights are Apache-2.0;
 ONNX Runtime is MIT with third-party notices. All assets load from Caper, lazily.
 No inference runs inside the AudioWorklet callback and no raw PCM goes to a
-denoising service. It is experimental, not the default or a proven Krisp replacement.
+denoising service. It is the default based on owner listening feedback, not a
+proven universal Krisp replacement.
+
+Quality guidance checked against [upstream DPDFNet](https://github.com/ceva-ip/DPDFNet):
+keep the current 960-point unnormalized FFT, 480-sample hop, Vorbis window and
+metadata-initialized recurrent normalization. Do not normalize again outside the
+model or add an extra gate/AGC. Upstream lists 7.17G MACs for DPDFNet-8 HR versus
+2.42G for DPDFNet-2 HR. This is a published operation count, not a measured Caper
+CPU/latency result. Both pinned models now pass real stateful inference tests;
+model 8 also reaches ready/output in Chromium against the built app. This is not
+a physical listening comparison or sustained performance benchmark. Its quality
+advantage is unknown; it is offered for owner A/B testing, not promoted to default.
+Keep input gain below hardware clipping, use a consistent close mic position,
+and disable duplicate OS/vendor voice filters when comparing quality. Check the
+active/fallback status before attributing a sound to DPDFNet.
+
+Default-preset / snippet validation, September 6, 2026:
+
+- DPDFNet comparison update: `npm test --workspace @caper/web`: 54 passed;
+  `npm run check`: passed. Both model hashes, metadata/stateful inference,
+  worker selection and track-preserving fallback checked.
+- UI fixture for the previous five-second recorder: switching from model 2 to 8
+  cleared the existing recording and retained device selectors. Desktop/mobile inspected.
+- Review correction: live-mode exit reads **Stop live listening**, not Back to
+  snippet, since entering live mode discards the snippet.
+- Chromium local WebRTC receive fixture: five-second, 48 kHz WAV, 480,044 bytes,
+  nonzero RMS; silent until play, playback advances, live mode uses the received
+  stream, old blob URLs revoked, cancellation leaves borrowed tracks live.
+- Entry, recording, ready and live layouts inspected, including 390px mobile;
+  device selectors restored after correcting the removal scope. Signaling/channel state mocked and generated tone used. No new
+  live Cloudflare, physical speech-quality or native desktop acceptance claimed.
+- Recording keeps a muted media element attached to the received stream while
+  capturing PCM: Chromium otherwise left its WebRTC jitter buffer undrained and
+  produced silent recordings in this test.
 
 Received-test / DPDFNet validation, September 6, 2026:
 

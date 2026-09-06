@@ -3,16 +3,20 @@ import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 
 const revision = "dd6818d00f50c836fed43a6243ebe49116de5964";
-const destination = new URL("../apps/web/public/audio/dpdfnet2-v1/", import.meta.url);
+const variant = process.argv[2] ?? "2";
+if (!["2", "8"].includes(variant)) throw new Error("Use model variant 2 or 8");
+const filename = `dpdfnet${variant}_48khz_hr.onnx`;
+const destination = new URL(`../apps/web/public/audio/dpdfnet${variant}-v1/`, import.meta.url);
 await mkdir(destination, { recursive: true });
 const runtime = JSON.parse(await readFile(new URL("../node_modules/onnxruntime-web/package.json", import.meta.url), "utf8"));
 if (runtime.version !== "1.23.2") throw new Error("Unexpected ONNX Runtime version");
-const response = await fetch(`https://huggingface.co/Ceva-IP/DPDFNet/resolve/${revision}/onnx/dpdfnet2_48khz_hr.onnx?download=true`, { signal: AbortSignal.timeout(60_000) });
+const response = await fetch(`https://huggingface.co/Ceva-IP/DPDFNet/resolve/${revision}/onnx/${filename}?download=true`, { signal: AbortSignal.timeout(60_000) });
 if (!response.ok) throw new Error(`model download failed: ${response.status}`);
 const model = Buffer.from(await response.arrayBuffer());
-if (createHash("sha256").update(model).digest("hex") !== "7f0575a5cec0ba4ffd8f8bd657e06d007e4ccdd955d76faab922b9d3291dc14b") throw new Error("model checksum mismatch");
-await writeFile(new URL("dpdfnet2_48khz_hr.onnx", destination), model);
-for (const name of ["ort.wasm.bundle.min.mjs", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm"]) {
+const hash = variant === "2" ? "7f0575a5cec0ba4ffd8f8bd657e06d007e4ccdd955d76faab922b9d3291dc14b" : "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631";
+if (createHash("sha256").update(model).digest("hex") !== hash) throw new Error("model checksum mismatch");
+await writeFile(new URL(filename, destination), model);
+for (const name of variant === "2" ? ["ort.wasm.bundle.min.mjs", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm"] : []) {
   await cp(new URL(`../node_modules/onnxruntime-web/dist/${name}`, import.meta.url), new URL(name, destination));
 }
 for (const [name, url, hash] of [
@@ -27,5 +31,5 @@ for (const [name, url, hash] of [
   await writeFile(new URL(name, destination), bytes);
 }
 const exporter = `import json,onnx,sys\nm=onnx.load(sys.argv[1]);d={x.key:x.value for x in m.metadata_props};o={'stateSize':int(d['state_size']),'erbNormStateSize':int(d['erb_norm_state_size']),'erbNormInit':[float(x) for x in d['erb_norm_init'].split(',')],'specNormInit':[float(x) for x in d['spec_norm_init'].split(',')]};open(sys.argv[2],'w').write(json.dumps(o,separators=(',',':'))+'\\n')`;
-const result = spawnSync("python", ["-c", exporter, new URL("dpdfnet2_48khz_hr.onnx", destination).pathname, new URL("metadata.json", destination).pathname], { stdio: "inherit" });
+const result = spawnSync("python", ["-c", exporter, new URL(filename, destination).pathname, new URL("metadata.json", destination).pathname], { stdio: "inherit" });
 if (result.status !== 0) throw new Error("metadata export failed (install Python package `onnx`)");
