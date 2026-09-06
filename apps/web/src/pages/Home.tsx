@@ -1,5 +1,7 @@
 import LowPolyChat from "../components/LowPolyChat";
 
+const repositoryUrl = "https://github.com/joswayski/caper";
+
 export default function Home() {
   return (
     <main className="page">
@@ -16,6 +18,10 @@ export default function Home() {
           </p>
           <div className="hero-actions">
             <span className="coming-soon"><i /> Coming soon</span>
+            <span className="action-separator" aria-hidden="true">·</span>
+            <a className="github-button" href={repositoryUrl} target="_blank" rel="noreferrer">
+              Follow on GitHub <span aria-hidden="true">↗</span>
+            </a>
           </div>
         </div>
 
