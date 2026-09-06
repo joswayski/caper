@@ -48,9 +48,9 @@ export interface CallViewState {
   monitorConnecting?: boolean;
   monitorStatus?: string;
   selfId?: string;
+  localMedia?: MediaStream;
   participants: Participant[];
   remoteMedia: RemoteMedia[];
-  speaking?: string[];
   error?: string;
   diagnostics?: string;
   noiseSuppression?: NoiseSuppression;

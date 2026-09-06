@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
 import MicPlayback from "./MicPlayback";
+import VoiceWaveform from "./VoiceWaveform";
 import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
@@ -34,6 +35,7 @@ export default function Call() {
   const [output, setOutput] = useState("");
   const [actionError, setActionError] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
+  const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
@@ -79,13 +81,26 @@ export default function Call() {
           <div className="voice-channel"><span aria-hidden="true">◖))</span> General {connected && <small aria-label={`${state.participants.length} in voice`}>{state.participants.length}</small>}</div>
           <ul aria-label="People in voice">
             {state.participants.map((participant) => {
-              const speaking = state.speaking?.includes(participant.id) ?? false;
+              const self = participant.id === state.selfId;
+              const speaking = activeParticipants.has(participant.id);
+              const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
+              const participantMuted = self ? state.muted : participant.muted;
+              const participantDeafened = self ? state.deafened : participant.deafened;
+              const waveformMuted = participantMuted && !state.monitoring;
               return <li className="participant" key={participant.id}>
                 <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                <span className="participant-name"><strong>{participant.name}{participant.id === state.selfId ? " (you)" : ""}</strong><small>{participant.deafened ? "Deafened" : participant.muted ? "Muted" : speaking ? "Speaking" : "In voice"}</small></span>
-                {speaking && <span className="speaking-waveform" aria-label={`${participant.name} is speaking`}>
-                  <i /><i /><i /><i /><i />
-                </span>}
+                <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><small>{participantDeafened ? "Deafened" : participantMuted ? "Muted" : speaking ? "Speaking" : "In voice"}</small></span>
+                <VoiceWaveform
+                  stream={stream}
+                  muted={waveformMuted}
+                  label={`${participant.name} live audio level`}
+                  onActivityChange={(active) => setActiveParticipants((current) => {
+                    if (current.has(participant.id) === active) return current;
+                    const next = new Set(current);
+                    active ? next.add(participant.id) : next.delete(participant.id);
+                    return next;
+                  })}
+                />
               </li>;
             })}
           </ul>
