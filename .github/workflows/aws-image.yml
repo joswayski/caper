@@ -114,8 +114,8 @@ jobs:
           payload="$(jq -cn --arg git_sha "$GITHUB_SHA" --arg digest "$IMAGE_DIGEST" --arg deploy_url "$DEPLOY_WORKFLOW_URL" '{
             username: "Production deploys",
             embeds: [{
-              title: "Caper image is ready",
-              description: "Deploy Caper triggers this exact image. Open GitHub is the fallback.",
+              title: "Caper web image is ready",
+              description: "Deploy Caper web triggers this exact image. Open GitHub is the fallback.",
               color: 11947296,
               fields: [
                 {name: "Git SHA", value: ("`" + $git_sha + "`"), inline: false},
@@ -123,7 +123,7 @@ jobs:
               ]
             }],
             components: [{type: 1, components: [
-              {type: 2, style: 3, label: "Deploy Caper", custom_id: ("production-deploy:v1:caper:" + $git_sha)},
+              {type: 2, style: 3, label: "Deploy Caper web", custom_id: ("production-deploy:v1:caper:" + $git_sha)},
               {type: 2, style: 5, label: "Open GitHub", url: $deploy_url}
             ]}]
           }')"
