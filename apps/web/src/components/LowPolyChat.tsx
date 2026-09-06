@@ -32,6 +32,7 @@ export default function LowPolyChat() {
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
     Object.assign(key.shadow.camera, { left: -8, right: 8, top: 7, bottom: -7, near: 0.5, far: 30 });
+    key.shadow.camera.updateProjectionMatrix();
     key.shadow.bias = -0.0002;
     key.shadow.normalBias = 0.015;
     key.shadow.intensity = 0.35;
@@ -55,8 +56,9 @@ export default function LowPolyChat() {
       tilt.x += (target.x - tilt.x) * blend;
       tilt.y += (target.y - tilt.y) * blend;
       chat.position.y = motion.matches ? 0 : Math.sin(time * 0.0007) * 0.10;
-      chat.rotation.x = 0.10 + tilt.x;
+      chat.rotation.x = 0.10 + tilt.x + (motion.matches ? 0 : Math.sin(time * 0.00027) * 0.018);
       chat.rotation.y = -0.20 + tilt.y + (motion.matches ? 0 : Math.sin(time * 0.00035) * 0.025);
+      chat.rotation.z = -0.035 + (motion.matches ? 0 : Math.sin(time * 0.00022) * 0.009);
       draw();
       if (!motion.matches && visible && !document.hidden) animationFrame = requestAnimationFrame(render);
     };
