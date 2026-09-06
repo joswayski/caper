@@ -1,26 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { PublicCallClient } from "../media/client";
-import type { CallViewState, RemoteMedia } from "../media/types";
+import type { CallViewState } from "../media/types";
 import "./call.css";
 
-const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, participants: [], remoteMedia: [] };
+const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
 
-function AudioOutput({ media, deafened, name, output }: { media: RemoteMedia; deafened: boolean; name: string; output: string }) {
+function AudioOutput({ stream, muted, name, output }: { stream: MediaStream; muted: boolean; name: string; output: string }) {
   const ref = useRef<HTMLAudioElement>(null);
   const [blocked, setBlocked] = useState(false);
   const [deviceError, setDeviceError] = useState(false);
   useEffect(() => {
     const element = ref.current;
     if (element) {
-      element.srcObject = media.stream;
+      element.srcObject = stream;
       void element.play().catch(() => setBlocked(true));
     }
     return () => { if (element) element.srcObject = null; };
-  }, [media.stream]);
+  }, [stream]);
   useEffect(() => {
     if (ref.current?.setSinkId) void ref.current.setSinkId(output).then(() => setDeviceError(false)).catch(() => setDeviceError(true));
   }, [output]);
-  return <><audio ref={ref} autoPlay muted={deafened} />
+  return <><audio ref={ref} autoPlay muted={muted} />
     {blocked && <button onClick={() => void ref.current?.play().then(() => setBlocked(false)).catch(() => setBlocked(true))}>Play {name} audio</button>}
     {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
@@ -101,8 +101,9 @@ export default function Call() {
             </form>}
             <p>DeepFilterNet cleans your microphone locally. First use downloads a 24 MB audio model and engine.</p>
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. No text chat or recording by Caper; other visitors may record. Not end-to-end encrypted.</div>
-          </div> : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
-          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} media={media} deafened={state.deafened} output={output} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
+          </div> : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Mic test active." : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Only you can hear your microphone. The channel is muted and deafened until you stop the test." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
+          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} output={output} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
+          {state.monitorStream && <AudioOutput stream={state.monitorStream} muted={false} output={output} name="your microphone test" />}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {state.noiseSuppressionStatus && <p className="noise-status" role="status">{state.noiseSuppressionStatus}</p>}
           {state.diagnostics && <details className="call-diagnostics"><summary>Connection diagnostics</summary><p>{state.diagnostics}</p><small>Local estimates, not billing totals. Counters reset on reconnect.</small></details>}
@@ -112,8 +113,9 @@ export default function Call() {
           <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
           {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype && <label className="device-control"><span>Speakers</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Speakers"}</option>)}</select></label>}
           <div className="control-buttons">
-            <button disabled={!connected} type="button" className={state.muted ? "active" : ""} aria-pressed={state.muted} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? "Unmute" : "Mute"}</button>
-            <button disabled={!connected} type="button" className={state.deafened ? "active" : ""} aria-pressed={state.deafened} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? "Listen" : "Deafen"}</button>
+            <button disabled={!connected || state.monitoring} type="button" className={state.muted ? "active" : ""} aria-pressed={state.muted} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? "Unmute" : "Mute"}</button>
+            <button disabled={!connected || state.monitoring} type="button" className={state.deafened ? "active" : ""} aria-pressed={state.deafened} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? "Listen" : "Deafen"}</button>
+            <button disabled={!connected} type="button" className={state.monitoring ? "active" : ""} aria-pressed={state.monitoring} onClick={() => { setActionError(undefined); void clientRef.current!.setMonitoring(!state.monitoring).catch((error) => setActionError(error instanceof Error ? error.message : "Mic test could not start.")); }}>{state.monitoring ? "Stop mic test" : "Mic test"}</button>
             <button type="button" className="leave-button" onClick={leave}>Leave voice</button>
           </div>
         </footer>}

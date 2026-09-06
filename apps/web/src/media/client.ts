@@ -63,6 +63,9 @@ export class PublicCallClient {
   private reconnects = 0;
   private muted = false;
   private deafened = false;
+  private monitoring = false;
+  private monitorStream?: MediaStream;
+  private stateBeforeMonitoring?: { muted: boolean; deafened: boolean };
   private polling = false;
   private microphoneDeviceId?: string;
   private statsTimer?: number;
@@ -81,6 +84,8 @@ export class PublicCallClient {
       phase: this.phase,
       muted: this.muted,
       deafened: this.deafened,
+      monitoring: this.monitoring,
+      monitorStream: this.monitorStream,
       selfId: this.selfId,
       participants: this.participants,
       remoteMedia: [...this.remoteMedia.values()],
@@ -220,7 +225,10 @@ export class PublicCallClient {
     return this.serialize(async () => {
       const pc = this.requirePc();
       const token = this.token;
-      if (kind === "microphone") track.enabled = !this.muted;
+      if (kind === "microphone") {
+        track.enabled = !this.muted;
+        if (this.monitoring) this.setMonitorTrack(track);
+      }
       const transceiver = pc.addTransceiver(track, { direction: "sendonly", streams: [new MediaStream([track])] });
       if (track.kind === "audio" && typeof RTCRtpSender !== "undefined" && transceiver.setCodecPreferences) {
         const codecs = RTCRtpSender.getCapabilities("audio")?.codecs ?? [];
@@ -244,7 +252,10 @@ export class PublicCallClient {
           void this.unpublish(kind).catch(() => this.scheduleReconnect());
         }
       }, { once: true });
-      if (kind === "microphone" && this.muted) await transceiver.sender.replaceTrack(null);
+      if (kind === "microphone" && (this.muted || this.monitoring)) {
+        await transceiver.sender.replaceTrack(null);
+        track.enabled = this.monitoring;
+      }
     }, generation).catch((error) => {
       track.stop();
       if (generation === this.generation && this.phase === "connected") { this.pc?.close(); this.scheduleReconnect(); }
@@ -270,6 +281,34 @@ export class PublicCallClient {
     this.deafened = deafened;
     this.emit();
     await this.setState(this.muted, deafened);
+  }
+
+  async setMonitoring(monitoring: boolean) {
+    if (monitoring === this.monitoring) return;
+    if (monitoring) {
+      this.stateBeforeMonitoring = { muted: this.muted, deafened: this.deafened };
+      this.monitoring = true;
+      this.muted = true;
+      this.deafened = true;
+    } else {
+      this.monitoring = false;
+      this.muted = this.stateBeforeMonitoring?.muted ?? false;
+      this.deafened = this.stateBeforeMonitoring?.deafened ?? false;
+      this.stateBeforeMonitoring = undefined;
+    }
+
+    const microphone = this.senders.get("microphone");
+    if (microphone) {
+      this.setMonitorTrack(this.monitoring ? microphone.track : undefined);
+    }
+    this.emit();
+    await this.serializeMedia(async () => {
+      const current = this.senders.get("microphone");
+      if (!current) return;
+      await current.sender.replaceTrack(this.muted || this.monitoring ? null : current.track);
+      current.track.enabled = this.monitoring || !this.muted;
+    });
+    if (this.token) await this.setState(this.muted, this.deafened);
   }
 
   private setState(muted: boolean, deafened: boolean) {
@@ -308,8 +347,10 @@ export class PublicCallClient {
       if (!microphone) { this.stopMicrophone(track); return; }
       const old = microphone.track;
       track.enabled = !this.muted;
-      await microphone.sender.replaceTrack(this.muted ? null : track);
+      await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : track);
+      track.enabled = this.monitoring || !this.muted;
       microphone.track = track;
+      if (this.monitoring) this.setMonitorTrack(track);
       this.microphoneDeviceId = deviceId || undefined;
       this.stopMicrophone(old);
       this.emit();
@@ -485,6 +526,7 @@ export class PublicCallClient {
     if (this.phase === "idle" || this.phase === "leaving") return;
     this.phase = "leaving";
     ++this.generation;
+    this.resetMonitoring();
     this.emit();
     await this.teardown(false);
     this.phase = "idle";
@@ -497,6 +539,7 @@ export class PublicCallClient {
     if (this.token) void fetch(`${API_ROOT}/leave`, { method: "POST", keepalive: true, headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` }, body: "{}" }).catch(() => undefined);
     ++this.generation;
     this.phase = "idle";
+    this.resetMonitoring();
     window.clearInterval(this.pollTimer);
     window.clearTimeout(this.reconnectTimer);
     for (const publication of this.senders.values()) publication.track.stop();
@@ -521,12 +564,26 @@ export class PublicCallClient {
     this.speaking = [];
     this.diagnostics = "";
     this.joinTiming = "";
+    this.setMonitorTrack();
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());
     this.pc?.getSenders().forEach((sender) => { if (sender.track !== preserve) sender.track?.stop(); });
     for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
     this.pc?.close();
     this.pc = undefined; this.token = undefined;
     this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.polling = false;
+  }
+
+  private resetMonitoring() {
+    if (!this.monitoring) return;
+    this.monitoring = false;
+    this.muted = this.stateBeforeMonitoring?.muted ?? false;
+    this.deafened = this.stateBeforeMonitoring?.deafened ?? false;
+    this.stateBeforeMonitoring = undefined;
+    this.setMonitorTrack();
+  }
+
+  private setMonitorTrack(source?: MediaStreamTrack) {
+    this.monitorStream = source ? new MediaStream([source]) : undefined;
   }
 
   private requirePc() {

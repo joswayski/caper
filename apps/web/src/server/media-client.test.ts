@@ -40,6 +40,7 @@ function setup(t: TestContext) {
   const track = new Track();
   const calls: string[] = [];
   const joinedNames: string[] = [];
+  const stateUpdates: Array<{ muted: boolean; deafened: boolean }> = [];
   const states: CallViewState[] = [];
   const restore: Array<() => void> = [];
   const install = (key: string, value: unknown) => {
@@ -60,11 +61,12 @@ function setup(t: TestContext) {
     }
     if (op === "publish") return Response.json({ sessionDescription: { type: "answer", sdp: "v=0" } });
     if (op === "snapshot") return Response.json({ participants: [] });
+    if (op === "state") stateUpdates.push(JSON.parse(options.body as string));
     return new Response(null, { status: 204 });
   });
   const client = new PublicCallClient((state) => states.push(state));
   t.after(() => { client.leaveImmediately(); restore.reverse().forEach((fn) => fn()); });
-  return { client, track, calls, joinedNames, states, install };
+  return { client, track, calls, joinedNames, stateUpdates, states, install };
 }
 
 test("mode/device replacement preserves mute, releases old capture, and can select system default", async (t) => {
@@ -133,6 +135,34 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   assert.equal(track.readyState, "ended");
   assert.equal(Peer.latest.connectionState, "closed");
   assert.ok(calls.includes("leave"));
+});
+
+test("mic test detaches channel audio, loops back the live microphone, and restores prior state", async (t) => {
+  const { client, track, states, stateUpdates } = setup(t);
+  await client.join("Guest");
+  await client.setMuted(true);
+  await client.setDeafened(false);
+
+  await client.setMonitoring(true);
+  assert.equal(states.at(-1)?.monitoring, true);
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(states.at(-1)?.deafened, true);
+  const monitorTrack = states.at(-1)?.monitorStream?.getAudioTracks()[0] as unknown as Track;
+  assert.equal(monitorTrack, track, "the processed outgoing track should feed local playback directly");
+  assert.equal(monitorTrack.enabled, true, "the local loopback track must remain audible");
+  assert.equal(track.enabled, true, "sender detachment, not track disabling, isolates the channel");
+  assert.equal(Peer.latest.senders[0].track, null, "the microphone must not reach the channel");
+  assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
+
+  await client.setMonitoring(false);
+  assert.equal(states.at(-1)?.monitoring, false);
+  assert.equal(states.at(-1)?.monitorStream, undefined);
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(states.at(-1)?.deafened, false);
+  assert.equal(track.enabled, false);
+  assert.equal(monitorTrack.readyState, "live", "stopping the test must not stop the microphone capture");
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: false });
 });
 
 test("mute and deafen update local media and view state without waiting for roster sync", async (t) => {

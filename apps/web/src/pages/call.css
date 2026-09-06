@@ -61,5 +61,4 @@
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
   .device-control { width: 100%; }
   .control-buttons { display: grid; grid-template-columns: repeat(2, 1fr); }
-  .control-buttons .leave-button { grid-column: 1 / -1; }
 }
