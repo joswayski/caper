@@ -6,10 +6,18 @@ const xUrl = "https://x.com/josevalerio";
 const contactEmail = "contact@josevalerio.com";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
-export default function Home() {
-  const [now, setNow] = useState(() => Date.now());
+type HomeProps = {
+  initialNow: number;
+  latestChanges: readonly LatestChange[];
+};
+
+const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
+
+export default function Home({ initialNow, latestChanges }: HomeProps) {
+  const [now, setNow] = useState(initialNow);
 
   useEffect(() => {
+    setNow(Date.now());
     const interval = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(interval);
   }, []);
@@ -53,9 +61,9 @@ export default function Home() {
 
       <section className="latest-changes shell" aria-labelledby="latest-changes-heading">
         <h2 id="latest-changes-heading">Latest changes</h2>
-        {__LATEST_CHANGES__.length > 0 ? (
+        {latestChanges.length > 0 ? (
           <ol>
-            {__LATEST_CHANGES__.map((change) => (
+            {latestChanges.map((change) => (
               <li key={change.sha}>
                 <a href={change.url} target="_blank" rel="noreferrer">{change.title}</a>
                 <time dateTime={change.committedAt}>{formatRelativeTime(change.committedAt, now)}</time>
@@ -71,19 +79,25 @@ export default function Home() {
 }
 
 function formatRelativeTime(committedAt: string, now: number) {
-  const seconds = Math.max(0, Math.round((new Date(committedAt).getTime() - now) / 1_000));
-  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  const divisions = [
+    { amount: 60, unit: "second" },
+    { amount: 60, unit: "minute" },
+    { amount: 24, unit: "hour" },
+    { amount: 7, unit: "day" },
+    { amount: 4.345, unit: "week" },
+    { amount: 12, unit: "month" },
+    { amount: Number.POSITIVE_INFINITY, unit: "year" },
+  ] as const;
 
-  if (seconds > -60) return formatter.format(seconds, "second");
-  const minutes = Math.round(seconds / 60);
-  if (minutes > -60) return formatter.format(minutes, "minute");
-  const hours = Math.round(minutes / 60);
-  if (hours > -24) return formatter.format(hours, "hour");
-  const days = Math.round(hours / 24);
-  if (days > -30) return formatter.format(days, "day");
-  const months = Math.round(days / 30);
-  if (months > -12) return formatter.format(months, "month");
-  return formatter.format(Math.round(months / 12), "year");
+  let duration = (new Date(committedAt).getTime() - now) / 1_000;
+  for (const division of divisions) {
+    if (Math.abs(duration) < division.amount) {
+      return relativeTimeFormatter.format(Math.round(duration), division.unit);
+    }
+    duration /= division.amount;
+  }
+
+  return relativeTimeFormatter.format(0, "second");
 }
 
 function XIcon() {
