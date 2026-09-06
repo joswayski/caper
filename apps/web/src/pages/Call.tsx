@@ -1,3 +1,4 @@
+import { NOISE_SUPPRESSION_OPTIONS, type NoiseSuppression } from "../media/microphone";
 import { useEffect, useRef, useState } from "react";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
@@ -96,10 +97,11 @@ export default function Call() {
             <p>One shared voice channel. No invites, accounts, or ringing anyone.</p>
             <p>You’ll get a random nickname when you join. Everyone sees the same name.</p>
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
-              <label className="device-control"><span>Noise suppression</span><select value={state.noiseSuppression ?? "deepfilter"} onChange={(event) => void clientRef.current?.setNoiseSuppression(event.target.value as "deepfilter" | "off")}><option value="deepfilter">DeepFilterNet · on-device</option><option value="off">Off</option></select></label>
+              <label className="device-control"><span>Noise suppression</span><select value={state.noiseSuppression ?? "deepfilter"} onChange={(event) => void clientRef.current?.setNoiseSuppression(event.target.value as NoiseSuppression)}>{NOISE_SUPPRESSION_OPTIONS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></label>
               <button className="primary-button" disabled={available !== true} type="submit">{available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
-            <p>DeepFilterNet cleans your microphone locally. First use downloads a 24 MB audio model and engine.</p>
+            <p>{NOISE_SUPPRESSION_OPTIONS.find(({ value }) => value === (state.noiseSuppression ?? "deepfilter"))?.description}</p>
+            <p>Filters run on your device. First use downloads 24 MB for DeepFilterNet or 3.6 MB for RNNoise.</p>
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. No text chat or recording by Caper; other visitors may record. Not end-to-end encrypted.</div>
           </div> : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Mic test active." : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Only you can hear your microphone. The channel is muted and deafened until you stop the test." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} output={output} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
@@ -109,7 +111,7 @@ export default function Call() {
           {state.diagnostics && <details className="call-diagnostics"><summary>Connection diagnostics</summary><p>{state.diagnostics}</p><small>Local estimates, not billing totals. Counters reset on reconnect.</small></details>}
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
-          <label className="device-control"><span>Noise suppression</span><select disabled={controlsDisabled} value={state.noiseSuppression ?? "deepfilter"} onChange={(event) => void act(() => clientRef.current!.setNoiseSuppression(event.target.value as "deepfilter" | "off"))}><option value="deepfilter">DeepFilterNet · on-device</option><option value="off">Off</option></select></label>
+          <label className="device-control"><span>Noise suppression</span><select disabled={controlsDisabled} title={NOISE_SUPPRESSION_OPTIONS.find(({ value }) => value === state.noiseSuppression)?.description} value={state.noiseSuppression ?? "deepfilter"} onChange={(event) => void act(() => clientRef.current!.setNoiseSuppression(event.target.value as NoiseSuppression))}>{NOISE_SUPPRESSION_OPTIONS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
           {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype && <label className="device-control"><span>Speakers</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Speakers"}</option>)}</select></label>}
           <div className="control-buttons">
