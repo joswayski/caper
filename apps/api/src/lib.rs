@@ -546,15 +546,30 @@ async fn join(State(s): State<AppState>, Json(input): Json<Join>) -> Result<Json
         r.joins.push_back(now);
         r.joining += 1;
     }
-    // Session creation is intentionally never retried: an ambiguous create could orphan a session.
-    let session = match s.provider.create_session(&s.config).await {
+    // These independent provider requests run together. Session creation is intentionally
+    // never retried: an ambiguous create could orphan a session.
+    let (session, ice) = tokio::join!(
+        s.provider.create_session(&s.config),
+        s.provider.turn(&s.config)
+    );
+    let session = match session {
         Ok(session) => session,
         Err(error) => {
             s.registry.lock().await.joining -= 1;
+            if let Ok(servers) = ice {
+                for username in servers
+                    .iter()
+                    .filter_map(|server| server.username.as_deref())
+                {
+                    if s.provider.revoke_turn(&s.config, username).await.is_err() {
+                        tracing::warn!("TURN revocation failed after session creation failure");
+                    }
+                }
+            }
             return Err(error.into());
         }
     };
-    let ice = match s.provider.turn(&s.config).await {
+    let ice = match ice {
         Ok(ice) => ice,
         Err(error) => {
             s.registry.lock().await.joining -= 1;
