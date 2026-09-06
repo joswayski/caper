@@ -1,8 +1,18 @@
 name: API image
 on:
   pull_request:
+    paths:
+      - apps/api/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/api-image.yml
   push:
     branches: [main]
+    paths:
+      - apps/api/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/api-image.yml
 permissions:
   contents: read
 jobs:
