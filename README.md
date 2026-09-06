@@ -20,7 +20,9 @@ No account or installation is required; joining requests microphone permission.
 Faker generates an adjective/animal nickname on join, shared through the roster
 and retained on automatic reconnect. Names are not verified or guaranteed unique.
 Mute, deafen, microphone and
-speaker selection are available. No text chat, database, camera or screen sharing.
+speaker selection are available. DeepFilterNet3 cleans outgoing microphone audio
+on-device by default, with an Off option and visible fallback when unavailable.
+No text chat, database, camera or screen sharing.
 Nothing is recorded by Caper. This is transport-encrypted, not E2EE; other
 participants can record what they hear.
 

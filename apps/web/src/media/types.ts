@@ -45,4 +45,6 @@ export interface CallViewState {
   speaking?: string[];
   error?: string;
   diagnostics?: string;
+  noiseSuppression?: "deepfilter" | "off";
+  noiseSuppressionStatus?: string;
 }

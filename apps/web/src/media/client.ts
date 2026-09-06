@@ -1,4 +1,5 @@
 import { fakerEN as faker } from "@faker-js/faker";
+import { captureMicrophone, type Microphone, type NoiseSuppression } from "./microphone.ts";
 import type {
   CallSnapshot,
   CallViewState,
@@ -66,6 +67,9 @@ export class PublicCallClient {
   private statsTimer?: number;
   private speaking: string[] = [];
   private diagnostics = "";
+  private noiseSuppression: NoiseSuppression = "deepfilter";
+  private captures = new Map<MediaStreamTrack, Microphone>();
+  private captureController = new AbortController();
 
   private readonly changed: (state: CallViewState) => void;
   constructor(changed: (state: CallViewState) => void) { this.changed = changed; }
@@ -78,6 +82,8 @@ export class PublicCallClient {
       remoteMedia: [...this.remoteMedia.values()],
       speaking: this.speaking,
       diagnostics: this.diagnostics,
+      noiseSuppression: this.noiseSuppression,
+      noiseSuppressionStatus: this.captures.get(this.senders.get("microphone")?.track!)?.status,
       error,
     });
   }
@@ -125,24 +131,15 @@ export class PublicCallClient {
     const generation = ++this.generation;
     let capturedMicrophone: MediaStreamTrack | undefined;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: microphoneDeviceId ? { exact: microphoneDeviceId } : undefined,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      const microphone = stream.getAudioTracks()[0];
-      if (!microphone) throw new Error("No microphone track was available.");
+      const microphone = await this.openMicrophone(this.microphoneDeviceId);
       capturedMicrophone = microphone;
       if (generation !== this.generation || this.phase !== "joining") {
-        stream.getTracks().forEach((track) => track.stop());
+        this.stopMicrophone(microphone);
         return;
       }
       const joined = await this.api<JoinResponse>("join", { name: this.name }, undefined);
       if (generation !== this.generation) {
-        stream.getTracks().forEach((track) => track.stop());
+        this.stopMicrophone(microphone);
         void this.api("leave", {}, joined.token).catch(() => undefined);
         return;
       }
@@ -159,7 +156,7 @@ export class PublicCallClient {
       this.startPolling();
       this.emit();
     } catch (error) {
-      if (capturedMicrophone && !this.senders.has("microphone")) capturedMicrophone.stop();
+      if (capturedMicrophone && !this.senders.has("microphone")) this.stopMicrophone(capturedMicrophone);
       if (generation !== this.generation) return;
       await this.teardown(false);
       if (generation !== this.generation) return;
@@ -251,21 +248,44 @@ export class PublicCallClient {
     return this.serialize(() => this.api("state", { muted, deafened }));
   }
 
+  private async openMicrophone(deviceId?: string) {
+    const microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => this.emit());
+    this.captures.set(microphone.track, microphone);
+    return microphone.track;
+  }
+
+  private stopMicrophone(track: MediaStreamTrack) {
+    const capture = this.captures.get(track);
+    if (capture) { capture.stop(); this.captures.delete(track); }
+    else track.stop();
+  }
+
+  async setNoiseSuppression(mode: NoiseSuppression) {
+    const previous = this.noiseSuppression;
+    this.noiseSuppression = mode;
+    try {
+      if (this.phase === "connected") await this.changeMicrophone(this.microphoneDeviceId ?? "");
+    } catch (error) {
+      this.noiseSuppression = previous;
+      throw error;
+    } finally { this.emit(); }
+  }
+
   async changeMicrophone(deviceId: string) {
-    this.microphoneDeviceId = deviceId || undefined;
     const generation = this.generation;
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, echoCancellation: true, noiseSuppression: true } });
-    const track = stream.getAudioTracks()[0]!;
-    if (generation !== this.generation || !this.senders.has("microphone")) { track.stop(); return; }
+    const track = await this.openMicrophone(deviceId || undefined);
+    if (generation !== this.generation || !this.senders.has("microphone")) { this.stopMicrophone(track); return; }
     await this.serialize(async () => {
       const microphone = this.senders.get("microphone");
-      if (!microphone) { track.stop(); return; }
+      if (!microphone) { this.stopMicrophone(track); return; }
       const old = microphone.track;
       track.enabled = !this.muted;
       await microphone.sender.replaceTrack(this.muted ? null : track);
       microphone.track = track;
-      old.stop();
-    }, generation).catch((error) => { track.stop(); throw error; });
+      this.microphoneDeviceId = deviceId || undefined;
+      this.stopMicrophone(old);
+      this.emit();
+    }, generation).catch((error) => { this.stopMicrophone(track); throw error; });
   }
 
   private subscribe(trackId: string) {
@@ -410,11 +430,11 @@ export class PublicCallClient {
     this.emit();
     let captured: MediaStreamTrack | undefined;
     try {
-      const track = (await navigator.mediaDevices.getUserMedia({ audio: { deviceId: this.microphoneDeviceId ? { exact: this.microphoneDeviceId } : undefined, echoCancellation: true, noiseSuppression: true } })).getAudioTracks()[0]!;
+      const track = await this.openMicrophone(this.microphoneDeviceId);
       captured = track;
-      if (generation !== this.generation) { track.stop(); return; }
+      if (generation !== this.generation) { this.stopMicrophone(track); return; }
       const joined = await this.api<JoinResponse>("join", { name: this.name }, undefined);
-      if (generation !== this.generation) { track.stop(); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
+      if (generation !== this.generation) { this.stopMicrophone(track); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
       this.token = joined.token; this.selfId = joined.id; this.pc = this.makePeerConnection(joined.iceServers);
       await this.publishTrack("microphone", track, generation);
       await waitFor(this.pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => this.pc?.connectionState === "connected");
@@ -424,7 +444,7 @@ export class PublicCallClient {
       this.startPolling();
       this.emit();
     } catch {
-      captured?.stop();
+      if (captured) this.stopMicrophone(captured);
       if (generation !== this.generation) return;
       this.scheduleReconnect();
     }
@@ -462,6 +482,10 @@ export class PublicCallClient {
   }
 
   private stopEverything(preserve?: MediaStreamTrack) {
+    this.captureController.abort();
+    this.captureController = new AbortController();
+    for (const capture of this.captures.values()) capture.stop();
+    this.captures.clear();
     window.clearInterval(this.statsTimer);
     this.speaking = [];
     this.diagnostics = "";
