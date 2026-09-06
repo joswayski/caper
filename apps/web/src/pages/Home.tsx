@@ -17,10 +17,11 @@ export default function Home() {
             teams, and everything in between.
           </p>
           <div className="hero-actions">
+            <span className="coming-soon"><i /> Coming soon</span>
+            <span className="action-separator" aria-hidden="true">·</span>
             <a className="github-button" href={repositoryUrl} target="_blank" rel="noreferrer">
               Follow on GitHub <span aria-hidden="true">↗</span>
             </a>
-            <span className="coming-soon"><i /> Coming soon</span>
           </div>
         </div>
 
