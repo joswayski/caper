@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
   AmbientLight,
+  Box3,
   BoxGeometry,
   DirectionalLight,
   EdgesGeometry,
@@ -13,6 +14,7 @@ import {
   PerspectiveCamera,
   Scene,
   SRGBColorSpace,
+  Vector3,
   WebGLRenderer,
 } from "three";
 import type { BufferGeometry, Material } from "three";
@@ -128,9 +130,18 @@ export default function LowPolyChat() {
 
     const resize = () => {
       const { width, height } = host.getBoundingClientRect();
+      if (width === 0 || height === 0) return;
+
       renderer.setSize(width, height, false);
-      camera.position.z = width < 500 ? 12.5 : 10.5;
       camera.aspect = width / height;
+      const verticalFov = camera.fov * (Math.PI / 180);
+      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+      chat.updateWorldMatrix(true, true);
+      const frame = new Box3().setFromObject(chat).getSize(new Vector3());
+      camera.position.z = Math.max(
+        frame.y / (2 * Math.tan(verticalFov / 2)),
+        frame.x / (2 * Math.tan(horizontalFov / 2)),
+      ) + frame.z / 2 + 0.8;
       camera.updateProjectionMatrix();
       renderer.render(scene, camera);
     };
