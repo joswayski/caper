@@ -56,6 +56,7 @@ export class PublicCallClient {
   private senders = new Map<MediaKind, { sender: RTCRtpSender; mid: string; track: MediaStreamTrack }>();
   private subscriptions = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
+  private mediaQueue: Promise<unknown> = Promise.resolve();
   private pollTimer?: number;
   private reconnectTimer?: number;
   private generation = 0;
@@ -70,6 +71,7 @@ export class PublicCallClient {
   private noiseSuppression: NoiseSuppression = "deepfilter";
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
+  private joinTiming = "";
 
   private readonly changed: (state: CallViewState) => void;
   constructor(changed: (state: CallViewState) => void) { this.changed = changed; }
@@ -77,6 +79,8 @@ export class PublicCallClient {
   private emit(error?: string) {
     this.changed({
       phase: this.phase,
+      muted: this.muted,
+      deafened: this.deafened,
       selfId: this.selfId,
       participants: this.participants,
       remoteMedia: [...this.remoteMedia.values()],
@@ -97,6 +101,18 @@ export class PublicCallClient {
     };
     const result = this.queue.then(guarded, guarded);
     this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  private serializeMedia<T>(operation: () => Promise<T>, generation = this.generation): Promise<T> {
+    const guarded = async () => {
+      if (generation !== this.generation) throw new Error("Call session changed.");
+      const value = await operation();
+      if (generation !== this.generation) throw new Error("Call session changed.");
+      return value;
+    };
+    const result = this.mediaQueue.then(guarded, guarded);
+    this.mediaQueue = result.catch(() => undefined);
     return result;
   }
 
@@ -121,8 +137,21 @@ export class PublicCallClient {
     return (text ? JSON.parse(text) : undefined) as T;
   }
 
+  private async prepareJoin() {
+    const capture = this.openMicrophone(this.microphoneDeviceId);
+    const joining = this.api<JoinResponse>("join", { name: this.name }, undefined);
+    const [captureResult, joinResult] = await Promise.allSettled([capture, joining]);
+    if (captureResult.status === "rejected" || joinResult.status === "rejected") {
+      if (captureResult.status === "fulfilled") this.stopMicrophone(captureResult.value);
+      if (joinResult.status === "fulfilled") void this.api("leave", {}, joinResult.value.token).catch(() => undefined);
+      throw captureResult.status === "rejected" ? captureResult.reason : joinResult.status === "rejected" ? joinResult.reason : new Error("Join preparation failed.");
+    }
+    return { microphone: captureResult.value, joined: joinResult.value };
+  }
+
   async join(name = "", microphoneDeviceId?: string) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
+    const started = performance.now();
     // Generate once per explicit join, not per roster render or automatic rejoin.
     this.name = name.trim().slice(0, 40) || `${faker.word.adjective()} ${faker.animal.type()}`.slice(0, 40);
     this.microphoneDeviceId = microphoneDeviceId || undefined;
@@ -131,14 +160,10 @@ export class PublicCallClient {
     const generation = ++this.generation;
     let capturedMicrophone: MediaStreamTrack | undefined;
     try {
-      const microphone = await this.openMicrophone(this.microphoneDeviceId);
+      const { microphone, joined } = await this.prepareJoin();
+      const prepared = performance.now();
       capturedMicrophone = microphone;
       if (generation !== this.generation || this.phase !== "joining") {
-        this.stopMicrophone(microphone);
-        return;
-      }
-      const joined = await this.api<JoinResponse>("join", { name: this.name }, undefined);
-      if (generation !== this.generation) {
         this.stopMicrophone(microphone);
         void this.api("leave", {}, joined.token).catch(() => undefined);
         return;
@@ -147,14 +172,17 @@ export class PublicCallClient {
       this.selfId = joined.id;
       this.pc = this.makePeerConnection(joined.iceServers);
       await this.publishTrack("microphone", microphone, generation);
+      const published = performance.now();
       if (generation !== this.generation) return;
       await waitFor(this.pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => this.pc?.connectionState === "connected");
       if (generation !== this.generation) return;
       this.phase = "connected";
       this.reconnects = 0;
-      await this.setState(this.muted, this.deafened);
-      this.startPolling();
+      this.joinTiming = `Joined in ${(performance.now() - started).toFixed(0)} ms · microphone + session ${(prepared - started).toFixed(0)} ms · ICE + signaling ${(published - prepared).toFixed(0)} ms · transport ${(performance.now() - published).toFixed(0)} ms`;
       this.emit();
+      const stateSync = this.setState(this.muted, this.deafened);
+      this.startPolling();
+      await stateSync;
     } catch (error) {
       if (capturedMicrophone && !this.senders.has("microphone")) this.stopMicrophone(capturedMicrophone);
       if (generation !== this.generation) return;
@@ -226,22 +254,22 @@ export class PublicCallClient {
 
   async setMuted(muted: boolean) {
     this.muted = muted;
-    await this.serialize(async () => {
-      const token = this.token;
-      const microphone = this.senders.get("microphone");
-      if (microphone) {
-        microphone.track.enabled = !muted;
-        await microphone.sender.replaceTrack(muted ? null : microphone.track);
-      }
-      if (token) await this.api("state", { muted, deafened: this.deafened }, token);
-    });
+    const microphone = this.senders.get("microphone");
+    if (microphone) microphone.track.enabled = !muted;
     this.emit();
+    await this.serializeMedia(async () => {
+      const current = this.senders.get("microphone");
+      if (!current) return;
+      current.track.enabled = !this.muted;
+      await current.sender.replaceTrack(this.muted ? null : current.track);
+    });
+    if (this.token) await this.setState(muted, this.deafened);
   }
 
   async setDeafened(deafened: boolean) {
     this.deafened = deafened;
-    await this.setState(this.muted, deafened);
     this.emit();
+    await this.setState(this.muted, deafened);
   }
 
   private setState(muted: boolean, deafened: boolean) {
@@ -275,7 +303,7 @@ export class PublicCallClient {
     const generation = this.generation;
     const track = await this.openMicrophone(deviceId || undefined);
     if (generation !== this.generation || !this.senders.has("microphone")) { this.stopMicrophone(track); return; }
-    await this.serialize(async () => {
+    await this.serializeMedia(async () => {
       const microphone = this.senders.get("microphone");
       if (!microphone) { this.stopMicrophone(track); return; }
       const old = microphone.track;
@@ -382,7 +410,7 @@ export class PublicCallClient {
         }
       });
       this.speaking = [...speaking];
-      this.diagnostics = `This connection: ${(received / 1e6).toFixed(2)} MB received · ${(sent / 1e6).toFixed(2)} MB sent · ${lost} packets lost · ${(jitter * 1000).toFixed(0)} ms max jitter · ${(rtt * 1000).toFixed(0)} ms RTT · ${relay ? "TURN relay" : "direct / relay not observed"}`;
+      this.diagnostics = `${this.joinTiming} · This connection: ${(received / 1e6).toFixed(2)} MB received · ${(sent / 1e6).toFixed(2)} MB sent · ${lost} packets lost · ${(jitter * 1000).toFixed(0)} ms max jitter · ${(rtt * 1000).toFixed(0)} ms RTT · ${relay ? "TURN relay" : "direct / relay not observed"}`;
       this.emit();
     } catch { /* Stats support varies; diagnostics must never interrupt media. */ }
   }
@@ -428,21 +456,24 @@ export class PublicCallClient {
     if (generation !== this.generation) return;
     this.phase = "joining";
     this.emit();
+    const started = performance.now();
     let captured: MediaStreamTrack | undefined;
     try {
-      const track = await this.openMicrophone(this.microphoneDeviceId);
+      const { microphone: track, joined } = await this.prepareJoin();
+      const prepared = performance.now();
       captured = track;
-      if (generation !== this.generation) { this.stopMicrophone(track); return; }
-      const joined = await this.api<JoinResponse>("join", { name: this.name }, undefined);
       if (generation !== this.generation) { this.stopMicrophone(track); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
       this.token = joined.token; this.selfId = joined.id; this.pc = this.makePeerConnection(joined.iceServers);
       await this.publishTrack("microphone", track, generation);
+      const published = performance.now();
       await waitFor(this.pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => this.pc?.connectionState === "connected");
       if (generation !== this.generation) return;
       this.phase = "connected";
-      await this.setState(this.muted, this.deafened);
-      this.startPolling();
+      this.joinTiming = `Rejoined in ${(performance.now() - started).toFixed(0)} ms · microphone + session ${(prepared - started).toFixed(0)} ms · ICE + signaling ${(published - prepared).toFixed(0)} ms · transport ${(performance.now() - published).toFixed(0)} ms`;
       this.emit();
+      const stateSync = this.setState(this.muted, this.deafened);
+      this.startPolling();
+      await stateSync;
     } catch {
       if (captured) this.stopMicrophone(captured);
       if (generation !== this.generation) return;
@@ -489,6 +520,7 @@ export class PublicCallClient {
     window.clearInterval(this.statsTimer);
     this.speaking = [];
     this.diagnostics = "";
+    this.joinTiming = "";
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());
     this.pc?.getSenders().forEach((sender) => { if (sender.track !== preserve) sender.track?.stop(); });
     for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
