@@ -18,6 +18,9 @@ const API_ROOT = "/api/media";
 const CONNECT_TIMEOUT_MS = 12_000;
 const MAX_REJOINS = 3;
 const FETCH_TIMEOUT_MS = 25_000;
+const SNAPSHOT_TIMEOUT_MS = 5_000;
+const CONTROL_RECOVERY_MS = 30_000;
+const DISCONNECT_GRACE_MS = 10_000;
 
 class CallApiError extends Error {
   readonly status: number;
@@ -26,6 +29,12 @@ class CallApiError extends Error {
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : "The call could not continue.";
+}
+
+function transientControlError(error: unknown) {
+  return error instanceof CallApiError
+    ? error.status === 408 || error.status === 429 || error.status >= 500
+    : error instanceof TypeError || (error instanceof DOMException && error.name === "AbortError");
 }
 
 export class PublicCallClient {
@@ -43,6 +52,9 @@ export class PublicCallClient {
   private mediaQueue: Promise<unknown> = Promise.resolve();
   private pollTimer?: number;
   private reconnectTimer?: number;
+  private disconnectTimer?: number;
+  private controlFailedSince?: number;
+  private stateDirty = false;
   private generation = 0;
   private reconnects = 0;
   private muted = false;
@@ -119,25 +131,27 @@ export class PublicCallClient {
     return result;
   }
 
-  private async api<T = void>(operation: string, body: object = {}, token = this.token): Promise<T> {
+  private async api<T = void>(operation: string, body: object = {}, token = this.token, timeout = FETCH_TIMEOUT_MS): Promise<T> {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const response = await fetch(`${API_ROOT}/${operation}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    }).finally(() => window.clearTimeout(timer));
-    if (!response.ok) {
-      const detail = await response.json().catch(() => ({})) as { error?: string };
-      throw new CallApiError(detail.error || `Call service returned ${response.status}.`, response.status);
-    }
-    if (response.status === 204 || response.headers.get("content-length") === "0") return undefined as T;
-    const text = await response.text();
-    return (text ? JSON.parse(text) : undefined) as T;
+    const timer = window.setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(`${API_ROOT}/${operation}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({})) as { error?: string };
+        throw new CallApiError(detail.error || `Call service returned ${response.status}.`, response.status);
+      }
+      if (response.status === 204 || response.headers.get("content-length") === "0") return undefined as T;
+      const text = await response.text();
+      return (text ? JSON.parse(text) : undefined) as T;
+    } finally { window.clearTimeout(timer); }
   }
 
   private async prepareJoin() {
@@ -212,8 +226,14 @@ export class PublicCallClient {
       this.emit();
     };
     pc.onconnectionstatechange = () => {
-      if ((pc.connectionState === "failed" || pc.connectionState === "disconnected") && this.phase === "connected") {
-        this.scheduleReconnect();
+      if (pc !== this.pc) return;
+      window.clearTimeout(this.disconnectTimer);
+      if (this.phase !== "connected") return;
+      if (pc.connectionState === "failed") this.scheduleReconnect();
+      else if (pc.connectionState === "disconnected") {
+        this.disconnectTimer = window.setTimeout(() => {
+          if (pc === this.pc && pc.connectionState === "disconnected") this.scheduleReconnect();
+        }, DISCONNECT_GRACE_MS);
       }
     };
     return pc;
@@ -350,7 +370,12 @@ export class PublicCallClient {
   }
 
   private setState(muted: boolean, deafened: boolean) {
-    return this.serialize(() => this.api("state", { muted, deafened }));
+    this.stateDirty = true;
+    const generation = this.generation;
+    return this.serialize(async () => {
+      await this.api("state", { muted, deafened });
+      if (generation === this.generation) this.stateDirty = this.muted !== muted || this.deafened !== deafened;
+    }, generation);
   }
 
   private async openMicrophone(deviceId?: string) {
@@ -503,9 +528,28 @@ export class PublicCallClient {
     if (this.phase !== "connected" || this.polling) return;
     this.polling = true;
     const generation = this.generation;
+    const started = performance.now();
     try {
-      const snapshot = await this.api<CallSnapshot>("snapshot");
+      let snapshot: CallSnapshot;
+      try {
+        snapshot = await this.api<CallSnapshot>("snapshot", {}, this.token, SNAPSHOT_TIMEOUT_MS);
+      } catch (error) {
+        if (generation !== this.generation || this.phase !== "connected") return;
+        this.controlFailedSince ??= started;
+        // Retry only the heartbeat. Never replay ambiguous SFU mutations, and
+        // never discard healthy audio for a brief control-plane outage.
+        if (!transientControlError(error) || performance.now() - this.controlFailedSince >= CONTROL_RECOVERY_MS) {
+          this.scheduleReconnect();
+        }
+        return;
+      }
       if (generation !== this.generation || this.phase !== "connected") return;
+      this.controlFailedSince = undefined;
+      if (this.stateDirty) {
+        try { await this.setState(this.muted, this.deafened); }
+        catch (error) { if (!transientControlError(error)) throw error; }
+        if (generation !== this.generation || this.phase !== "connected") return;
+      }
       this.participants = snapshot.participants;
       const available = new Set(snapshot.participants.flatMap((participant) => participant.tracks.map((track) => track.id)));
       for (const id of this.subscriptions.keys()) if (!available.has(id)) await this.unsubscribe(id);
@@ -603,6 +647,9 @@ export class PublicCallClient {
   }
 
   private stopEverything(preserve?: MediaStreamTrack) {
+    window.clearTimeout(this.disconnectTimer);
+    this.controlFailedSince = undefined;
+    this.stateDirty = false;
     this.captureController.abort();
     this.captureController = new AbortController();
     for (const capture of this.captures.values()) capture.stop();
