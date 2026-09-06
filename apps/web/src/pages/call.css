@@ -44,6 +44,22 @@
 .stage-placeholder h3 { margin: 20px 0 0; color: var(--text); font-size: 1.8rem; letter-spacing: -.04em; }
 .stage-placeholder p { max-width: 360px; margin: 12px 0; line-height: 1.6; }
 .noise-status { color: var(--text-muted); font-size: .8rem; }
+.mic-test-card { width: min(720px, 100%); margin: clamp(36px, 8vh, 84px) auto; padding: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.mic-test-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.mic-test-heading h3 { margin: 0; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: -.04em; }
+.mic-test-copy { max-width: 580px; margin: 12px 0 0; color: var(--text-muted); line-height: 1.55; }
+.recording-clock { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin: 0; font-variant-numeric: tabular-nums; font-weight: 800; }
+.recording-clock i { width: 10px; height: 10px; border-radius: 50%; background: var(--terracotta-bright); box-shadow: 0 0 0 5px rgb(219 104 73 / .14); animation: recording-pulse 1.2s ease-in-out infinite; }
+@keyframes recording-pulse { 50% { opacity: .45; transform: scale(.8); } }
+.mic-meter { height: 64px; display: flex; align-items: center; gap: 5px; margin: 24px 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
+.mic-meter i { height: 8px; min-width: 3px; flex: 1; border-radius: 999px; background: var(--border); transition: height 80ms linear, background-color 80ms linear; }
+.mic-meter i.lit { height: 32px; background: var(--caper); }
+.stop-recording-button { width: 100%; min-height: 48px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
+.mic-playback { display: grid; gap: 12px; }
+.mic-playback p { margin: 0; }
+.mic-playback audio { width: 100%; }
+.mic-playback button { justify-self: start; min-height: 40px; padding: 0 16px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-weight: 750; cursor: pointer; }
+.mic-test-privacy { display: block; margin-top: 20px; color: var(--text-muted); line-height: 1.5; }
 .call-diagnostics { color: var(--text-muted); margin-top: 20px; font-size: .8rem; }
 .call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
 .control-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -53,6 +69,7 @@
 .control-buttons .leave-button { border-color: var(--terracotta); color: #fff; background: var(--terracotta); }
 @media (prefers-reduced-motion: reduce) {
   .speaking-waveform i { animation: none; }
+  .recording-clock i { animation: none; }
 }
 @media (max-width: 760px) {
   .call-header, .call-room { width: calc(100% - 24px); }
@@ -65,6 +82,9 @@
   .stage-title { align-items: flex-start; }
   .stage-title > p { max-width: 100px; margin-top: 0; text-align: right; }
   .stage-placeholder { min-height: 300px; }
+  .mic-test-card { margin: 24px auto; padding: 20px; }
+  .mic-test-heading { align-items: flex-start; }
+  .mic-meter { gap: 3px; }
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
   .device-control { width: 100%; }
   .control-buttons { display: grid; grid-template-columns: repeat(2, 1fr); }

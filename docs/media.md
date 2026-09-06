@@ -5,7 +5,7 @@
 One public **General voice channel**, always available to join while the service
 is enabled. This is not a dial/invite/call flow. No accounts, text chat,
 camera, screen sharing, channel creation, or server-side recording. Mic test offers
-an explicit five-second, tab-memory-only recording of received audio. Faker generates
+an explicit, tab-memory-only recording of up to ten seconds of received audio. Faker generates
 an adjective/animal nickname once per explicit join in the browser; the Rust
 registry stores it and distributes the same name to every participant. Automatic
 reconnect keeps the nickname; explicit leave/join generates another. The lobby
@@ -117,12 +117,14 @@ the same codec preference and SFU/TURN provisioning as channel participants.
 Only the received track is played. This exercises the call path, **not the exact
 network conditions, headphones or volume of every other participant**.
 
-The default test is silent until requested: press **Record 5 seconds**, speak,
-then press play. The recorder takes decoded PCM from the private received track,
-not hardware capture, and writes a bounded 48 kHz mono PCM16 WAV in tab memory. It avoids
-an additional lossy Opus encoding pass. No snippet is uploaded or persisted.
-Re-recording, switching to **Listen live**, Stop, leave, reconnect or unmount
-discards the snippet and cancels capture. Live listening remains optional.
+Pressing **Mic test** establishes the private return and starts recording as soon
+as received audio is ready. A timer, received-audio meter and **Stop & play back**
+button make the active state visible. Stopping plays the recording automatically;
+recording also stops after ten seconds. The browser records the timestamped Opus
+return rather than rebuilding a WAV from manually counted PCM frames, preserving
+the received stream's real-time playback cadence. No recording is uploaded or
+persisted. Testing again, ending the test, leaving, reconnecting or unmounting
+discards the recording and cancels capture.
 
 Starting detaches the public sender before enabling private test audio, saves
 mute/deafen and marks both true. Stopping restores those choices. Switching a
@@ -219,9 +221,9 @@ DPDFNet-8 HR (experimental) for comparison. Speakers/Headphones stays fixed to
 natural headphone input; no mode selector is shown.
 Microphone/output selectors remain; output selection also applies to live and
 recorded mic-test playback. New visitors use DPDFNet with natural headphone input.
-Changing a filter/device clears the old snippet immediately and disables
-recording during initialization. Runtime fallback also discards any old snippet.
-Record a fresh five-second sample after the chosen model reports active. Model 8
+Changing a filter/device clears the old recording immediately and disables
+recording during initialization. Runtime fallback also discards any old recording.
+Run a fresh mic test after the chosen model reports active. Model 8
 adds a lazy 14.9 MB model download and reuses model 2's vendored runtime/DSP.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the worklet
@@ -269,8 +271,8 @@ Default-preset / snippet validation, September 6, 2026:
 - DPDFNet comparison update: `npm test --workspace @caper/web`: 54 passed;
   `npm run check`: passed. Both model hashes, metadata/stateful inference,
   worker selection and track-preserving fallback checked.
-- UI fixture: switching from model 2 to 8 clears the existing recording, retains
-  device selectors and resets to Record 5 seconds. Desktop/mobile inspected.
+- UI fixture for the previous five-second recorder: switching from model 2 to 8
+  cleared the existing recording and retained device selectors. Desktop/mobile inspected.
 - Review correction: live-mode exit reads **Stop live listening**, not Back to
   snippet, since entering live mode discards the snippet.
 - Chromium local WebRTC receive fixture: five-second, 48 kHz WAV, 480,044 bytes,
