@@ -1,4 +1,4 @@
-export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet2" | "browser" | "off";
+export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet2" | "dpdfnet8" | "browser" | "off";
 export type AudioSetup = "speakers" | "headphones";
 export interface Microphone {
   track: MediaStreamTrack;
@@ -66,8 +66,8 @@ export async function captureMicrophone(
     return microphone;
   }
 
-  const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet2" ? "dpdfnet2" : "deepfilter";
-  const engineName = engine === "rnnoise" ? "RNNoise" : engine === "dpdfnet2" ? "DPDFNet-2 HR" : "DeepFilterNet";
+  const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet2" || mode === "dpdfnet8" ? "dpdfnet2" : "deepfilter";
+  const engineName = engine === "rnnoise" ? "RNNoise" : engine === "dpdfnet2" ? (mode === "dpdfnet8" ? "DPDFNet-8 HR" : "DPDFNet-2 HR") : "DeepFilterNet";
   const attenuationLimit = mode === "deepfilter-gentle" ? 12 : mode === "deepfilter-strong" ? 40 : 20;
   const presetName = mode === "deepfilter-gentle" ? "gentle" : mode === "deepfilter-strong" ? "strong" : "balanced";
 
@@ -113,7 +113,7 @@ export async function captureMicrophone(
     });
     let workerReady: ((error?: Error) => void) | undefined;
     if (engine === "dpdfnet2") {
-      worker = new Worker("/audio/dpdfnet2-v1/worker.js", { type: "module", name: "caper-dpdfnet2" });
+      worker = new Worker(mode === "dpdfnet8" ? "/audio/dpdfnet8-v1/worker.js" : "/audio/dpdfnet2-v1/worker.js", { type: "module", name: `caper-${mode}` });
       worker.onmessage = ({ data }) => {
         if (data?.type === "ready") workerReady?.();
         else if (data?.type === "output") node?.port.postMessage(data, [data.samples]);
@@ -153,7 +153,7 @@ export async function captureMicrophone(
     source.connect(node);
     node.connect(destination);
     microphone.track = destination.stream.getAudioTracks()[0];
-    microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet2" ? "DPDFNet-2 HR active · experimental · on-device" : `DeepFilterNet active · ${presetName} · on-device`;
+    microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet2" ? `${engineName} active · experimental · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = () => void fallback();
     node.port.onmessage = ({ data }) => { if (data === "failed") void fallback(); };
     return microphone;

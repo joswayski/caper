@@ -214,9 +214,16 @@ The shared adapter lives at `/audio/noise-v1/`; previously published immutable
 DeepFilter assets are unchanged. Normal web deployment includes all new assets;
 no operator configuration commands are required.
 
-Only noise-suppression and Speakers/Headphones mode selectors have been removed.
+An in-channel noise-suppression selector offers DPDFNet-2 HR (default) and
+DPDFNet-8 HR (experimental) for comparison. Speakers/Headphones stays fixed to
+natural headphone input; no mode selector is shown.
 Microphone/output selectors remain; output selection also applies to live and
 recorded mic-test playback. New visitors use DPDFNet with natural headphone input.
+Changing a filter/device clears the old snippet immediately and disables
+recording during initialization. Runtime fallback also discards any old snippet.
+Record a fresh five-second sample after the chosen model reports active. Model 8
+adds a lazy 14.9 MB model download and reuses model 2's vendored runtime/DSP.
+Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the worklet
 acknowledges initialization. If loading/initialization fails, capture falls back
 to browser suppression when supported, otherwise unsuppressed audio, with an
@@ -249,15 +256,23 @@ keep the current 960-point unnormalized FFT, 480-sample hop, Vorbis window and
 metadata-initialized recurrent normalization. Do not normalize again outside the
 model or add an extra gate/AGC. Upstream lists 7.17G MACs for DPDFNet-8 HR versus
 2.42G for DPDFNet-2 HR. This is a published operation count, not a measured Caper
-CPU/latency result. DPDFNet-8 has not been run or listening-tested in Caper; its
-quality advantage is unknown, not disproven. It is not enabled.
+CPU/latency result. Both pinned models now pass real stateful inference tests;
+model 8 also reaches ready/output in Chromium against the built app. This is not
+a physical listening comparison or sustained performance benchmark. Its quality
+advantage is unknown; it is offered for owner A/B testing, not promoted to default.
 Keep input gain below hardware clipping, use a consistent close mic position,
 and disable duplicate OS/vendor voice filters when comparing quality. Check the
 active/fallback status before attributing a sound to DPDFNet.
 
 Default-preset / snippet validation, September 6, 2026:
 
-- `npm test --workspace @caper/web`: 52 passed; `npm run check`: passed.
+- DPDFNet comparison update: `npm test --workspace @caper/web`: 54 passed;
+  `npm run check`: passed. Both model hashes, metadata/stateful inference,
+  worker selection and track-preserving fallback checked.
+- UI fixture: switching from model 2 to 8 clears the existing recording, retains
+  device selectors and resets to Record 5 seconds. Desktop/mobile inspected.
+- Review correction: live-mode exit reads **Stop live listening**, not Back to
+  snippet, since entering live mode discards the snippet.
 - Chromium local WebRTC receive fixture: five-second, 48 kHz WAV, 480,044 bytes,
   nonzero RMS; silent until play, playback advances, live mode uses the received
   stream, old blob URLs revoked, cancellation leaves borrowed tracks live.

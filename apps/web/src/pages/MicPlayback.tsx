@@ -81,7 +81,7 @@ export default function MicPlayback({ stream, output }: { stream: MediaStream; o
     {!live && <p className="noise-status">Speak for five seconds, then press play to hear the received audio. The snippet stays only in this tab and is cleared when you stop the test.</p>}
     <div className="control-buttons">
       {!live && !recording && <button type="button" onClick={record}>{url ? "Record again" : "Record 5 seconds"}</button>}
-      <button type="button" className={live ? "active" : ""} aria-pressed={live} onClick={toggleLive}>{live ? "Back to snippet" : "Listen live"}</button>
+      <button type="button" className={live ? "active" : ""} aria-pressed={live} onClick={toggleLive}>{live ? "Stop live listening" : "Listen live"}</button>
     </div>
     {recording && <p className="noise-status" role="status">Recording received audio… 5 seconds.</p>}
     {error && <p className="noise-status" role="alert">{error}</p>}
