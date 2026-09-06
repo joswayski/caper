@@ -1,23 +1,6 @@
 import { useEffect, useRef } from "react";
-import {
-  AmbientLight,
-  Box3,
-  BoxGeometry,
-  DirectionalLight,
-  EdgesGeometry,
-  Group,
-  IcosahedronGeometry,
-  LineBasicMaterial,
-  LineSegments,
-  Mesh,
-  MeshStandardMaterial,
-  PerspectiveCamera,
-  Scene,
-  SRGBColorSpace,
-  Vector3,
-  WebGLRenderer,
-} from "three";
-import type { BufferGeometry, Material } from "three";
+import { AmbientLight, Box3, DirectionalLight, PCFShadowMap, PerspectiveCamera, Scene, SRGBColorSpace, Vector3, WebGLRenderer } from "three";
+import { createChatModel } from "./chatModel";
 
 export default function LowPolyChat() {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -28,138 +11,159 @@ export default function LowPolyChat() {
 
     const scene = new Scene();
     const camera = new PerspectiveCamera(34, 1, 0.1, 100);
-    camera.position.set(0, 0, 10.5);
-
     const renderer = new WebGLRenderer({ alpha: true, antialias: true });
     renderer.setClearColor(0x000000, 0);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = SRGBColorSpace;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = PCFShadowMap;
     renderer.domElement.setAttribute("aria-hidden", "true");
     host.appendChild(renderer.domElement);
 
-    const geometries: BufferGeometry[] = [];
-    const materials: Material[] = [];
-    const chat = new Group();
-    chat.rotation.set(-0.12, -0.28, -0.035);
+    let disposed = false;
+    const draw = () => { if (!disposed) renderer.render(scene, camera); };
+    const model = createChatModel(draw);
+    const chat = model.group;
+    chat.rotation.set(0.10, -0.20, -0.035);
     scene.add(chat);
+    scene.add(new AmbientLight(0xffffff, 1.7));
+    const key = new DirectionalLight(0xfff1e4, 1.6);
+    key.position.set(-5, 8, 12);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    Object.assign(key.shadow.camera, { left: -8, right: 8, top: 7, bottom: -7, near: 0.5, far: 30 });
+    key.shadow.camera.updateProjectionMatrix();
+    key.shadow.bias = -0.0002;
+    key.shadow.normalBias = 0.015;
+    key.shadow.intensity = 0.35;
+    scene.add(key);
+    const fill = new DirectionalLight(0xa9c5c0, 1.1);
+    fill.position.set(8, -3, 5);
+    scene.add(fill);
 
-    const material = (color: number, roughness = 0.72) => {
-      const value = new MeshStandardMaterial({ color, roughness, metalness: 0.04 });
-      materials.push(value);
-      return value;
-    };
-
-    const box = (
-      width: number,
-      height: number,
-      depth: number,
-      color: number,
-      x: number,
-      y: number,
-      z: number,
-    ) => {
-      const geometry = new BoxGeometry(width, height, depth);
-      geometries.push(geometry);
-      const mesh = new Mesh(geometry, material(color));
-      mesh.position.set(x, y, z);
-      chat.add(mesh);
-      return mesh;
-    };
-
-    box(6.4, 4.35, 0.2, 0x151719, 0, 0, 0);
-    box(1.35, 4.05, 0.12, 0x25292b, -2.35, 0, 0.17);
-    box(4.72, 0.48, 0.1, 0x1c1f21, 0.7, 1.72, 0.18);
-    box(0.72, 0.1, 0.08, 0xb64d32, -2.35, 1.44, 0.3);
-
-    [-0.98, -0.45, 0.08, 0.61].forEach((y, index) => {
-      box(index === 1 ? 0.68 : 0.82, 0.11, 0.07, index === 1 ? 0x637a43 : 0x4b5153, -2.25, y, 0.3);
-    });
-
-    const avatarColors = [0xb64d32, 0x637a43, 0xe4e5df, 0x596166];
-    const lineWidths = [2.7, 2.15, 2.9, 2.35];
-    [1.02, 0.3, -0.42, -1.14].forEach((y, index) => {
-      const avatarGeometry = new IcosahedronGeometry(0.22, 1);
-      geometries.push(avatarGeometry);
-      const avatar = new Mesh(avatarGeometry, material(avatarColors[index]));
-      avatar.position.set(-1.25, y, 0.32);
-      avatar.rotation.set(index * 0.4, index * 0.25, 0);
-      chat.add(avatar);
-
-      box(0.72, 0.12, 0.07, 0x717779, -0.65, y + 0.11, 0.28);
-      box(lineWidths[index], 0.12, 0.07, 0x3b4042, 0.45, y - 0.12, 0.27);
-      box(lineWidths[index] * 0.67, 0.1, 0.07, 0x303537, -0.05, y - 0.34, 0.27);
-    });
-
-    [1.7, 2.18, 2.66].forEach((x, index) => {
-      const controlGeometry = new IcosahedronGeometry(0.14, 1);
-      geometries.push(controlGeometry);
-      const control = new Mesh(
-        controlGeometry,
-        material(index === 2 ? 0xb64d32 : 0x4b5153),
-      );
-      control.position.set(x, 1.72, 0.33);
-      chat.add(control);
-    });
-
-    const edgeSourceGeometry = new BoxGeometry(6.4, 4.35, 0.2);
-    const edgeGeometry = new EdgesGeometry(edgeSourceGeometry);
-    geometries.push(edgeSourceGeometry, edgeGeometry);
-    const edgeMaterial = new LineBasicMaterial({ color: 0x4b5153, transparent: true, opacity: 0.75 });
-    materials.push(edgeMaterial);
-    chat.add(new LineSegments(edgeGeometry, edgeMaterial));
-
-    scene.add(new AmbientLight(0xffffff, 1.9));
-    const keyLight = new DirectionalLight(0xf3f4f5, 3.2);
-    keyLight.position.set(-4, 6, 8);
-    scene.add(keyLight);
-    const fillLight = new DirectionalLight(0x637a43, 2.2);
-    fillLight.position.set(5, -2, 5);
-    scene.add(fillLight);
-
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let animationFrame = 0;
-
+    let visible = true;
+    let pointer: { id: number; x: number; y: number; tiltX: number; tiltY: number } | null = null;
+    const target = { x: 0, y: 0 };
+    const tilt = { x: 0, y: 0 };
+    const limit = 0.14; // Eight degrees in each direction, on top of the resting pose.
+    const clamp = (value: number) => Math.max(-limit, Math.min(limit, value));
+    let previousTime = 0;
     const render = (time = 0) => {
-      if (!reducedMotion) {
-        chat.position.y = Math.sin(time * 0.0007) * 0.1;
-        chat.rotation.y = -0.28 + Math.sin(time * 0.00035) * 0.035;
-        animationFrame = requestAnimationFrame(render);
-      }
-      renderer.render(scene, camera);
+      const blend = motion.matches ? 1 : 1 - Math.exp(-Math.min(time - previousTime, 64) / 85);
+      previousTime = time;
+      tilt.x += (target.x - tilt.x) * blend;
+      tilt.y += (target.y - tilt.y) * blend;
+      chat.position.y = motion.matches ? 0 : Math.sin(time * 0.0007) * 0.10;
+      chat.rotation.x = 0.10 + tilt.x + (motion.matches ? 0 : Math.sin(time * 0.00027) * 0.018);
+      chat.rotation.y = -0.20 + tilt.y + (motion.matches ? 0 : Math.sin(time * 0.00035) * 0.025);
+      chat.rotation.z = -0.035 + (motion.matches ? 0 : Math.sin(time * 0.00022) * 0.009);
+      draw();
+      if (!motion.matches && visible && !document.hidden) animationFrame = requestAnimationFrame(render);
     };
-
+    const resume = () => {
+      cancelAnimationFrame(animationFrame);
+      render(performance.now());
+    };
+    const reset = () => {
+      const activePointer = pointer;
+      pointer = null;
+      target.x = target.y = 0;
+      host.classList.remove("is-dragging");
+      if (activePointer && host.hasPointerCapture(activePointer.id)) host.releasePointerCapture(activePointer.id);
+      resume();
+    };
+    const pointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || !event.isPrimary || pointer) return;
+      pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, tiltX: tilt.x, tiltY: tilt.y };
+      host.setPointerCapture(event.pointerId);
+      host.classList.add("is-dragging");
+      host.focus({ preventScroll: true });
+    };
+    const pointerMove = (event: PointerEvent) => {
+      if (!pointer || pointer.id !== event.pointerId) return;
+      const { width, height } = host.getBoundingClientRect();
+      target.x = clamp(pointer.tiltX + (event.clientY - pointer.y) / height * 0.6);
+      target.y = clamp(pointer.tiltY + (event.clientX - pointer.x) / width * 0.6);
+      resume();
+    };
+    const pointerEnd = (event: PointerEvent) => {
+      if (pointer?.id === event.pointerId) reset();
+    };
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key === "Home") {
+        event.preventDefault();
+        reset();
+      } else if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+        event.preventDefault();
+        target.x = clamp(target.x + (event.key === "ArrowDown" ? 0.035 : event.key === "ArrowUp" ? -0.035 : 0));
+        target.y = clamp(target.y + (event.key === "ArrowRight" ? 0.035 : event.key === "ArrowLeft" ? -0.035 : 0));
+        resume();
+      }
+    };
+    host.addEventListener("pointerdown", pointerDown);
+    host.addEventListener("pointermove", pointerMove);
+    host.addEventListener("pointerup", pointerEnd);
+    host.addEventListener("pointercancel", pointerEnd);
+    host.addEventListener("lostpointercapture", pointerEnd);
+    host.addEventListener("keydown", keyDown);
+    host.addEventListener("blur", reset);
+    window.addEventListener("blur", reset);
     const resize = () => {
       const { width, height } = host.getBoundingClientRect();
-      if (width === 0 || height === 0) return;
-
+      if (!width || !height) return;
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
-      const verticalFov = camera.fov * (Math.PI / 180);
+      const verticalFov = camera.fov * Math.PI / 180;
       const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
       chat.updateWorldMatrix(true, true);
       const frame = new Box3().setFromObject(chat).getSize(new Vector3());
       camera.position.z = Math.max(
-        frame.y / (2 * Math.tan(verticalFov / 2)),
-        frame.x / (2 * Math.tan(horizontalFov / 2)),
-      ) + frame.z / 2 + 0.8;
+        (frame.y + 0.8) / (2 * Math.tan(verticalFov / 2)),
+        (frame.x + 0.8) / (2 * Math.tan(horizontalFov / 2)),
+      ) + frame.z / 2 + 0.5;
       camera.updateProjectionMatrix();
-      renderer.render(scene, camera);
+      draw();
     };
-
     const observer = new ResizeObserver(resize);
     observer.observe(host);
+    const visibility = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting;
+      resume();
+    });
+    visibility.observe(host);
+    motion.addEventListener("change", resume);
+    document.addEventListener("visibilitychange", resume);
     resize();
-    render();
+    resume();
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(animationFrame);
       observer.disconnect();
+      visibility.disconnect();
+      motion.removeEventListener("change", resume);
+      document.removeEventListener("visibilitychange", resume);
+      host.removeEventListener("pointerdown", pointerDown);
+      host.removeEventListener("pointermove", pointerMove);
+      host.removeEventListener("pointerup", pointerEnd);
+      host.removeEventListener("pointercancel", pointerEnd);
+      host.removeEventListener("lostpointercapture", pointerEnd);
+      host.removeEventListener("keydown", keyDown);
+      host.removeEventListener("blur", reset);
+      window.removeEventListener("blur", reset);
+      host.classList.remove("is-dragging");
+      model.dispose();
+      key.shadow.dispose();
       renderer.dispose();
-      geometries.forEach((geometry) => geometry.dispose());
-      materials.forEach((value) => value.dispose());
       host.removeChild(renderer.domElement);
     };
   }, []);
 
-  return <div className="low-poly-chat" ref={hostRef} aria-hidden="true" />;
+  return (
+    <div className="low-poly-chat" ref={hostRef} tabIndex={0} role="group" aria-label="Interactive 3D Caper chat preview" aria-describedby="chat-tilt-help">
+      <span className="chat-tilt-help" id="chat-tilt-help">Drag to tilt · Arrow keys to rotate · Esc to reset</span>
+    </div>
+  );
 }
