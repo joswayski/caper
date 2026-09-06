@@ -15,8 +15,8 @@ body {
 .hero h1 span { display: block; }
 .hero-copy > p { max-width: 580px; margin: 32px 0 0; color: #d1d3d4; font-size: clamp(1.12rem, 1.8vw, 1.35rem); font-weight: 600; line-height: 1.55; }
 .hero-actions { display: flex; align-items: center; gap: 14px; margin-top: 38px; }
-.github-button { min-height: 52px; width: max-content; display: inline-flex; align-items: center; gap: 10px; padding: 0 20px; border: 1px solid rgba(243,244,245,.18); border-radius: 999px; color: var(--text); background: var(--surface); font-weight: 700; text-decoration: none; transition: color .2s ease-out, background-color .2s ease-out, border-color .2s ease-out; }
-.github-button:hover { color: #c9d6b7; border-color: rgba(99,122,67,.55); background: rgba(99,122,67,.14); }
+.github-button { min-height: 52px; width: max-content; display: inline-flex; align-items: center; gap: 10px; padding: 0 20px; border: 1px solid var(--terracotta); border-radius: 999px; color: var(--text); background: var(--terracotta); font-weight: 700; text-decoration: none; transition: color .2s ease-out, background-color .2s ease-out, border-color .2s ease-out; }
+.github-button:hover { color: #fff; border-color: #c8644c; background: #ad472d; }
 .github-button span { font-size: 1.15rem; }
 .coming-soon { display: flex; align-items: center; gap: 9px; color: var(--text-muted); font-size: .9rem; font-weight: 600; white-space: nowrap; }
 .coming-soon i { width: 7px; height: 7px; border-radius: 50%; background: var(--terracotta-bright); box-shadow: 0 0 0 4px rgba(219,104,73,.12); }
