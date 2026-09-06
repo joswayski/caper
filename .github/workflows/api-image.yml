@@ -52,8 +52,48 @@ jobs:
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo 'exists=true' >> "$GITHUB_OUTPUT"; fi
       - uses: aws-actions/amazon-ecr-login@v2.1.6
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
-      - name: Publish separately from the website (no deployment)
+      - name: Publish separately from the website
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
         run: |
           docker tag caper-api:test "$ECR:api-$GITHUB_SHA"
           docker push "$ECR:api-$GITHUB_SHA"
+      - name: Record immutable image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: record
+        run: |
+          set -euo pipefail
+          digest="$(aws ecr describe-images --repository-name production/caper --image-ids "imageTag=api-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          printf '### Published API image\n\n`%s:api-%s@%s`\n' "$ECR" "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Notify deployment webhook
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}
+          DEPLOY_WORKFLOW_URL: https://github.com/joswayski/infrastructure/actions/workflows/deploy-caper-api.yml
+          IMAGE_DIGEST: ${{ steps.record.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DEPLOY_NOTIFICATION_WEBHOOK_URL" ]]; then
+            echo "DEPLOY_NOTIFICATION_WEBHOOK_URL is not configured; skipping notification."
+            exit 0
+          fi
+          payload="$(jq -cn --arg git_sha "$GITHUB_SHA" --arg digest "$IMAGE_DIGEST" --arg deploy_url "$DEPLOY_WORKFLOW_URL" '{
+            username: "Production deploys",
+            embeds: [{
+              title: "Caper API image is ready",
+              description: "Deploy Caper API triggers this exact image. Open GitHub is the fallback.",
+              color: 11947296,
+              fields: [
+                {name: "Git SHA", value: ("`" + $git_sha + "`"), inline: false},
+                {name: "Digest", value: ("`" + $digest + "`"), inline: false}
+              ]
+            }],
+            components: [{type: 1, components: [
+              {type: 2, style: 3, label: "Deploy Caper API", custom_id: ("production-deploy:v1:caper-api:" + $git_sha)},
+              {type: 2, style: 5, label: "Open GitHub", url: $deploy_url}
+            ]}]
+          }')"
+          curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 10 \
+            --header 'Content-Type: application/json' --data "$payload" \
+            "${DEPLOY_NOTIFICATION_WEBHOOK_URL}?wait=false&with_components=true"
