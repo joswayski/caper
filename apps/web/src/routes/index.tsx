@@ -2,7 +2,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import Home from "../pages/Home";
 
 export const Route = createFileRoute("/")({
-  component: Home,
+  loader: () => ({
+    initialNow: Date.now(),
+    latestChanges: __LATEST_CHANGES__,
+  }),
+  staleTime: Number.POSITIVE_INFINITY,
+  component: HomeRoute,
   head: () => ({
     links: [
       {
@@ -22,3 +27,8 @@ export const Route = createFileRoute("/")({
     ],
   }),
 });
+
+function HomeRoute() {
+  const { initialNow, latestChanges } = Route.useLoaderData();
+  return <Home initialNow={initialNow} latestChanges={latestChanges} />;
+}
