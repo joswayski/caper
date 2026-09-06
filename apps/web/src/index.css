@@ -9,21 +9,24 @@ body {
 .shell { width: min(1520px, calc(100% - 80px)); margin-inline: auto; }
 .site-header { min-height: 104px; display: flex; align-items: center; }
 .wordmark { color: var(--text); font-size: 1.9rem; font-weight: 900; letter-spacing: -.075em; text-decoration: none; }
-.hero { min-height: calc(100vh - 104px); display: grid; grid-template-columns: minmax(0, .72fr) minmax(0, 1.28fr); align-items: center; gap: 40px; padding-block: 60px 124px; }
+.hero { min-height: calc(100vh - 104px); display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); align-items: center; gap: 32px; padding-block: 60px 124px; }
 .hero-copy { position: relative; z-index: 2; }
-.hero h1 { margin: 0; font-size: clamp(3.2rem, 5.6vw, 5.6rem); font-weight: 900; line-height: 1.12; letter-spacing: -.06em; }
-.hero-title-line { display: block; overflow: hidden; white-space: nowrap; }
+.hero h1 { margin: 0; font-size: clamp(2.8rem, 4.8vw, 4.6rem); font-weight: 900; line-height: 1.18; letter-spacing: -.06em; }
+.hero-title-line { display: block; white-space: nowrap; }
 .rolodex {
   position: relative;
-  display: inline-block;
+  display: inline-grid;
+  justify-items: start;
+  align-items: baseline;
   overflow: hidden;
-  height: 1em;
   vertical-align: baseline;
+  padding-block: .18em;
+  margin-block: -.18em;
 }
-.rolodex-sizer { visibility: hidden; }
+.rolodex-sizer,
+.rolodex-word { grid-area: 1 / 1; }
+.rolodex-sizer { visibility: hidden; pointer-events: none; }
 .rolodex-word {
-  position: absolute;
-  inset: 0 auto auto 0;
   white-space: nowrap;
   opacity: 0;
   transform: translateY(110%);
@@ -73,7 +76,7 @@ body {
   .shell { width: min(100% - 36px, 1200px); }
   .site-header { min-height: 82px; }
   .hero { min-height: auto; grid-template-columns: 1fr; gap: 36px; padding-block: 56px 48px; }
-  .hero h1 { font-size: clamp(2.4rem, 10vw, 3.4rem); }
+  .hero h1 { font-size: clamp(2.2rem, 9vw, 3rem); }
   .hero-copy > p { margin-top: 26px; font-size: 1.08rem; }
   .hero-actions { flex-wrap: wrap; gap: 16px; margin-top: 32px; }
   .action-separator { display: none; }

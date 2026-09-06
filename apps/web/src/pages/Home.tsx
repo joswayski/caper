@@ -21,8 +21,7 @@ export default function Home() {
             </span>
           </h1>
           <p>
-            Drop into a public voice channel and hang out.
-            No accounts, no invites. Just good company.
+            Chat and voice channels, in a space that feels like yours.
           </p>
           <div className="hero-actions">
             <a className="github-button" href="/live">Open voice channel</a>
