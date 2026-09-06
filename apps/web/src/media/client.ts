@@ -66,6 +66,7 @@ export class PublicCallClient {
   private statsTimer?: number;
   private speaking: string[] = [];
   private diagnostics = "";
+  private joinTiming = "";
 
   private readonly changed: (state: CallViewState) => void;
   constructor(changed: (state: CallViewState) => void) { this.changed = changed; }
@@ -117,8 +118,28 @@ export class PublicCallClient {
     return (text ? JSON.parse(text) : undefined) as T;
   }
 
+  private async prepareJoin() {
+    const capture = navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: this.microphoneDeviceId ? { exact: this.microphoneDeviceId } : undefined,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    const joining = this.api<JoinResponse>("join", { name: this.name }, undefined);
+    const [captureResult, joinResult] = await Promise.allSettled([capture, joining]);
+    if (captureResult.status === "rejected" || joinResult.status === "rejected") {
+      if (captureResult.status === "fulfilled") captureResult.value.getTracks().forEach((track) => track.stop());
+      if (joinResult.status === "fulfilled") void this.api("leave", {}, joinResult.value.token).catch(() => undefined);
+      throw captureResult.status === "rejected" ? captureResult.reason : joinResult.status === "rejected" ? joinResult.reason : new Error("Join preparation failed.");
+    }
+    return { stream: captureResult.value, joined: joinResult.value };
+  }
+
   async join(name = "", microphoneDeviceId?: string) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
+    const started = performance.now();
     // Generate once per explicit join, not per roster render or automatic rejoin.
     this.name = name.trim().slice(0, 40) || `${faker.word.adjective()} ${faker.animal.type()}`.slice(0, 40);
     this.microphoneDeviceId = microphoneDeviceId || undefined;
@@ -127,23 +148,12 @@ export class PublicCallClient {
     const generation = ++this.generation;
     let capturedMicrophone: MediaStreamTrack | undefined;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          deviceId: microphoneDeviceId ? { exact: microphoneDeviceId } : undefined,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      const { stream, joined } = await this.prepareJoin();
+      const prepared = performance.now();
       const microphone = stream.getAudioTracks()[0];
       if (!microphone) throw new Error("No microphone track was available.");
       capturedMicrophone = microphone;
       if (generation !== this.generation || this.phase !== "joining") {
-        stream.getTracks().forEach((track) => track.stop());
-        return;
-      }
-      const joined = await this.api<JoinResponse>("join", { name: this.name }, undefined);
-      if (generation !== this.generation) {
         stream.getTracks().forEach((track) => track.stop());
         void this.api("leave", {}, joined.token).catch(() => undefined);
         return;
@@ -152,11 +162,13 @@ export class PublicCallClient {
       this.selfId = joined.id;
       this.pc = this.makePeerConnection(joined.iceServers);
       await this.publishTrack("microphone", microphone, generation);
+      const published = performance.now();
       if (generation !== this.generation) return;
       await waitFor(this.pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => this.pc?.connectionState === "connected");
       if (generation !== this.generation) return;
       this.phase = "connected";
       this.reconnects = 0;
+      this.joinTiming = `Joined in ${(performance.now() - started).toFixed(0)} ms · microphone + session ${(prepared - started).toFixed(0)} ms · ICE + signaling ${(published - prepared).toFixed(0)} ms · transport ${(performance.now() - published).toFixed(0)} ms`;
       this.emit();
       const stateSync = this.setState(this.muted, this.deafened);
       this.startPolling();
@@ -365,7 +377,7 @@ export class PublicCallClient {
         }
       });
       this.speaking = [...speaking];
-      this.diagnostics = `This connection: ${(received / 1e6).toFixed(2)} MB received · ${(sent / 1e6).toFixed(2)} MB sent · ${lost} packets lost · ${(jitter * 1000).toFixed(0)} ms max jitter · ${(rtt * 1000).toFixed(0)} ms RTT · ${relay ? "TURN relay" : "direct / relay not observed"}`;
+      this.diagnostics = `${this.joinTiming} · This connection: ${(received / 1e6).toFixed(2)} MB received · ${(sent / 1e6).toFixed(2)} MB sent · ${lost} packets lost · ${(jitter * 1000).toFixed(0)} ms max jitter · ${(rtt * 1000).toFixed(0)} ms RTT · ${relay ? "TURN relay" : "direct / relay not observed"}`;
       this.emit();
     } catch { /* Stats support varies; diagnostics must never interrupt media. */ }
   }
@@ -411,18 +423,22 @@ export class PublicCallClient {
     if (generation !== this.generation) return;
     this.phase = "joining";
     this.emit();
+    const started = performance.now();
     let captured: MediaStreamTrack | undefined;
     try {
-      const track = (await navigator.mediaDevices.getUserMedia({ audio: { deviceId: this.microphoneDeviceId ? { exact: this.microphoneDeviceId } : undefined, echoCancellation: true, noiseSuppression: true } })).getAudioTracks()[0]!;
+      const { stream, joined } = await this.prepareJoin();
+      const prepared = performance.now();
+      const track = stream.getAudioTracks()[0];
+      if (!track) throw new Error("No microphone track was available.");
       captured = track;
-      if (generation !== this.generation) { track.stop(); return; }
-      const joined = await this.api<JoinResponse>("join", { name: this.name }, undefined);
-      if (generation !== this.generation) { track.stop(); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
+      if (generation !== this.generation) { stream.getTracks().forEach((item) => item.stop()); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
       this.token = joined.token; this.selfId = joined.id; this.pc = this.makePeerConnection(joined.iceServers);
       await this.publishTrack("microphone", track, generation);
+      const published = performance.now();
       await waitFor(this.pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => this.pc?.connectionState === "connected");
       if (generation !== this.generation) return;
       this.phase = "connected";
+      this.joinTiming = `Rejoined in ${(performance.now() - started).toFixed(0)} ms · microphone + session ${(prepared - started).toFixed(0)} ms · ICE + signaling ${(published - prepared).toFixed(0)} ms · transport ${(performance.now() - published).toFixed(0)} ms`;
       this.emit();
       const stateSync = this.setState(this.muted, this.deafened);
       this.startPolling();
@@ -469,6 +485,7 @@ export class PublicCallClient {
     window.clearInterval(this.statsTimer);
     this.speaking = [];
     this.diagnostics = "";
+    this.joinTiming = "";
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());
     this.pc?.getSenders().forEach((sender) => { if (sender.track !== preserve) sender.track?.stop(); });
     for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();

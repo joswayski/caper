@@ -8,6 +8,7 @@ use tower::ServiceExt;
 
 struct Mock {
     next: AtomicUsize,
+    provisioning: AtomicUsize,
     closes: Mutex<Vec<(String, String)>>,
     revocations: Mutex<Vec<String>>,
     remote_offer: AtomicBool,
@@ -16,6 +17,7 @@ impl Mock {
     fn new() -> Self {
         Self {
             next: AtomicUsize::new(1),
+            provisioning: AtomicUsize::new(0),
             closes: Mutex::new(vec![]),
             revocations: Mutex::new(vec![]),
             remote_offer: AtomicBool::new(true),
@@ -25,9 +27,17 @@ impl Mock {
 #[async_trait]
 impl Provider for Mock {
     async fn create_session(&self, _: &Config) -> Result<String, ProviderError> {
+        self.provisioning.fetch_or(1, Ordering::SeqCst);
+        while self.provisioning.load(Ordering::SeqCst) & 2 == 0 {
+            tokio::task::yield_now().await;
+        }
         Ok(format!("s{}", self.next.fetch_add(1, Ordering::SeqCst)))
     }
     async fn turn(&self, _: &Config) -> Result<Vec<IceServer>, ProviderError> {
+        self.provisioning.fetch_or(2, Ordering::SeqCst);
+        while self.provisioning.load(Ordering::SeqCst) & 1 == 0 {
+            tokio::task::yield_now().await;
+        }
         Ok(vec![IceServer {
             urls: json!(["stun:test"]),
             username: Some("temporary-user".into()),
@@ -96,14 +106,18 @@ async fn call(
     (status, value)
 }
 async fn joined(s: &AppState, name: &str) -> Value {
-    call(
-        app(s.clone()),
-        "POST",
-        "/api/media/join",
-        None,
-        json!({"name":name}),
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/join",
+            None,
+            json!({"name":name}),
+        ),
     )
     .await
+    .expect("session and TURN provisioning should run concurrently")
     .1
 }
 

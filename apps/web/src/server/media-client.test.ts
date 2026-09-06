@@ -173,16 +173,18 @@ test("provider join failure releases microphone acquired before publication", as
   assert.equal(states.at(-1)?.error, "unavailable");
 });
 
-test("leave during permission prompt releases late capture without creating session", async (t) => {
+test("join provisioning overlaps permission and leave cleans up both late results", async (t) => {
   const { client, track, calls, states, install } = setup(t);
   let grant!: (s: Stream) => void;
   install("navigator", { mediaDevices: { getUserMedia: () => new Promise((resolve) => { grant = resolve; }) } });
   const joining = client.join("Guest");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["join"]);
   await client.leave();
   grant(new Stream([track]));
   await joining;
   assert.equal(track.readyState, "ended");
-  assert.equal(calls.length, 0);
+  assert.deepEqual(calls, ["join", "leave"]);
   assert.equal(states.at(-1)?.phase, "idle");
 });
 
