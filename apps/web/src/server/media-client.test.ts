@@ -97,6 +97,7 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
   assert.equal(Peer.latest.senders[0].track, null);
   assert.equal(tracks[0].readyState, "ended");
   assert.equal(tracks[1].enabled, false);
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], tracks[1]);
   assert.equal(states.at(-1)?.noiseSuppressionStatus, "Noise suppression off");
   await client.changeMicrophone("");
   assert.equal(constraints[2].deviceId, undefined);
@@ -138,6 +139,7 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   const { client, track, calls, states } = setup(t);
   await client.join("Guest");
   assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], track);
   await client.setMuted(true);
   assert.equal(track.enabled, false);
   assert.equal(Peer.latest.senders[0].track, null);
