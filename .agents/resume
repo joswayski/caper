@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Adapted from Captures: dependencies belong in setup, not this fast wake hook.
+# Orb services are supervised by Amp. Production credentials are never seeded here.
 echo "[resume] Caper requires no wake-time repair."

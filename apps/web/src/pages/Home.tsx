@@ -21,13 +21,13 @@ export default function Home() {
             </span>
           </h1>
           <p>
-            Chat, call, and share in a space that feels like yours. For friends,
-            teams, and everything in between.
+            Drop into a public voice channel and hang out.
+            No accounts, no invites. Just good company.
           </p>
           <div className="hero-actions">
-            <span className="coming-soon"><i /> Coming soon</span>
+            <a className="github-button" href="/live">Open voice channel</a>
             <span className="action-separator" aria-hidden="true">·</span>
-            <a className="github-button" href={repositoryUrl} target="_blank" rel="noreferrer">
+            <a className="coming-soon" href={repositoryUrl} target="_blank" rel="noreferrer">
               Follow on GitHub <span aria-hidden="true">↗</span>
             </a>
           </div>
