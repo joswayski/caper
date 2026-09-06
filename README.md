@@ -17,15 +17,17 @@ context around them. It is in its earliest stage today.
 
 ## Browser MVP
 
-`/call` provides one public lobby for microphone voice, cameras, and screen
-sharing using Cloudflare Realtime SFU/TURN. No account or installation is
-required; joining requests microphone permission. Names are optional and are
-not verified identities. Cameras and shared screens require an explicit Watch
-action. Nothing is recorded by Caper. This is transport-encrypted, not E2EE;
-other participants can capture what they receive.
+`/call` provides one public **General voice channel** using Cloudflare Realtime
+SFU/TURN. Join or leave whenever; there are no outgoing calls or invitations.
+No account or installation is required; joining requests microphone permission.
+Names are optional and not verified identities. Mute, deafen, microphone and
+speaker selection are available. No text chat, database, camera or screen sharing.
+Nothing is recorded by Caper. This is transport-encrypted, not E2EE; other
+participants can record what they hear.
 
-Calls are **disabled by default** pending provider configuration and live
-multi-network testing. See [media setup and runbook](docs/media.md) for the
+Voice is **disabled by default** unless server credentials are configured.
+The temporary Cloudflare SFU app and TURN key have been provisioned; AWS
+production activation is separate. See [media setup and runbook](docs/media.md) for the
 remaining activation and acceptance checks. The desktop app is independent;
 browser support does not establish Tauri media support. Messaging, accounts,
 and persistent channels are not part of this MVP.

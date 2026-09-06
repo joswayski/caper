@@ -61,7 +61,6 @@ export class PublicCallClient {
   private muted = false;
   private deafened = false;
   private polling = false;
-  private watched = new Set<string>();
   private microphoneDeviceId?: string;
   private statsTimer?: number;
   private speaking: string[] = [];
@@ -76,7 +75,6 @@ export class PublicCallClient {
       selfId: this.selfId,
       participants: this.participants,
       remoteMedia: [...this.remoteMedia.values()],
-      localMedia: { camera: this.senders.has("camera"), screen: this.senders.has("screen") },
       speaking: this.speaking,
       diagnostics: this.diagnostics,
       error,
@@ -201,12 +199,6 @@ export class PublicCallClient {
         const codecs = RTCRtpSender.getCapabilities("audio")?.codecs ?? [];
         transceiver.setCodecPreferences([...codecs.filter((c) => c.mimeType.toLowerCase() === "audio/opus"), ...codecs.filter((c) => c.mimeType.toLowerCase() !== "audio/opus")]);
       }
-      if (kind === "screen") {
-        const parameters = transceiver.sender.getParameters();
-        parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
-        parameters.encodings[0]!.maxBitrate = 3_000_000;
-        await transceiver.sender.setParameters(parameters).catch(() => undefined);
-      }
       await pc.setLocalDescription(await pc.createOffer());
       const mid = transceiver.mid;
       if (!mid) throw new Error("The browser did not assign a media identifier.");
@@ -222,7 +214,7 @@ export class PublicCallClient {
       this.senders.set(kind, { sender: transceiver.sender, mid, track });
       track.addEventListener("ended", () => {
         if (generation === this.generation && this.senders.get(kind)?.track === track) {
-          void (kind === "screen" ? this.stopScreen() : this.unpublish(kind)).catch(() => this.scheduleReconnect());
+          void this.unpublish(kind).catch(() => this.scheduleReconnect());
         }
       }, { once: true });
       if (kind === "microphone" && this.muted) await transceiver.sender.replaceTrack(null);
@@ -272,47 +264,6 @@ export class PublicCallClient {
       microphone.track = track;
       old.stop();
     }, generation).catch((error) => { track.stop(); throw error; });
-  }
-
-  async toggleCamera() {
-    if (this.senders.has("camera")) return this.unpublish("camera");
-    const generation = this.generation;
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    const track = stream.getVideoTracks()[0]!;
-    if (generation !== this.generation) { track.stop(); return; }
-    await this.publishTrack("camera", track).catch((error) => { track.stop(); throw error; });
-    this.emit();
-  }
-
-  async toggleScreen() {
-    if (this.senders.has("screen")) return this.stopScreen();
-    const generation = this.generation;
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 }, frameRate: { ideal: 30, max: 30 } },
-      audio: true,
-    });
-    if (generation !== this.generation) { stream.getTracks().forEach((track) => track.stop()); return; }
-    const video = stream.getVideoTracks()[0]!;
-    try {
-      await this.publishTrack("screen", video);
-      const audio = stream.getAudioTracks()[0];
-      if (audio) await this.publishTrack("screenAudio", audio);
-      this.emit();
-    } catch (error) {
-      stream.getTracks().forEach((track) => track.stop());
-      throw error;
-    }
-  }
-
-  async watch(participantId: string, watched: boolean) {
-    watched ? this.watched.add(participantId) : this.watched.delete(participantId);
-    const participant = this.participants.find((item) => item.id === participantId);
-    if (!participant) return;
-    const tracks = participant.tracks.filter((track) => track.kind !== "microphone");
-    for (const track of tracks) {
-      if (watched && !this.subscriptions.has(track.id)) await this.subscribe(track.id);
-      if (!watched && this.subscriptions.has(track.id)) await this.unsubscribe(track.id);
-    }
   }
 
   private subscribe(trackId: string) {
@@ -374,11 +325,6 @@ export class PublicCallClient {
     }
   }
 
-  private async stopScreen() {
-    await this.unpublish("screenAudio");
-    await this.unpublish("screen");
-  }
-
   private startPolling() {
     window.clearInterval(this.pollTimer);
     window.clearInterval(this.statsTimer);
@@ -432,8 +378,7 @@ export class PublicCallClient {
       for (const participant of snapshot.participants) {
         if (participant.id === this.selfId) continue;
         for (const track of participant.tracks) {
-          if (track.kind === "microphone" && !this.subscriptions.has(track.id)) await this.subscribe(track.id);
-          if (track.kind !== "microphone" && this.watched.has(participant.id) && !this.subscriptions.has(track.id)) await this.subscribe(track.id);
+          if (!this.subscriptions.has(track.id)) await this.subscribe(track.id);
         }
       }
       this.emit();

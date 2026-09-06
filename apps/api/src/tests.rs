@@ -273,7 +273,7 @@ async fn expiry_removes_and_cleans() {
         "POST",
         "/api/media/publish",
         Some(token),
-        json!({"kind":"camera","mid":"1","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+        json!({"kind":"microphone","mid":"1","sessionDescription":{"type":"offer","sdp":"v=0"}}),
     )
     .await;
     {
@@ -311,10 +311,12 @@ fn provider_errors_and_unsupported_turn_are_rejected() {
         json!(["turn:relay.example:3478", "stun:relay.example:53"])
     );
     assert_eq!(TURN_TTL, MAX_CALL_DURATION.as_secs());
+    assert_eq!(MAX_TRACKS, 1);
+    assert_eq!(MAX_SUBSCRIPTIONS, 11);
 }
 
 #[tokio::test]
-async fn expired_tokens_and_duplicate_track_kinds_are_rejected() {
+async fn expired_tokens_nonmicrophone_kinds_and_extra_publications_are_rejected() {
     let (s, _) = state();
     let joined = joined(&s, "a").await;
     let token = joined["token"].as_str().unwrap();
@@ -328,6 +330,18 @@ async fn expired_tokens_and_duplicate_track_kinds_are_rejected() {
         )
         .await
         .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/publish",
+            Some(token),
+            json!({"kind":"microphone","mid":"1","sessionDescription":{"type":"offer","sdp":"v=0"}})
+        )
+        .await
+        .0,
         StatusCode::OK
     );
     assert_eq!(
@@ -336,7 +350,7 @@ async fn expired_tokens_and_duplicate_track_kinds_are_rejected() {
             "POST",
             "/api/media/publish",
             Some(token),
-            json!({"kind":"camera","mid":"2","sessionDescription":{"type":"offer","sdp":"v=0"}})
+            json!({"kind":"microphone","mid":"2","sessionDescription":{"type":"offer","sdp":"v=0"}})
         )
         .await
         .0,
@@ -432,4 +446,25 @@ async fn subscription_without_offer_does_not_require_negotiation_and_cannot_dupl
         .0,
         StatusCode::CONFLICT
     );
+}
+
+#[tokio::test]
+async fn cloudflare_session_creation_sends_no_body() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = Config::test(true);
+    config.provider_base = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new().route(
+        "/apps/app/sessions/new",
+        post(|body: axum::body::Bytes| async move {
+            assert!(body.is_empty(), "Cloudflare rejects an empty JSON object");
+            (
+                StatusCode::CREATED,
+                Json(json!({"sessionId":"test-session"})),
+            )
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let result = Cloudflare::new().create_session(&config).await;
+    server.abort();
+    assert_eq!(result.unwrap(), "test-session");
 }

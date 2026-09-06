@@ -1,5 +1,5 @@
 export type CallPhase = "idle" | "joining" | "connected" | "reconnecting" | "leaving" | "failed";
-export type MediaKind = "microphone" | "camera" | "screen" | "screenAudio";
+export type MediaKind = "microphone";
 
 export interface CallTrack {
   id: string;
@@ -42,7 +42,6 @@ export interface CallViewState {
   selfId?: string;
   participants: Participant[];
   remoteMedia: RemoteMedia[];
-  localMedia: { camera: boolean; screen: boolean };
   speaking?: string[];
   error?: string;
   diagnostics?: string;

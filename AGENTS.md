@@ -6,7 +6,7 @@ Adapted from the conventions in `joswayski/captures`.
 
 - Caper is an early-stage space for conversations. Distinguish working features from roadmap ideas; do not describe mockups as shipped functionality.
 - `apps/web`: TanStack Start browser app and same-origin development API adapter.
-- `apps/api`: Rust media control service. Cloudflare Realtime SFU/TURN carries media; AWS carries control traffic. The anonymous public lobby has no accounts or durable database.
+- `apps/api`: Rust media control service. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. MVP is one public General voice channel with join/leave, not outgoing calls. No text chat, database, camera or screen sharing.
 - `apps/desktop`: independent Tauri shell and React UI. Browser WebRTC success does not prove native webview support.
 - `shared/design.css`: shared visual tokens. `docs/brand` contains the owner's reference images and style guidance.
 - `docs/media.md`: configuration, deployment, privacy, validation matrix, and call runbook.
@@ -31,5 +31,5 @@ Adapted from the conventions in `joswayski/captures`.
 - Leave README accurate and concise. Put operational detail in `docs/media.md`; maintain an honest platform/test matrix.
 - Run `npm run check` and `npm test --workspace @caper/web`; for Rust, `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`.
 - Build changed Docker images when a daemon is available; otherwise validate build stages directly and report the limitation.
-- Never equate mocks with live SFU validation. Record multi-network/TURN, sustained share, and device checks separately.
+- Never equate mocks with live SFU validation. Record multi-network/TURN, sustained voice, and physical device checks separately.
 - Use focused, ready-for-review GitHub PRs, not direct default-branch pushes. Include exact post-merge operator commands for deployment/configuration changes.

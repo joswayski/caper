@@ -25,8 +25,8 @@ const LEASE: Duration = Duration::from_secs(45);
 const MAX_CALL_DURATION: Duration = Duration::from_secs(60 * 60);
 const TURN_TTL: u64 = MAX_CALL_DURATION.as_secs();
 const MAX_PARTICIPANTS: usize = 12;
-const MAX_TRACKS: usize = 4;
-const MAX_SUBSCRIPTIONS: usize = 44;
+const MAX_TRACKS: usize = 1;
+const MAX_SUBSCRIPTIONS: usize = MAX_PARTICIPANTS - 1;
 const JOIN_LIMIT_PER_MINUTE: usize = 30;
 const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
@@ -151,7 +151,7 @@ impl Provider for Cloudflare {
                 reqwest::Method::POST,
                 c,
                 &format!("apps/{}/sessions/new", required(&c.app_id)),
-                json!({}),
+                Value::Null,
             )
             .await?;
         value
@@ -274,7 +274,9 @@ impl Cloudflare {
             .client
             .request(method.clone(), format!("{}/{path}", c.provider_base))
             .bearer_auth(required(&c.app_secret));
-        let request = if method == reqwest::Method::GET {
+        // Session creation has no request body. Sending {} selects the legacy
+        // SDP-in-body API path, which rejects it without sessionDescription.
+        let request = if method == reqwest::Method::GET || body.is_null() {
             request
         } else {
             request.json(&body)
@@ -396,17 +398,6 @@ struct Track {
 #[serde(rename_all = "camelCase")]
 enum Kind {
     Microphone,
-    Camera,
-    Screen,
-    ScreenAudio,
-}
-impl Kind {
-    fn media(self) -> &'static str {
-        match self {
-            Self::Microphone | Self::ScreenAudio => "audio",
-            Self::Camera | Self::Screen => "video",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -660,7 +651,7 @@ enum SdpType {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Publish {
-    kind: Kind,
+    kind: String,
     mid: String,
     session_description: Sdp,
 }
@@ -673,7 +664,8 @@ async fn publish(
     Json(i): Json<Publish>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
-    if !matches!(i.session_description.ty, SdpType::Offer)
+    if i.kind != "microphone"
+        || !matches!(i.session_description.ty, SdpType::Offer)
         || !valid_text(&i.mid, 64)
         || !valid_text(&i.session_description.sdp, 200_000)
     {
@@ -689,10 +681,7 @@ async fn publish(
             p.operation = false;
             return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
         }
-        if p.tracks.len() >= MAX_TRACKS
-            || p.tracks.contains_key(&i.mid)
-            || p.tracks.values().any(|t| t.kind == i.kind)
-        {
+        if p.tracks.len() >= MAX_TRACKS || p.tracks.contains_key(&i.mid) {
             p.operation = false;
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
@@ -703,7 +692,7 @@ async fn publish(
     };
     let track_id = Uuid::new_v4();
     let provider_name = format!("caper-{track_id}");
-    let body = json!({"sessionDescription":{"type":"offer","sdp":i.session_description.sdp},"tracks":[{"location":"local","mid":i.mid,"trackName":provider_name,"kind":i.kind.media()}]});
+    let body = json!({"sessionDescription":{"type":"offer","sdp":i.session_description.sdp},"tracks":[{"location":"local","mid":i.mid,"trackName":provider_name,"kind":"audio"}]});
     let result = s.provider.tracks_new(&s.config, &session, body).await;
     let valid = result.as_ref().is_ok_and(|v| {
         validate_provider_envelope(v).is_ok()
@@ -736,7 +725,7 @@ async fn publish(
         i.mid,
         Track {
             id: track_id,
-            kind: i.kind,
+            kind: Kind::Microphone,
             provider_name,
         },
     );
