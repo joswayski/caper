@@ -29,7 +29,7 @@ export default function LowPolyChat() {
       ref={hostRef}
       tabIndex={0}
       role="group"
-      aria-label="Interactive 3D Caper chat preview"
+      aria-label="Interactive 3D Caper chat preview. Drag to rotate; on touch screens, drag with two fingers."
     >
       <picture aria-hidden="true">
         <source media="(max-width: 1000px)" srcSet="/images/chat-preview-stacked.webp" type="image/webp" />

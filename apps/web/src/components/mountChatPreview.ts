@@ -48,6 +48,14 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   let animationFrame = 0;
   let visible = true;
   let pointer: { id: number; x: number; y: number; tiltX: number; tiltY: number } | null = null;
+  const touches = new Map<number, { x: number; y: number }>();
+  let paired = false;
+  const pair = { x: 0, y: 0, tiltX: 0, tiltY: 0 };
+  const pairCentroid = () => {
+    let x = 0, y = 0;
+    touches.forEach((touch) => { x += touch.x; y += touch.y; });
+    return { x: x / touches.size, y: y / touches.size };
+  };
   const target = { x: 0, y: 0 };
   const tilt = { x: 0, y: 0 };
   const limit = 0.14; // Eight degrees in each direction, on top of the resting pose.
@@ -89,19 +97,61 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   const reset = () => {
     const activePointer = pointer;
     pointer = null;
+    touches.clear();
+    paired = false;
     target.x = target.y = 0;
     host.classList.remove("is-dragging");
     if (activePointer && host.hasPointerCapture(activePointer.id)) host.releasePointerCapture(activePointer.id);
     if (ready) resume();
   };
-  const pointerDown = (event: PointerEvent) => {
-    if (event.button !== 0 || !event.isPrimary || pointer) return;
+  const beginSingle = (event: PointerEvent) => {
     pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, tiltX: tilt.x, tiltY: tilt.y };
-    host.setPointerCapture(event.pointerId);
+    try {
+      host.setPointerCapture(event.pointerId);
+    } catch {
+      // A released or synthetic pointer cannot be captured; drag state still applies.
+    }
     host.classList.add("is-dragging");
     host.focus({ preventScroll: true });
   };
+  const pointerDown = (event: PointerEvent) => {
+    if (event.pointerType === "mouse") {
+      if (event.button !== 0 || !event.isPrimary || pointer) return;
+      beginSingle(event);
+      return;
+    }
+    if (pointer && !event.isPrimary) {
+      // A second finger joins: rotate with the pair so one finger keeps scrolling the page.
+      if (paired || touches.size !== 1 || touches.has(event.pointerId)) return;
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const center = pairCentroid();
+      pair.x = center.x;
+      pair.y = center.y;
+      pair.tiltX = tilt.x;
+      pair.tiltY = tilt.y;
+      paired = true;
+      if (ready) resume();
+      return;
+    }
+    if (!event.isPrimary || pointer) return;
+    touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    beginSingle(event);
+  };
   const pointerMove = (event: PointerEvent) => {
+    const touch = touches.get(event.pointerId);
+    if (touch && event.pointerType !== "mouse") {
+      touch.x = event.clientX;
+      touch.y = event.clientY;
+    }
+    if (paired) {
+      if (!touch || touches.size < 2) return;
+      const center = pairCentroid();
+      const { width, height } = host.getBoundingClientRect();
+      target.x = clamp(pair.tiltX + (center.y - pair.y) / height * 0.6);
+      target.y = clamp(pair.tiltY + (center.x - pair.x) / width * 0.6);
+      if (ready) resume();
+      return;
+    }
     if (!pointer || pointer.id !== event.pointerId) return;
     const { width, height } = host.getBoundingClientRect();
     target.x = clamp(pointer.tiltX + (event.clientY - pointer.y) / height * 0.6);
@@ -109,6 +159,28 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
     if (ready) resume();
   };
   const pointerEnd = (event: PointerEvent) => {
+    touches.delete(event.pointerId);
+    if (paired) {
+      if (touches.size >= 2 || !pointer) return;
+      paired = false;
+      if (touches.has(pointer.id)) {
+        // One finger lifted: re-anchor the remaining finger so it continues without jumping.
+        const next = touches.get(pointer.id)!;
+        pointer.x = next.x;
+        pointer.y = next.y;
+        pointer.tiltX = tilt.x;
+        pointer.tiltY = tilt.y;
+      } else if (touches.size === 1) {
+        // Primary lifted first: promote the remaining finger.
+        const [[id, at]] = [...touches.entries()];
+        pointer = { id, x: at.x, y: at.y, tiltX: tilt.x, tiltY: tilt.y };
+      } else {
+        pointer = null;
+        host.classList.remove("is-dragging");
+      }
+      if (ready) resume();
+      return;
+    }
     if (pointer?.id === event.pointerId) reset();
   };
   const keyDown = (event: KeyboardEvent) => {
