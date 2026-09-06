@@ -11,7 +11,7 @@ registry stores it and distributes the same name to every participant. Automatic
 reconnect keeps the nickname; explicit leave/join generates another. The lobby
 does not persist presence. Names can collide or be impersonated; participant
 IDs, not names, distinguish people. Up to 12 people can join with microphone permission,
-mute, deafen, and leave. Devices use OS defaults. Other visitors may record audio.
+mute, deafen, choose devices, and leave. Other visitors may record audio.
 
 Browser → same-origin `/api/media/*` → single Rust Axum service → Cloudflare
 control API. Browser ↔ Cloudflare Realtime SFU/TURN for WebRTC audio. No media
@@ -105,8 +105,8 @@ the feature flag; web `/api/health` is independent of provider availability.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
   browser echo cancellation and gain control are off for headphones. DTX is not guaranteed.
 - Speaking indicators and diagnostics use browser stats where available, not
-  billing records. Input/output follow system defaults; there are no device or
-  processing selectors. Joining requires microphone permission.
+  billing records. Microphone/output selectors are available in-channel. Output
+  selection requires `setSinkId`; otherwise use OS settings. Joining requires microphone permission.
 
 ## Received-audio microphone test
 
@@ -214,8 +214,9 @@ The shared adapter lives at `/audio/noise-v1/`; previously published immutable
 DeepFilter assets are unchanged. Normal web deployment includes all new assets;
 no operator configuration commands are required.
 
-All selectors have been removed, including microphone and output devices; use OS
-settings for those. New visitors use DPDFNet with natural headphone input.
+Only noise-suppression and Speakers/Headphones mode selectors have been removed.
+Microphone/output selectors remain; output selection also applies to live and
+recorded mic-test playback. New visitors use DPDFNet with natural headphone input.
 The active status appears only after the worklet
 acknowledges initialization. If loading/initialization fails, capture falls back
 to browser suppression when supported, otherwise unsuppressed audio, with an
@@ -246,8 +247,10 @@ proven universal Krisp replacement.
 Quality guidance checked against [upstream DPDFNet](https://github.com/ceva-ip/DPDFNet):
 keep the current 960-point unnormalized FFT, 480-sample hop, Vorbis window and
 metadata-initialized recurrent normalization. Do not normalize again outside the
-model or add an extra gate/AGC. A larger DPDFNet-8 HR exists but costs nearly 3×
-the MACs without an established listening advantage for Caper; it is not enabled.
+model or add an extra gate/AGC. Upstream lists 7.17G MACs for DPDFNet-8 HR versus
+2.42G for DPDFNet-2 HR. This is a published operation count, not a measured Caper
+CPU/latency result. DPDFNet-8 has not been run or listening-tested in Caper; its
+quality advantage is unknown, not disproven. It is not enabled.
 Keep input gain below hardware clipping, use a consistent close mic position,
 and disable duplicate OS/vendor voice filters when comparing quality. Check the
 active/fallback status before attributing a sound to DPDFNet.
@@ -259,7 +262,7 @@ Default-preset / snippet validation, September 6, 2026:
   nonzero RMS; silent until play, playback advances, live mode uses the received
   stream, old blob URLs revoked, cancellation leaves borrowed tracks live.
 - Entry, recording, ready and live layouts inspected, including 390px mobile;
-  zero selectors. Signaling/channel state mocked and generated tone used. No new
+  device selectors restored after correcting the removal scope. Signaling/channel state mocked and generated tone used. No new
   live Cloudflare, physical speech-quality or native desktop acceptance claimed.
 - Recording keeps a muted media element attached to the received stream while
   capturing PCM: Chromium otherwise left its WebRTC jitter buffer undrained and

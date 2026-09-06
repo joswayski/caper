@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { recordReceivedAudio, type ReceivedRecording } from "../media/recording";
 
-export default function MicPlayback({ stream }: { stream: MediaStream }) {
+export default function MicPlayback({ stream, output }: { stream: MediaStream; output: string }) {
   const liveRef = useRef<HTMLAudioElement>(null);
   const playbackRef = useRef<HTMLAudioElement>(null);
   const urlRef = useRef<string | undefined>(undefined);
@@ -11,6 +11,16 @@ export default function MicPlayback({ stream }: { stream: MediaStream }) {
   const [recording, setRecording] = useState(false);
   const [url, setUrl] = useState<string>();
   const [error, setError] = useState<string>();
+  const [deviceError, setDeviceError] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    const element = live ? liveRef.current : playbackRef.current;
+    if (element?.setSinkId) void element.setSinkId(output)
+      .then(() => { if (current) setDeviceError(false); })
+      .catch(() => { if (current) setDeviceError(true); });
+    return () => { current = false; };
+  }, [output, live, url]);
 
   const teardown = () => {
     generation.current++;
@@ -75,6 +85,7 @@ export default function MicPlayback({ stream }: { stream: MediaStream }) {
     </div>
     {recording && <p className="noise-status" role="status">Recording received audio… 5 seconds.</p>}
     {error && <p className="noise-status" role="alert">{error}</p>}
+    {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}
     {live && <><p className="noise-status" role="status">Listening live to received audio.</p><audio ref={liveRef} controls style={{ maxWidth: "100%", width: "100%" }} /></>}
     {!live && url && <><p className="noise-status" role="status">Ready. Press play to listen to your five-second snippet.</p><audio ref={playbackRef} aria-label="Recorded microphone test" controls src={url} style={{ maxWidth: "100%", width: "100%" }} /></>}
   </div>;

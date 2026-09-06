@@ -6,9 +6,10 @@ import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
 
-function AudioOutput({ stream, muted, name }: { stream: MediaStream; muted: boolean; name: string }) {
+function AudioOutput({ stream, muted, name, output }: { stream: MediaStream; muted: boolean; name: string; output: string }) {
   const ref = useRef<HTMLAudioElement>(null);
   const [blocked, setBlocked] = useState(false);
+  const [deviceError, setDeviceError] = useState(false);
   useEffect(() => {
     const element = ref.current;
     if (element) {
@@ -17,19 +18,27 @@ function AudioOutput({ stream, muted, name }: { stream: MediaStream; muted: bool
     }
     return () => { if (element) element.srcObject = null; };
   }, [stream]);
+  useEffect(() => {
+    if (ref.current?.setSinkId) void ref.current.setSinkId(output).then(() => setDeviceError(false)).catch(() => setDeviceError(true));
+  }, [output]);
   return <><audio ref={ref} autoPlay muted={muted} />
-    {blocked && <button onClick={() => void ref.current?.play().then(() => setBlocked(false)).catch(() => setBlocked(true))}>Play {name} audio</button>}</>;
+    {blocked && <button onClick={() => void ref.current?.play().then(() => setBlocked(false)).catch(() => setBlocked(true))}>Play {name} audio</button>}
+    {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
 
 export default function Call() {
   const [state, setState] = useState(initialState);
   const [available, setAvailable] = useState<boolean>();
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [deviceId, setDeviceId] = useState("");
+  const [output, setOutput] = useState("");
   const [actionError, setActionError] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed";
+  const controlsDisabled = !connected || actionPending || state.monitorConnecting;
 
   useEffect(() => {
     let current = true;
@@ -42,10 +51,18 @@ export default function Call() {
     return () => { current = false; window.removeEventListener("pagehide", unload); clientRef.current?.leaveImmediately(); };
   }, []);
 
-  const act = async (operation: () => Promise<unknown>) => {
+  useEffect(() => {
+    if (!connected) return;
+    const update = () => void navigator.mediaDevices.enumerateDevices().then(setDevices).catch(() => setActionError("Device list unavailable. Use system settings."));
+    update();
+    navigator.mediaDevices.addEventListener("devicechange", update);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", update);
+  }, [connected]);
+
+  const act = async (operation: () => Promise<unknown>, success?: () => void) => {
     setActionError(undefined);
     setActionPending(true);
-    try { await operation(); } catch (error) {
+    try { await operation(); success?.(); } catch (error) {
       setActionError(error instanceof Error ? error.message : "That action did not work.");
     } finally { setActionPending(false); }
   };
@@ -78,20 +95,22 @@ export default function Call() {
             <h1>Drop in. Talk. Head out.</h1>
             <p>One shared voice channel. No invites, accounts, or ringing anyone.</p>
             <p>You’ll get a random nickname when you join. Everyone sees the same name.</p>
-            <p>Use headphones. Caper uses your system’s default microphone and output, with echo cancellation off.</p>
-            {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join(); }}>
+            <p>Use headphones; echo cancellation is off. You can choose your microphone and output after joining.</p>
+            {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
               <button className="primary-button" disabled={available !== true} type="submit">{available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. Mic test can keep a five-second snippet temporarily in this browser; Caper does not store recordings on its servers. Other visitors may record. Not end-to-end encrypted.</div>
           </div> : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Mic test · received audio" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Your microphone travels through the call service and back to you. Other people in the channel cannot hear the test. Use headphones to avoid feedback." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
-          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          {state.monitorStream && <MicPlayback stream={state.monitorStream} />}
+          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} output={output} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
+          {state.monitorStream && <MicPlayback stream={state.monitorStream} output={output} />}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          {!idle && <p className="noise-status">Use headphones · natural input, without browser echo cancellation or automatic volume adjustment. Devices follow your system defaults.</p>}
+          {!idle && <p className="noise-status">Use headphones · natural input, without browser echo cancellation or automatic volume adjustment.</p>}
           {state.noiseSuppressionStatus && <p className="noise-status" role="status">{state.noiseSuppressionStatus}</p>}
           {state.diagnostics && <details className="call-diagnostics"><summary>Connection diagnostics</summary><p>{state.diagnostics}</p><small>Local estimates, not billing totals. Counters reset on reconnect.</small></details>}
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
+          <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
+          {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-control"><span>Audio output</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Audio output"}</option>)}</select></label> : <p className="noise-status">Choose your audio output in system settings; this browser cannot switch outputs.</p>}
           <div className="control-buttons">
             <button disabled={!connected || state.monitoring} type="button" className={state.muted ? "active" : ""} aria-pressed={state.muted} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? "Unmute" : "Mute"}</button>
             <button disabled={!connected || state.monitoring} type="button" className={state.deafened ? "active" : ""} aria-pressed={state.deafened} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? "Listen" : "Deafen"}</button>
