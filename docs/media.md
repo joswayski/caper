@@ -81,7 +81,7 @@ workflow and path allowlist instead of riding these two.
 
 Outbound HTTPS to `rtc.live.cloudflare.com` is required for the Rust API. AWS
 needs no public media UDP ports. Clients use SFU plus TURN UDP and TCP/TLS
-fallback; browser-blocked TURN port 53 is filtered. `/api/media/status` reports
+fallback; alternate port 53 is filtered from both STUN and TURN URLs. `/api/media/status` reports
 the feature flag; web `/api/health` is independent of provider availability.
 
 ## Limits and lifecycle
@@ -106,6 +106,59 @@ the feature flag; web `/api/health` is independent of provider availability.
 - Speaking indicators and diagnostics use browser stats where available, not
   billing records. Output selection requires `HTMLMediaElement.setSinkId`;
   otherwise use OS settings. Joining requires microphone permission.
+
+## Join startup and preparation
+
+The enabled `/live` screen starts downloading the default DeepFilterNet model
+and compiling its WASM before Join. The marketing page does not download these
+assets. A call-client-owned cache retains compiled code and model bytes across
+joins, reconnects, device changes, and DeepFilter preset switches on that screen.
+RNNoise has a separate lazily populated entry; DPDFNet initialization is unchanged.
+The browser HTTP cache can reuse asset bytes after a full navigation, but the
+application does not persist compiled modules across page loads.
+
+Preparation never requests microphone permission, captures audio, creates an
+AudioContext, or publishes a track. It shifts up to about 24 MB of asset loading
+and compilation earlier, trading memory/bandwidth on the voice screen for less
+work after Join. WASM compilation can run concurrently with the model download.
+Join still opens the microphone and initializes a dedicated worklet/model
+instance, then waits for its ready acknowledgement before publication. A cold
+join waits for unfinished preparation; it does not temporarily publish raw audio.
+Existing honest browser-suppression fallback on actual processor failure remains.
+Downloads have a 30-second timeout; failures are evicted so a later join can retry.
+Cancelling a join stops capture immediately without cancelling shared preparation.
+
+September 6, 2026 investigation (not a post-deployment performance guarantee):
+
+- Jose's reported diagnostics: 5,956 ms total; 406 ms microphone + session;
+  5,222 ms ICE + signaling; 328 ms transport; 7 ms connected RTT.
+- Real Chromium using the existing `localDescription()` helper and Cloudflare
+  public STUN: 5,085–5,098 ms with ports 3478 + 53, versus 251–280 ms with only
+  port 3478 (three samples each). With port 53, gathering hit the five-second cap.
+  These tests did not provision TURN credentials or connect to a live SFU session.
+- The API now excludes port 53 from both STUN and TURN, including string/list
+  forms, while preserving the supported UDP/TCP/TLS relay routes and credentials.
+  The bounded gathering wait remains: do not remove it without TURN-only testing.
+- Chromium UI check with generated microphone, real DeepFilterNet and local
+  WebRTC signaling fixture: before Join, zero captures and one WASM compilation;
+  after join and rejoin, two captures but still only two asset requests and one
+  compilation. Both publications used a processed track. Muted rejoin kept the
+  sender detached; leave ended the raw track. This is not live SFU, physical
+  speech-quality, remote first-decoded-audio, or native desktop validation.
+
+Three-second roster/track polling is still present and can delay an existing
+listener's subscription. Planned follow-up, not implemented here: bearer-authenticated
+SSE notifications from the same Rust registry, with initial/recovery snapshots,
+coalesced invalidation, reconnect backoff, and periodic heartbeat/snapshot fallback.
+HTTP retains mutations; SSE only tells clients to reconcile immediately. Do not
+put capability tokens in event-stream URLs. The development proxy must stream
+without its normal 25-second request deadline; production ingress must not buffer
+events. Validate publish/close/leave/expiry notifications, private monitor isolation,
+auth revocation, stream disconnects, and simultaneous joins before replacing polling.
+
+Acceptance remains actual received audio, not a faster connected label. Collect
+cold/warm join percentiles and first decoded remote audio on two devices/networks,
+including forced TURN/TLS, before claiming the startup goal is met.
 
 ## Received-audio microphone test
 

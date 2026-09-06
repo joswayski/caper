@@ -1,3 +1,5 @@
+import { NoiseAssets } from "./noise-assets.ts";
+
 export const NOISE_SUPPRESSION_OPTIONS = [
   { value: "deepfilter", label: "DeepFilterNet · balanced", description: "Recommended starting point. Less aggressive than the original setting; a little background sound may remain." },
   { value: "deepfilter-gentle", label: "DeepFilterNet · gentle", description: "Keeps more of your original voice, along with more room noise. Try this if quiet words or laughter get cut off." },
@@ -15,12 +17,6 @@ export interface Microphone {
   stop(): void;
 }
 
-async function loadAsset(url: string, signal: AbortSignal) {
-  const response = await fetch(url, { signal });
-  if (!response.ok) throw new Error("Noise suppression download failed.");
-  return response.arrayBuffer();
-}
-
 /** Owns both hardware capture and the processed track; never sends PCM over IPC. */
 export async function captureMicrophone(
   deviceId: string | undefined,
@@ -28,6 +24,7 @@ export async function captureMicrophone(
   signal: AbortSignal,
   changed: () => void,
   audioSetup: AudioSetup = "speakers",
+  assets = new NoiseAssets(),
 ): Promise<Microphone> {
   signal.throwIfAborted();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: {
@@ -107,12 +104,7 @@ export async function captureMicrophone(
     if (context.sampleRate !== 48_000 || !context.audioWorklet) throw new Error("Unsupported audio context");
     // Resume immediately, before downloads, to retain the Join button's user activation.
     void context.resume().catch(() => undefined);
-    const loadingSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
-    const [bytes, model] = engine === "dpdfnet2" ? [] : await Promise.all([
-      loadAsset(engine === "rnnoise" ? "/audio/rnnoise-v1/rnnoise.wasm" : "/audio/deepfilter-v1/df_bg.wasm", loadingSignal),
-      engine === "deepfilter" ? loadAsset("/audio/deepfilter-v1/DeepFilterNet3.bin", loadingSignal) : undefined,
-    ]);
-    const module = bytes ? await WebAssembly.compile(bytes) : undefined;
+    const { module, model } = engine === "dpdfnet2" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
     await context.audioWorklet.addModule(engine === "dpdfnet2" ? "/audio/dpdfnet2-v1/worklet.js" : "/audio/noise-v1/worklet.js");
     signal.throwIfAborted();
     node = new AudioWorkletNode(context, engine === "dpdfnet2" ? "caper-dpdfnet2" : "caper-noise", {

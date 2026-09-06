@@ -600,16 +600,32 @@ async fn expiry_removes_and_cleans() {
 fn provider_errors_and_unsupported_turn_are_rejected() {
     assert!(validate_provider_envelope(&json!({"errorCode":"bad"})).is_err());
     assert!(validate_provider_envelope(&json!({"tracks":[{"errorCode":123}]})).is_err());
-    let mut urls = json!([
-        "turn:relay.example:53?transport=tcp",
-        "turn:relay.example:3478",
-        "stun:relay.example:53"
+    let supported = json!([
+        "stun:stun.cloudflare.com:3478",
+        "turn:turn.cloudflare.com:3478?transport=udp",
+        "turn:turn.cloudflare.com:3478?transport=tcp",
+        "turn:turn.cloudflare.com:80?transport=tcp",
+        "turns:turn.cloudflare.com:5349?transport=tcp",
+        "turns:turn.cloudflare.com:443?transport=tcp"
     ]);
-    filter_unsupported_turn_urls(&mut urls);
-    assert_eq!(
-        urls,
-        json!(["turn:relay.example:3478", "stun:relay.example:53"])
-    );
+    let mut urls = supported.clone();
+    for url in [
+        "stun:stun.cloudflare.com:53",
+        "stuns:relay.example:53",
+        "turn:turn.cloudflare.com:53?transport=udp",
+        "turn:relay.example:53?transport=tcp",
+        "turns:relay.example:53?transport=tcp",
+    ] {
+        urls.as_array_mut().unwrap().push(json!(url));
+        let mut single = json!(url);
+        filter_unsupported_ice_urls(&mut single);
+        assert_eq!(single, json!([]));
+    }
+    filter_unsupported_ice_urls(&mut urls);
+    assert_eq!(urls, supported);
+    let mut single = json!("stun:stun.cloudflare.com:3478");
+    filter_unsupported_ice_urls(&mut single);
+    assert_eq!(single, json!("stun:stun.cloudflare.com:3478"));
     assert_eq!(TURN_TTL, MAX_CALL_DURATION.as_secs());
     assert_eq!(MAX_TRACKS, 1);
     assert_eq!(MAX_SUBSCRIPTIONS, 11);
@@ -767,6 +783,38 @@ async fn cloudflare_session_creation_sends_no_body() {
     let result = Cloudflare::new().create_session(&config).await;
     server.abort();
     assert_eq!(result.unwrap(), "test-session");
+}
+
+#[tokio::test]
+async fn cloudflare_turn_filters_blocked_stun_without_losing_relay_credentials() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = Config::test(true);
+    config.provider_base = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new().route(
+        "/turn/keys/turn/credentials/generate-ice-servers",
+        post(|| async {
+            (StatusCode::CREATED, Json(json!({"iceServers":[
+                {"urls":["stun:stun.cloudflare.com:3478","stun:stun.cloudflare.com:53"]},
+                {"urls":"stun:stun.cloudflare.com:53"},
+                {"urls":["turn:turn.cloudflare.com:53?transport=udp","turns:turn.cloudflare.com:443?transport=tcp"],"username":"temporary-user","credential":"temporary-credential"}
+            ]})))
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let result = Cloudflare::new().turn(&config).await;
+    server.abort();
+    let servers = result.unwrap();
+    assert_eq!(servers.len(), 2);
+    assert_eq!(servers[0].urls, json!(["stun:stun.cloudflare.com:3478"]));
+    assert_eq!(
+        servers[1].urls,
+        json!(["turns:turn.cloudflare.com:443?transport=tcp"])
+    );
+    assert_eq!(servers[1].username.as_deref(), Some("temporary-user"));
+    assert_eq!(
+        servers[1].credential.as_deref(),
+        Some("temporary-credential")
+    );
 }
 
 #[test]
