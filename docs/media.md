@@ -57,19 +57,16 @@ Image CI builds `apps/api/Dockerfile` and publishes
 `production/caper:api-<full-40-character-sha>` after merge to main via `api-image.yml`,
 using the existing `production-caper-ecr-publisher` IAM role.
 The Docker target and service name are `api` and `caper-api`, respectively.
-This is the application control API, not a self-hosted audio relay. It does not deploy itself.
-The corrective infrastructure PR stages `api-deployment.yaml`, `api-service.yaml`,
-`api-secret.yaml`, and `api-ingress-patch.yaml` under `clusters/production/apps/caper/`.
+This is the application control API, not a self-hosted audio relay. Publishing
+does not roll it out. The image notification includes a green **Deploy Caper API**
+button for that exact SHA and an **Open GitHub** fallback to
+`deploy-caper-api.yml` in `joswayski/infrastructure`.
 Deployment/Service/ExternalSecret are named `caper-api`; the container is `api`.
 AWS Secrets Manager `production/apps/caper-api` supplies Kubernetes Secret
 `caper-api-cloudflare`. Keep one API replica with `Recreate`, port 3001,
 `/api/media` routing, and existing `MEDIA_*` / `CF_*` configuration names.
-Activation requires a verified image digest and credentials; follow the Caper API
-activation runbook in infrastructure `docs/operations.md`.
 The active web Deployment/Service remains `caper` with two replicas: renaming it
 to `caper-web` requires a separate reviewed rollout and SSM deployment-target update.
-The companion IAM trust fix from `master` to `main` requires a reviewed OpenTofu
-apply before image publishing. No production apply was performed here.
 
 Outbound HTTPS to `rtc.live.cloudflare.com` is required for the Rust API. AWS
 needs no public media UDP ports. Clients use SFU plus TURN UDP and TCP/TLS
