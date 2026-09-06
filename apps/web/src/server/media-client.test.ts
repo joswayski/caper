@@ -98,6 +98,72 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   assert.ok(calls.includes("leave"));
 });
 
+test("mute and deafen update local media and view state without waiting for roster sync", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.join("Guest");
+  let finishState!: () => void;
+  install("fetch", async (url: string) => {
+    if (url.endsWith("/state")) return new Promise<Response>((resolve) => { finishState = () => resolve(new Response(null, { status: 204 })); });
+    return new Response(null, { status: 204 });
+  });
+
+  const muting = client.setMuted(true);
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.muted, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  finishState();
+  await muting;
+
+  const deafening = client.setDeafened(true);
+  assert.equal(states.at(-1)?.deafened, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  finishState();
+  await deafening;
+});
+
+test("unmute during a pending microphone switch attaches the new track", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.join("Guest");
+  await client.setMuted(true);
+
+  const nextTrack = new Track();
+  const replacements: Array<{ next: Track | null; finish: () => void }> = [];
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  Peer.latest.senders[0].replaceTrack = (next) => new Promise<void>((resolve) => {
+    replacements.push({
+      next,
+      finish: () => {
+        Peer.latest.senders[0].track = next;
+        resolve();
+      },
+    });
+  });
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([nextTrack]) } });
+
+  const switching = client.changeMicrophone("mic-2");
+  for (let i = 0; i < 20 && replacements.length === 0; i++) await flush();
+  assert.equal(replacements.length, 1);
+  assert.equal(replacements[0]?.next, null);
+
+  const unmuting = client.setMuted(false);
+  assert.equal(states.at(-1)?.muted, false);
+  for (let i = 0; i < 10; i++) await flush();
+  assert.equal(replacements.length, 1);
+
+  replacements[0]?.finish();
+  await switching;
+  await flush();
+  assert.equal(track.readyState, "ended");
+  assert.equal(replacements.length, 2);
+  assert.equal(replacements[1]?.next, nextTrack);
+
+  replacements[1]?.finish();
+  await unmuting;
+  assert.equal(Peer.latest.senders[0].track, nextTrack);
+  assert.equal(nextTrack.enabled, true);
+  assert.equal(nextTrack.readyState, "live");
+});
+
 test("provider join failure releases microphone acquired before publication", async (t) => {
   const { client, track, states, install } = setup(t);
   install("fetch", async () => Response.json({ error: "unavailable" }, { status: 503 }));
