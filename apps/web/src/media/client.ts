@@ -565,14 +565,16 @@ export class PublicCallClient {
 
   async leave() {
     if (this.phase === "idle" || this.phase === "leaving") return;
-    this.phase = "leaving";
     ++this.generation;
     this.resetMonitoring();
+    // The view renders this as the join screen while cleanup prevents another
+    // session from starting until the prior capability has been released.
+    this.phase = "leaving";
+    this.participants = [];
+    this.selfId = undefined;
     this.emit();
     await this.teardown(false);
     this.phase = "idle";
-    this.participants = [];
-    this.selfId = undefined;
     this.emit();
   }
 

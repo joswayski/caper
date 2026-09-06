@@ -16,6 +16,13 @@
 .participant-name { min-width: 0; display: grid; flex: 1; }
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
 .participant-name small { color: var(--text-muted); font-size: .72rem; }
+.speaking-waveform { height: 22px; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; color: var(--caper); }
+.speaking-waveform i { width: 2px; height: 6px; border-radius: 999px; background: currentColor; animation: voice-wave 680ms ease-in-out infinite alternate; }
+.speaking-waveform i:nth-child(2) { height: 13px; animation-delay: -310ms; }
+.speaking-waveform i:nth-child(3) { height: 19px; animation-delay: -130ms; }
+.speaking-waveform i:nth-child(4) { height: 12px; animation-delay: -470ms; }
+.speaking-waveform i:nth-child(5) { height: 7px; animation-delay: -220ms; }
+@keyframes voice-wave { to { transform: scaleY(.38); } }
 .stage { min-width: 0; padding: 28px; background: #101214; }
 .stage-title > p { color: var(--text-muted); font-size: .8rem; }
 .join-card { width: min(460px, 100%); margin: clamp(32px, 7vh, 72px) auto; }
@@ -44,6 +51,9 @@
 .control-buttons button:hover, .control-buttons button.active { border-color: #805143; background: #39231e; }
 .control-buttons button:disabled, .device-control select:disabled { opacity: .5; cursor: wait; }
 .control-buttons .leave-button { border-color: var(--terracotta); color: #fff; background: var(--terracotta); }
+@media (prefers-reduced-motion: reduce) {
+  .speaking-waveform i { animation: none; }
+}
 @media (max-width: 760px) {
   .call-header, .call-room { width: calc(100% - 24px); }
   .call-header { height: 64px; }

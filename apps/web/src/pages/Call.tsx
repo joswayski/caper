@@ -37,7 +37,7 @@ export default function Call() {
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
-  const idle = state.phase === "idle" || state.phase === "failed";
+  const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const controlsDisabled = !connected || actionPending || state.monitorConnecting;
 
   useEffect(() => {
@@ -83,6 +83,9 @@ export default function Call() {
               return <li className="participant" key={participant.id}>
                 <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                 <span className="participant-name"><strong>{participant.name}{participant.id === state.selfId ? " (you)" : ""}</strong><small>{participant.deafened ? "Deafened" : participant.muted ? "Muted" : speaking ? "Speaking" : "In voice"}</small></span>
+                {speaking && <span className="speaking-waveform" aria-label={`${participant.name} is speaking`}>
+                  <i /><i /><i /><i /><i />
+                </span>}
               </li>;
             })}
           </ul>
@@ -97,7 +100,7 @@ export default function Call() {
             <p>You’ll get a random nickname when you join. Everyone sees the same name.</p>
             <p>Use headphones; echo cancellation is off. You can choose your microphone and output after joining.</p>
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
-              <button className="primary-button" disabled={available !== true} type="submit">{available === undefined ? "Checking voice…" : "Join voice"}</button>
+              <button className="primary-button" disabled={available !== true || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. Mic test can keep a five-second snippet temporarily in this browser; Caper does not store recordings on its servers. Other visitors may record. Not end-to-end encrypted.</div>
           </div> : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Mic test · received audio" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Your microphone travels through the call service and back to you. Other people in the channel cannot hear the test. Use headphones to avoid feedback." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
