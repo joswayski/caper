@@ -20,7 +20,9 @@ context around them. It is in its earliest stage today.
 `/call` provides one public **General voice channel** using Cloudflare Realtime
 SFU/TURN. Join or leave whenever; there are no outgoing calls or invitations.
 No account or installation is required; joining requests microphone permission.
-Names are optional and not verified identities. Mute, deafen, microphone and
+Faker generates an adjective/animal nickname on join, shared through the roster
+and retained on automatic reconnect. Names are not verified or guaranteed unique.
+Mute, deafen, microphone and
 speaker selection are available. No text chat, database, camera or screen sharing.
 Nothing is recorded by Caper. This is transport-encrypted, not E2EE; other
 participants can record what they hear.

@@ -25,10 +25,8 @@
 .join-card h1 { margin: 0; font-size: clamp(2rem, 3.5vw, 3rem); line-height: 1.08; letter-spacing: -.05em; }
 .join-card > p { color: var(--text-muted); line-height: 1.6; }
 .join-card form { display: grid; gap: 10px; margin-top: 30px; }
-.join-card label, .device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
-.join-card label span { font-weight: 400; }
-.join-card input, .device-control select { width: 100%; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
-.join-card input { height: 48px; padding: 0 16px; font: inherit; }
+.device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
+.device-control select { width: 100%; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
 .call-page :focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 .primary-button { height: 48px; margin-top: 5px; border: 0; border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .primary-button:disabled { opacity: .5; cursor: wait; }

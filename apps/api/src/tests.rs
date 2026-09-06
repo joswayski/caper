@@ -160,6 +160,18 @@ async fn ownership_subscription_and_negotiation() {
     )
     .await;
     assert_eq!(snap["participants"].as_array().unwrap().len(), 2);
+    let (_, other_snapshot) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/snapshot",
+        Some(tb),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        snap, other_snapshot,
+        "both visitors see the same names and IDs"
+    );
     let (_, published) = call(
         app(s.clone()),
         "POST",

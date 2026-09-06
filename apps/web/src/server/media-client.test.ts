@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { fakerEN as faker } from "@faker-js/faker";
 import { PublicCallClient, waitFor } from "../media/client.ts";
 import type { CallViewState } from "../media/types.ts";
 
@@ -38,6 +39,7 @@ class Peer extends EventTarget {
 function setup(t: TestContext) {
   const track = new Track();
   const calls: string[] = [];
+  const joinedNames: string[] = [];
   const states: CallViewState[] = [];
   const restore: Array<() => void> = [];
   const install = (key: string, value: unknown) => {
@@ -49,18 +51,36 @@ function setup(t: TestContext) {
   install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([track]) } });
   install("MediaStream", Stream);
   install("RTCPeerConnection", Peer);
-  install("fetch", async (url: string) => {
+  install("fetch", async (url: string, options: RequestInit) => {
     const op = url.split("/").at(-1)!;
     calls.push(op);
-    if (op === "join") return Response.json({ token: "capability", id: "self", iceServers: [] });
+    if (op === "join") {
+      joinedNames.push(JSON.parse(options.body as string).name);
+      return Response.json({ token: "capability", id: "self", iceServers: [] });
+    }
     if (op === "publish") return Response.json({ sessionDescription: { type: "answer", sdp: "v=0" } });
     if (op === "snapshot") return Response.json({ participants: [] });
     return new Response(null, { status: 204 });
   });
   const client = new PublicCallClient((state) => states.push(state));
   t.after(() => { client.leaveImmediately(); restore.reverse().forEach((fn) => fn()); });
-  return { client, track, calls, states, install };
+  return { client, track, calls, joinedNames, states, install };
 }
+
+test("random nicknames are submitted once per explicit join", async (t) => {
+  const { client, joinedNames } = setup(t);
+  let generated = 0;
+  t.mock.method(faker.word, "adjective", () => ++generated === 1 ? "mellow" : "brave");
+  t.mock.method(faker.animal, "type", () => "otter");
+  await client.join();
+  await client.setMuted(true);
+  await client.join(); // Already connected: do not regenerate.
+  assert.deepEqual(joinedNames, ["mellow otter"]);
+  assert.equal(generated, 1);
+  await client.leave();
+  await client.join();
+  assert.deepEqual(joinedNames, ["mellow otter", "brave otter"]);
+});
 
 test("join, 204 state responses, real sender mute, deafen and immediate device cleanup", async (t) => {
   const { client, track, calls, states } = setup(t);

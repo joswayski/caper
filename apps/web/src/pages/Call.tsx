@@ -28,7 +28,6 @@ function AudioOutput({ media, deafened, name, output }: { media: RemoteMedia; de
 export default function Call() {
   const [state, setState] = useState(initialState);
   const [available, setAvailable] = useState<boolean>();
-  const [name, setName] = useState("");
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -97,9 +96,8 @@ export default function Call() {
             <span className="voice-symbol" aria-hidden="true">◖))</span>
             <h1>Drop in. Talk. Head out.</h1>
             <p>One shared voice channel. No invites, accounts, or ringing anyone.</p>
-            {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join(name, deviceId || undefined); }}>
-              <label htmlFor="display-name">Your name <span>(optional)</span></label>
-              <input id="display-name" value={name} maxLength={40} onChange={(event) => setName(event.target.value)} placeholder="Guest" autoComplete="nickname" />
+            <p>You’ll get a random nickname when you join. Everyone sees the same name.</p>
+            {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
               <button className="primary-button" disabled={available !== true} type="submit">{available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. No text chat or recording by Caper; other visitors may record. Not end-to-end encrypted.</div>

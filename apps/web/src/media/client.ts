@@ -1,3 +1,4 @@
+import { fakerEN as faker } from "@faker-js/faker";
 import type {
   CallSnapshot,
   CallViewState,
@@ -114,9 +115,10 @@ export class PublicCallClient {
     return (text ? JSON.parse(text) : undefined) as T;
   }
 
-  async join(name: string, microphoneDeviceId?: string) {
+  async join(name = "", microphoneDeviceId?: string) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
-    this.name = name.trim().slice(0, 40) || `Guest ${Math.floor(100 + Math.random() * 900)}`;
+    // Generate once per explicit join, not per roster render or automatic rejoin.
+    this.name = name.trim().slice(0, 40) || `${faker.word.adjective()} ${faker.animal.type()}`.slice(0, 40);
     this.microphoneDeviceId = microphoneDeviceId || undefined;
     this.phase = "joining";
     this.emit();

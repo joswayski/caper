@@ -4,8 +4,12 @@
 
 One public **General voice channel**, always available to join while the service
 is enabled. This is not a dial/invite/call flow. No accounts, text chat, database,
-camera, screen sharing, channel creation, or recording by Caper. Names are optional
-and can be impersonated. Up to 12 people can join with microphone permission,
+camera, screen sharing, channel creation, or recording by Caper. Faker generates
+an adjective/animal nickname once per explicit join in the browser; the Rust
+registry stores it and distributes the same name to every participant. Automatic
+reconnect keeps the nickname; explicit leave/join generates another. No database
+or browser storage is needed. Names can collide or be impersonated; participant
+IDs, not names, distinguish people. Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 
 Browser → same-origin `/api/media/*` → single Rust Axum service → Cloudflare
