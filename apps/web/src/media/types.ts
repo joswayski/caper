@@ -1,3 +1,5 @@
+import type { NoiseSuppression } from "./microphone";
+
 export type CallPhase = "idle" | "joining" | "connected" | "reconnecting" | "leaving" | "failed";
 export type MediaKind = "microphone";
 
@@ -49,6 +51,6 @@ export interface CallViewState {
   speaking?: string[];
   error?: string;
   diagnostics?: string;
-  noiseSuppression?: "deepfilter" | "off";
+  noiseSuppression?: NoiseSuppression;
   noiseSuppressionStatus?: string;
 }

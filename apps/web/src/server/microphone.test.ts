@@ -38,7 +38,8 @@ class WorkletNode {
   onprocessorerror: (() => void) | null = null;
   connections: unknown[] = [];
   disconnectCalls = 0;
-  constructor(..._args: unknown[]) { WorkletNode.latest = this; }
+  readonly options: any;
+  constructor(...args: unknown[]) { WorkletNode.latest = this; this.options = args[2]; }
   connect(target: unknown) { this.connections.push(target); return target; }
   disconnect() { this.disconnectCalls++; this.connections = []; }
 }
@@ -101,6 +102,37 @@ function setup(t: TestContext, options: {
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+test("every enhanced mode selects the intended engine and preset", async (t) => {
+  for (const [mode, attenuation] of [["deepfilter", 20], ["deepfilter-gentle", 12], ["deepfilter-strong", 40], ["rnnoise", 20]] as const) {
+    await t.test(mode, async (t) => {
+      const { fetches } = setup(t);
+      const capturing = captureMicrophone(undefined, mode, new AbortController().signal, () => undefined);
+      await tick();
+      const { engine, attenuationLimit, model } = WorkletNode.latest!.options.processorOptions;
+      assert.equal(engine, mode === "rnnoise" ? "rnnoise" : "deepfilter");
+      assert.equal(attenuationLimit, attenuation);
+      if (mode === "rnnoise") {
+        assert.equal(model, undefined);
+        assert.deepEqual(fetches.map(({ url }) => url), ["/audio/rnnoise-v1/rnnoise.wasm"]);
+      }
+      WorkletNode.latest!.port.emit("ready");
+      const microphone = await capturing;
+      assert.match(microphone.status, /active/);
+      microphone.stop();
+    });
+  }
+});
+
+test("browser baseline skips WASM and honestly reports unsupported suppression", async (t) => {
+  const { raw, fetches } = setup(t);
+  const microphone = await captureMicrophone(undefined, "browser", new AbortController().signal, () => undefined);
+  assert.equal(microphone.track, raw);
+  assert.equal(fetches.length, 0);
+  assert.equal(Context.latest, undefined);
+  assert.match(microphone.status, /unavailable/);
+  microphone.stop();
+});
+
 test("DeepFilter waits for a valid ready acknowledgement", async (t) => {
   const { raw, fetches } = setup(t);
   const controller = new AbortController();
@@ -133,7 +165,7 @@ test("a ready acknowledgement connects raw input to DeepFilter and returns only 
   assert.equal(microphone.track, context.processed);
   assert.deepEqual(context.source.connections, [WorkletNode.latest]);
   assert.deepEqual(WorkletNode.latest!.connections, [context.destination]);
-  assert.equal(microphone.status, "DeepFilterNet active · on-device");
+  assert.equal(microphone.status, "DeepFilterNet active · balanced · on-device");
   microphone.stop();
 });
 

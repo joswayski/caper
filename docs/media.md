@@ -98,8 +98,8 @@ the feature flag; web `/api/health` is independent of provider availability.
 
 ## On-device noise suppression
 
-DeepFilterNet3 is the default microphone mode. Capture → browser echo cancellation
-and gain control → 48 kHz mono AudioWorklet/WASM DeepFilterNet → MediaStream output
+DeepFilterNet3 balanced is the default microphone mode. Capture → browser echo cancellation
+and gain control → 48 kHz mono AudioWorklet/WASM DeepFilterNet or RNNoise → MediaStream output
 track → existing WebRTC Opus sender → Cloudflare SFU. The Rust control API, SFU
 configuration, and TURN path do not change. No LiveKit dependency, denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
@@ -110,8 +110,38 @@ versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
 
+### Comparing free filters
+
+| Mode | Purpose |
+| --- | --- |
+| DeepFilterNet balanced (default) | 20 dB attenuation limit, retaining about 10% original spectral amplitude. |
+| DeepFilterNet gentle | 12 dB limit, retaining about 25% original amplitude; more voice **and noise** return. |
+| DeepFilterNet strong | Original 40 dB limit, retaining about 1% original amplitude. |
+| RNNoise | Independent lightweight 48 kHz neural model, 3.6 MB same-origin download. No VAD gating. |
+| Browser suppression | Built-in baseline; implementation/support varies by browser/device. |
+| Off | No requested noise suppression; AEC and automatic gain control still enabled. |
+
+DeepFilter presets blend the enhanced and time-aligned original spectrum; they do
+not retrain the model or change its speech decisions. Post-filter beta is explicitly
+zero. Lower limits can soften artifacts but cannot guarantee recovery of clean speech
+from loud AC. Neither model fixes clipping already introduced by microphone hardware,
+gain control, or echo cancellation. Compare Off too before attributing all artifacts
+to denoising. Use headphones for local monitoring: speaker feedback is not a fair
+suppression test. Keep microphone position and gain fixed when comparing modes.
+
+As of September 2026, [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet)
+and [RNNoise](https://github.com/xiph/rnnoise) are practical free full-band options;
+neither is universally best or demonstrated here to outperform Krisp. Newer research
+such as [GTCRN](https://github.com/Xiaobin-Rong/gtcrn) is worth tracking, but its
+16 kHz reference path and extra streaming integration are not an automatic upgrade
+for natural full-band voice. These are specialist neural audio models, not LLMs.
+RNNoise provenance/reproduction is in `apps/web/public/audio/rnnoise-v1/README.md`.
+The shared adapter lives at `/audio/noise-v1/`; previously published immutable
+DeepFilter assets are unchanged. Normal web deployment includes all new assets;
+no operator configuration commands are required.
+
 The selector is available before joining and during a call. Off disables noise
-suppression, not echo cancellation. DeepFilter mode requests browser suppression
+suppression, not echo cancellation. DeepFilter and RNNoise request browser suppression
 off to avoid double denoising. The active status appears only after the worklet
 acknowledges initialization. If loading/initialization fails, capture falls back
 to browser suppression when supported, otherwise unsuppressed audio, with an
@@ -127,7 +157,25 @@ DeepFilter is not an echo canceller, voice gate, or guaranteed primary-speaker
 isolation. It can affect laughter, music, whispers, and natural voice timbre.
 The adapter adds 10 ms buffering **in addition to** model and system latency.
 
-Validation, September 6, 2026:
+Alternative-engine validation, September 6, 2026:
+
+- `npm test --workspace @caper/web`: 38 passing tests after rebasing onto the
+  merged microphone-monitor PR #24, including real pinned
+  RNNoise inference (>6 dB stationary-noise attenuation), engine/preset selection,
+  and shared worklet frame ordering. `npm run check` passed.
+- Microphone-monitor integration and web typecheck passed; no monitor API changes
+  were needed. The monitor feature is provided by PR #24, not duplicated here.
+- Generated-microphone Chromium check: balanced, gentle, strong and RNNoise
+  reached active status; browser baseline honestly reported unavailable in this
+  environment; Off worked. Switching during monitoring retained live/enabled local
+  playback and ended the old track. Desktop and 390px layouts inspected. Room
+  signaling/PeerConnection were mocked, not the audio processing.
+- Built Nitro RNNoise WASM response: HTTP 200, `application/wasm`, immutable cache
+  header and matching vendored SHA-256. Docker daemon unavailable.
+- No physical AC/voice comparison, new live-SFU test, cross-platform desktop
+  capture test, or sustained performance benchmark was performed for these modes.
+
+Original DeepFilter integration validation, September 6, 2026:
 
 - Actual pinned WASM/model inference in Node: finite, nonzero output and >6 dB
   attenuation on deterministic stationary noise (not a speech-quality benchmark).

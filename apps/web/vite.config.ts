@@ -15,6 +15,12 @@ export default defineConfig({
         "/audio/deepfilter-v1/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
+        "/audio/noise-v1/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
+        "/audio/rnnoise-v1/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
         "/assets/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
