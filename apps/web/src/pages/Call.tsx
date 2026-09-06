@@ -46,7 +46,11 @@ export default function Call() {
     let current = true;
     fetch("/api/media/status", { signal: AbortSignal.timeout(10_000) })
       .then(async (response) => response.ok ? response.json() as Promise<{ enabled: boolean }> : { enabled: false })
-      .then((result) => { if (current) setAvailable(result.enabled); })
+      .then((result) => {
+        if (!current) return;
+        setAvailable(result.enabled);
+        if (result.enabled) clientRef.current?.prepareMicrophone();
+      })
       .catch(() => { if (current) setAvailable(false); });
     const unload = () => clientRef.current?.leaveImmediately();
     window.addEventListener("pagehide", unload);

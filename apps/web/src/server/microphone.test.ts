@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { captureMicrophone } from "../media/microphone.ts";
+import { NoiseAssets } from "../media/noise-assets.ts";
 
 class Track {
   enabled = true;
@@ -173,6 +174,29 @@ test("browser baseline skips WASM and honestly reports unsupported suppression",
   assert.equal(fetches.length, 0);
   assert.equal(Context.latest, undefined);
   assert.match(microphone.status, /unavailable/);
+  microphone.stop();
+});
+
+test("preloading never captures audio; warm capture still waits for the selected processor", async (t) => {
+  let captures = 0;
+  const { fetches } = setup(t, { getUserMedia: async () => { captures++; return new Stream([new Track()]); } });
+  const assets = new NoiseAssets();
+  await assets.load("deepfilter");
+  assert.equal(captures, 0);
+  assert.equal(Context.latest, undefined);
+  assert.equal(WorkletNode.latest, undefined);
+  let settled = false;
+  const capturing = captureMicrophone(undefined, "deepfilter-gentle", new AbortController().signal, () => undefined, "speakers", assets)
+    .then((microphone) => { settled = true; return microphone; });
+  await tick();
+  assert.equal(captures, 1);
+  assert.equal(fetches.length, 2, "joining must reuse the preloaded assets");
+  assert.equal(settled, false, "never return temporary raw audio while the filter is loading");
+  assert.equal(WorkletNode.latest!.options.processorOptions.attenuationLimit, 12);
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  assert.equal(microphone.track, Context.latest!.processed);
+  assert.match(microphone.status, /DeepFilterNet active · gentle/);
   microphone.stop();
 });
 

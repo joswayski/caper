@@ -1,6 +1,7 @@
 import { fakerEN as faker } from "@faker-js/faker";
 import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression } from "./microphone.ts";
 import { ReceivedMonitor } from "./monitor.ts";
+import { NoiseAssets } from "./noise-assets.ts";
 import { localDescription, preferOpus, waitFor } from "./rtc.ts";
 export { waitFor } from "./rtc.ts";
 import type {
@@ -61,9 +62,17 @@ export class PublicCallClient {
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
   private joinTiming = "";
+  private readonly noiseAssets = new NoiseAssets();
 
   private readonly changed: (state: CallViewState) => void;
   constructor(changed: (state: CallViewState) => void) { this.changed = changed; }
+
+  prepareMicrophone() {
+    // Download/compile only: no permission prompt, hardware capture or AudioContext.
+    if (this.noiseSuppression === "rnnoise") void this.noiseAssets.load("rnnoise").catch(() => undefined);
+    else if (this.noiseSuppression.startsWith("deepfilter")) void this.noiseAssets.load("deepfilter").catch(() => undefined);
+    // DPDFNet owns its ONNX runtime in a worker; it does not use these WASM assets.
+  }
 
   private emit(error?: string) {
     this.changed({
@@ -345,7 +354,7 @@ export class PublicCallClient {
   }
 
   private async openMicrophone(deviceId?: string) {
-    const microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => this.emit(), this.audioSetup);
+    const microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => this.emit(), this.audioSetup, this.noiseAssets);
     this.captures.set(microphone.track, microphone);
     return microphone.track;
   }

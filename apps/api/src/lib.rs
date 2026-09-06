@@ -196,7 +196,7 @@ impl Provider for Cloudflare {
             .map(|v| v.ice_servers)
             .map_err(|_| ProviderError::Rejected)?;
         for server in &mut servers {
-            filter_unsupported_turn_urls(&mut server.urls);
+            filter_unsupported_ice_urls(&mut server.urls);
         }
         servers.retain(|server| match &server.urls {
             Value::String(url) => !url.is_empty(),
@@ -319,13 +319,13 @@ fn validate_provider_envelope(value: &Value) -> Result<(), ProviderError> {
     }
     Ok(())
 }
-fn filter_unsupported_turn_urls(urls: &mut Value) {
+fn filter_unsupported_ice_urls(urls: &mut Value) {
+    // Browser-blocked alternate ports can hold up non-trickle ICE gathering for
+    // five seconds even when the primary STUN/TURN routes are already usable.
     let supported = |url: &str| {
-        !(url.starts_with("turn:") || url.starts_with("turns:"))
-            || !url
-                .split('?')
-                .next()
-                .is_some_and(|authority| authority.ends_with(":53"))
+        !url.split('?')
+            .next()
+            .is_some_and(|authority| authority.ends_with(":53"))
     };
     match urls {
         Value::String(url) if !supported(url) => *urls = Value::Array(vec![]),

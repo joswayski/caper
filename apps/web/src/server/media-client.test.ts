@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fakerEN as faker } from "@faker-js/faker";
 import { PublicCallClient, waitFor } from "../media/client.ts";
+import { NoiseAssets } from "../media/noise-assets.ts";
 import type { CallViewState } from "../media/types.ts";
 
 class Track extends EventTarget {
@@ -76,6 +77,24 @@ function setup(t: TestContext) {
   t.after(() => { client.leaveImmediately(); restore.reverse().forEach((fn) => fn()); });
   return { client, track, calls, joinedNames, stateUpdates, states, install };
 }
+
+test("preparation skips unused assets for DPDFNet and only warms the selected WASM engine", async (t) => {
+  const engines: string[] = [];
+  t.mock.method(NoiseAssets.prototype, "load", async (engine: string) => {
+    engines.push(engine);
+    return { module: {} as WebAssembly.Module };
+  });
+  const client = new PublicCallClient(() => undefined);
+  client.prepareMicrophone(); // The current DPDFNet-2 default has no shared WASM entry.
+  await client.setNoiseSuppression("dpdfnet8");
+  client.prepareMicrophone();
+  assert.deepEqual(engines, []);
+  await client.setNoiseSuppression("deepfilter-gentle");
+  client.prepareMicrophone();
+  await client.setNoiseSuppression("rnnoise");
+  client.prepareMicrophone();
+  assert.deepEqual(engines, ["deepfilter", "rnnoise"]);
+});
 
 test("mode/device replacement preserves mute, releases old capture, and can select system default", async (t) => {
   const { client, states, install } = setup(t);
