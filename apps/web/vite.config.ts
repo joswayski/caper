@@ -94,8 +94,13 @@ async function latestChanges(): Promise<LatestChange[]> {
 }
 
 export default defineConfig(async () => {
-  const changes = await latestChanges();
-  console.log(`Fetched ${changes.length} latest changes from the GitHub API.`);
+  let changes: LatestChange[] = [];
+  try {
+    changes = await latestChanges();
+    console.log(`Fetched ${changes.length} latest changes from the GitHub API.`);
+  } catch (error) {
+    console.warn("Unable to load latest Caper changes:", error);
+  }
 
   return {
   define: {
