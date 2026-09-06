@@ -67,6 +67,43 @@ function setup(t: TestContext) {
   return { client, track, calls, joinedNames, states, install };
 }
 
+test("mode/device replacement preserves mute, releases old capture, and can select system default", async (t) => {
+  const { client, states, install } = setup(t);
+  const tracks: Track[] = [];
+  const constraints: MediaTrackConstraints[] = [];
+  install("navigator", { mediaDevices: { getUserMedia: async (value: MediaStreamConstraints) => {
+    constraints.push(value.audio as MediaTrackConstraints);
+    const track = new Track(); tracks.push(track);
+    return new Stream([track]);
+  } } });
+  await client.join("Guest", "usb");
+  await client.setMuted(true);
+  await client.setNoiseSuppression("off");
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(tracks[0].readyState, "ended");
+  assert.equal(tracks[1].enabled, false);
+  assert.equal(states.at(-1)?.noiseSuppressionStatus, "Noise suppression off");
+  await client.changeMicrophone("");
+  assert.equal(constraints[2].deviceId, undefined);
+  assert.equal(tracks[1].readyState, "ended");
+  await client.setMuted(false);
+  assert.equal(Peer.latest.senders[0].track, tracks[2]);
+  await client.leave();
+  assert.ok(tracks.every((track) => track.readyState === "ended"));
+});
+
+test("failed mode replacement keeps the old microphone and rolls back selection", async (t) => {
+  const { client, track, install, states } = setup(t);
+  await client.join();
+  const replacement = new Track();
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([replacement]) } });
+  Peer.latest.senders[0].replaceTrack = async () => { throw new Error("replace failed"); };
+  await assert.rejects(client.setNoiseSuppression("off"), /replace failed/);
+  assert.equal(track.readyState, "live");
+  assert.equal(replacement.readyState, "ended");
+  assert.equal(states.at(-1)?.noiseSuppression, "deepfilter");
+});
+
 test("random nicknames are submitted once per explicit join", async (t) => {
   const { client, joinedNames } = setup(t);
   let generated = 0;

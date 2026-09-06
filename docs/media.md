@@ -93,10 +93,69 @@ the feature flag; web `/api/health` is independent of provider availability.
   choice. Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
-  echo cancellation/noise suppression requested. DTX is not guaranteed.
+  browser echo cancellation and gain control are requested. DTX is not guaranteed.
 - Speaking indicators and diagnostics use browser stats where available, not
   billing records. Output selection requires `HTMLMediaElement.setSinkId`;
   otherwise use OS settings. Joining requires microphone permission.
+
+## On-device noise suppression
+
+DeepFilterNet3 is the default microphone mode. Capture → browser echo cancellation
+and gain control → 48 kHz mono AudioWorklet/WASM DeepFilterNet → MediaStream output
+track → existing WebRTC Opus sender → Cloudflare SFU. The Rust control API, SFU
+configuration, and TURN path do not change. No LiveKit dependency, denoising API,
+license server, per-minute inference fee, or raw-audio upload is introduced.
+
+The model and WASM (~24 MB combined) are vendored and loaded from Caper's own
+`/audio/deepfilter-v1/` path only when enhanced capture is requested. They are
+versioned/cacheable and included by the existing web build/Docker COPY stages.
+License notices, source provenance, and checksums are in the adjacent README.
+No new environment variables or infrastructure configuration are required.
+
+The selector is available before joining and during a call. Off disables noise
+suppression, not echo cancellation. DeepFilter mode requests browser suppression
+off to avoid double denoising. The active status appears only after the worklet
+acknowledges initialization. If loading/initialization fails, capture falls back
+to browser suppression when supported, otherwise unsuppressed audio, with an
+explicit status. A runtime processor error bypasses the worklet without replacing
+or unmuting the outgoing track. This is failure recovery, not an assurance that
+all CPU overload or audio artifacts can be detected automatically.
+
+Device/mode changes replace the outgoing track and release the previous hardware
+track and AudioContext. Reconnect retains the selected mode. Cancel/leave aborts
+downloads and closes both capture and processed tracks; a late permission grant
+is released. Mode is in memory for the page lifetime, not persisted to storage.
+DeepFilter is not an echo canceller, voice gate, or guaranteed primary-speaker
+isolation. It can affect laughter, music, whispers, and natural voice timbre.
+The adapter adds 10 ms buffering **in addition to** model and system latency.
+
+Validation, September 6, 2026:
+
+- Actual pinned WASM/model inference in Node: finite, nonzero output and >6 dB
+  attenuation on deterministic stationary noise (not a speech-quality benchmark).
+- Mocked lifecycle tests: readiness, fallback, runtime bypass preserving mute,
+  abort/late permission, disposal, and same-origin-only asset loading.
+- Chromium with a generated microphone: real AudioContext/AudioWorklet/model;
+  processed (not raw) track publication, enhanced/off switching while muted,
+  and old capture/context disposal checked. Room signaling was mocked for UI
+  verification; this is **not** a new live Cloudflare SFU acceptance result.
+- Separate real Chromium WebRTC loopback: 9,646 bytes received, 183,360 decoded
+  samples, nonzero audio energy, zero concealed samples in a four-second check;
+  replacing the enhanced track with Off succeeded. This tests local Opus transport,
+  not physical speech quality, sustained performance, or the Cloudflare network.
+- Built Nitro app: real worklet reached active status; model HTTP download hash
+  matched the vendored bytes with no Content-Encoding transformation. Docker
+  daemon was unavailable; web build stages and built-server asset serving were
+  validated directly, not via a container run.
+- Desktop/mobile browser layouts inspected; physical microphones, headset and
+  speakerphone echo, speech preservation, sustained CPU/gaming load, Firefox,
+  Safari, and all Tauri webviews/native capture remain unvalidated.
+
+Desktop direction: the existing Tauri shell has no working voice implementation.
+This browser adapter is not a native desktop audio pipeline. The same model can
+be used with upstream Rust `libDF`; native capture, echo cancellation, and feeding
+processed PCM into the chosen native WebRTC sender still need implementation.
+Do not transport continuous PCM through ordinary Tauri command/event IPC.
 
 ## Cost and acceptance
 

@@ -12,6 +12,9 @@ export default defineConfig({
     react(),
     nitro({
       routeRules: {
+        "/audio/deepfilter-v1/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
         "/assets/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
