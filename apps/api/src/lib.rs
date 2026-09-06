@@ -3,9 +3,10 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
+use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -17,7 +18,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use uuid::Uuid;
 
@@ -353,6 +354,7 @@ pub struct AppState {
     provider: Arc<dyn Provider>,
     registry: Arc<Mutex<Registry>>,
     database: Option<PgPool>,
+    events: watch::Sender<()>,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -364,11 +366,13 @@ impl AppState {
         provider: Arc<dyn Provider>,
         database: Option<PgPool>,
     ) -> Self {
+        let (events, _) = watch::channel(());
         Self {
             config,
             provider,
             registry: Arc::new(Mutex::new(Registry::default())),
             database,
+            events,
         }
     }
 
@@ -403,6 +407,7 @@ struct Participant {
     operation: bool,
     operations: VecDeque<Instant>,
     monitor: Option<Monitor>,
+    events: Option<watch::Sender<()>>,
 }
 #[derive(Clone, Copy)]
 struct Monitor {
@@ -460,6 +465,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/media/status", get(status))
         .route("/api/media/join", post(join))
         .route("/api/media/snapshot", post(snapshot))
+        .route("/api/media/events", get(events))
         .route("/api/media/publish", post(publish))
         .route("/api/media/subscribe", post(subscribe))
         .route("/api/media/negotiate", post(negotiate))
@@ -534,6 +540,95 @@ fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
         }
     }
     Ok(id)
+}
+
+struct EventStreamState {
+    state: AppState,
+    token: String,
+    updates: watch::Receiver<()>,
+    cancellation: watch::Receiver<()>,
+    first: bool,
+}
+
+async fn events(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    ensure_enabled(&s)?;
+    let token = bearer(&headers)?.to_owned();
+    let (updates, cancellation) = {
+        // Authentication, subscription and connection replacement are atomic with roster
+        // mutations, preventing a change between authentication and registration being lost.
+        let mut r = s.registry.lock().await;
+        let id = authenticate(&r, &token)?;
+        let participant = r.participants.get_mut(&id).unwrap();
+        if participant.monitor.is_some() {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "monitor sessions cannot receive public events",
+            ));
+        }
+        let (tx, rx) = watch::channel(());
+        participant.events = Some(tx);
+        (s.events.subscribe(), rx)
+    };
+    let stream = stream::unfold(
+        EventStreamState {
+            state: s,
+            token,
+            updates,
+            cancellation,
+            first: true,
+        },
+        |mut stream| async move {
+            let event = if stream.first {
+                stream.first = false;
+                "ready"
+            } else {
+                tokio::select! {
+                    changed = stream.updates.changed() => {
+                        if changed.is_err() { return None; }
+                        "changed"
+                    }
+                    cancelled = stream.cancellation.changed() => {
+                        let _ = cancelled;
+                        return None;
+                    }
+                    () = tokio::time::sleep(Duration::from_secs(10)) => "heartbeat",
+                }
+            };
+            // Heartbeats do not renew the lease. They do bound expiry/revocation detection
+            // even when the cleanup sweep is not running.
+            let valid = {
+                let r = stream.state.registry.lock().await;
+                authenticate(&r, &stream.token).is_ok()
+            };
+            valid.then(|| {
+                (
+                    Ok::<_, std::convert::Infallible>(Event::default().event(event).data("{}")),
+                    stream,
+                )
+            })
+        },
+    );
+    Ok(Sse::new(stream).into_response_with_header())
+}
+
+trait SseResponseExt<S> {
+    fn into_response_with_header(self) -> Response;
+}
+impl<S> SseResponseExt<S> for Sse<S>
+where
+    S: Stream<Item = Result<Event, std::convert::Infallible>> + Send + 'static,
+{
+    fn into_response_with_header(self) -> Response {
+        let mut response = self.into_response();
+        response.headers_mut().insert(
+            "x-accel-buffering",
+            axum::http::HeaderValue::from_static("no"),
+        );
+        response
+    }
 }
 
 fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {
@@ -673,6 +768,7 @@ async fn join(
         operation: false,
         operations: VecDeque::new(),
         monitor,
+        events: None,
     };
     let mut r = s.registry.lock().await;
     r.joining -= 1;
@@ -695,6 +791,9 @@ async fn join(
     }
     r.tokens.insert(token.clone(), id);
     r.participants.insert(id, p);
+    if monitor.is_none() {
+        s.events.send_replace(());
+    }
     Ok(Json(json!({"token":token,"id":id,"iceServers":ice})))
 }
 
@@ -858,6 +957,9 @@ async fn publish(
             provider_name,
         },
     );
+    if p.monitor.is_none() {
+        s.events.send_replace(());
+    }
     let mut result = result;
     if let Some(object) = result.as_object_mut() {
         object.insert("trackId".into(), json!(track_id));
@@ -1097,6 +1199,9 @@ async fn close(
     p.operation = false;
     p.tracks.remove(&i.mid);
     p.subscriptions.remove(&i.mid);
+    if source.is_some() && p.monitor.is_none() {
+        s.events.send_replace(());
+    }
     if let Some(source) = source {
         drop(r);
         close_dependents(&s, source).await;
@@ -1119,8 +1224,12 @@ async fn update_state(
     let mut r = s.registry.lock().await;
     let id = authenticate(&r, token)?;
     let p = r.participants.get_mut(&id).unwrap();
+    let changed = p.muted != i.muted || p.deafened != i.deafened;
     p.muted = i.muted;
     p.deafened = i.deafened;
+    if changed && p.monitor.is_none() {
+        s.events.send_replace(());
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 async fn leave(
@@ -1164,6 +1273,7 @@ async fn close_dependents(s: &AppState, source: Uuid) {
 async fn remove_participant(s: &AppState, id: Uuid) {
     let removed = {
         let mut r = s.registry.lock().await;
+        let public_removed = r.participants.get(&id).is_some_and(|p| p.monitor.is_none());
         let mut ids = vec![id];
         if r.participants.get(&id).is_some_and(|p| p.monitor.is_none()) {
             ids.extend(r.participants.values().filter_map(|p| {
@@ -1172,13 +1282,18 @@ async fn remove_participant(s: &AppState, id: Uuid) {
                     .map(|_| p.id)
             }));
         }
-        ids.into_iter()
+        let removed = ids
+            .into_iter()
             .filter_map(|id| {
                 let p = r.participants.remove(&id)?;
                 r.tokens.remove(&p.token);
                 Some(p)
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        if public_removed && !removed.is_empty() {
+            s.events.send_replace(());
+        }
+        removed
     };
     for p in removed {
         revoke_participant_turn(s, &p).await;
@@ -1282,16 +1397,23 @@ pub fn spawn_cleanup(s: AppState) {
                         .filter(|monitor| expired_parents.contains(&monitor.parent))
                         .map(|_| p.id)
                 }));
+                let public_removed = expired
+                    .iter()
+                    .any(|id| r.participants.get(id).is_some_and(|p| p.monitor.is_none()));
                 // Remove under the same lock used for the expiry decision, so a concurrent
                 // heartbeat cannot refresh a participant between checking and removal.
-                expired
+                let removed = expired
                     .into_iter()
                     .filter_map(|id| {
                         let p = r.participants.remove(&id)?;
                         r.tokens.remove(&p.token);
                         Some(p)
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                if public_removed && !removed.is_empty() {
+                    s.events.send_replace(());
+                }
+                removed
             };
             for p in expired {
                 revoke_participant_turn(&s, &p).await;
