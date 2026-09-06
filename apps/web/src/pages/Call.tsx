@@ -72,12 +72,11 @@ export default function Call() {
     <main className="call-page">
       <header className="call-header">
         <a className="wordmark" href="/">caper</a>
-        <span className="lobby-label"><i /> Public voice</span>
       </header>
       <section className="call-room">
         <aside className="people-panel">
           <div className="panel-heading"><div><p className="eyebrow">Caper</p><h1>Voice channel</h1></div></div>
-          <div className="voice-channel"><span aria-hidden="true">◖))</span> General <small>PUBLIC</small></div>
+          <div className="voice-channel"><span aria-hidden="true">◖))</span> General {connected && <small aria-label={`${state.participants.length} in voice`}>{state.participants.length}</small>}</div>
           <ul aria-label="People in voice">
             {state.participants.map((participant) => {
               const speaking = state.speaking?.includes(participant.id) ?? false;
@@ -90,18 +89,15 @@ export default function Call() {
           {idle && <p className="roster-note">Join to see who’s here.</p>}
         </aside>
         <div className="stage">
-          <div className="stage-title"><div><p className="eyebrow">One channel, open to everyone</p><h2>General</h2></div><p role="status">{idle ? "Public voice channel" : connected ? `${state.participants.length} in voice` : state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p></div>
+          <div className="stage-title"><div><p className="eyebrow">One channel, open to everyone</p><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>
           {idle ? <div className="join-card">
             <span className="voice-symbol" aria-hidden="true">◖))</span>
             <h1>Drop in. Talk. Head out.</h1>
             <p>One shared voice channel. No invites, accounts, or ringing anyone.</p>
             <p>You’ll get a random nickname when you join. Everyone sees the same name.</p>
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
-              <label className="device-control"><span>Noise suppression</span><select value={state.noiseSuppression ?? "deepfilter"} onChange={(event) => void clientRef.current?.setNoiseSuppression(event.target.value as NoiseSuppression)}>{NOISE_SUPPRESSION_OPTIONS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></label>
               <button className="primary-button" disabled={available !== true} type="submit">{available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
-            <p>{NOISE_SUPPRESSION_OPTIONS.find(({ value }) => value === (state.noiseSuppression ?? "deepfilter"))?.description}</p>
-            <p>Filters run on your device. First use downloads 24 MB for DeepFilterNet or 3.6 MB for RNNoise.</p>
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. No text chat or recording by Caper; other visitors may record. Not end-to-end encrypted.</div>
           </div> : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Mic test active." : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Only you can hear your microphone. The channel is muted and deafened until you stop the test." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} output={output} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
