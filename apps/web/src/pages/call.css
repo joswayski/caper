@@ -1,7 +1,5 @@
 .call-page { min-height: 100vh; background: var(--blackout); }
 .call-header { width: min(1400px, calc(100% - 56px)); height: 80px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
-.lobby-label { display: flex; align-items: center; gap: 9px; color: var(--text-muted); font-size: .88rem; font-weight: 700; }
-.lobby-label i { width: 8px; height: 8px; border-radius: 50%; background: var(--caper); }
 .eyebrow { margin: 0 0 8px; color: var(--text-muted); font-size: .7rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: 1fr auto / 260px 1fr; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .people-panel { padding: 28px 16px; border-right: 1px solid var(--border); }
@@ -37,7 +35,6 @@
 .stage-placeholder h3 { margin: 20px 0 0; color: var(--text); font-size: 1.8rem; letter-spacing: -.04em; }
 .stage-placeholder p { max-width: 360px; margin: 12px 0; line-height: 1.6; }
 .noise-status { color: var(--text-muted); font-size: .8rem; }
-.join-card .device-control { width: 100%; }
 .call-diagnostics { color: var(--text-muted); margin-top: 20px; font-size: .8rem; }
 .call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
 .device-control { width: min(240px, 25vw); display: grid; gap: 5px; }

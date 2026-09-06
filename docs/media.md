@@ -140,7 +140,8 @@ The shared adapter lives at `/audio/noise-v1/`; previously published immutable
 DeepFilter assets are unchanged. Normal web deployment includes all new assets;
 no operator configuration commands are required.
 
-The selector is available before joining and during a call. Off disables noise
+The selector is available inside the channel, not before joining. New visitors
+start with Balanced without having to choose a filter. Off disables noise
 suppression, not echo cancellation. DeepFilter and RNNoise request browser suppression
 off to avoid double denoising. The active status appears only after the worklet
 acknowledges initialization. If loading/initialization fails, capture falls back
