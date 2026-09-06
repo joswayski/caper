@@ -1,7 +1,7 @@
 .call-page { min-height: 100vh; background: var(--blackout); }
 .call-header { width: min(1400px, calc(100% - 56px)); height: 80px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
 .eyebrow { margin: 0 0 8px; color: var(--text-muted); font-size: .7rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: 1fr auto / 260px 1fr; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: 1fr auto / 340px 1fr; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .people-panel { padding: 28px 16px; border-right: 1px solid var(--border); }
 .panel-heading, .stage-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .panel-heading h1, .stage-title h2 { margin: 0; letter-spacing: -.04em; font-size: 1.3rem; }
@@ -16,6 +16,7 @@
 .participant-name { min-width: 0; display: grid; flex: 1; }
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
 .participant-name small { color: var(--text-muted); font-size: .72rem; }
+.voice-waveform { width: 84px; height: 28px; display: block; flex: 0 0 auto; }
 .stage { min-width: 0; padding: 28px; background: #101214; }
 .stage-title > p { color: var(--text-muted); font-size: .8rem; }
 .join-card { width: min(460px, 100%); margin: clamp(32px, 7vh, 72px) auto; }
@@ -23,8 +24,10 @@
 .join-card h1 { margin: 0; font-size: clamp(2rem, 3.5vw, 3rem); line-height: 1.08; letter-spacing: -.05em; }
 .join-card > p { color: var(--text-muted); line-height: 1.6; }
 .join-card form { display: grid; gap: 10px; margin-top: 30px; }
+.device-control { width: min(240px, 25vw); display: grid; gap: 5px; }
 .device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
-.device-control select { width: 100%; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
+.device-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
+.device-control select { width: 100%; height: 34px; padding: 0 8px; font-size: .8rem; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
 .call-page :focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 .primary-button { height: 48px; margin-top: 5px; border: 0; border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .primary-button:disabled { opacity: .5; cursor: wait; }
@@ -35,15 +38,32 @@
 .stage-placeholder h3 { margin: 20px 0 0; color: var(--text); font-size: 1.8rem; letter-spacing: -.04em; }
 .stage-placeholder p { max-width: 360px; margin: 12px 0; line-height: 1.6; }
 .noise-status { color: var(--text-muted); font-size: .8rem; }
+.mic-test-card { width: min(720px, 100%); margin: clamp(36px, 8vh, 84px) auto; padding: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.mic-test-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.mic-test-heading h3 { margin: 0; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: -.04em; }
+.mic-test-copy { max-width: 580px; margin: 12px 0 0; color: var(--text-muted); line-height: 1.55; }
+.recording-clock { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin: 0; font-variant-numeric: tabular-nums; font-weight: 800; }
+.recording-clock i { width: 10px; height: 10px; border-radius: 50%; background: var(--terracotta-bright); box-shadow: 0 0 0 5px rgb(219 104 73 / .14); animation: recording-pulse 1.2s ease-in-out infinite; }
+@keyframes recording-pulse { 50% { opacity: .45; transform: scale(.8); } }
+.mic-meter { height: 64px; display: flex; align-items: center; gap: 5px; margin: 24px 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
+.mic-meter i { height: 8px; min-width: 3px; flex: 1; border-radius: 999px; background: var(--border); transition: height 80ms linear, background-color 80ms linear; }
+.mic-meter i.lit { height: 32px; background: var(--caper); }
+.stop-recording-button { width: 100%; min-height: 48px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
+.mic-playback { display: grid; gap: 12px; }
+.mic-playback p { margin: 0; }
+.mic-playback audio { width: 100%; }
+.mic-playback button { justify-self: start; min-height: 40px; padding: 0 16px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-weight: 750; cursor: pointer; }
+.mic-test-privacy { display: block; margin-top: 20px; color: var(--text-muted); line-height: 1.5; }
 .call-diagnostics { color: var(--text-muted); margin-top: 20px; font-size: .8rem; }
 .call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
-.device-control { width: min(240px, 25vw); display: grid; gap: 5px; }
-.device-control select { height: 34px; padding: 0 8px; font-size: .8rem; }
 .control-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .control-buttons button, .stage-placeholder button { min-height: 40px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font-size: .82rem; font-weight: 750; cursor: pointer; }
 .control-buttons button:hover, .control-buttons button.active { border-color: #805143; background: #39231e; }
 .control-buttons button:disabled, .device-control select:disabled { opacity: .5; cursor: wait; }
 .control-buttons .leave-button { border-color: var(--terracotta); color: #fff; background: var(--terracotta); }
+@media (prefers-reduced-motion: reduce) {
+  .recording-clock i { animation: none; }
+}
 @media (max-width: 760px) {
   .call-header, .call-room { width: calc(100% - 24px); }
   .call-header { height: 64px; }
@@ -55,6 +75,9 @@
   .stage-title { align-items: flex-start; }
   .stage-title > p { max-width: 100px; margin-top: 0; text-align: right; }
   .stage-placeholder { min-height: 300px; }
+  .mic-test-card { margin: 24px auto; padding: 20px; }
+  .mic-test-heading { align-items: flex-start; }
+  .mic-meter { gap: 3px; }
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
   .device-control { width: 100%; }
   .control-buttons { display: grid; grid-template-columns: repeat(2, 1fr); }

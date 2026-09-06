@@ -105,21 +105,21 @@ function setup(t: TestContext, options: {
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-test("DPDFNet readiness comes from its worker; runtime failure stops the published track", async (t) => {
+for (const variant of ["2", "8"] as const) test(`DPDFNet-${variant} readiness comes from its worker; runtime failure stops the published track`, async (t) => {
   const { install } = setup(t);
   let worker!: { onmessage?: (event: { data: unknown }) => void; terminated: boolean };
   install("Worker", class {
     onmessage?: (event: { data: unknown }) => void;
     terminated = false;
-    constructor() { worker = this; }
+    constructor(url: string) { assert.equal(url, `/audio/dpdfnet${variant}-v1/worker.js`); worker = this; }
     terminate() { this.terminated = true; }
   });
-  const capturing = captureMicrophone(undefined, "dpdfnet2", new AbortController().signal, () => undefined);
+  const capturing = captureMicrophone(undefined, variant === "2" ? "dpdfnet2" : "dpdfnet8", new AbortController().signal, () => undefined);
   await tick();
   worker.onmessage!({ data: { type: "ready" } });
   const microphone = await capturing;
   assert.equal(microphone.track, Context.latest!.processed);
-  assert.match(microphone.status, /^DPDFNet-2 HR active/);
+  assert.ok(microphone.status.startsWith(`DPDFNet-${variant} HR active`));
   microphone.track.enabled = false;
   WorkletNode.latest!.port.emit("failed");
   await tick();

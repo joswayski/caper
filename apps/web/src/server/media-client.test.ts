@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fakerEN as faker } from "@faker-js/faker";
 import { PublicCallClient, waitFor } from "../media/client.ts";
+import { NoiseAssets } from "../media/noise-assets.ts";
 import type { CallViewState } from "../media/types.ts";
 
 class Track extends EventTarget {
@@ -94,6 +95,27 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   return { client, track, calls, joinedNames, stateUpdates, states, install, events };
 }
 
+test("preparation skips unused assets for DPDFNet and only warms the selected WASM engine", async (t) => {
+  const engines: string[] = [];
+  t.mock.method(NoiseAssets.prototype, "load", async (engine: string) => {
+    engines.push(engine);
+    return { module: {} as WebAssembly.Module };
+  });
+  const states: CallViewState[] = [];
+  const client = new PublicCallClient((state) => states.push(state));
+  await client.setAudioSetup("headphones");
+  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet2");
+  client.prepareMicrophone(); // The current DPDFNet-2 default has no shared WASM entry.
+  await client.setNoiseSuppression("dpdfnet8");
+  client.prepareMicrophone();
+  assert.deepEqual(engines, []);
+  await client.setNoiseSuppression("deepfilter-gentle");
+  client.prepareMicrophone();
+  await client.setNoiseSuppression("rnnoise");
+  client.prepareMicrophone();
+  assert.deepEqual(engines, ["deepfilter", "rnnoise"]);
+});
+
 test("mode/device replacement preserves mute, releases old capture, and can select system default", async (t) => {
   const { client, states, install } = setup(t);
   const tracks: Track[] = [];
@@ -104,11 +126,17 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
     return new Stream([track]);
   } } });
   await client.join("Guest", "usb");
+  assert.equal(states.at(-1)?.noiseSuppression, "off");
+  assert.equal(states.at(-1)?.audioSetup, "headphones");
+  assert.equal(constraints[0].echoCancellation, false);
+  assert.equal(constraints[0].autoGainControl, false);
+  assert.equal(constraints[0].noiseSuppression, false);
   await client.setMuted(true);
   await client.setNoiseSuppression("off");
   assert.equal(Peer.latest.senders[0].track, null);
   assert.equal(tracks[0].readyState, "ended");
   assert.equal(tracks[1].enabled, false);
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], tracks[1]);
   assert.equal(states.at(-1)?.noiseSuppressionStatus, "Noise suppression off");
   await client.changeMicrophone("");
   assert.equal(constraints[2].deviceId, undefined);
@@ -150,6 +178,7 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   const { client, track, calls, states } = setup(t);
   await client.join("Guest");
   assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], track);
   await client.setMuted(true);
   assert.equal(track.enabled, false);
   assert.equal(Peer.latest.senders[0].track, null);
@@ -387,6 +416,26 @@ test("join provisioning overlaps permission and leave cleans up both late result
   await joining;
   assert.equal(track.readyState, "ended");
   assert.deepEqual(calls, ["join", "leave"]);
+  assert.equal(states.at(-1)?.phase, "idle");
+});
+
+test("leave blocks a new session until slow server cleanup completes", async (t) => {
+  const { client, states, install } = setup(t);
+  let completeLeave!: () => void;
+  let joins = 0;
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/leave")) return new Promise<Response>((resolve) => { completeLeave = () => resolve(new Response(null, { status: 204 })); });
+    if (url.endsWith("/join")) joins++;
+    return original(url, init);
+  });
+  await client.join("Guest");
+  const leaving = client.leave();
+  assert.equal(states.at(-1)?.phase, "leaving");
+  await client.join("Second guest");
+  assert.equal(joins, 1);
+  completeLeave();
+  await leaving;
   assert.equal(states.at(-1)?.phase, "idle");
 });
 

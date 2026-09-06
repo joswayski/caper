@@ -37,6 +37,7 @@ export class PublicCallClient {
   private phase: CallViewState["phase"] = "idle";
   private participants: Participant[] = [];
   private remoteMedia = new Map<string, RemoteMedia>();
+  private localMedia?: MediaStream;
   private senders = new Map<MediaKind, { sender: RTCRtpSender; mid: string; track: MediaStreamTrack }>();
   private subscriptions = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -58,10 +59,9 @@ export class PublicCallClient {
   private events?: CallEvents;
   private microphoneDeviceId?: string;
   private statsTimer?: number;
-  private speaking: string[] = [];
   private diagnostics = "";
-  private noiseSuppression: NoiseSuppression = "deepfilter";
-  private audioSetup: AudioSetup = "speakers";
+  private noiseSuppression: NoiseSuppression = "dpdfnet2";
+  private audioSetup: AudioSetup = "headphones";
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
   private joinTiming = "";
@@ -72,7 +72,9 @@ export class PublicCallClient {
 
   prepareMicrophone() {
     // Download/compile only: no permission prompt, hardware capture or AudioContext.
-    void this.noiseAssets.load("deepfilter").catch(() => undefined);
+    if (this.noiseSuppression === "rnnoise") void this.noiseAssets.load("rnnoise").catch(() => undefined);
+    else if (this.noiseSuppression.startsWith("deepfilter")) void this.noiseAssets.load("deepfilter").catch(() => undefined);
+    // DPDFNet owns its ONNX runtime in a worker; it does not use these WASM assets.
   }
 
   private emit(error?: string) {
@@ -85,9 +87,9 @@ export class PublicCallClient {
       monitorConnecting: this.monitorConnecting,
       monitorStatus: this.monitorStatus,
       selfId: this.selfId,
+      localMedia: this.localMedia,
       participants: this.participants,
       remoteMedia: [...this.remoteMedia.values()],
-      speaking: this.speaking,
       diagnostics: this.diagnostics,
       noiseSuppression: this.noiseSuppression,
       audioSetup: this.audioSetup,
@@ -271,6 +273,7 @@ export class PublicCallClient {
       await pc.setRemoteDescription(response.sessionDescription);
       if (generation !== this.generation) throw new Error("Call session changed.");
       this.senders.set(kind, { sender: transceiver.sender, mid, track });
+      if (kind === "microphone") this.localMedia = new MediaStream([track]);
       track.addEventListener("ended", () => {
         if (generation === this.generation && this.senders.get(kind)?.track === track) {
           void this.unpublish(kind).catch(() => this.scheduleReconnect());
@@ -432,6 +435,7 @@ export class PublicCallClient {
       track.enabled = this.monitoring || !this.muted;
       if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(track);
       microphone.track = track;
+      this.localMedia = new MediaStream([track]);
       this.microphoneDeviceId = deviceId || undefined;
       this.stopMicrophone(old);
       this.emit();
@@ -485,6 +489,7 @@ export class PublicCallClient {
       if (generation !== this.generation || this.senders.get(kind) !== publication) return;
       publication.track.stop();
       this.senders.delete(kind);
+      if (kind === "microphone") this.localMedia = undefined;
     }, generation);
     this.emit();
   }
@@ -513,7 +518,6 @@ export class PublicCallClient {
     try {
       const report = await pc.getStats();
       if (pc !== this.pc) return;
-      const speaking = new Set<string>();
       let received = 0, sent = 0, lost = 0, jitter = 0, rtt = 0, relay = false;
       report.forEach((stat) => {
         if (stat.type === "outbound-rtp") sent += stat.bytesSent ?? 0;
@@ -521,19 +525,12 @@ export class PublicCallClient {
           received += stat.bytesReceived ?? 0;
           lost += stat.packetsLost ?? 0;
           jitter = Math.max(jitter, stat.jitter ?? 0);
-          if (stat.kind === "audio" && stat.audioLevel > 0.02) {
-            for (const media of this.remoteMedia.values()) {
-              if (media.kind === "microphone" && media.stream.getTracks().some((track) => track.id === stat.trackIdentifier)) speaking.add(media.participantId);
-            }
-          }
         }
-        if (stat.type === "media-source" && stat.kind === "audio" && stat.audioLevel > 0.02 && !this.muted && this.selfId) speaking.add(this.selfId);
         if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.nominated) {
           rtt = Math.max(rtt, stat.currentRoundTripTime ?? 0);
           relay ||= report.get(stat.localCandidateId)?.candidateType === "relay";
         }
       });
-      this.speaking = [...speaking];
       this.diagnostics = `${this.joinTiming} · This connection: ${(received / 1e6).toFixed(2)} MB received · ${(sent / 1e6).toFixed(2)} MB sent · ${lost} packets lost · ${(jitter * 1000).toFixed(0)} ms max jitter · ${(rtt * 1000).toFixed(0)} ms RTT · ${relay ? "TURN relay" : "direct / relay not observed"}`;
       this.emit();
     } catch { /* Stats support varies; diagnostics must never interrupt media. */ }
@@ -613,14 +610,16 @@ export class PublicCallClient {
 
   async leave() {
     if (this.phase === "idle" || this.phase === "leaving") return;
-    this.phase = "leaving";
     ++this.generation;
     this.resetMonitoring();
+    // The view renders this as the join screen while cleanup prevents another
+    // session from starting until the prior capability has been released.
+    this.phase = "leaving";
+    this.participants = [];
+    this.selfId = undefined;
     this.emit();
     await this.teardown(false);
     this.phase = "idle";
-    this.participants = [];
-    this.selfId = undefined;
     this.emit();
   }
 
@@ -652,7 +651,6 @@ export class PublicCallClient {
     for (const capture of this.captures.values()) capture.stop();
     this.captures.clear();
     window.clearInterval(this.statsTimer);
-    this.speaking = [];
     this.diagnostics = "";
     this.joinTiming = "";
     this.stopReceivedMonitor();
@@ -661,7 +659,7 @@ export class PublicCallClient {
     for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
     this.pc?.close();
     this.pc = undefined; this.token = undefined;
-    this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.pollPromise = undefined; this.pollAgain = false;
+    this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.localMedia = undefined; this.pollPromise = undefined; this.pollAgain = false;
   }
 
   private resetMonitoring() {
