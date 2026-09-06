@@ -23,8 +23,6 @@
 .join-card h1 { margin: 0; font-size: clamp(2rem, 3.5vw, 3rem); line-height: 1.08; letter-spacing: -.05em; }
 .join-card > p { color: var(--text-muted); line-height: 1.6; }
 .join-card form { display: grid; gap: 10px; margin-top: 30px; }
-.device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
-.device-control select { width: 100%; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
 .call-page :focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 .primary-button { height: 48px; margin-top: 5px; border: 0; border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .primary-button:disabled { opacity: .5; cursor: wait; }
@@ -37,12 +35,10 @@
 .noise-status { color: var(--text-muted); font-size: .8rem; }
 .call-diagnostics { color: var(--text-muted); margin-top: 20px; font-size: .8rem; }
 .call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
-.device-control { width: min(240px, 25vw); display: grid; gap: 5px; }
-.device-control select { height: 34px; padding: 0 8px; font-size: .8rem; }
 .control-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .control-buttons button, .stage-placeholder button { min-height: 40px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font-size: .82rem; font-weight: 750; cursor: pointer; }
 .control-buttons button:hover, .control-buttons button.active { border-color: #805143; background: #39231e; }
-.control-buttons button:disabled, .device-control select:disabled { opacity: .5; cursor: wait; }
+.control-buttons button:disabled { opacity: .5; cursor: wait; }
 .control-buttons .leave-button { border-color: var(--terracotta); color: #fff; background: var(--terracotta); }
 @media (max-width: 760px) {
   .call-header, .call-room { width: calc(100% - 24px); }
@@ -56,6 +52,5 @@
   .stage-title > p { max-width: 100px; margin-top: 0; text-align: right; }
   .stage-placeholder { min-height: 300px; }
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
-  .device-control { width: 100%; }
   .control-buttons { display: grid; grid-template-columns: repeat(2, 1fr); }
 }

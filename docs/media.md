@@ -4,13 +4,14 @@
 
 One public **General voice channel**, always available to join while the service
 is enabled. This is not a dial/invite/call flow. No accounts, text chat,
-camera, screen sharing, channel creation, or recording by Caper. Faker generates
+camera, screen sharing, channel creation, or server-side recording. Mic test offers
+an explicit five-second, tab-memory-only recording of received audio. Faker generates
 an adjective/animal nickname once per explicit join in the browser; the Rust
 registry stores it and distributes the same name to every participant. Automatic
 reconnect keeps the nickname; explicit leave/join generates another. The lobby
 does not persist presence. Names can collide or be impersonated; participant
 IDs, not names, distinguish people. Up to 12 people can join with microphone permission,
-mute, deafen, choose devices, and leave. Other visitors may record audio.
+mute, deafen, and leave. Devices use OS defaults. Other visitors may record audio.
 
 Browser → same-origin `/api/media/*` → single Rust Axum service → Cloudflare
 control API. Browser ↔ Cloudflare Realtime SFU/TURN for WebRTC audio. No media
@@ -102,10 +103,10 @@ the feature flag; web `/api/health` is independent of provider availability.
   choice. Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
-  browser echo cancellation and gain control are requested. DTX is not guaranteed.
+  browser echo cancellation and gain control are off for headphones. DTX is not guaranteed.
 - Speaking indicators and diagnostics use browser stats where available, not
-  billing records. Output selection requires `HTMLMediaElement.setSinkId`;
-  otherwise use OS settings. Joining requires microphone permission.
+  billing records. Input/output follow system defaults; there are no device or
+  processing selectors. Joining requires microphone permission.
 
 ## Received-audio microphone test
 
@@ -115,6 +116,13 @@ to Cloudflare SFU and receiving/decoding it on a separate PeerConnection. It use
 the same codec preference and SFU/TURN provisioning as channel participants.
 Only the received track is played. This exercises the call path, **not the exact
 network conditions, headphones or volume of every other participant**.
+
+The default test is silent until requested: press **Record 5 seconds**, speak,
+then press play. The recorder takes decoded PCM from the private received track,
+not hardware capture, and writes a bounded 48 kHz mono PCM16 WAV in tab memory. It avoids
+an additional lossy Opus encoding pass. No snippet is uploaded or persisted.
+Re-recording, switching to **Listen live**, Stop, leave, reconnect or unmount
+discards the snippet and cancels capture. Live listening remains optional.
 
 Starting detaches the public sender before enabling private test audio, saves
 mute/deafen and marks both true. Stopping restores those choices. Switching a
@@ -147,42 +155,43 @@ gh workflow run deploy-caper.yml --repo joswayski/infrastructure -f git_sha=<mer
 ```
 
 These are operator instructions, not commands automatically run by this change.
+The later default-preset/snippet change is web-only and requires no further API
+deployment when private received tests are already deployed. After its web image
+build, use only the `deploy-caper.yml` command above with that merge SHA.
 
 ### Audio setup and speech consistency
 
-Speakers (default) requests browser echo cancellation and automatic gain control.
-Headphones requests both **off**, independently of the chosen denoiser. Choose it
-only while wearing headphones; switch back before using speakers. This provides
-a comparison for pumping, robotic timbre or cut-off speech introduced before the
-neural filter. It may change volume; it does not repair a hardware-clipped input
-or guarantee clean speech. Browser/OS support varies and OS-level processing may
-still apply. Microphone selection and these settings are retained only for the
-page lifetime. Denoisers remain mutually exclusive; no new noise gate is added.
+Headphones natural input is now the default, with browser echo cancellation and
+automatic gain control **off**. Use headphones: speakerphone echo protection is
+not enabled, and no selector remains to enable it. This preserves the preset Jose
+preferred rather than stacking processing. OS-level processing may still apply.
+It does not repair hardware-clipped input or guarantee clean speech.
 
 ## On-device noise suppression
 
-DeepFilterNet3 balanced is the default microphone mode. Capture → browser echo cancellation
-and gain control (Speakers setup) → 48 kHz mono DeepFilterNet, RNNoise or experimental
-DPDFNet → MediaStream output track → existing WebRTC Opus sender → Cloudflare SFU.
+DPDFNet-2 48 kHz HR is the default microphone mode. Capture (browser AEC, AGC and
+noise suppression off) → 48 kHz mono DPDFNet → MediaStream output track → existing
+WebRTC Opus sender → Cloudflare SFU. The model and DSP settings are unchanged from
+the experimental option Jose preferred; runtime performance limitations remain.
 The new private test changes the control API as described above, not SFU configuration.
 No LiveKit dependency, external denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
 
-The model and WASM (~24 MB combined) are vendored and loaded from Caper's own
-`/audio/deepfilter-v1/` path only when enhanced capture is requested. They are
+The default model and runtime (~23 MB combined) are vendored and loaded from Caper's
+`/audio/dpdfnet2-v1/` path when joining. They are
 versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
 
-### Comparing free filters
+### Retained engine implementations (no user-facing selectors)
 
 | Mode | Purpose |
 | --- | --- |
-| DeepFilterNet balanced (default) | 20 dB attenuation limit, retaining about 10% original spectral amplitude. |
+| DeepFilterNet balanced | 20 dB attenuation limit, retaining about 10% original spectral amplitude. |
 | DeepFilterNet gentle | 12 dB limit, retaining about 25% original amplitude; more voice **and noise** return. |
 | DeepFilterNet strong | Original 40 dB limit, retaining about 1% original amplitude. |
 | RNNoise | Independent lightweight 48 kHz neural model, 3.6 MB same-origin download. No VAD gating. |
-| DPDFNet-2 HR (experimental) | 48 kHz model; approximately 23 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
+| DPDFNet-2 HR (default) | 48 kHz model; approximately 23 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
 | Browser suppression | Built-in baseline; implementation/support varies by browser/device. |
 | Off | No requested noise suppression; Audio setup independently controls AEC and automatic gain. |
 
@@ -205,10 +214,9 @@ The shared adapter lives at `/audio/noise-v1/`; previously published immutable
 DeepFilter assets are unchanged. Normal web deployment includes all new assets;
 no operator configuration commands are required.
 
-The selector is available inside the channel, not before joining. New visitors
-start with Balanced without having to choose a filter. Off disables noise
-suppression, not echo cancellation. DeepFilter and RNNoise request browser suppression
-off to avoid double denoising. The active status appears only after the worklet
+All selectors have been removed, including microphone and output devices; use OS
+settings for those. New visitors use DPDFNet with natural headphone input.
+The active status appears only after the worklet
 acknowledges initialization. If loading/initialization fails, capture falls back
 to browser suppression when supported, otherwise unsuppressed audio, with an
 explicit status. A runtime processor error bypasses the worklet without replacing
@@ -232,7 +240,30 @@ DPDFNet model/runtime provenance, checksums, full licenses and reproduction are
 in `apps/web/public/audio/dpdfnet2-v1/README.md`. CEVA code/weights are Apache-2.0;
 ONNX Runtime is MIT with third-party notices. All assets load from Caper, lazily.
 No inference runs inside the AudioWorklet callback and no raw PCM goes to a
-denoising service. It is experimental, not the default or a proven Krisp replacement.
+denoising service. It is the default based on owner listening feedback, not a
+proven universal Krisp replacement.
+
+Quality guidance checked against [upstream DPDFNet](https://github.com/ceva-ip/DPDFNet):
+keep the current 960-point unnormalized FFT, 480-sample hop, Vorbis window and
+metadata-initialized recurrent normalization. Do not normalize again outside the
+model or add an extra gate/AGC. A larger DPDFNet-8 HR exists but costs nearly 3×
+the MACs without an established listening advantage for Caper; it is not enabled.
+Keep input gain below hardware clipping, use a consistent close mic position,
+and disable duplicate OS/vendor voice filters when comparing quality. Check the
+active/fallback status before attributing a sound to DPDFNet.
+
+Default-preset / snippet validation, September 6, 2026:
+
+- `npm test --workspace @caper/web`: 52 passed; `npm run check`: passed.
+- Chromium local WebRTC receive fixture: five-second, 48 kHz WAV, 480,044 bytes,
+  nonzero RMS; silent until play, playback advances, live mode uses the received
+  stream, old blob URLs revoked, cancellation leaves borrowed tracks live.
+- Entry, recording, ready and live layouts inspected, including 390px mobile;
+  zero selectors. Signaling/channel state mocked and generated tone used. No new
+  live Cloudflare, physical speech-quality or native desktop acceptance claimed.
+- Recording keeps a muted media element attached to the received stream while
+  capturing PCM: Chromium otherwise left its WebRTC jitter buffer undrained and
+  produced silent recordings in this test.
 
 Received-test / DPDFNet validation, September 6, 2026:
 

@@ -1,13 +1,4 @@
-export const NOISE_SUPPRESSION_OPTIONS = [
-  { value: "deepfilter", label: "DeepFilterNet · balanced", description: "Recommended starting point. Less aggressive than the original setting; a little background sound may remain." },
-  { value: "deepfilter-gentle", label: "DeepFilterNet · gentle", description: "Keeps more of your original voice, along with more room noise. Try this if quiet words or laughter get cut off." },
-  { value: "deepfilter-strong", label: "DeepFilterNet · strong", description: "The original suppression strength. A quieter background, with more risk of changing your voice." },
-  { value: "rnnoise", label: "RNNoise · lightweight", description: "A different on-device model with lower processing cost. Compare it with DeepFilterNet for fans and AC noise." },
-  { value: "dpdfnet2", label: "DPDFNet-2 HR · experimental", description: "Experimental 48 kHz on-device model. It may fall back to browser suppression when this device cannot process audio in real time." },
-  { value: "browser", label: "Browser suppression", description: "Your browser’s built-in filter. Quality and availability depend on the browser and device." },
-  { value: "off", label: "Off", description: "No requested noise suppression. Audio setup controls echo protection and automatic microphone level separately." },
-] as const;
-export type NoiseSuppression = typeof NOISE_SUPPRESSION_OPTIONS[number]["value"];
+export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet2" | "browser" | "off";
 export type AudioSetup = "speakers" | "headphones";
 export interface Microphone {
   track: MediaStreamTrack;

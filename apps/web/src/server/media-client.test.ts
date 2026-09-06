@@ -87,6 +87,11 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
     return new Stream([track]);
   } } });
   await client.join("Guest", "usb");
+  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet2");
+  assert.equal(states.at(-1)?.audioSetup, "headphones");
+  assert.equal(constraints[0].echoCancellation, false);
+  assert.equal(constraints[0].autoGainControl, false);
+  assert.equal(constraints[0].noiseSuppression, false);
   await client.setMuted(true);
   await client.setNoiseSuppression("off");
   assert.equal(Peer.latest.senders[0].track, null);
@@ -111,7 +116,7 @@ test("failed mode replacement keeps the old microphone and rolls back selection"
   await assert.rejects(client.setNoiseSuppression("off"), /replace failed/);
   assert.equal(track.readyState, "live");
   assert.equal(replacement.readyState, "ended");
-  assert.equal(states.at(-1)?.noiseSuppression, "deepfilter");
+  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet2");
 });
 
 test("random nicknames are submitted once per explicit join", async (t) => {
