@@ -15,7 +15,7 @@ COPY apps/api/src apps/api/src
 
 RUN cargo build --locked --release --package caper-api
 
-FROM debian:bookworm-slim AS media
+FROM debian:bookworm-slim AS api
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \

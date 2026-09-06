@@ -54,7 +54,9 @@ file before `cargo run -p caper-api`. Run the web process with
 In an orb use supervised services and portal URLs, not direct sandbox host URLs.
 
 Image CI builds `apps/api/Dockerfile` and publishes
-`production/caper:media-<git-sha>` after merge to main. It does not deploy it.
+`production/caper:api-<git-sha>` after merge to main via `api-image.yml`.
+The Docker target and service name are `api` and `caper-api`, respectively.
+This is the application control API, not a self-hosted audio relay. It does not deploy itself.
 The companion infrastructure PR stages a single-replica `Recreate` Deployment,
 Service, and `/api/media` ingress patch, excluded from active Kustomization until
 an image digest and credentials exist. Follow **Activate Caper media (one-time)**

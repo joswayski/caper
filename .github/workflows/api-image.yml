@@ -1,4 +1,4 @@
-name: Media image
+name: API image
 on:
   pull_request:
   push:
@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 jobs:
-  media:
+  api:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -20,16 +20,16 @@ jobs:
         with:
           context: .
           file: apps/api/Dockerfile
-          target: media
+          target: api
           platforms: linux/arm64
           load: true
-          tags: caper-media:test
-          cache-from: type=gha,scope=media
-          cache-to: type=gha,scope=media,mode=max
+          tags: caper-api:test
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
       - name: Verify disabled service
         run: |
           set -euo pipefail
-          container="$(docker run -d -p 3001:3001 caper-media:test)"
+          container="$(docker run -d -p 3001:3001 caper-api:test)"
           trap 'docker rm -f "$container" >/dev/null' EXIT
           for attempt in $(seq 1 30); do
             if curl --fail --silent http://127.0.0.1:3001/health; then break; fi
@@ -48,12 +48,12 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: existing
         run: |
-          digest="$(aws ecr describe-images --repository-name production/caper --image-ids "imageTag=media-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
+          digest="$(aws ecr describe-images --repository-name production/caper --image-ids "imageTag=api-$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
           if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo 'exists=true' >> "$GITHUB_OUTPUT"; fi
       - uses: aws-actions/amazon-ecr-login@v2.1.6
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
       - name: Publish separately from the website (no deployment)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.existing.outputs.exists != 'true'
         run: |
-          docker tag caper-media:test "$ECR:media-$GITHUB_SHA"
-          docker push "$ECR:media-$GITHUB_SHA"
+          docker tag caper-api:test "$ECR:api-$GITHUB_SHA"
+          docker push "$ECR:api-$GITHUB_SHA"
