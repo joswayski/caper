@@ -17,7 +17,10 @@ export function waitFor(target: EventTarget, event: string, timeout: number, rea
 }
 
 export async function localDescription(pc: RTCPeerConnection, signal?: AbortSignal) {
-  await waitFor(pc, "icegatheringstatechange", 5_000, () => pc.iceGatheringState === "complete", signal).catch(() => signal?.throwIfAborted());
+  // Follow Cloudflare's browser flow: exchange SDP without waiting for every
+  // STUN/TURN probe to finish. Gathering continues; callers still gate audio on
+  // the actual transport connection, not on this description being available.
+  signal?.throwIfAborted();
   if (!pc.localDescription) throw new Error("WebRTC did not produce a session description.");
   return pc.localDescription.toJSON();
 }
