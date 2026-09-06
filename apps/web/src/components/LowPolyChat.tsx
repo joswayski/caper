@@ -118,11 +118,21 @@ export default function LowPolyChat() {
       const verticalFov = camera.fov * Math.PI / 180;
       const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
       chat.updateWorldMatrix(true, true);
-      const frame = new Box3().setFromObject(chat).getSize(new Vector3());
+      const bounds = new Box3().setFromObject(chat);
+      const frame = bounds.getSize(new Vector3());
+      const center = bounds.getCenter(new Vector3());
       camera.position.z = Math.max(
         (frame.y + 0.8) / (2 * Math.tan(verticalFov / 2)),
         (frame.x + 0.8) / (2 * Math.tan(horizontalFov / 2)),
       ) + frame.z / 2 + 0.5;
+      camera.position.y = center.y;
+      const stacked = window.matchMedia("(max-width: 1000px)").matches;
+      if (stacked) {
+        camera.position.x = center.x;
+      } else {
+        const visibleWidth = 2 * Math.tan(horizontalFov / 2) * (camera.position.z - center.z);
+        camera.position.x = center.x - frame.x / 2 + visibleWidth / 2 + 0.42;
+      }
       camera.updateProjectionMatrix();
       draw();
     };
