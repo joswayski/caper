@@ -61,6 +61,7 @@ export class PublicCallClient {
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
   private joinTiming = "";
+  private leavePromise?: Promise<void>;
 
   private readonly changed: (state: CallViewState) => void;
   constructor(changed: (state: CallViewState) => void) { this.changed = changed; }
@@ -564,16 +565,19 @@ export class PublicCallClient {
   }
 
   async leave() {
-    if (this.phase === "idle" || this.phase === "leaving") return;
-    this.phase = "leaving";
+    if (this.leavePromise) return this.leavePromise;
+    if (this.phase === "idle") return;
     ++this.generation;
     this.resetMonitoring();
-    this.emit();
-    await this.teardown(false);
+    // Return to the join screen while the best-effort server cleanup finishes.
+    // Otherwise a slow leave request renders the generic connecting placeholder.
     this.phase = "idle";
     this.participants = [];
     this.selfId = undefined;
     this.emit();
+    const leaving = this.teardown(false).finally(() => { this.leavePromise = undefined; });
+    this.leavePromise = leaving;
+    await leaving;
   }
 
   leaveImmediately() {

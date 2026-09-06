@@ -373,6 +373,23 @@ test("join provisioning overlaps permission and leave cleans up both late result
   assert.equal(states.at(-1)?.phase, "idle");
 });
 
+test("leave returns the view to idle before a slow server cleanup completes", async (t) => {
+  const { client, states, install } = setup(t);
+  let completeLeave!: () => void;
+  install("fetch", (url: string) => {
+    if (url.endsWith("/leave")) return new Promise<Response>((resolve) => { completeLeave = () => resolve(new Response(null, { status: 204 })); });
+    if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: "capability", id: "self", iceServers: [] }));
+    if (url.endsWith("/publish")) return Promise.resolve(Response.json({ sessionDescription: { type: "answer", sdp: "v=0" } }));
+    if (url.endsWith("/state")) return Promise.resolve(new Response(null, { status: 204 }));
+    return Promise.resolve(Response.json({ participants: [] }));
+  });
+  await client.join("Guest");
+  const leaving = client.leave();
+  assert.equal(states.at(-1)?.phase, "idle");
+  completeLeave();
+  await leaving;
+});
+
 test("leave during join closes the late capability and never creates a PeerConnection", async (t) => {
   const { client, track, install } = setup(t);
   let finish!: (r: Response) => void;

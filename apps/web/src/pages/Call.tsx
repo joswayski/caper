@@ -83,6 +83,9 @@ export default function Call() {
               return <li className="participant" key={participant.id}>
                 <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                 <span className="participant-name"><strong>{participant.name}{participant.id === state.selfId ? " (you)" : ""}</strong><small>{participant.deafened ? "Deafened" : participant.muted ? "Muted" : speaking ? "Speaking" : "In voice"}</small></span>
+                {speaking && <span className="speaking-waveform" aria-label={`${participant.name} is speaking`}>
+                  <i /><i /><i /><i /><i />
+                </span>}
               </li>;
             })}
           </ul>
