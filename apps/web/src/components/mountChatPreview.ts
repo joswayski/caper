@@ -1,5 +1,6 @@
 import { AmbientLight, Box3, DirectionalLight, PCFShadowMap, PerspectiveCamera, Scene, SRGBColorSpace, Vector3, WebGLRenderer } from "three";
 import { createChatModel } from "./chatModel";
+import { createVoiceField } from "./voiceField";
 
 export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   let renderer: WebGLRenderer;
@@ -24,6 +25,8 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   const draw = () => { if (!disposed) renderer.render(scene, camera); };
   const model = createChatModel(draw);
   const chat = model.group;
+  const voiceField = createVoiceField();
+  chat.add(voiceField.group);
   const rest = { x: 0.10, y: -0.20, z: -0.035 };
   const idle = { x: 0.018, y: 0.025, z: 0.009 };
   const float = 0.08;
@@ -77,6 +80,7 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
     chat.rotation.x = rest.x + tilt.x + (motion.matches ? 0 : Math.sin(elapsed * 0.00027) * idle.x);
     chat.rotation.y = rest.y + tilt.y + (motion.matches ? 0 : Math.sin(elapsed * 0.00035) * idle.y);
     chat.rotation.z = rest.z + (motion.matches ? 0 : Math.sin(elapsed * 0.00022) * idle.z);
+    voiceField.update(elapsed, motion.matches);
     draw();
     if (!motion.matches && visible && !document.hidden) animationFrame = requestAnimationFrame(render);
   };
@@ -276,6 +280,7 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
     host.removeEventListener("blur", reset);
     window.removeEventListener("blur", reset);
     host.classList.remove("is-dragging");
+    voiceField.dispose();
     model.dispose();
     key.shadow.dispose();
     renderer.dispose();
