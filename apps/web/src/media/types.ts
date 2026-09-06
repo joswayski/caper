@@ -39,6 +39,8 @@ export interface RemoteMedia {
 
 export interface CallViewState {
   phase: CallPhase;
+  muted: boolean;
+  deafened: boolean;
   selfId?: string;
   participants: Participant[];
   remoteMedia: RemoteMedia[];

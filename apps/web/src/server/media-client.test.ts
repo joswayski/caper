@@ -98,6 +98,29 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   assert.ok(calls.includes("leave"));
 });
 
+test("mute and deafen update local media and view state without waiting for roster sync", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.join("Guest");
+  let finishState!: () => void;
+  install("fetch", async (url: string) => {
+    if (url.endsWith("/state")) return new Promise<Response>((resolve) => { finishState = () => resolve(new Response(null, { status: 204 })); });
+    return new Response(null, { status: 204 });
+  });
+
+  const muting = client.setMuted(true);
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.muted, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  finishState();
+  await muting;
+
+  const deafening = client.setDeafened(true);
+  assert.equal(states.at(-1)?.deafened, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  finishState();
+  await deafening;
+});
+
 test("provider join failure releases microphone acquired before publication", async (t) => {
   const { client, track, states, install } = setup(t);
   install("fetch", async () => Response.json({ error: "unavailable" }, { status: 503 }));

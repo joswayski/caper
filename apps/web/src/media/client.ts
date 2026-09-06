@@ -73,6 +73,8 @@ export class PublicCallClient {
   private emit(error?: string) {
     this.changed({
       phase: this.phase,
+      muted: this.muted,
+      deafened: this.deafened,
       selfId: this.selfId,
       participants: this.participants,
       remoteMedia: [...this.remoteMedia.values()],
@@ -155,9 +157,10 @@ export class PublicCallClient {
       if (generation !== this.generation) return;
       this.phase = "connected";
       this.reconnects = 0;
-      await this.setState(this.muted, this.deafened);
-      this.startPolling();
       this.emit();
+      const stateSync = this.setState(this.muted, this.deafened);
+      this.startPolling();
+      await stateSync;
     } catch (error) {
       if (capturedMicrophone && !this.senders.has("microphone")) capturedMicrophone.stop();
       if (generation !== this.generation) return;
@@ -229,22 +232,18 @@ export class PublicCallClient {
 
   async setMuted(muted: boolean) {
     this.muted = muted;
-    await this.serialize(async () => {
-      const token = this.token;
-      const microphone = this.senders.get("microphone");
-      if (microphone) {
-        microphone.track.enabled = !muted;
-        await microphone.sender.replaceTrack(muted ? null : microphone.track);
-      }
-      if (token) await this.api("state", { muted, deafened: this.deafened }, token);
-    });
+    const microphone = this.senders.get("microphone");
+    if (microphone) microphone.track.enabled = !muted;
+    const replacement = microphone?.sender.replaceTrack(muted ? null : microphone.track);
     this.emit();
+    await replacement;
+    if (this.token) await this.setState(muted, this.deafened);
   }
 
   async setDeafened(deafened: boolean) {
     this.deafened = deafened;
-    await this.setState(this.muted, deafened);
     this.emit();
+    await this.setState(this.muted, deafened);
   }
 
   private setState(muted: boolean, deafened: boolean) {
@@ -420,9 +419,10 @@ export class PublicCallClient {
       await waitFor(this.pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => this.pc?.connectionState === "connected");
       if (generation !== this.generation) return;
       this.phase = "connected";
-      await this.setState(this.muted, this.deafened);
-      this.startPolling();
       this.emit();
+      const stateSync = this.setState(this.muted, this.deafened);
+      this.startPolling();
+      await stateSync;
     } catch {
       captured?.stop();
       if (generation !== this.generation) return;
