@@ -1,3 +1,5 @@
+import LowPolyChat from "../components/LowPolyChat";
+
 const repositoryUrl = "https://github.com/joswayski/caper";
 
 export default function Home() {
@@ -5,7 +7,6 @@ export default function Home() {
     <main className="page">
       <header className="site-header shell">
         <a className="wordmark" href="/" aria-label="Caper home">caper</a>
-        <span className="header-status"><i /> Coming soon</span>
       </header>
 
       <section className="hero shell">
@@ -15,17 +16,15 @@ export default function Home() {
             Chat, call, and share in a space that feels like yours. For friends,
             teams, and everything in between.
           </p>
-          <a className="github-button" href={repositoryUrl} target="_blank" rel="noreferrer">
-            Follow on GitHub <span aria-hidden="true">↗</span>
-          </a>
+          <div className="hero-actions">
+            <a className="github-button" href={repositoryUrl} target="_blank" rel="noreferrer">
+              Follow on GitHub <span aria-hidden="true">↗</span>
+            </a>
+            <span className="coming-soon"><i /> Coming soon</span>
+          </div>
         </div>
 
-        <div className="people-collage" aria-hidden="true">
-          <div className="person-card person-card-terracotta"><i /><span /></div>
-          <div className="person-card person-card-cream"><i /><span /></div>
-          <div className="person-card person-card-green"><i /><span /></div>
-          <div className="person-card person-card-charcoal"><i /><span /></div>
-        </div>
+        <LowPolyChat />
       </section>
     </main>
   );
