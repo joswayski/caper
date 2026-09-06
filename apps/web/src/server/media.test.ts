@@ -29,3 +29,39 @@ test("adapter forwards only credentials needed by the fixed API and preserves 20
   }));
   assert.equal(response.status, 204);
 });
+
+test("SSE proxy streams immediately, survives the ordinary deadline, and forwards cancellation", async (t) => {
+  const old = process.env.MEDIA_API_URL;
+  process.env.MEDIA_API_URL = "http://media:3001";
+  t.after(() => { if (old) process.env.MEDIA_API_URL = old; else delete process.env.MEDIA_API_URL; });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let signal!: AbortSignal;
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let cancelled = false;
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.equal(url, "http://media:3001/api/media/events");
+    assert.equal(init.method, "GET");
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer ephemeral");
+    signal = init.signal!;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n")); },
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": "text/event-stream" } });
+  });
+  const controller = new AbortController();
+  const response = await proxyMedia(new Request("https://caper.chat/api/media/events", {
+    headers: { authorization: "Bearer ephemeral" }, signal: controller.signal,
+  }));
+  assert.equal(response.headers.get("x-accel-buffering"), "no");
+  assert.equal(response.headers.get("content-type"), "text/event-stream");
+  const reader = response.body!.getReader();
+  assert.match(new TextDecoder().decode((await reader.read()).value), /event: ready/);
+  t.mock.timers.tick(26_000);
+  assert.equal(signal.aborted, false, "the streaming body must outlive the normal request timeout");
+  stream.enqueue(new TextEncoder().encode("event: heartbeat\ndata: {}\n\n"));
+  assert.match(new TextDecoder().decode((await reader.read()).value), /heartbeat/);
+  controller.abort();
+  assert.equal(signal.aborted, true);
+  await reader.cancel();
+  assert.equal(cancelled, true);
+});

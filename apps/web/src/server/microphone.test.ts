@@ -105,7 +105,7 @@ function setup(t: TestContext, options: {
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-for (const variant of ["2", "8"] as const) test(`DPDFNet-${variant} readiness comes from its worker; runtime failure preserves the published track`, async (t) => {
+for (const variant of ["2", "8"] as const) test(`DPDFNet-${variant} readiness comes from its worker; runtime failure stops the published track`, async (t) => {
   const { install } = setup(t);
   let worker!: { onmessage?: (event: { data: unknown }) => void; terminated: boolean };
   install("Worker", class {
@@ -125,7 +125,8 @@ for (const variant of ["2", "8"] as const) test(`DPDFNet-${variant} readiness co
   await tick();
   assert.equal(microphone.track, Context.latest!.processed);
   assert.equal(microphone.track.enabled, false);
-  assert.match(microphone.status, /browser suppression/);
+  assert.match(microphone.status, /failed — microphone stopped/);
+  assert.equal(microphone.track.readyState, "ended");
   assert.equal(worker.terminated, true);
   microphone.stop();
 });
@@ -211,14 +212,10 @@ test("DeepFilter waits for a valid ready acknowledgement", async (t) => {
   assert.ok(WorkletNode.latest, "worklet should be constructed after local assets load");
   assert.equal(settled, false, "capture must not resolve before the processor acknowledges readiness");
   WorkletNode.latest.port.emit("not-ready");
-  const microphone = await capturing;
-  // Invalid acknowledgement is an honest raw-track fallback, not DeepFilter success.
-  assert.equal(settled, true);
-  assert.equal(microphone.track, raw);
-  assert.match(microphone.status, /^DeepFilterNet unavailable/);
+  await assert.rejects(capturing, /DeepFilterNet could not start/);
+  assert.equal(settled, false, "invalid readiness must not yield a lower-quality track");
   assert.equal(fetches.every(({ url }) => url.startsWith("/audio/deepfilter-v1/")), true);
-  assert.equal(raw.readyState, "live");
-  microphone.stop();
+  assert.equal(raw.readyState, "ended");
 });
 
 test("a ready acknowledgement connects raw input to DeepFilter and returns only its destination track", async (t) => {
@@ -253,39 +250,27 @@ test("off mode skips every asset and retains echo cancellation capture constrain
   microphone.stop();
 });
 
-test("initialization, download, and worklet failures fall back with honest browser status", async (t) => {
-  await t.test("AudioContext initialization", async (t) => {
-    class BrokenContext { constructor() { throw new Error("init"); } }
-    const { raw } = setup(t, { context: BrokenContext });
-    const changed: string[] = [];
-    const microphone = await captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => changed.push("changed"));
-    assert.equal(microphone.track, raw);
-    assert.equal(microphone.status, "DeepFilterNet unavailable — browser suppression");
-    assert.deepEqual(changed, ["changed"]);
-    microphone.stop();
-  });
-  await t.test("asset download", async (t) => {
-    const { raw } = setup(t, { fetch: async () => new Response(null, { status: 503 }) });
-    const microphone = await captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined);
-    assert.equal(microphone.track, raw);
-    assert.equal(microphone.status, "DeepFilterNet unavailable — browser suppression");
-    assert.equal(Context.latest!.state, "closed");
-    microphone.stop();
-  });
-  await t.test("audio worklet module", async (t) => {
-    class BrokenWorkletContext extends Context {
-      override audioWorklet = { addModule: async () => { throw new Error("worklet"); } };
-    }
-    const { raw } = setup(t, { context: BrokenWorkletContext });
-    const microphone = await captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined);
-    assert.equal(microphone.track, raw);
-    assert.equal(microphone.status, "DeepFilterNet unavailable — browser suppression");
-    assert.equal(Context.latest!.state, "closed");
-    microphone.stop();
-  });
+test("initialization, download, and worklet failures stop capture rather than downgrade", async (t) => {
+  class BrokenContext { constructor() { throw new Error("init"); } }
+  class BrokenWorkletContext extends Context {
+    override audioWorklet = { addModule: async () => { throw new Error("worklet"); } };
+  }
+  for (const [name, options] of [
+    ["AudioContext initialization", { context: BrokenContext }],
+    ["asset download", { fetch: async () => new Response(null, { status: 503 }) }],
+    ["audio worklet module", { context: BrokenWorkletContext }],
+  ] as const) {
+    await t.test(name, async (t) => {
+      const { raw } = setup(t, options);
+      await assert.rejects(captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined), /DeepFilterNet could not start/);
+      assert.equal(raw.readyState, "ended");
+      assert.equal(raw.settings.noiseSuppression, false, "never request a fallback filter");
+      if (Context.latest) assert.equal(Context.latest.state, "closed");
+    });
+  }
 });
 
-test("runtime processor failure bypasses the node without replacing or unmuting the outgoing track", async (t) => {
+test("runtime processor failure stops output without replacing or unmuting the outgoing track", async (t) => {
   setup(t);
   let changes = 0;
   const capturing = captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => changes++);
@@ -298,8 +283,9 @@ test("runtime processor failure bypasses the node without replacing or unmuting 
   await tick();
   assert.equal(microphone.track, outgoing);
   assert.equal(outgoing.enabled, false);
-  assert.deepEqual(Context.latest!.source.connections, [Context.latest!.destination]);
-  assert.equal(microphone.status, "DeepFilterNet unavailable — browser suppression");
+  assert.deepEqual(Context.latest!.source.connections, []);
+  assert.equal(outgoing.readyState, "ended");
+  assert.equal(microphone.status, "DeepFilterNet failed — microphone stopped");
   assert.equal(changes, 1);
   microphone.stop();
 });
