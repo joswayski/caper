@@ -164,14 +164,14 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
     chat.updateWorldMatrix(true, true);
     envelope.getSize(frame);
     envelope.getCenter(center);
-    const pad = 1.6;
+    const pad = 0.9;
     camera.position.set(
       center.x,
       center.y,
       Math.max(
         (frame.y + pad) / (2 * Math.tan(verticalFov / 2)),
         (frame.x + pad) / (2 * Math.tan(horizontalFov / 2)),
-      ) + frame.z / 2 + 0.7,
+      ) + frame.z / 2 + 0.5,
     );
     camera.updateProjectionMatrix();
     if (ready) draw();
