@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
 import MicPlayback from "./MicPlayback";
-import VoiceWaveform from "./VoiceWaveform";
+import VoiceActivity from "./VoiceActivity";
 import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
@@ -24,28 +25,45 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const context = new AudioContext();
-    const source = context.createMediaStreamSource(stream);
-    const gain = context.createGain();
-    const destination = context.createMediaStreamDestination();
-    source.connect(gain).connect(destination);
-    gain.gain.value = volume / 100;
-    gainRef.current = gain;
-    contextRef.current = context;
-    element.srcObject = destination.stream;
-    void Promise.all([context.resume(), element.play()]).then(() => setBlocked(false)).catch(() => setBlocked(true));
+    let context: AudioContext | undefined;
+    let source: MediaStreamAudioSourceNode | undefined;
+    let gain: GainNode | undefined;
+    let destination: MediaStreamAudioDestinationNode | undefined;
+    try {
+      context = acquireAudioContext();
+      source = context.createMediaStreamSource(stream);
+      gain = context.createGain();
+      destination = context.createMediaStreamDestination();
+      source.connect(gain).connect(destination);
+      gain.gain.value = volume / 100;
+      gainRef.current = gain;
+      contextRef.current = context;
+      element.srcObject = destination.stream;
+      void Promise.all([context.resume(), element.play()]).then(() => setBlocked(false)).catch(() => setBlocked(true));
+    } catch {
+      source?.disconnect();
+      gain?.disconnect();
+      destination?.stream.getTracks().forEach((track) => track.stop());
+      if (context) releaseAudioContext(context);
+      context = undefined;
+      element.srcObject = stream;
+      element.volume = Math.min(volume / 100, 1);
+      void element.play().then(() => setBlocked(false)).catch(() => setBlocked(true));
+    }
     return () => {
       element.srcObject = null;
-      source.disconnect();
-      gain.disconnect();
+      source?.disconnect();
+      gain?.disconnect();
+      destination?.stream.getTracks().forEach((track) => track.stop());
       gainRef.current = null;
       contextRef.current = null;
-      void context.close();
+      if (context) releaseAudioContext(context);
     };
   }, [stream]);
   useEffect(() => {
     const gain = gainRef.current;
     if (gain) gain.gain.setValueAtTime(volume / 100, gain.context.currentTime);
+    else if (ref.current) ref.current.volume = Math.min(volume / 100, 1);
   }, [volume]);
   useEffect(() => {
     if (ref.current?.setSinkId) void ref.current.setSinkId(output).then(() => setDeviceError(false)).catch(() => setDeviceError(true));
@@ -121,15 +139,16 @@ export default function Call() {
               const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
               const participantMuted = self ? state.muted : participant.muted;
               const participantDeafened = self ? state.deafened : participant.deafened;
-              const waveformMuted = participantMuted && !state.monitoring;
+              const activityMuted = participantMuted && !state.monitoring;
               return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
-                <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                <ParticipantCountry code={participant.countryCode} />
+                <span className="participant-avatar">
+                  <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                  <ParticipantCountry code={participant.countryCode} />
+                </span>
                 <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantDeafened ? <small>Deafened</small> : participantMuted ? <small>Muted</small> : null}</span>
-                <VoiceWaveform
+                <VoiceActivity
                   stream={stream}
-                  muted={waveformMuted}
-                  label={`${participant.name} live audio level`}
+                  muted={activityMuted}
                   onActivityChange={(active) => setActiveParticipants((current) => {
                     if (current.has(participant.id) === active) return current;
                     const next = new Set(current);
