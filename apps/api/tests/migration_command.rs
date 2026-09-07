@@ -1,6 +1,37 @@
 use std::process::Command;
 
 #[test]
+fn startup_requires_direct_migration_url_before_runtime_connection() {
+    for (migration_url, expected) in [
+        ("", "MIGRATION_DATABASE_URL is required"),
+        (
+            "postgres://unused:secret@127.0.0.1:6432/caperchat",
+            "direct connection",
+        ),
+        ("invalid", "MIGRATION_DATABASE_URL must be a PostgreSQL URL"),
+    ] {
+        let result = Command::new(env!("CARGO_BIN_EXE_caper-api"))
+            .env_clear()
+            .env(
+                "DATABASE_URL",
+                "postgres://unused:secret@127.0.0.1:1/caperchat",
+            )
+            .env("MIGRATION_DATABASE_URL", migration_url)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        let output = format!(
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(output.contains(expected));
+        assert!(!output.contains("media API listening"));
+        assert!(!output.contains("secret"));
+    }
+}
+
+#[test]
 fn migration_command_requires_its_own_url_without_runtime_fallback() {
     for value in [None, Some(""), Some("   ")] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_caper-api"));

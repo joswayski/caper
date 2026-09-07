@@ -4,7 +4,7 @@ use sqlx::{
 };
 use std::{str::FromStr, time::Duration};
 
-/// Connects using the application role. Never runs migrations at startup.
+/// Migrates through the direct connection, then connects using the application role.
 ///
 /// `DATABASE_URL` is optional so local and image checks still boot without a
 /// database. Use PlanetScale's pooled port 6432 for application queries.
@@ -16,16 +16,19 @@ pub async fn connect_database() -> Result<Option<PgPool>, String> {
         tracing::info!("DATABASE_URL unset; starting without a database");
         return Ok(None);
     };
+    // Validate runtime configuration before performing any schema changes.
+    connect_options(&url)?;
+    migrate_database().await?;
     let pool = connect(&url).await?;
     Ok(Some(pool))
 }
 
-/// Explicit migration command only; never falls back to the application URL.
+/// Startup and explicit migration command; never falls back to the application URL.
 pub async fn migrate_database() -> Result<(), String> {
     let url = std::env::var("MIGRATION_DATABASE_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .ok_or("MIGRATION_DATABASE_URL is required for --migrate")?;
+        .ok_or("MIGRATION_DATABASE_URL is required to run migrations")?;
     let options =
         connect_options(&url).map_err(|_| "MIGRATION_DATABASE_URL must be a PostgreSQL URL")?;
     // SQLx migrations need a session-level advisory lock, not transaction pooling.
