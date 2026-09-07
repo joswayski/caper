@@ -6,6 +6,8 @@ export type AudioSetup = "speakers" | "headphones";
 export interface Microphone {
   track: MediaStreamTrack;
   status: string;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
   stop(): void;
 }
 
@@ -37,6 +39,12 @@ export async function captureMicrophone(
   const microphone: Microphone = {
     track: raw,
     status: "Noise suppression off",
+    async pause() {
+      if (!stopped && context?.state === "running") await context.suspend();
+    },
+    async resume() {
+      if (!stopped && context?.state === "suspended") await context.resume();
+    },
     stop() {
       if (stopped) return;
       stopped = true;

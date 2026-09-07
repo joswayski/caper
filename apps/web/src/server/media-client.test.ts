@@ -144,7 +144,7 @@ test("preparation does not allocate a spare during a call; Leave warms the next 
 });
 
 test("mode/device replacement preserves mute, releases old capture, and can select system default", async (t) => {
-  const { client, states, install } = setup(t);
+  const { client, states, install, calls } = setup(t);
   const tracks: Track[] = [];
   const constraints: MediaTrackConstraints[] = [];
   install("navigator", { mediaDevices: { getUserMedia: async (value: MediaStreamConstraints) => {
@@ -170,6 +170,8 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
   assert.equal(tracks[1].readyState, "ended");
   await client.setMuted(false);
   assert.equal(Peer.latest.senders[0].track, tracks[2]);
+  assert.equal(Peer.all.length, 1, "device replacement keeps the existing peer connection");
+  assert.equal(calls.filter((operation) => operation === "join").length, 1);
   await client.leave();
   assert.ok(tracks.every((track) => track.readyState === "ended"));
 });
@@ -177,10 +179,18 @@ test("mode/device replacement preserves mute, releases old capture, and can sele
 test("failed mode replacement keeps the old microphone and rolls back selection", async (t) => {
   const { client, track, install, states } = setup(t);
   await client.join();
+  const capture = (client as unknown as { captures: Map<Track, { pause(): Promise<void>; resume(): Promise<void> }> }).captures.get(track)!;
+  const pause = t.mock.method(capture, "pause");
+  const resume = t.mock.method(capture, "resume");
   const replacement = new Track();
-  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([replacement]) } });
+  install("navigator", { mediaDevices: { getUserMedia: async () => {
+    assert.equal(pause.mock.callCount(), 1, "old processing pauses before replacement capture starts");
+    return new Stream([replacement]);
+  } } });
   Peer.latest.senders[0].replaceTrack = async () => { throw new Error("replace failed"); };
   await assert.rejects(client.setNoiseSuppression("browser"), /replace failed/);
+  assert.equal(pause.mock.callCount(), 1);
+  assert.equal(resume.mock.callCount(), 1);
   assert.equal(track.readyState, "live");
   assert.equal(replacement.readyState, "ended");
   assert.equal(states.at(-1)?.noiseSuppression, "off");
