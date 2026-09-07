@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { PublicCallClient } from "../media/client";
-import type { NoiseSuppression } from "../media/microphone";
 import type { CallViewState } from "../media/types";
 import MicPlayback from "./MicPlayback";
 import VoiceWaveform from "./VoiceWaveform";
@@ -143,7 +142,6 @@ export default function Call() {
           {state.diagnostics && <details className="call-diagnostics"><summary>Connection diagnostics</summary><p>{state.diagnostics}</p><small>Local estimates, not billing totals. Counters reset on reconnect.</small></details>}
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
-          <label className="device-control"><span>Noise suppression</span><select disabled={controlsDisabled} value={state.noiseSuppression ?? "browser"} onChange={(event) => { const value = event.target.value as NoiseSuppression; void act(() => clientRef.current!.setNoiseSuppression(value)); }}><option value="browser">Browser (recommended)</option><option value="dpdfnet8">DPDFNet-8 (experimental)</option><option value="off">Off</option></select></label>
           <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
           {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-control"><span>Audio output</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Audio output"}</option>)}</select></label> : <p className="noise-status">Choose your audio output in system settings; this browser cannot switch outputs.</p>}
           <div className="control-buttons">
