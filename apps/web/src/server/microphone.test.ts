@@ -63,9 +63,12 @@ class Context {
   readonly processed = new Track();
   readonly destination = { stream: new Stream([this.processed]) };
   closeCalls = 0;
+  suspendCalls = 0;
+  resumeCalls = 0;
   audioWorklet = { addModule: async (_url: string) => undefined };
   constructor(..._args: unknown[]) { Context.latest = this; }
-  async resume() { this.state = "running"; }
+  async suspend() { this.suspendCalls++; this.state = "suspended"; }
+  async resume() { this.resumeCalls++; this.state = "running"; }
   createMediaStreamSource(_stream: MediaStream) { return this.source; }
   createMediaStreamDestination() { return this.destination; }
   async close() { this.closeCalls++; this.state = "closed"; }
@@ -359,6 +362,28 @@ test("runtime processor failure stops output without replacing or unmuting the o
   assert.equal(outgoing.readyState, "ended");
   assert.equal(microphone.status, "DeepFilterNet failed — microphone stopped");
   assert.equal(changes, 1);
+  microphone.stop();
+});
+
+test("enhanced capture can pause during replacement and resume after rollback", async (t) => {
+  setup(t);
+  const capturing = captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined);
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  const context = Context.latest!;
+
+  await microphone.pause();
+  assert.equal(context.state, "suspended");
+  assert.equal(context.suspendCalls, 1);
+  await microphone.pause();
+  assert.equal(context.suspendCalls, 1);
+
+  await microphone.resume();
+  assert.equal(context.state, "running");
+  assert.equal(context.resumeCalls, 2, "capture startup and rollback each resume once");
+  await microphone.resume();
+  assert.equal(context.resumeCalls, 2);
   microphone.stop();
 });
 

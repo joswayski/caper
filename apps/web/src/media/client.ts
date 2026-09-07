@@ -491,24 +491,46 @@ export class PublicCallClient {
 
   async changeMicrophone(deviceId: string) {
     const generation = this.generation;
-    const track = await this.openMicrophone(deviceId || undefined);
-    if (generation !== this.generation || !this.senders.has("microphone")) { this.stopMicrophone(track); return; }
     await this.serializeMedia(async () => {
       const microphone = this.senders.get("microphone");
-      if (!microphone) { this.stopMicrophone(track); return; }
+      if (!microphone) return;
       const old = microphone.track;
-      track.enabled = !this.muted;
-      await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : track);
-      if (generation !== this.generation) throw new Error("Call session changed.");
-      track.enabled = this.monitoring || !this.muted;
-      if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(track);
-      if (generation !== this.generation) throw new Error("Call session changed.");
-      microphone.track = track;
-      this.localMedia = new MediaStream([track]);
-      this.microphoneDeviceId = deviceId || undefined;
-      this.stopMicrophone(old);
-      this.emit();
-    }, generation).catch((error) => { this.stopMicrophone(track); throw error; });
+      const oldCapture = this.captures.get(old);
+      let track: MediaStreamTrack | undefined;
+      let senderReplaced = false;
+      // Enhanced filters are CPU-heavy. Do not run two pipelines while preparing
+      // a replacement; the brief overlap can starve the active worklet and end
+      // its track, which escalates an ordinary device change into a full rejoin.
+      await oldCapture?.pause();
+      try {
+        track = await this.openMicrophone(deviceId || undefined);
+        if (generation !== this.generation || this.senders.get("microphone") !== microphone) throw new Error("Call session changed.");
+        track.enabled = !this.muted;
+        await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : track);
+        senderReplaced = true;
+        if (generation !== this.generation) throw new Error("Call session changed.");
+        track.enabled = this.monitoring || !this.muted;
+        if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(track);
+        if (generation !== this.generation) throw new Error("Call session changed.");
+        microphone.track = track;
+        this.localMedia = new MediaStream([track]);
+        this.microphoneDeviceId = deviceId || undefined;
+        this.stopMicrophone(old);
+        this.emit();
+      } catch (error) {
+        let rollbackFailed = false;
+        try { await oldCapture?.resume(); } catch { rollbackFailed = true; }
+        if (senderReplaced && generation === this.generation && this.senders.get("microphone") === microphone) {
+          try {
+            await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : old);
+            if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(old);
+          } catch { rollbackFailed = true; }
+        }
+        if (track) this.stopMicrophone(track);
+        if (rollbackFailed) this.scheduleReconnect();
+        throw error;
+      }
+    }, generation);
   }
 
   private subscribe(trackId: string) {
