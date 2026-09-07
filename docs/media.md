@@ -382,14 +382,20 @@ the same codec preference and SFU/TURN provisioning as channel participants.
 Only the received track is played. This exercises the call path, **not the exact
 network conditions, headphones or volume of every other participant**.
 
-Pressing **Mic test** establishes the private return and starts recording as soon
-as received audio is ready. A timer, received-audio meter and **Stop & play back**
+Pressing **Mic test** establishes the private return. **Record microphone** starts
+recording explicitly. A timer, received-audio meter and **Stop & play back**
 button make the active state visible. Stopping plays the recording automatically;
 recording also stops after ten seconds. The browser records the timestamped Opus
 return rather than rebuilding a WAV from manually counted PCM frames, preserving
 the received stream's real-time playback cadence. No recording is uploaded or
 persisted. Testing again, ending the test, leaving, reconnecting or unmounting
 discards the recording and cancels capture.
+Reconnects and device/filter changes return to the Record button, never start
+recording automatically. Status updates and output changes preserve playback.
+A decoded recording with no samples above 0.001 amplitude produces a no-signal
+warning; a nonempty Opus container or connected peer alone is not proof of sound.
+This is a silence check, not a speech-quality score. Blocked autoplay leaves
+native Play controls available; output-device denial is reported separately.
 
 Starting detaches the public sender before enabling private test audio, saves
 mute/deafen and marks both true. Stopping restores those choices. Switching a
@@ -436,20 +442,22 @@ It does not repair hardware-clipped input or guarantee clean speech.
 
 ## On-device noise suppression
 
-DPDFNet-8 48 kHz HR is the default microphone mode. Capture (browser AEC, AGC and
-noise suppression off) → 48 kHz mono DPDFNet → MediaStream output track → existing
-WebRTC Opus sender → Cloudflare SFU. Runtime performance limitations remain.
+Browser suppression is the default microphone mode, with AEC and AGC still off
+for headphones. Browser support varies and the status reports when suppression
+is unavailable. DPDFNet-8 48 kHz HR is opt-in/experimental: capture (browser AEC,
+AGC and noise suppression off) → 48 kHz mono DPDFNet → MediaStream output track →
+existing WebRTC Opus sender → Cloudflare SFU. Runtime performance limitations remain.
 The new private test changes the control API as described above, not SFU configuration.
 No LiveKit dependency, external denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
 
-The default model and runtime (~27 MB combined) are vendored and loaded from Caper's
-`/audio/dpdfnet8-v2/` path during voice-page preparation or an unprepared join. They are
+The optional model and runtime (~27 MB combined) are vendored and loaded from Caper's
+`/audio/dpdfnet8-v2/` path when DPDFNet is selected. They are
 versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
 
-### Retained engine implementations (no user-facing selectors)
+### Retained engine implementations (only Browser, DPDFNet-8 and Off exposed)
 
 | Mode | Purpose |
 | --- | --- |
@@ -457,8 +465,8 @@ No new environment variables or infrastructure configuration are required.
 | DeepFilterNet gentle | 12 dB limit, retaining about 25% original amplitude; more voice **and noise** return. |
 | DeepFilterNet strong | Original 40 dB limit, retaining about 1% original amplitude. |
 | RNNoise | Independent lightweight 48 kHz neural model, 3.6 MB same-origin download. No VAD gating. |
-| DPDFNet-8 HR (default) | 48 kHz model; approximately 27 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
-| Browser suppression | Built-in baseline; implementation/support varies by browser/device. |
+| DPDFNet-8 HR (experimental) | 48 kHz model; approximately 27 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
+| Browser suppression (default) | Built-in baseline; implementation/support varies by browser/device. |
 | Off | No requested noise suppression; Audio setup independently controls AEC and automatic gain. |
 
 DeepFilter presets blend the enhanced and time-aligned original spectrum; they do
@@ -479,13 +487,13 @@ RNNoise provenance/reproduction is in `apps/web/public/audio/rnnoise-v1/README.m
 The shared adapter lives at `/audio/noise-v1/`. Normal web deployment includes
 all new assets; no operator configuration commands are required.
 
-DPDFNet-8 HR is the fixed in-channel noise-suppression filter. Speakers/Headphones
-stays fixed to natural headphone input; no mode selector is shown.
-Microphone/output selectors remain; output selection also applies to live and
-recorded mic-test playback. New visitors use DPDFNet with natural headphone input.
+The in-channel filter selector offers Browser (recommended), DPDFNet-8
+(experimental), and Off. Speakers/Headphones stays fixed to natural headphone
+input; no audio-setup selector is shown. Microphone/output selectors remain;
+output selection also applies to live and recorded mic-test playback.
 Changing a filter/device clears the old recording immediately and disables
 recording during initialization. Runtime failure also discards any old recording.
-Run a fresh mic test after DPDFNet-8 reports active. Its 14.9 MB model and runtime
+For DPDFNet, run a fresh mic test after it reports active. Its 14.9 MB model and runtime
 load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the processor acknowledges initialization.
@@ -634,6 +642,37 @@ audio element; leave closed the PeerConnection, removed playback, and cleared
 the participant from the other browser's roster. Input was a generated tone,
 not a physical microphone. No SFU/signaling responses were mocked. This test
 caught and fixed session creation incorrectly sending `{}` instead of no body.
+
+Microphone-playback verification, September 7, 2026 (UTC):
+
+- Reproduced DPDFNet stopping the capture during join. In this CPU-only orb,
+  its first five processed hops averaged 15.0 ms (18.6 ms maximum) against a
+  10 ms/hop budget. Its fail-closed path can stop audio, trigger reconnect,
+  and previously remount an automatically recording test. This is why Browser
+  is now the default; DPDFNet remains experimental, not performance-fixed.
+- The real private SFU return produced a 1.98-second decoded recording with
+  peak amplitude 0.204 from synthetic 440 Hz input. Switching the UI microphone
+  selector requested the exact second device ID and changed the returned
+  recording to 880 Hz (measured over its middle second), RMS 0.142.
+- Forced TURN on both private peers: selected candidates confirmed relay/UDP;
+  106,608 outbound and 102,951 inbound RTP bytes were observed. The returned
+  1.98-second recording had peak amplitude 0.204. Signaling/SFU were real;
+  capture and device enumeration were synthetic. This does not test physical
+  browser noise suppression; the synthetic track honestly reported it unavailable.
+- Stop/replay and subsequent stats updates preserved the recording; device
+  replacement cleared it without starting a new one. Silent returned audio
+  showed the warning. Ending/restarting the test left zero active recorders;
+  Leave closed all peers and removed playback. Desktop and 390px mobile
+  ready/playback/warning layouts were inspected.
+- Repeatable component regression: start Vite, then run
+  `node scripts/test-mic-playback.mjs http://localhost:5174` (adjust the port;
+  requires `agent-browser`). It uses real Chromium recording/decoding with
+  synthetic local input, not SFU mocks presented as live validation. It covers
+  explicit start, stop/replay, parent updates, cancellation, stream replacement,
+  URL cleanup, silence, the ten-second limit, output denial/recovery, autoplay
+  blocking, and unmount cleanup.
+
+This is a web-only change; no API deployment or provider configuration is required.
 
 Physical microphone/speaker quality, multiple networks, prolonged sessions,
 mobile background behavior, Firefox/Safari, and Tauri remain separate checks.

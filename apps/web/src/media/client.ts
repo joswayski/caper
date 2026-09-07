@@ -76,7 +76,7 @@ export class PublicCallClient {
   private microphoneDeviceId?: string;
   private statsTimer?: number;
   private diagnostics = "";
-  private noiseSuppression: NoiseSuppression = "dpdfnet8";
+  private noiseSuppression: NoiseSuppression = "browser";
   private audioSetup: AudioSetup = "headphones";
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
@@ -424,7 +424,7 @@ export class PublicCallClient {
       if (this.receivedMonitor !== monitor || !this.monitoring) return;
       this.monitorStream = stream;
       this.monitorConnecting = false;
-      this.monitorStatus = "Received through Cloudflare · Opus audio. Use headphones; the return is delayed.";
+      this.monitorStatus = "Private Cloudflare return connected · Record to check the received audio.";
       this.emit();
     } catch (error) {
       if (this.receivedMonitor !== monitor) return;
