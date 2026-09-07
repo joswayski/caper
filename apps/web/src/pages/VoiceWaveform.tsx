@@ -47,6 +47,10 @@ export default function VoiceWaveform({ stream, muted, label, onActivityChange }
     const drawing = canvas.getContext("2d");
     if (!drawing) return;
     drawing.scale(pixelRatio, pixelRatio);
+    const activeStroke = drawing.createLinearGradient(0, 0, width, 0);
+    activeStroke.addColorStop(0, "rgb(112 137 78 / 0)");
+    activeStroke.addColorStop(0.28, "rgb(112 137 78 / 1)");
+    activeStroke.addColorStop(1, "rgb(112 137 78 / 1)");
 
     const columns = Math.floor(width / 3);
     const history = new Array<number>(columns).fill(0);
@@ -97,9 +101,13 @@ export default function VoiceWaveform({ stream, muted, label, onActivityChange }
       }
 
       drawing.clearRect(0, 0, width, height);
+      if (!active) {
+        frame = window.requestAnimationFrame(draw);
+        return;
+      }
       drawing.lineCap = "round";
       drawing.lineWidth = 2;
-      drawing.strokeStyle = active ? "rgb(112 137 78)" : "rgb(99 122 67 / .52)";
+      drawing.strokeStyle = activeStroke;
       history.forEach((amplitude, index) => {
         const barHeight = 2 + amplitude * (height - 4);
         const x = index * 3 + 1;

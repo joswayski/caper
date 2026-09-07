@@ -93,7 +93,7 @@ export default function Call() {
               const waveformMuted = participantMuted && !state.monitoring;
               return <li className="participant" key={participant.id}>
                 <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><small>{participantDeafened ? "Deafened" : participantMuted ? "Muted" : speaking ? "Speaking" : "In voice"}</small></span>
+                <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantDeafened ? <small>Deafened</small> : participantMuted ? <small>Muted</small> : null}</span>
                 <VoiceWaveform
                   stream={stream}
                   muted={waveformMuted}
