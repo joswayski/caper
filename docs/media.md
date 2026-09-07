@@ -145,8 +145,12 @@ the feature flag; web `/api/health` is independent of provider availability.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
   browser echo cancellation and gain control are off for headphones. DTX is not guaranteed.
 - Speaking indicators and diagnostics use browser stats where available, not
-  billing records. Microphone/output selectors are available in-channel. Output
-  selection requires `setSinkId`; otherwise use OS settings. Joining requires microphone permission.
+  billing records. Microphone/output selectors are available in-channel when the
+  browser exposes selectable devices. Output selection requires both `setSinkId`
+  and a non-default output from `enumerateDevices`; otherwise the UI directs the
+  user to device audio controls. In particular, iOS Safari does not expose its
+  system audio routes for in-page selection, so switch speakers, headphones or
+  Bluetooth in Control Center. Joining requires microphone permission.
 
 ## Leaving voice
 

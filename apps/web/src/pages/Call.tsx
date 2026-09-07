@@ -49,6 +49,8 @@ export default function Call() {
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const controlsDisabled = !connected || actionPending || state.monitorConnecting;
+  const outputDevices = devices.filter((device) => device.kind === "audiooutput" && device.deviceId !== "default");
+  const canChooseOutput = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype && outputDevices.length > 0;
 
   useEffect(() => {
     let current = true;
@@ -126,7 +128,7 @@ export default function Call() {
             <h1>Drop in. Talk. Head out.</h1>
             <p>One shared voice channel. No invites, accounts, or ringing anyone.</p>
             <p>You’ll get a random nickname when you join. Everyone sees the same name.</p>
-            <p>Use headphones; echo cancellation is off. You can choose your microphone and output after joining.</p>
+            <p>Use headphones; echo cancellation is off. You can choose your microphone and, when supported, audio output after joining.</p>
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
               <button className="primary-button" disabled={available !== true || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
@@ -143,7 +145,7 @@ export default function Call() {
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
           <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
-          {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-control"><span>Audio output</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Audio output"}</option>)}</select></label> : <p className="noise-status">Choose your audio output in system settings; this browser cannot switch outputs.</p>}
+          {canChooseOutput ? <label className="device-control"><span>Audio output</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{outputDevices.map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Audio output"}</option>)}</select></label> : <div className="device-control"><span>Audio output</span><small>Use your device’s audio controls to switch outputs; this browser does not expose another output here.</small></div>}
           <div className="control-buttons">
             <button disabled={!connected || state.monitoring} type="button" className={state.muted ? "active" : ""} aria-pressed={state.muted} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? "Unmute" : "Mute"}</button>
             <button disabled={!connected || state.monitoring} type="button" className={state.deafened ? "active" : ""} aria-pressed={state.deafened} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? "Listen" : "Deafen"}</button>
