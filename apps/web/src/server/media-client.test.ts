@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import { fakerEN as faker } from "@faker-js/faker";
 import { PublicCallClient, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
+import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
 import type { CallViewState } from "../media/types.ts";
 
 class Track extends EventTarget {
@@ -97,7 +98,8 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   return { client, track, calls, joinedNames, stateUpdates, states, install, events };
 }
 
-test("preparation skips unused assets for DPDFNet and only warms the selected WASM engine", async (t) => {
+test("preparation warms DPDFNet-8 by default without unused DeepFilter assets", async (t) => {
+  const dpdfnet = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
   const engines: string[] = [];
   t.mock.method(NoiseAssets.prototype, "load", async (engine: string) => {
     engines.push(engine);
@@ -108,12 +110,32 @@ test("preparation skips unused assets for DPDFNet and only warms the selected WA
   await client.setAudioSetup("headphones");
   assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet8");
   client.prepareMicrophone();
+  assert.equal(dpdfnet.mock.callCount(), 1);
   assert.deepEqual(engines, []);
   await client.setNoiseSuppression("deepfilter-gentle");
   client.prepareMicrophone();
   await client.setNoiseSuppression("rnnoise");
   client.prepareMicrophone();
   assert.deepEqual(engines, ["deepfilter", "rnnoise"]);
+});
+
+test("preparation does not allocate a spare during a call; Leave warms the next join, page exit does not", async (t) => {
+  const { client, track } = setup(t);
+  const prepare = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
+  const stop = t.mock.method(DpdfnetPreparation.prototype, "stop", () => undefined);
+  // Isolate client lifecycle here; real processed capture and worker handoff have separate tests.
+  t.mock.method(client as unknown as { openMicrophone(): Promise<MediaStreamTrack> }, "openMicrophone", async () => track as unknown as MediaStreamTrack);
+  await client.setNoiseSuppression("dpdfnet8");
+  client.prepareMicrophone();
+  await client.join();
+  client.prepareMicrophone();
+  assert.equal(prepare.mock.callCount(), 1);
+  await client.leave();
+  assert.equal(prepare.mock.callCount(), 2);
+  assert.equal(stop.mock.callCount(), 1);
+  client.leaveImmediately();
+  assert.equal(prepare.mock.callCount(), 2);
+  assert.equal(stop.mock.callCount(), 2);
 });
 
 test("mode/device replacement preserves mute, releases old capture, and can select system default", async (t) => {

@@ -1,4 +1,5 @@
 import { NoiseAssets } from "./noise-assets.ts";
+import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
 
 export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet8" | "browser" | "off";
 export type AudioSetup = "speakers" | "headphones";
@@ -16,6 +17,7 @@ export async function captureMicrophone(
   changed: () => void,
   audioSetup: AudioSetup = "speakers",
   assets = new NoiseAssets(),
+  dpdfnet = new DpdfnetPreparation(),
 ): Promise<Microphone> {
   signal.throwIfAborted();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: {
@@ -30,7 +32,7 @@ export async function captureMicrophone(
   let source: MediaStreamAudioSourceNode | undefined;
   let destination: MediaStreamAudioDestinationNode | undefined;
   let node: AudioWorkletNode | undefined;
-  let worker: Worker | undefined;
+  let prepared: ReturnType<DpdfnetPreparation["take"]> | undefined;
   let stopped = false;
   const microphone: Microphone = {
     track: raw,
@@ -45,7 +47,7 @@ export async function captureMicrophone(
       node?.port.postMessage("stop");
       node?.disconnect();
       node?.port.close();
-      worker?.terminate();
+      prepared?.stop();
       if (context && context.state !== "closed") void context.close().catch(() => undefined);
     },
   };
@@ -82,30 +84,15 @@ export async function captureMicrophone(
     // Resume immediately, before downloads, to retain the Join button's user activation.
     void context.resume().catch(() => undefined);
     const { module, model } = engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
-    await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v1/worklet.js" : "/audio/noise-v1/worklet.js");
+    await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet.js" : "/audio/noise-v1/worklet.js");
     signal.throwIfAborted();
     node = new AudioWorkletNode(context, engine === "dpdfnet8" ? "caper-dpdfnet8" : "caper-noise", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
       channelCount: 1, channelCountMode: "explicit",
       processorOptions: { engine, module, model, attenuationLimit },
     });
-    let workerReady: ((error?: Error) => void) | undefined;
     if (engine === "dpdfnet8") {
-      worker = new Worker("/audio/dpdfnet8-v1/worker.js", { type: "module", name: "caper-dpdfnet8" });
-      worker.onmessage = ({ data }) => {
-        if (data?.type === "ready") workerReady?.();
-        else if (data?.type === "output") node?.port.postMessage(data, [data.samples]);
-        else if (workerReady) workerReady(new Error("Noise suppression failed"));
-        else node?.port.postMessage({ type: "failed" });
-      };
-      worker.onerror = () => {
-        if (workerReady) workerReady(new Error("Noise suppression failed"));
-        else node?.port.postMessage({ type: "failed" });
-      };
-      node.port.addEventListener("message", ({ data }) => {
-        if (data?.type === "process") worker?.postMessage(data, [data.samples]);
-      });
-      node.port.start();
+      prepared = dpdfnet.take();
     }
     await new Promise<void>((resolve, reject) => {
       // ORT's first model compile is substantially slower than the small WASM engines.
@@ -114,17 +101,31 @@ export async function captureMicrophone(
       const finish = (error?: Error) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
-        workerReady = undefined;
         error ? reject(error) : resolve();
       };
-      if (engine === "dpdfnet8") workerReady = finish;
+      if (prepared) void prepared.ready.then(() => finish(), finish);
       signal.addEventListener("abort", abort, { once: true });
       node!.onprocessorerror = () => finish(new Error("Noise suppression failed"));
-      node!.port.onmessage = ({ data }) => finish(data === "ready" ? undefined : new Error("Noise suppression failed"));
+      node!.port.onmessage = ({ data }) => {
+        if (data !== "ready") finish(new Error("Noise suppression failed"));
+        else if (!prepared) finish(); // DPDFNet must wait for its worker, not the worklet.
+      };
     });
     // The context may be blocked by autoplay policy. Do not hang joining forever.
     if (context.state !== "running") throw new Error("Audio context did not start");
     signal.throwIfAborted();
+    if (prepared) {
+      const worker = prepared.worker;
+      worker.onmessage = ({ data }) => {
+        if (data?.type === "output") node?.port.postMessage(data, [data.samples]);
+        else node?.port.postMessage({ type: "failed" });
+      };
+      worker.onerror = () => node?.port.postMessage({ type: "failed" });
+      node.port.addEventListener("message", ({ data }) => {
+        if (data?.type === "process") worker.postMessage(data, [data.samples]);
+      });
+      node.port.start();
+    }
     source = context.createMediaStreamSource(stream);
     destination = context.createMediaStreamDestination();
     destination.channelCount = 1;

@@ -3,20 +3,19 @@ import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 
 const revision = "dd6818d00f50c836fed43a6243ebe49116de5964";
-const variant = process.argv[2] ?? "2";
-if (!["2", "8"].includes(variant)) throw new Error("Use model variant 2 or 8");
-const filename = `dpdfnet${variant}_48khz_hr.onnx`;
-const destination = new URL(`../apps/web/public/audio/dpdfnet${variant}-v1/`, import.meta.url);
+if ((process.argv[2] ?? "8") !== "8") throw new Error("Only DPDFNet-8 is supported");
+const filename = "dpdfnet8_48khz_hr.onnx";
+const destination = new URL("../apps/web/public/audio/dpdfnet8-v2/", import.meta.url);
 await mkdir(destination, { recursive: true });
 const runtime = JSON.parse(await readFile(new URL("../node_modules/onnxruntime-web/package.json", import.meta.url), "utf8"));
 if (runtime.version !== "1.23.2") throw new Error("Unexpected ONNX Runtime version");
 const response = await fetch(`https://huggingface.co/Ceva-IP/DPDFNet/resolve/${revision}/onnx/${filename}?download=true`, { signal: AbortSignal.timeout(60_000) });
 if (!response.ok) throw new Error(`model download failed: ${response.status}`);
 const model = Buffer.from(await response.arrayBuffer());
-const hash = variant === "2" ? "7f0575a5cec0ba4ffd8f8bd657e06d007e4ccdd955d76faab922b9d3291dc14b" : "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631";
+const hash = "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631";
 if (createHash("sha256").update(model).digest("hex") !== hash) throw new Error("model checksum mismatch");
 await writeFile(new URL(filename, destination), model);
-for (const name of variant === "2" ? ["ort.wasm.bundle.min.mjs", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm"] : []) {
+for (const name of ["ort.wasm.bundle.min.mjs", "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm"]) {
   await cp(new URL(`../node_modules/onnxruntime-web/dist/${name}`, import.meta.url), new URL(name, destination));
 }
 for (const [name, url, hash] of [

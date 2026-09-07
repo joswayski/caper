@@ -4,9 +4,17 @@ import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import * as ort from "onnxruntime-web";
-import { DpdfnetStream } from "../../public/audio/dpdfnet8-v1/dsp.js";
+import { DpdfnetStream } from "../../public/audio/dpdfnet8-v2/dsp.js";
 
-const assets = new URL("../../public/audio/dpdfnet8-v1/", import.meta.url);
+const assets = new URL("../../public/audio/dpdfnet8-v2/", import.meta.url);
+
+test("shipped browser ONNX runtime is the intact pinned WASM binary", async () => {
+  // Model inference below uses node_modules; also verify the bytes actually served to browsers.
+  const wasm = await readFile(new URL("ort-wasm-simd-threaded.wasm", assets));
+  assert.equal(wasm.length, 11_905_541);
+  assert.equal(createHash("sha256").update(wasm).digest("hex"), "45eaee27761ad883742a8d4b8fce1538d60ce43b51adf1726fafccc59b8c1a15");
+  assert.equal(WebAssembly.validate(wasm), true);
+});
 
 test("pinned DPDFNet-8 model performs stateful inference on real spectra", async () => {
   ort.env.wasm.numThreads = 1;

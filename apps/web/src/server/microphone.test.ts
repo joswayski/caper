@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { captureMicrophone } from "../media/microphone.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
+import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
 
 class Track {
   enabled = true;
@@ -111,7 +112,7 @@ test("DPDFNet-8 readiness comes from its worker; runtime failure stops the publi
   install("Worker", class {
     onmessage?: (event: { data: unknown }) => void;
     terminated = false;
-    constructor(url: string) { assert.equal(url, "/audio/dpdfnet8-v1/worker.js"); worker = this; }
+    constructor(url: string) { assert.equal(url, "/audio/dpdfnet8-v2/worker.js"); worker = this; }
     terminate() { this.terminated = true; }
   });
   const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined);
@@ -129,6 +130,77 @@ test("DPDFNet-8 readiness comes from its worker; runtime failure stops the publi
   assert.equal(microphone.track.readyState, "ended");
   assert.equal(worker.terminated, true);
   microphone.stop();
+});
+
+function preparedDpdfnet(t: TestContext) {
+  const { install, raw } = setup(t);
+  const workers: Array<{ onmessage?: (event: { data: unknown }) => void; terminateCalls: number }> = [];
+  install("Worker", class {
+    onmessage?: (event: { data: unknown }) => void;
+    terminateCalls = 0;
+    constructor() { workers.push(this); }
+    terminate() { this.terminateCalls++; }
+  });
+  const preparation = new DpdfnetPreparation();
+  t.after(() => preparation.stop());
+  return { preparation, workers, raw };
+}
+
+for (const warmed of [false, true]) test(`capture exclusively consumes DPDFNet preparation (already ready: ${warmed})`, async (t) => {
+  const { preparation, workers } = preparedDpdfnet(t);
+  const warming = preparation.prepare();
+  assert.equal(Context.latest, undefined, "preparation must not open an audio context");
+  if (warmed) {
+    workers[0].onmessage!({ data: { type: "ready" } });
+    await warming;
+  }
+  let ready = false;
+  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "headphones", new NoiseAssets(), preparation)
+    .then((microphone) => { ready = true; return microphone; });
+  await tick();
+  assert.equal(workers.length, 1, "Join must not create another model instance");
+  if (!warmed) {
+    WorkletNode.latest!.port.emit("ready");
+    await tick();
+    assert.equal(ready, false, "worklet readiness cannot bypass worker initialization");
+    assert.equal(Context.latest!.source.connections.length, 0);
+    workers[0].onmessage!({ data: { type: "ready" } });
+    await warming;
+  }
+  const microphone = await capturing;
+  assert.equal(microphone.track, Context.latest!.processed);
+  assert.match(microphone.status, /DPDFNet-8 HR active/);
+  preparation.stop();
+  assert.equal(workers[0].terminateCalls, 0);
+  microphone.stop();
+  assert.equal(workers[0].terminateCalls, 1);
+});
+
+for (const readyThenAbort of [false, true]) test(`cancel releases the transferred DPDFNet worker (ready/abort race: ${readyThenAbort})`, async (t) => {
+  const { preparation, workers, raw } = preparedDpdfnet(t);
+  const controller = new AbortController();
+  const capturing = captureMicrophone(undefined, "dpdfnet8", controller.signal, () => undefined, "headphones", new NoiseAssets(), preparation);
+  const rejected = assert.rejects(capturing, { name: "AbortError" });
+  await tick();
+  if (readyThenAbort) workers[0].onmessage!({ data: { type: "ready" } });
+  controller.abort();
+  await rejected;
+  assert.equal(workers[0].terminateCalls, 1);
+  assert.equal(raw.readyState, "ended");
+  assert.equal(Context.latest!.state, "closed");
+  assert.equal(Context.latest!.source.connections.length, 0);
+});
+
+test("failed transferred DPDFNet initialization stops capture rather than returning raw audio", async (t) => {
+  const { preparation, workers, raw } = preparedDpdfnet(t);
+  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "headphones", new NoiseAssets(), preparation);
+  const rejected = assert.rejects(capturing, /DPDFNet-8 HR could not start/);
+  await tick();
+  workers[0].onmessage!({ data: { type: "failed" } });
+  await rejected;
+  assert.equal(workers[0].terminateCalls, 1);
+  assert.equal(raw.readyState, "ended");
+  assert.equal(Context.latest!.source.connections.length, 0);
 });
 
 test("headphones opt out of echo and automatic level processing; speakers retain both", async (t) => {
