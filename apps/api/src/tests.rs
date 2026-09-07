@@ -129,6 +129,60 @@ async fn joined(s: &AppState, name: &str) -> Value {
     .expect("session and TURN provisioning should run concurrently")
     .1
 }
+
+#[tokio::test]
+async fn snapshot_includes_only_valid_cloudflare_country_codes() {
+    let (s, _) = state();
+    let join = |name: &str, country: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/media/join")
+            .header("content-type", "application/json")
+            .header("cf-ipcountry", country)
+            .body(Body::from(json!({"name":name}).to_string()))
+            .unwrap()
+    };
+
+    let located_response = app(s.clone()).oneshot(join("located", "US")).await.unwrap();
+    let located: Value = serde_json::from_slice(
+        &to_bytes(located_response.into_body(), BODY_LIMIT)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let unknown_response = app(s.clone()).oneshot(join("unknown", "XX")).await.unwrap();
+    let unknown: Value = serde_json::from_slice(
+        &to_bytes(unknown_response.into_body(), BODY_LIMIT)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let snapshot = call(
+        app(s),
+        "POST",
+        "/api/media/snapshot",
+        Some(located["token"].as_str().unwrap()),
+        json!({}),
+    )
+    .await
+    .1;
+    let participants = snapshot["participants"].as_array().unwrap();
+    assert_eq!(
+        participants
+            .iter()
+            .find(|participant| participant["name"] == "located")
+            .unwrap()["countryCode"],
+        "US"
+    );
+    assert!(
+        participants
+            .iter()
+            .find(|participant| participant["id"] == unknown["id"])
+            .unwrap()
+            .get("countryCode")
+            .is_none()
+    );
+}
 async fn monitor_joined(s: &AppState, token: &str, role: &str) -> (StatusCode, Value) {
     call(
         app(s.clone()),

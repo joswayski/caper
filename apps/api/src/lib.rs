@@ -403,6 +403,7 @@ struct Participant {
     id: Uuid,
     token: String,
     name: String,
+    country_code: Option<String>,
     session: String,
     turn_usernames: Vec<String>,
     muted: bool,
@@ -669,6 +670,13 @@ struct Join {
     name: String,
     monitor: Option<MonitorRole>,
 }
+
+fn country_code(headers: &HeaderMap) -> Option<String> {
+    let code = headers.get("cf-ipcountry")?.to_str().ok()?;
+    (code.len() == 2 && code != "XX" && code.bytes().all(|byte| byte.is_ascii_uppercase()))
+        .then(|| code.to_owned())
+}
+
 async fn join(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -679,6 +687,7 @@ async fn join(
     if name.is_empty() || name.chars().count() > 40 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
+    let country_code = country_code(&headers);
     let monitor = {
         let mut r = s.registry.lock().await;
         let now = Instant::now();
@@ -762,6 +771,7 @@ async fn join(
         id,
         token: token.clone(),
         name: name.into(),
+        country_code,
         session,
         turn_usernames: ice
             .iter()
@@ -819,6 +829,8 @@ async fn release_join_reservation(s: &AppState, monitor: Option<Monitor>) {
 struct View<'a> {
     id: Uuid,
     name: &'a str,
+    #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
+    country_code: Option<&'a str>,
     muted: bool,
     deafened: bool,
     tracks: Vec<TrackView>,
@@ -848,6 +860,7 @@ async fn snapshot(
         .map(|p| View {
             id: p.id,
             name: &p.name,
+            country_code: p.country_code.as_deref(),
             muted: p.muted,
             deafened: p.deafened,
             tracks: p

@@ -7,6 +7,14 @@ import VoiceWaveform from "./VoiceWaveform";
 import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
+const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+
+function ParticipantCountry({ code }: { code?: string }) {
+  if (!code || !/^[A-Z]{2}$/.test(code)) return null;
+  const name = regionNames.of(code) ?? code;
+  const flag = String.fromCodePoint(...[...code].map((letter) => 0x1f1e6 + letter.charCodeAt(0) - 65));
+  return <span className="participant-country" aria-label={`From ${name}`} title={name}>{flag}</span>;
+}
 
 function AudioOutput({ stream, muted, name, output }: { stream: MediaStream; muted: boolean; name: string; output: string }) {
   const ref = useRef<HTMLAudioElement>(null);
@@ -94,6 +102,7 @@ export default function Call() {
               const waveformMuted = participantMuted && !state.monitoring;
               return <li className="participant" key={participant.id}>
                 <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                <ParticipantCountry code={participant.countryCode} />
                 <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantDeafened ? <small>Deafened</small> : participantMuted ? <small>Muted</small> : null}</span>
                 <VoiceWaveform
                   stream={stream}
@@ -122,7 +131,7 @@ export default function Call() {
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
               <button className="primary-button" disabled={available !== true || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
-            <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. Mic test can keep a brief recording temporarily in this browser; Caper does not store recordings on its servers. Other visitors may record. Not end-to-end encrypted.</div>
+            <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you and see your approximate country, inferred from your IP address. Caper does not store your IP address. Mic test can keep a brief recording temporarily in this browser; Caper does not store recordings on its servers. Other visitors may record. Not end-to-end encrypted.</div>
           </div> : state.monitorStream && !actionPending
             ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} />
             : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Creating a private return through the call service. Press Record when it’s ready." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
