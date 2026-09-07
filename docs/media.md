@@ -586,6 +586,9 @@ to Cloudflare SFU and receiving/decoding it on a separate PeerConnection. It use
 the same codec preference and SFU/TURN provisioning as channel participants.
 Only the received track is played. This exercises the call path, **not the exact
 network conditions, headphones or volume of every other participant**.
+The private receiver attaches a muted sink as soon as its track arrives so the
+browser drains the WebRTC jitter buffer continuously. Waiting until Record is
+pressed can make Chromium consume queued startup audio at catch-up speed.
 
 Pressing **Mic test** establishes the private return. **Record microphone** starts
 recording explicitly. A timer, received-audio meter and **Stop & play back**
@@ -753,9 +756,10 @@ Default-preset / snippet validation, September 6, 2026:
 - Entry, recording, ready and live layouts inspected, including 390px mobile;
   device selectors restored after correcting the removal scope. Signaling/channel state mocked and generated tone used. No new
   live Cloudflare, physical speech-quality or native desktop acceptance claimed.
-- Recording keeps a muted media element attached to the received stream while
-  MediaRecorder is active: Chromium otherwise leaves its WebRTC jitter buffer
-  undrained and can produce an empty recording.
+- The private return keeps a muted media element attached from track arrival
+  through teardown, and recording retains its own sink as a safeguard: Chromium
+  otherwise leaves its WebRTC jitter buffer undrained, which can produce empty
+  audio or accelerated catch-up at the start of a recording.
 
 Received-test / DPDFNet validation, September 6, 2026:
 

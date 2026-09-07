@@ -3,12 +3,14 @@ import type { JoinResponse, SessionDescriptionResponse } from "./types";
 
 type Request = <T = void>(operation: string, body: object, token: string) => Promise<T>;
 
-/** Owns two private SFU sessions. Borrows capture; never plays or stops its track. */
+/** Owns two private SFU sessions. Borrows capture and silently drains the received track. */
 export class ReceivedMonitor {
   private readonly tokens = new Set<string>();
   private readonly peers: RTCPeerConnection[] = [];
   private sender?: RTCRtpSender;
   private stream?: MediaStream;
+  private receiver?: HTMLAudioElement;
+  private receiverReady?: Promise<void>;
   private heartbeat?: number;
   private stopped = false;
   private readonly request: Request;
@@ -71,6 +73,14 @@ export class ReceivedMonitor {
       rx.ontrack = ({ track: received }) => {
         if (this.stopped) { received.stop(); return; }
         this.stream = new MediaStream([received]);
+        // Drain the remote jitter buffer as soon as the track arrives. Waiting
+        // until recording starts can make Chromium play accumulated audio at
+        // catch-up speed at the beginning of the saved clip.
+        this.receiver = new Audio();
+        this.receiver.muted = true;
+        this.receiver.srcObject = this.stream;
+        this.receiverReady = this.receiver.play();
+        void this.receiverReady.catch(() => undefined);
         received.onended = () => { if (!this.stopped) this.failed(); };
       };
       const subscription = await this.request<SessionDescriptionResponse>("subscribe", { trackId: publication.trackId }, joined[1].token);
@@ -83,6 +93,8 @@ export class ReceivedMonitor {
       await Promise.all(this.peers.map((pc) => waitFor(pc, "connectionstatechange", 12_000, () => this.stopped || pc.connectionState === "connected")));
       this.check();
       if (!this.stream) throw new Error("No received microphone audio.");
+      await this.receiverReady;
+      this.check();
       return this.stream;
     } catch (error) {
       this.stop();
@@ -101,6 +113,8 @@ export class ReceivedMonitor {
     if (this.stopped) return;
     this.stopped = true;
     window.clearInterval(this.heartbeat);
+    this.receiver?.pause();
+    if (this.receiver) this.receiver.srcObject = null;
     for (const pc of this.peers) pc.close();
     this.stream?.getTracks().forEach((track) => track.stop());
     for (const token of this.tokens) void this.request("leave", {}, token).catch(() => undefined);
