@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
 import MicPlayback from "./MicPlayback";
-import VoiceWaveform from "./VoiceWaveform";
+import VoiceActivity from "./VoiceActivity";
 import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
@@ -15,23 +16,60 @@ function ParticipantCountry({ code }: { code?: string }) {
   return <span className="participant-country" aria-label={`From ${name}`} title={name}>{flag}</span>;
 }
 
-function AudioOutput({ stream, muted, name, output }: { stream: MediaStream; muted: boolean; name: string; output: string }) {
+function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStream; muted: boolean; name: string; output: string; volume: number }) {
   const ref = useRef<HTMLAudioElement>(null);
+  const gainRef = useRef<GainNode | null>(null);
+  const contextRef = useRef<AudioContext | null>(null);
   const [blocked, setBlocked] = useState(false);
   const [deviceError, setDeviceError] = useState(false);
   useEffect(() => {
     const element = ref.current;
-    if (element) {
+    if (!element) return;
+    let context: AudioContext | undefined;
+    let source: MediaStreamAudioSourceNode | undefined;
+    let gain: GainNode | undefined;
+    let destination: MediaStreamAudioDestinationNode | undefined;
+    try {
+      context = acquireAudioContext();
+      source = context.createMediaStreamSource(stream);
+      gain = context.createGain();
+      destination = context.createMediaStreamDestination();
+      source.connect(gain).connect(destination);
+      gain.gain.value = volume / 100;
+      gainRef.current = gain;
+      contextRef.current = context;
+      element.srcObject = destination.stream;
+      void Promise.all([context.resume(), element.play()]).then(() => setBlocked(false)).catch(() => setBlocked(true));
+    } catch {
+      source?.disconnect();
+      gain?.disconnect();
+      destination?.stream.getTracks().forEach((track) => track.stop());
+      if (context) releaseAudioContext(context);
+      context = undefined;
       element.srcObject = stream;
-      void element.play().catch(() => setBlocked(true));
+      element.volume = Math.min(volume / 100, 1);
+      void element.play().then(() => setBlocked(false)).catch(() => setBlocked(true));
     }
-    return () => { if (element) element.srcObject = null; };
+    return () => {
+      element.srcObject = null;
+      source?.disconnect();
+      gain?.disconnect();
+      destination?.stream.getTracks().forEach((track) => track.stop());
+      gainRef.current = null;
+      contextRef.current = null;
+      if (context) releaseAudioContext(context);
+    };
   }, [stream]);
+  useEffect(() => {
+    const gain = gainRef.current;
+    if (gain) gain.gain.setValueAtTime(volume / 100, gain.context.currentTime);
+    else if (ref.current) ref.current.volume = Math.min(volume / 100, 1);
+  }, [volume]);
   useEffect(() => {
     if (ref.current?.setSinkId) void ref.current.setSinkId(output).then(() => setDeviceError(false)).catch(() => setDeviceError(true));
   }, [output]);
   return <><audio ref={ref} autoPlay muted={muted} />
-    {blocked && <button onClick={() => void ref.current?.play().then(() => setBlocked(false)).catch(() => setBlocked(true))}>Play {name} audio</button>}
+    {blocked && <button onClick={() => void Promise.all([contextRef.current?.resume(), ref.current?.play()]).then(() => setBlocked(false)).catch(() => setBlocked(true))}>Play {name} audio</button>}
     {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
 
@@ -44,6 +82,9 @@ export default function Call() {
   const [actionError, setActionError] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
+  const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
+  const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
+  const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
@@ -91,22 +132,23 @@ export default function Call() {
         <aside className="people-panel">
           <div className="panel-heading"><div><p className="eyebrow">Caper</p><h1>Voice channel</h1></div></div>
           <div className="voice-channel"><span aria-hidden="true">◖))</span> General {connected && <small aria-label={`${state.participants.length} in voice`}>{state.participants.length}</small>}</div>
-          <ul aria-label="People in voice">
+          <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label="People in voice">
             {state.participants.map((participant) => {
               const self = participant.id === state.selfId;
               const speaking = activeParticipants.has(participant.id);
               const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
               const participantMuted = self ? state.muted : participant.muted;
               const participantDeafened = self ? state.deafened : participant.deafened;
-              const waveformMuted = participantMuted && !state.monitoring;
-              return <li className="participant" key={participant.id}>
-                <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                <ParticipantCountry code={participant.countryCode} />
+              const activityMuted = participantMuted && !state.monitoring;
+              return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
+                <span className="participant-avatar">
+                  <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                  <ParticipantCountry code={participant.countryCode} />
+                </span>
                 <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantDeafened ? <small>Deafened</small> : participantMuted ? <small>Muted</small> : null}</span>
-                <VoiceWaveform
+                <VoiceActivity
                   stream={stream}
-                  muted={waveformMuted}
-                  label={`${participant.name} live audio level`}
+                  muted={activityMuted}
                   onActivityChange={(active) => setActiveParticipants((current) => {
                     if (current.has(participant.id) === active) return current;
                     const next = new Set(current);
@@ -114,6 +156,32 @@ export default function Call() {
                     return next;
                   })}
                 />
+                {!self && <button className="participant-menu-button" type="button" aria-label={`Volume for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>•••</button>}
+                {volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
+                  <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    step="5"
+                    value={participantVolumes[participant.id] ?? 100}
+                    aria-label={`${participant.name} volume`}
+                    onChange={(event) => setParticipantVolumes((current) => ({ ...current, [participant.id]: Number(event.target.value) }))}
+                  />
+                  <label className="participant-mute">
+                    <span>Mute</span>
+                    <input
+                      type="checkbox"
+                      checked={mutedParticipants.has(participant.id)}
+                      onChange={(event) => setMutedParticipants((current) => {
+                        const next = new Set(current);
+                        event.target.checked ? next.add(participant.id) : next.delete(participant.id);
+                        return next;
+                      })}
+                    />
+                  </label>
+                  <small>Only changes what you hear.</small>
+                </div>}
               </li>;
             })}
           </ul>
@@ -134,7 +202,7 @@ export default function Call() {
           </div> : state.monitorStream && !actionPending
             ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} />
             : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Creating a private return through the call service. Press Record when it’s ready." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
-          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} output={output} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
+          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {!idle && <p className="noise-status">Use headphones · natural input, without browser echo cancellation or automatic volume adjustment.</p>}
