@@ -5,7 +5,7 @@ use sqlx::{FromRow, PgPool};
 #[derive(Clone, Debug, FromRow)]
 pub struct User {
     pub id: i64,
-    pub public_id: String,
+    pub external_id: String,
     pub workos_user_id: String,
     pub email: String,
     pub username: Option<String>,
@@ -23,7 +23,7 @@ pub struct PublicAccount<'a> {
 impl User {
     pub fn public(&self) -> PublicAccount<'_> {
         PublicAccount {
-            id: &self.public_id,
+            id: &self.external_id,
             username: self.username.as_deref(),
             display_name: self.display_name.as_deref(),
         }
@@ -47,7 +47,7 @@ pub async fn sync_workos_user(
 ) -> Result<User, sqlx::Error> {
     let email = normalize_email(verified_email);
     sqlx::query_as(
-        "INSERT INTO users (public_id, workos_user_id, email) VALUES ($1, $2, $3)
+        "INSERT INTO users (external_id, workos_user_id, email) VALUES ($1, $2, $3)
          ON CONFLICT (workos_user_id) DO UPDATE
          SET email = EXCLUDED.email, updated_at = now() RETURNING *",
     )

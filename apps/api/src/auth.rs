@@ -120,7 +120,7 @@ impl AuthVerifier {
             return Ok(Principal {
                 user: accounts::User {
                     id: 1,
-                    public_id: "V1StGXR8_Z5jdHi6B-myT".into(),
+                    external_id: "V1StGXR8_Z5jdHi6B-myT".into(),
                     workos_user_id: "user_test".into(),
                     email: "test@example.com".into(),
                     username: Some("test".into()),

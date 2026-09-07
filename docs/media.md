@@ -990,7 +990,8 @@ logout or continued login availability during a WorkOS outage.
 
 Bigint IDs stay internal for joins and are never exposed in profile responses.
 Random NanoIDs provide permanent public references without revealing signup order
-or the internal sequence. The API returns that public ID as `id`, alongside
+or the internal sequence. Stored as `external_id` for integrations and external
+references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
 

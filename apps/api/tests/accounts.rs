@@ -9,8 +9,8 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
         .await
         .unwrap();
     assert!(user.id > 0);
-    assert_eq!(user.public_id.len(), 21);
-    assert_ne!(user.public_id, user.id.to_string());
+    assert_eq!(user.external_id.len(), 21);
+    assert_ne!(user.external_id, user.id.to_string());
     assert_eq!(user.email, "jose+test@example.com");
     assert!(!user.onboarded());
 
@@ -18,7 +18,7 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(same.id, user.id);
-    assert_eq!(same.public_id, user.public_id);
+    assert_eq!(same.external_id, user.external_id);
     assert_eq!(same.email, "changed@example.com");
 
     let profile = set_profile(&pool, user.id, " Jose_1 ", " José 🌱 ")
@@ -30,13 +30,13 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
     assert!(profile.onboarded());
     assert_eq!(
         serde_json::to_value(profile.public()).unwrap(),
-        serde_json::json!({"id":user.public_id,"username":"jose_1", "displayName":"José 🌱"})
+        serde_json::json!({"id":user.external_id,"username":"jose_1", "displayName":"José 🌱"})
     );
 
     let other = sync_workos_user(&pool, "user_OTHER", "other@example.com")
         .await
         .unwrap();
-    assert_ne!(other.public_id, user.public_id);
+    assert_ne!(other.external_id, user.external_id);
     assert!(
         set_profile(&pool, other.id, "JOSE_1", "Other")
             .await
@@ -47,7 +47,7 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
         .unwrap()
         .unwrap();
     assert_eq!(renamed.id, user.id);
-    assert_eq!(renamed.public_id, user.public_id);
+    assert_eq!(renamed.external_id, user.external_id);
     assert_eq!(renamed.username.as_deref(), Some("jose_new"));
 }
 
@@ -60,7 +60,7 @@ async fn identity_constraints_and_concurrency(pool: PgPool) {
     );
     let (a, b) = (a.unwrap(), b.unwrap());
     assert_eq!(a.id, b.id);
-    assert_eq!(a.public_id, b.public_id);
+    assert_eq!(a.external_id, b.external_id);
     assert!(
         sync_workos_user(&pool, "user_DIFFERENT", "same@example.com")
             .await
