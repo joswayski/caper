@@ -1,5 +1,6 @@
 use crate::{ApiError, accounts};
 use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -33,8 +34,10 @@ struct CachedKeys {
     set: JwkSet,
     fetched: Instant,
 }
+#[derive(Clone)]
 struct CachedIdentity {
     email: String,
+    updated_at: DateTime<Utc>,
     fetched: Instant,
 }
 
@@ -68,6 +71,7 @@ struct WorkosUser {
     id: String,
     email: String,
     email_verified: bool,
+    updated_at: DateTime<Utc>,
 }
 
 impl AuthVerifier {
@@ -122,7 +126,7 @@ impl AuthVerifier {
                     id: 1,
                     external_id: "V1StGXR8_Z5jdHi6B-myT".into(),
                     workos_user_id: "user_test".into(),
-                    email: "test@example.com".into(),
+                    email: Some("test@example.com".into()),
                     username: Some("test".into()),
                     display_name: Some("Test User".into()),
                 },
@@ -132,13 +136,17 @@ impl AuthVerifier {
         let configured = self.inner.as_ref().ok_or_else(unavailable)?;
         let pool = pool.ok_or_else(unavailable)?;
         let claims = configured.verify(token).await?;
-        let email = configured.verified_email(&claims.sub).await?;
-        let user = accounts::sync_workos_user(pool, &claims.sub, &email)
-            .await
-            .map_err(|_| {
-                tracing::error!("account synchronization failed");
-                unavailable()
-            })?;
+        let identity = configured.verified_identity(&claims.sub).await?;
+        let user =
+            accounts::sync_workos_user(pool, &claims.sub, &identity.email, identity.updated_at)
+                .await
+                .map_err(|error| {
+                    if matches!(error, sqlx::Error::RowNotFound) {
+                        return unauthorized();
+                    }
+                    tracing::error!("account synchronization failed");
+                    unavailable()
+                })?;
         Ok(Principal {
             user,
             expires_at: claims.exp,
@@ -188,16 +196,16 @@ impl Configured {
         validate(token, &key, &self.client_id)
     }
 
-    async fn verified_email(&self, subject: &str) -> Result<String, ApiError> {
-        if let Some(email) = self
+    async fn verified_identity(&self, subject: &str) -> Result<CachedIdentity, ApiError> {
+        if let Some(identity) = self
             .identities
             .lock()
             .await
             .get(subject)
             .filter(|v| v.fetched.elapsed() < CACHE_TTL)
-            .map(|v| v.email.clone())
+            .cloned()
         {
-            return Ok(email);
+            return Ok(identity);
         }
         let response = self
             .http
@@ -223,14 +231,13 @@ impl Configured {
         if cache.len() >= MAX_IDENTITY_CACHE {
             cache.clear();
         }
-        cache.insert(
-            subject.into(),
-            CachedIdentity {
-                email: user.email.clone(),
-                fetched: Instant::now(),
-            },
-        );
-        Ok(user.email)
+        let identity = CachedIdentity {
+            email: user.email,
+            updated_at: user.updated_at,
+            fetched: Instant::now(),
+        };
+        cache.insert(subject.into(), identity.clone());
+        Ok(identity)
     }
 }
 

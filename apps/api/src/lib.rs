@@ -37,6 +37,7 @@ const BODY_LIMIT: usize = 256 * 1024;
 pub mod accounts;
 mod auth;
 mod db;
+mod webhook;
 
 pub use db::{connect_database, migrate_database};
 
@@ -51,6 +52,7 @@ pub struct Config {
     provider_base: String,
     workos_client_id: Option<String>,
     workos_api_key: Option<String>,
+    workos_webhook_secret: Option<String>,
     #[cfg(test)]
     auth_fixture: bool,
 }
@@ -72,6 +74,7 @@ impl Config {
             provider_base: "https://rtc.live.cloudflare.com/v1".into(),
             workos_client_id: get("WORKOS_CLIENT_ID"),
             workos_api_key: get("WORKOS_API_KEY"),
+            workos_webhook_secret: get("WORKOS_WEBHOOK_SECRET"),
             #[cfg(test)]
             auth_fixture: false,
         };
@@ -103,6 +106,7 @@ impl Config {
             provider_base: "mock".into(),
             workos_client_id: None,
             workos_api_key: None,
+            workos_webhook_secret: None,
             auth_fixture: true,
         }
     }
@@ -764,6 +768,7 @@ pub fn app(state: AppState) -> Router {
         ));
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
+        .route("/api/webhooks/workos", post(webhook::handle))
         .merge(protected)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))

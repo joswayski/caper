@@ -7,7 +7,10 @@ body {
 
 .page { min-height: 100vh; background: #0c0d0f; }
 .shell { width: min(1520px, calc(100% - 80px)); margin-inline: auto; }
-.site-header { min-height: 104px; display: flex; align-items: center; }
+.site-header { min-height: 104px; display: flex; align-items: center; justify-content: space-between; }
+.login-button { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 700; text-decoration: none; }
+.login-button:hover { border-color: var(--terracotta); }
+.login-button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
 .wordmark { color: var(--text); font-size: 1.9rem; font-weight: 900; letter-spacing: -.075em; text-decoration: none; }
 .hero { min-height: calc(100vh - 104px); display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; column-gap: clamp(20px, 3.2vw, 52px); padding-block: 48px 96px; }
 .hero-copy { position: relative; z-index: 2; padding-left: clamp(20px, 4.2vw, 72px); }
