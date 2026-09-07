@@ -204,7 +204,9 @@ export class PublicCallClient {
     } catch (error) {
       if (capturedMicrophone && !this.senders.has("microphone")) this.stopMicrophone(capturedMicrophone);
       if (generation !== this.generation) return;
-      await this.teardown(false);
+      // Local teardown is synchronous; provider cleanup must not delay the
+      // failed state or a subsequent explicit Join.
+      void this.teardown(false);
       if (generation !== this.generation) return;
       this.phase = "failed";
       this.emit(message(error));
@@ -707,14 +709,16 @@ export class PublicCallClient {
 
   private async rejoin() {
     if (++this.reconnects > MAX_REJOINS) {
-      await this.teardown(true);
+      void this.teardown(true);
       this.resetMonitoring();
       this.phase = "failed";
       this.emit("Connection lost. Please join again.");
       return;
     }
     const generation = ++this.generation;
-    await this.teardown(false);
+    // Start old-capability cleanup without putting the replacement session
+    // behind provider latency. teardown has already stopped local media here.
+    void this.teardown(false);
     if (generation !== this.generation) return;
     this.phase = "joining";
     this.emit();
@@ -729,6 +733,9 @@ export class PublicCallClient {
     } catch {
       if (captured) this.stopMicrophone(captured);
       if (generation !== this.generation) return;
+      // Stop the failed attempt before scheduling another one; its leave can
+      // finish independently of the next generation.
+      void this.teardown(false);
       this.scheduleReconnect();
     }
   }

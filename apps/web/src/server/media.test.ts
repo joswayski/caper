@@ -30,6 +30,23 @@ test("adapter forwards only credentials needed by the fixed API and preserves 20
   assert.equal(response.status, 204);
 });
 
+test("adapter preserves the Rust failure reference without exposing other upstream headers", async (t) => {
+  const old = process.env.MEDIA_API_URL;
+  process.env.MEDIA_API_URL = "http://media:3001";
+  t.after(() => { if (old) process.env.MEDIA_API_URL = old; else delete process.env.MEDIA_API_URL; });
+  const errorId = "01900000-0000-4000-8000-000000000001";
+  t.mock.method(globalThis, "fetch", async () => Response.json({ error: "media provider unavailable" }, {
+    status: 502, headers: { "x-caper-error-id": errorId, "set-cookie": "secret=value" },
+  }));
+  const response = await proxyMedia(new Request("https://caper.chat/api/media/join", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  }));
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("x-caper-error-id"), errorId);
+  assert.equal(response.headers.get("set-cookie"), null);
+  assert.deepEqual(await response.json(), { error: "media provider unavailable" });
+});
+
 test("SSE proxy streams immediately, survives the ordinary deadline, and forwards cancellation", async (t) => {
   const old = process.env.MEDIA_API_URL;
   process.env.MEDIA_API_URL = "http://media:3001";

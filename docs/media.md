@@ -157,15 +157,16 @@ then shows an enabled Join button without awaiting the provider cleanup response
 The old capability is captured before reset and sent to `/leave` with Fetch
 `keepalive`; completion or failure never changes the next call's state. Late
 peer events and microphone replacement completions are also session-guarded.
-Automatic reconnect and join-error teardown still await server cleanup.
+Automatic reconnect and join-error teardown also stop local media synchronously
+and send old-token cleanup in the background. A failed Join reports its original
+error without waiting for Leave; late cleanup never changes a newer generation.
 
 The four-to-five-second leave delay was separate from ICE gathering. The Rust
-endpoint already removes registry membership/tokens and notifies SSE listeners
-before awaiting TURN revocation and track/dependent cleanup. The previous client
-kept its `leaving` phase until that entire HTTP request returned. Server cleanup
-still runs; it is no longer a UI gate. If the request cannot reach the API,
-remote presence may persist until the existing 45-second lease expires; provider
-cleanup retries and credential expiry remain unchanged. Local audio stays stopped
+endpoint removes registry membership/tokens and notifies SSE listeners before
+queueing TURN revocation and track/dependent cleanup. It returns without waiting
+for Cloudflare cleanup. The previous client kept its `leaving` phase until that
+entire HTTP request returned. If Leave cannot reach the API, remote presence may
+persist until the existing 45-second lease expires. Local audio stays stopped
 even on cleanup failure. Immediate rejoin still obeys the server's capacity and
 join-rate limits.
 
@@ -179,11 +180,93 @@ single local browser observations, not latency percentiles or physical-device
 coverage. An initial cold join failed before the leave test and was retried;
 these results do not resolve the earlier cold-start limitation.
 
-This is a web-only rollout. Deploy its merged web image through the existing
-`deploy-caper.yml` workflow; no API image, migration, or provider changes are
-required. Check that Leave immediately stops local audio and restores Join while
-an old `/leave` request is pending, including repeated leave/rejoin and a failed
-cleanup response. Do not treat background request duration as local leave latency.
+Those measurements describe the initial web-only Leave fix. The reliability
+changes below also require an API rollout. Do not treat background request
+duration as local leave latency.
+
+## Provider failures and cleanup
+
+Caper HTTP 502 does **not** prove Cloudflare returned 502. Provider HTTP errors,
+timeouts, network failures, response-body failures, invalid JSON, top-level or
+per-track error envelopes, and locally rejected response shapes keep the existing
+`502 {"error":"media provider unavailable"}` contract. They now carry an
+`x-caper-error-id` response header matching the Rust warning's `id`. This header
+also passes through the development adapter. Do not confuse it with the outer
+Cloudflare edge's `cf-ray` response header.
+
+`Cloudflare operation failed` logs include the operation (session creation, TURN
+issue/revoke, publish, subscribe, negotiate, close, or session read), failure kind,
+upstream HTTP status when available, upstream `cf-ray`, bounded error code, and
+elapsed milliseconds for that provider request. `media request failed` links the
+returned reference to those details. Local shape-validation failures have no
+invented upstream status or timing. Successful calls log duration at debug level.
+No request/response bodies, SDP, raw media, credentials, full URLs, session IDs,
+MIDs, or free-text upstream error descriptions are logged. Response bodies are
+bounded to 256 KiB; once a non-success HTTP status is received, collecting its
+optional error code has only a 250 ms budget before returning the known failure.
+
+Subscription failure preserves the original provider error instead of replacing
+it with a missing-MID rejection. An ambiguous mutation still invalidates that
+participant; continuing with potentially inconsistent SDP is not safe. Unknown
+subscription MIDs are discovered via a background session read and then closed.
+Registry removal, token revocation, dependent-subscription removal, and roster
+invalidation do not wait for provider cleanup.
+
+Cleanup uses an in-memory queue of at most 512 jobs and a single worker with four
+concurrent slots, checking for ready jobs every 250 ms. A separate five-second
+expiry sweep cannot be held up by provider IO. Each job has a 12-second bound;
+Cloudflare HTTP requests retain their 10-second timeout. Only session reads,
+`force:true` track closure (no SDP renegotiation), and TURN credential revocation
+are eligible for cleanup retries. Session creation, TURN issuance, tracks/new,
+and renegotiation are **never automatically replayed by the HTTP transport**.
+The existing client's bounded whole-session recovery is separate from replaying
+a mutation against the old session.
+
+Cleanup retries only network/timeouts and HTTP 408/429/500/502/503/504, at most five
+attempts per queued job, with 2/4/8/16-second delays plus up to 1.02 seconds jitter.
+Other HTTP rejections and invalid responses stop that job rather than looping.
+A full queue drops new jobs with a warning/error instead of growing memory;
+exhausted jobs are logged as abandoned, not reported as successful cleanup.
+Shutdown stops the background loops, waits for an active local expiry pass, and
+spends up to 20 seconds draining cleanup batches after HTTP requests drain.
+Crashes, exhausted retries, queue overflow, and shutdown deadlines can leave
+provider resources behind. TURN expiry remains the one-hour backstop; this is
+not a durable cleanup system or automatic provider failover.
+
+After merging, deploy **both** merged images using the normal **Deploy Caper API**
+and **Deploy Caper web** buttons. No migration, secrets, or Cloudflare configuration
+changes are required. Optional equivalent operator commands (replace the SHA):
+
+```sh
+MERGED_SHA=<full-merge-commit-sha>
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+gh workflow run deploy-caper.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+```
+
+For a new failure, copy its `x-caper-error-id` from Network → failed request →
+Response Headers, plus UTC timestamp and endpoint (not SDP or bearer tokens).
+From an authorized Kubernetes operator shell, correlate it with:
+
+```sh
+kubectl -n default logs -l app.kubernetes.io/name=caper-api -c api --since=30m --prefix --max-log-requests=5 | rg '<error-id>'
+```
+
+If a 502 lacks that header, check whether the current API image is deployed and
+whether ingress generated the response; absence alone does not identify the
+failed layer. The September 7 ~5.5–6-second trace lines alone do not establish
+Cloudflare as the source. There is currently no application-log CloudWatch group
+available through the orb's read-only AWS role, so those historical failures
+remain unconfirmed. These changes improve diagnosis and recovery behavior; they
+do not establish that the original upstream issue is fixed.
+
+Verification: injected provider HTTP errors, per-track errors, invalid JSON,
+header/body timeouts, stalled cleanup, bounded retry/backoff, capability expiry,
+and shutdown draining are covered by Rust tests. Browser DOM checks on desktop
+and a 390px viewport used real DPDFNet-8 with synthetic silence and a mocked
+publication 502 plus unresolved Leave: the error was visible, Join enabled, raw
+tracks ended, and peers closed while cleanup remained pending (4 ms error-to-UI
+on the desktop probe). This is controlled failure testing, not live SFU outage,
+physical microphone, multi-network/TURN, or sustained-voice validation.
 
 ## Join startup and preparation
 
