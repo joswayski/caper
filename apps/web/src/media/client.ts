@@ -287,15 +287,17 @@ export class PublicCallClient {
     };
     pc.onconnectionstatechange = () => {
       if (pc !== this.pc) return;
-      window.clearTimeout(this.disconnectTimer);
       if (this.phase !== "connected") return;
       if (pc.connectionState === "connected") {
+        window.clearTimeout(this.disconnectTimer);
+        this.disconnectTimer = undefined;
         const microphone = this.senders.get("microphone");
         if (microphone) microphone.track.enabled = this.monitoring || !this.muted;
       } else if (pc.connectionState === "failed") this.scheduleReconnect();
-      else if (pc.connectionState === "disconnected") {
+      else if (this.disconnectTimer === undefined) {
+        // Intermediate states must not cancel or extend an existing deadline.
         this.disconnectTimer = window.setTimeout(() => {
-          if (pc === this.pc && pc.connectionState === "disconnected") this.scheduleReconnect();
+          if (pc === this.pc && pc.connectionState !== "connected") this.scheduleReconnect();
         }, DISCONNECT_GRACE_MS);
       }
     };
@@ -725,6 +727,7 @@ export class PublicCallClient {
 
   private stopEverything(preserve?: MediaStreamTrack) {
     window.clearTimeout(this.disconnectTimer);
+    this.disconnectTimer = undefined;
     window.clearTimeout(this.pollRetryTimer);
     window.clearTimeout(this.eventRetryTimer);
     window.clearTimeout(this.eventRecoveryTimer);

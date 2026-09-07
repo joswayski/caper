@@ -367,6 +367,24 @@ test("temporary RTC disconnect recovers without rejoin, but persistent disconnec
   assert.equal(states.at(-1)?.phase, "reconnecting");
 });
 
+for (const intermediate of ["connecting", "disconnected"]) {
+  test(`RTC recovery keeps the original deadline through ${intermediate} events`, async (t) => {
+    const { client, states } = setup(t);
+    await client.join();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const peer = Peer.latest;
+    peer.connectionState = "disconnected";
+    peer.onconnectionstatechange!();
+    t.mock.timers.tick(9_000);
+    peer.connectionState = intermediate;
+    peer.onconnectionstatechange!();
+    await (client as unknown as { poll(): Promise<void> }).poll();
+    assert.equal(states.at(-1)?.phase, "connected", "a healthy heartbeat does not prove transport recovery");
+    t.mock.timers.tick(1_000);
+    assert.equal(states.at(-1)?.phase, "reconnecting", "recover at the original ten-second deadline");
+  });
+}
+
 test("RTC failure immediately schedules recovery and leave cancels delayed recovery", async (t) => {
   const { client, states, calls } = setup(t);
   await client.join();
