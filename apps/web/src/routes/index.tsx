@@ -11,8 +11,20 @@ export const Route = createFileRoute("/")({
   component: HomeRoute,
   head: () => ({
     links: [
-      { rel: "preload", as: "image", href: "/images/chat-preview-wide.webp", type: "image/webp", media: "(min-width: 1001px)" },
-      { rel: "preload", as: "image", href: "/images/chat-preview-stacked.webp", type: "image/webp", media: "(max-width: 1000px)" },
+      {
+        rel: "preload",
+        as: "image",
+        href: "/images/chat-preview-wide.webp?v=20260906",
+        type: "image/webp",
+        media: "(min-width: 1001px)",
+      },
+      {
+        rel: "preload",
+        as: "image",
+        href: "/images/chat-preview-stacked.webp?v=20260906",
+        type: "image/webp",
+        media: "(max-width: 1000px)",
+      },
     ],
   }),
 });
