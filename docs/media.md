@@ -1,6 +1,6 @@
 # Public voice-channel MVP
 
-For proposed workspace/channel persistence and deployment-safe voice state, see
+For the proposed deployment-safe voice MVP and future space/channel terminology, see
 the [voice persistence plan](voice-persistence-plan.md). It is not implemented;
 the behavior documented below remains current.
 
