@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { proxyMedia } from "./media.ts";
+import { proxyMedia as forwardMedia } from "./media.ts";
+
+const proxyMedia = (request: Request) => forwardMedia(request, "verified-account-fixture");
+
+test("adapter fails closed without an account token", async () => {
+  assert.equal((await forwardMedia(new Request("https://caper.chat/api/media/status"), "")).status, 401);
+});
 
 test("adapter is disabled without configuration and restricts operations/methods", async (t) => {
   const old = process.env.MEDIA_API_URL;
@@ -20,12 +26,14 @@ test("adapter forwards only credentials needed by the fixed API and preserves 20
   t.after(() => { if (old) process.env.MEDIA_API_URL = old; else delete process.env.MEDIA_API_URL; });
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "http://media:3001/api/media/leave");
-    assert.equal(new Headers(init.headers).get("authorization"), "Bearer ephemeral");
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer verified-account-fixture");
+    assert.equal(new Headers(init.headers).get("x-caper-media-token"), "ephemeral");
+    assert.equal(new Headers(init.headers).get("x-caper-account-token"), null);
     assert.equal(new Headers(init.headers).get("cookie"), null);
     return new Response(null, { status: 204 });
   });
   const response = await proxyMedia(new Request("https://caper.chat/api/media/leave", {
-    method: "POST", headers: { authorization: "Bearer ephemeral", "content-type": "application/json", cookie: "unrelated=true" }, body: "{}",
+    method: "POST", headers: { authorization: "Bearer ephemeral", "content-type": "application/json", cookie: "unrelated=true", "x-caper-account-token": "attacker-supplied" }, body: "{}",
   }));
   assert.equal(response.status, 204);
 });
@@ -58,7 +66,8 @@ test("SSE proxy streams immediately, survives the ordinary deadline, and forward
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "http://media:3001/api/media/events");
     assert.equal(init.method, "GET");
-    assert.equal(new Headers(init.headers).get("authorization"), "Bearer ephemeral");
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer verified-account-fixture");
+    assert.equal(new Headers(init.headers).get("x-caper-media-token"), "ephemeral");
     signal = init.signal!;
     return new Response(new ReadableStream<Uint8Array>({
       start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n")); },

@@ -1,4 +1,3 @@
-import { fakerEN as faker } from "@faker-js/faker";
 import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression } from "./microphone.ts";
 import { ReceivedMonitor } from "./monitor.ts";
 import { NoiseAssets } from "./noise-assets.ts";
@@ -43,7 +42,6 @@ export class PublicCallClient {
   private pc?: RTCPeerConnection;
   private token?: string;
   private selfId?: string;
-  private name = "Guest";
   private phase: CallViewState["phase"] = "idle";
   private participants: Participant[] = [];
   private remoteMedia = new Map<string, RemoteMedia>();
@@ -171,7 +169,7 @@ export class PublicCallClient {
 
   private async prepareJoin() {
     const capture = this.openMicrophone(this.microphoneDeviceId);
-    const joining = this.api<JoinResponse>("join", { name: this.name }, undefined);
+    const joining = this.api<JoinResponse>("join", {}, undefined);
     const [captureResult, joinResult] = await Promise.allSettled([capture, joining]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
       if (captureResult.status === "fulfilled") this.stopMicrophone(captureResult.value);
@@ -181,11 +179,10 @@ export class PublicCallClient {
     return { microphone: captureResult.value, joined: joinResult.value };
   }
 
-  async join(name = "", microphoneDeviceId?: string) {
+  // Keep the existing call signature, but identity now comes from the account.
+  async join(_name = "", microphoneDeviceId?: string) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
     const started = performance.now();
-    // Generate once per explicit join, not per roster render or automatic rejoin.
-    this.name = name.trim().slice(0, 40) || `${faker.word.adjective()} ${faker.animal.type()}`.slice(0, 40);
     this.microphoneDeviceId = microphoneDeviceId || undefined;
     this.phase = "joining";
     this.emit();

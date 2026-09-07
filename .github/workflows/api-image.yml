@@ -39,7 +39,7 @@ jobs:
           tags: caper-api:test
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
-      - name: Verify disabled service
+      - name: Verify public health and protected API without secrets
         run: |
           set -euo pipefail
           container="$(docker run -d -p 3001:3001 caper-api:test)"
@@ -48,8 +48,11 @@ jobs:
             if curl --fail --silent http://127.0.0.1:3001/health; then break; fi
             sleep 1
           done
-          test "$(curl --fail --silent http://127.0.0.1:3001/api/media/status)" = '{"enabled":false}'
-          test "$(curl --silent -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"name":"test"}' http://127.0.0.1:3001/api/media/join)" = 503
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/health)" = 204
+          for path in /api/account/me /api/media/status; do
+            test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' "http://127.0.0.1:3001$path")" = 401
+          done
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"name":"test"}' http://127.0.0.1:3001/api/media/join)" = 401
       - name: Configure AWS credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v6.2.3

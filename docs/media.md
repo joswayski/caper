@@ -2,15 +2,14 @@
 
 ## Scope and architecture
 
-One public **General voice channel**, always available to join while the service
-is enabled. This is not a dial/invite/call flow. No accounts, text chat,
-camera, screen sharing, channel creation, or server-side recording. Mic test offers
-an explicit, tab-memory-only recording of up to ten seconds of received audio. Faker generates
-an adjective/animal nickname once per explicit join in the browser; the Rust
-registry stores it and distributes the same name to every participant. Automatic
-reconnect keeps the nickname; explicit leave/join generates another. The lobby
-does not persist presence. Names can collide or be impersonated; participant
-IDs, not names, distinguish people. Up to 12 people can join with microphone permission,
+One shared **General voice channel**, available to signed-in users with completed
+profiles while the service is enabled. This is not a dial/invite/call flow.
+No text chat, camera, screen sharing, channel creation, or server-side recording.
+Mic test offers an explicit, tab-memory-only recording of up to ten seconds of
+received audio. The Rust registry uses the authenticated account's global display
+name, never a caller-supplied nickname. Display names can collide; participant
+IDs, not names, distinguish people. Presence remains in memory.
+Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
 the registry keeps that code for the call and shares it in roster snapshots. Caper
@@ -30,7 +29,7 @@ two registries do not share sessions: requests can hit a pod that does not know
 the caller, and shutdown still ends the old pod's calls. Do not increase steady-state
 replicas or use sticky sessions as a substitute for shared coordination.
 Restarting the service clears presence and clients rejoin. Each tab receives an unguessable short-lived device
-capability, not an account/login. Clients use Caper track IDs, not arbitrary SFU
+capability bound to its authenticated account, in addition to login. Clients use Caper track IDs, not arbitrary SFU
 session IDs. Cloudflare terminates transport encryption; this is **not E2EE**.
 
 ## Provisioned resources and configuration
@@ -60,8 +59,12 @@ Keep this temporary test separate from any future production app/key.
 | `AXIOM_TOKEN` | Optional server-only ingest API token; absent/empty disables export |
 | `AXIOM_DATASET` | Defaults to the existing `caper` dataset |
 | `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
-| `MEDIA_API_URL` | Web-process-only local/orb adapter target |
-| `DATABASE_URL` | Optional PlanetScale Postgres URL. When set, the API connects and applies `apps/api/migrations` on startup. Use a direct primary URL on port `5432` (`sslmode=verify-full`). Leave empty to boot without a database. |
+| `MEDIA_API_URL` | Web-process-only internal Rust API target, required for account and media routes |
+| `DATABASE_URL` | API-only runtime URL: pooled port `6432`, database `/caperchat`, restricted app role, verified TLS. Missing configuration fails account/media access closed. |
+| `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Neither DB secret belongs in WEB. |
+| `WORKOS_CLIENT_ID` / `WORKOS_API_KEY` | Same WorkOS environment on web and API; API key is server-only |
+| `WORKOS_COOKIE_PASSWORD` | Web-only random secret, at least 32 characters, identical across web replicas |
+| `WORKOS_REDIRECT_URI` | Web-only exact registered HTTPS URL ending in `/api/auth/callback` |
 
 Use `.env.example`; Rust does not auto-load dotenv files. Export a private env
 file before `cargo run -p caper-api`. Run the web process with
@@ -911,3 +914,144 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 - Take down: disable `MEDIA_ENABLED` and restart the API (GitOps in production;
   stop the supervised media service for the orb). Revoke the temporary SFU app
   and TURN key after testing. The website can remain up.
+
+## AuthKit trial and Caper accounts
+
+All app pages require login; login/callback and health routes remain public.
+WorkOS owns email codes, hosted authentication, and sessions. Caper owns profiles
+and authorization. The trial uses the free hosted domain and default shared email
+sender, not SES or paid custom domains. WorkOS calls production shared-domain
+email delivery best-effort; this trial is not production delivery validation.
+
+`apps/api/migrations/202609070001_accounts.sql` creates `users`: bigint identity
+PK, unique random 21-character NanoID public ID, unique WorkOS subject, unique
+normalized verified email, timestamps, and profile fields. Usernames are lowercase
+ASCII letters/digits/underscore, 3–32 characters and globally unique. Display names
+are global, nonunique, 1–64 Unicode characters. Both start NULL and are completed
+together. Profile responses expose neither bigint IDs nor email. WorkOS subjects,
+not email matches, own accounts; a conflicting email never silently links users.
+
+The table keeps only primary-key, required-field and uniqueness constraints.
+Format, length, normalization and onboarding validation live in the application,
+not SQL `CHECK` expressions.
+
+The official TanStack Start AuthKit SDK handles callback state/PKCE, encrypted
+HttpOnly cookies, refresh and sign-out. Same-origin checks protect profile POSTs;
+server functions (including sign-out) use CSRF middleware. Browser proxies overwrite account
+headers using the verified session, never trust browser-supplied identities.
+Rust verifies RS256 signature, scoped WorkOS issuer/client, expiry and optional
+audience with cached JWKS, and fetches verified email server-side. Account/media
+routes fail closed without auth or DB configuration, even when voice is disabled.
+Media additionally requires a completed profile and account-bound capability.
+
+### Public API: web, desktop and mobile
+
+The prepared production address is **`https://api.caper.chat`**, routed directly
+to the existing Rust `caper-api` service. `https://caper.chat` serves the website
+and browser login/cookie endpoints through `caper-web`. No second Rust backend
+and no native-specific gateway exists. Infrastructure PR #77 prepares DNS/TLS
+and ingress wiring; this document is not a claim that the hostname is deployed.
+
+All account/media requests require `Authorization: Bearer <WorkOS access JWT>`.
+The API ignores session cookies and does not trust legacy account identity headers.
+The website server injects its authenticated session JWT when calling the same
+Rust API over the internal `MEDIA_API_URL`; browser cookies never need to cross
+to the API hostname. Direct native/server clients use the public hostname.
+
+| Method | Public endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Unauthenticated health check |
+| GET | `/api/account/me` | Current Caper profile; provisions verified account on first use |
+| POST | `/api/account/profile` | Set `username` and `displayName` in a JSON body |
+| GET | `/api/media/status` | Voice availability for a completed account |
+| POST | `/api/media/join` | Join General; requires completed profile |
+| GET | `/api/media/events` | Authenticated SSE stream |
+| POST | `/api/media/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Existing voice-control operations; all paths under `/api/media` |
+
+After joining, send the returned call capability as raw `X-Caper-Media-Token`
+alongside the account Bearer token for operations on that call. The call capability
+cannot authenticate an account. Browser media transport retains its existing
+same-origin call-capability header; WEB translates it to `X-Caper-Media-Token`
+and replaces Authorization with the verified account JWT before forwarding.
+
+Native clients use WorkOS's public-client device authorization flow in the system
+browser and poll with the client ID (no API key). Store rotating refresh tokens
+in the OS credential store, not localStorage/plain files, and clear/revoke them on
+sign-out. Tauri/iOS/Android login UI and secure storage integration are not included.
+Arbitrary third-party browser CORS access, API keys and developer OAuth consent
+are not implemented; native/server HTTP clients do not require CORS. Browser WebRTC
+does not prove native audio support.
+
+Staging settings: 5-minute access JWTs, 7-day inactivity, 30-day maximum session.
+Revocation prevents refresh but an already-issued JWT can work until expiry;
+Rust does not introspect every request. SSE emission stops at token expiry.
+JWKS and verified-email caches have a 5-minute TTL. Do not claim instant global
+logout or continued login availability during a WorkOS outage.
+
+Bigint IDs stay internal for joins and are never exposed in profile responses.
+Random NanoIDs provide permanent public references without revealing signup order
+or the internal sequence. Stored as `external_id` for integrations and external
+references, the API returns this value as `id`, alongside
+`username` and `displayName`. Usernames are globally unique, changeable handles;
+changing a username or email does not change either account ID.
+
+### Deployment and verification
+
+No production database changes are performed by tests. When `DATABASE_URL` is set,
+normal API startup first applies embedded migrations through `MIGRATION_DATABASE_URL`,
+closes that connection, then opens the runtime pool and starts HTTP/media. Missing
+or failed migrations prevent startup. No Job or manual migration step is required.
+Both secrets must be available to the API pod; neither belongs in WEB. This means
+the long-running API environment holds schema-changing credentials, an accepted
+early-stage tradeoff. SQLx advisory locks serialize concurrent startup migrations.
+Use direct port 5432: those locks require session affinity; pooled port 6432 is
+rejected for migrations with no runtime-URL fallback. Both URLs must target the same
+existing `/caperchat` database. Startup does not create the database or grant roles.
+
+An optional operator command remains available to migrate without starting HTTP;
+it reads only the securely exported `MIGRATION_DATABASE_URL`:
+
+```bash
+cargo run --locked --release -p caper-api -- --migrate
+# Or with the built binary / API container entrypoint:
+caper-api --migrate
+```
+
+The API Docker build copies migrations. Startup **creates the users table**;
+review/authorize deployment with that effect in mind. This replaces the unmerged,
+undeployed custom-session draft; do not run it against a DB that applied that
+draft's different checksum. No production migration/deployment is part of the trial.
+No separate `psql` migration command is needed. Leave data intact on rollback.
+
+Before an authorized production activation: register the exact callback and logout
+URLs in the matching WorkOS environment; provide the variables above; route all
+website paths through WEB and `api.caper.chat` directly to Rust; select matching
+web/API image pins and authorize the startup migration. Existing direct-to-Rust
+media ingress is incompatible with cookie auth. Infrastructure stages this separately
+as an opt-in overlay: do not activate it merely by merging app code.
+
+Database tests are explicitly ignored in the ordinary no-DB Rust suite. The CI
+`Account database (Postgres)` job runs them against disposable Postgres 17. To run
+locally, supply a **disposable local** Postgres URL whose role can create databases:
+
+```bash
+DATABASE_URL='postgres://user@127.0.0.1:55432/postgres' \
+  cargo test --locked -p caper-api --test accounts -- --ignored
+```
+
+SQLx creates a fresh migrated database per test. Never use a production URL.
+Orb setup installs Postgres binaries; an isolated UTF-8 cluster can be initialized
+with `/usr/lib/postgresql/15/bin/initdb -D /tmp/caper-test-pg -A trust -E UTF8` and
+run with `amp orb service start account-test-db --command '/usr/lib/postgresql/15/bin/postgres -D /tmp/caper-test-pg -h 127.0.0.1 -p 55432 -k /tmp'`.
+Local trust authentication is for the disposable loopback-only test server, not
+deployment. Tests cover profile constraints, concurrent username claims, stable
+account reuse and isolation. JWT and HTTP tests cover authentication enforcement.
+Trial smoke testing used real staging hosted Magic Auth, callback, profile creation
+and app access against disposable local TLS Postgres. The sandbox code came from
+WorkOS admin events, not an inbox: this does not verify email delivery. Public-client
+device authorization and refresh also returned a JWT accepted by Rust in the earlier trial;
+revoking that test session made refresh fail with HTTP 400. Browser sign-out returned
+to login and subsequent `/live` access redirected to login. The browser cookie was
+Secure, HttpOnly, SameSite=Lax. Desktop/mobile browser layouts and username-conflict
+UI were inspected. PlanetScale connectivity, physical desktop/mobile login, and live authenticated SFU voice remain
+untested. Earlier media results above predate this authentication boundary.

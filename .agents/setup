@@ -22,6 +22,7 @@ packages=(
   libssl-dev
   libwebkit2gtk-4.1-dev
   pkg-config
+  postgresql
 )
 missing_packages=()
 for package in "${packages[@]}"; do

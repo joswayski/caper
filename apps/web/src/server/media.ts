@@ -1,9 +1,12 @@
 const operations = new Set(["status", "join", "snapshot", "events", "publish", "subscribe", "negotiate", "close", "state", "leave"]);
 
-// Development/orb adapter. Production ingress routes directly to the same single Rust service.
-export async function proxyMedia(request: Request): Promise<Response> {
+// Browser adapter: account token comes ONLY from the verified server-side session.
+// Browser Authorization carries the call capability, not account identity.
+// Replace it with the verified session JWT when calling the public Rust API.
+export async function proxyMedia(request: Request, accountToken: string): Promise<Response> {
   const operation = new URL(request.url).pathname.slice("/api/media/".length);
   const headers = { "cache-control": "no-store" };
+  if (!accountToken) return new Response(null, { status: 401, headers });
   if (!operations.has(operation)) return new Response(null, { status: 404, headers });
   const streaming = operation === "events";
   if (request.method !== (operation === "status" || streaming ? "GET" : "POST")) {
@@ -43,7 +46,7 @@ export async function proxyMedia(request: Request): Promise<Response> {
   try {
     const upstream = await fetch(`${base.replace(/\/$/, "")}/api/media/${operation}`, {
       method: request.method,
-      headers: { "content-type": "application/json", authorization: request.headers.get("authorization") ?? "" },
+      headers: { "content-type": "application/json", authorization: `Bearer ${accountToken}`, "x-caper-media-token": (request.headers.get("authorization") ?? "").replace(/^Bearer /, "") },
       body: body as BodyInit | undefined,
       signal: AbortSignal.any([request.signal, streaming ? controller.signal : AbortSignal.timeout(25_000)]),
       redirect: "error",
