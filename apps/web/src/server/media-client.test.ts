@@ -25,6 +25,7 @@ class Peer extends EventTarget {
   iceGatheringState = "complete";
   localDescription?: { toJSON(): object };
   ontrack?: (event: { track: Track; transceiver: { mid: string }; streams: Stream[] }) => void;
+  onconnectionstatechange?: () => void;
   senders: Array<{ track: Track | null; replaceTrack(t: Track | null): Promise<void> }> = [];
   constructor() { super(); Peer.latest = this; Peer.all.push(this); }
   addTransceiver(track: Track) {
@@ -255,6 +256,148 @@ test("failed private join keeps channel isolated until explicit stop", async (t)
   assert.equal(states.at(-1)!.monitorConnecting, false);
   await client.setMonitoring(false);
   assert.equal(Peer.all[0].senders[0].track, track);
+});
+
+test("transient heartbeat failures preserve audio, recover the same session, and reset the grace window", async (t) => {
+  const { client, track, states, calls, install } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  const peer = Peer.latest;
+  const polling = client as unknown as { poll(): Promise<void> };
+  const originalFetch = fetch;
+  let now = 0;
+  let status = 503;
+  t.mock.method(performance, "now", () => now);
+  install("fetch", (url: string, options: RequestInit) => url.endsWith("/snapshot") && status !== 200
+    ? Promise.resolve(Response.json({}, { status })) : originalFetch(url, options));
+  for (status of [503, 502, 429, 408]) {
+    now += 3_000;
+    await polling.poll();
+    assert.equal(states.at(-1)?.phase, "connected");
+    assert.equal(track.readyState, "live");
+    assert.equal(peer.connectionState, "connected");
+  }
+  status = 200;
+  await polling.poll();
+  now += 30_000;
+  status = 503;
+  await polling.poll();
+  assert.equal(states.at(-1)?.phase, "connected", "a later outage gets its own grace window");
+  assert.equal(Peer.all.length, 1);
+  assert.equal(calls.filter((op) => op === "join").length, 1);
+  assert.ok(!calls.includes("leave"));
+});
+
+test("prolonged control outage still triggers rejoin", async (t) => {
+  const { client, states, install } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  const polling = client as unknown as { poll(): Promise<void> };
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  install("fetch", async () => { throw new TypeError("Network unavailable"); });
+  await polling.poll();
+  assert.equal(states.at(-1)?.phase, "connected");
+  now = 30_000;
+  await polling.poll();
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+});
+
+test("invalid session is not treated as a transient outage", async (t) => {
+  const { client, states, install } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  install("fetch", async () => Response.json({ error: "Session expired" }, { status: 401 }));
+  await (client as unknown as { poll(): Promise<void> }).poll();
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+});
+
+test("heartbeat timeout covers response bodies without closing healthy media", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  install("fetch", async (_url: string, options: RequestInit) => ({
+    ok: true, status: 200, headers: new Headers(),
+    text: () => new Promise((_resolve, reject) => options.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))),
+  }));
+  const pending = (client as unknown as { poll(): Promise<void> }).poll();
+  await Promise.resolve();
+  t.mock.timers.tick(5_000);
+  await pending;
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(track.readyState, "live");
+});
+
+test("failed mute state synchronization retries the latest state after API recovery", async (t) => {
+  const { client, track, stateUpdates, install } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  const originalFetch = fetch;
+  let unavailable = true;
+  install("fetch", (url: string, options: RequestInit) => unavailable && url.endsWith("/state")
+    ? Promise.resolve(Response.json({}, { status: 503 })) : originalFetch(url, options));
+  await assert.rejects(client.setMuted(true));
+  assert.equal(track.enabled, false);
+  assert.equal(Peer.latest.senders[0].track, null);
+  await assert.rejects(client.setDeafened(true));
+  unavailable = false;
+  await (client as unknown as { poll(): Promise<void> }).poll();
+  assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
+  assert.equal(Peer.all.length, 1);
+});
+
+test("temporary RTC disconnect recovers without rejoin, but persistent disconnect does not", async (t) => {
+  const { client, states } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const peer = Peer.latest;
+  peer.connectionState = "disconnected";
+  peer.onconnectionstatechange!();
+  t.mock.timers.tick(9_000);
+  assert.equal(states.at(-1)?.phase, "connected");
+  peer.connectionState = "connected";
+  peer.onconnectionstatechange!();
+  t.mock.timers.tick(1_000);
+  assert.equal(states.at(-1)?.phase, "connected");
+  peer.connectionState = "disconnected";
+  peer.onconnectionstatechange!();
+  t.mock.timers.tick(10_000);
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+});
+
+for (const intermediate of ["connecting", "disconnected"]) {
+  test(`RTC recovery keeps the original deadline through ${intermediate} events`, async (t) => {
+    const { client, states } = setup(t);
+    await client.join();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const peer = Peer.latest;
+    peer.connectionState = "disconnected";
+    peer.onconnectionstatechange!();
+    t.mock.timers.tick(9_000);
+    peer.connectionState = intermediate;
+    peer.onconnectionstatechange!();
+    await (client as unknown as { poll(): Promise<void> }).poll();
+    assert.equal(states.at(-1)?.phase, "connected", "a healthy heartbeat does not prove transport recovery");
+    t.mock.timers.tick(1_000);
+    assert.equal(states.at(-1)?.phase, "reconnecting", "recover at the original ten-second deadline");
+  });
+}
+
+test("RTC failure immediately schedules recovery and leave cancels delayed recovery", async (t) => {
+  const { client, states, calls } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const peer = Peer.latest;
+  peer.connectionState = "failed";
+  peer.onconnectionstatechange!();
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+  await client.leave();
+  t.mock.timers.tick(20_000);
+  assert.equal(states.at(-1)?.phase, "idle");
+  assert.equal(calls.filter((op) => op === "join").length, 1);
 });
 
 test("terminal reconnect failure stops mic monitoring before an explicit join", async (t) => {
@@ -541,7 +684,7 @@ test("an unavailable selected enhancer fails Join without publishing a fallback"
   assert.equal(track.readyState, "ended");
 });
 
-test("SSE loss during startup fails closed and loss after connection stops audio", async (t) => {
+test("SSE loss during startup fails closed but an established call recovers its stream without stopping audio", async (t) => {
   const { client, track, events, states, install } = setup(t);
   const original = fetch;
   let publish!: () => void;
@@ -559,10 +702,37 @@ test("SSE loss during startup fails closed and loss after connection stops audio
   install("fetch", original);
   await client.join();
   assert.equal(states.at(-1)?.phase, "connected");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const peer = Peer.latest;
   const outgoing = Peer.latest.senders[0].track!;
   events.at(-1)!.close();
   await tick();
-  assert.equal(outgoing.readyState, "ended");
+  assert.equal(outgoing.readyState, "live");
+  assert.equal(outgoing.enabled, true);
+  assert.equal(states.at(-1)?.phase, "connected");
+  t.mock.timers.tick(3_000);
+  await tick();
+  assert.equal(events.length, 3, "reopen SSE using the existing voice session");
+  assert.equal(Peer.latest, peer);
+  assert.equal(outgoing.readyState, "live");
+  assert.equal(states.at(-1)?.phase, "connected");
+});
+
+test("persistent SSE outage is bounded even while snapshots succeed", async (t) => {
+  const { client, events, states, install } = setup(t);
+  await client.join();
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/events")
+    ? Promise.resolve(Response.json({}, { status: 503 })) : original(url, init));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  events[0].close();
+  await tick();
+  t.mock.timers.tick(3_000);
+  await tick();
+  await (client as unknown as { poll(): Promise<void> }).poll();
+  assert.equal(states.at(-1)?.phase, "connected");
+  t.mock.timers.tick(27_000);
+  await tick();
   assert.equal(states.at(-1)?.phase, "reconnecting");
 });
 

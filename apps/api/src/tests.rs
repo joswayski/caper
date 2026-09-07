@@ -208,6 +208,31 @@ async fn events_enforce_access_and_emit_ready_immediately() {
 }
 
 #[tokio::test]
+async fn shutdown_ends_event_streams_without_removing_sessions() {
+    let (s, _) = state();
+    let participant = joined(&s, "public").await;
+    let token = participant["token"].as_str().unwrap();
+    let mut stream = event_response(&s, Some(token), false)
+        .await
+        .into_body()
+        .into_data_stream();
+    assert!(next_event(&mut stream).await.unwrap().contains("ready"));
+    let (_, ended) = tokio::join!(
+        async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            s.begin_shutdown();
+        },
+        next_event(&mut stream)
+    );
+    assert!(ended.is_none());
+    assert_eq!(
+        event_response(&s, Some(token), false).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(s.registry.lock().await.participants.len(), 1);
+}
+
+#[tokio::test]
 async fn public_events_are_coalesced_and_connections_are_replaced_or_revoked() {
     let (s, _) = state();
     let participant = joined(&s, "public").await;

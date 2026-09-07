@@ -21,9 +21,12 @@ Fifteen-second HTTP snapshots renew presence leases and repair missed state; HTT
 also carries commands. Audio still uses WebRTC, not SSE or WebSockets.
 
 The website has two AWS k3s replicas. A separate **single-replica** Rust service
-owns the in-memory participant registry. Do not scale that registry or use sticky
-sessions as a substitute for shared coordination. Restarting the service clears
-presence and clients rejoin. Each tab receives an unguessable short-lived device
+owns the in-memory participant registry, with one temporary extra pod during
+rolling updates. Overlap is intentionally accepted during development, but the
+two registries do not share sessions: requests can hit a pod that does not know
+the caller, and shutdown still ends the old pod's calls. Do not increase steady-state
+replicas or use sticky sessions as a substitute for shared coordination.
+Restarting the service clears presence and clients rejoin. Each tab receives an unguessable short-lived device
 capability, not an account/login. Clients use Caper track IDs, not arbitrary SFU
 session IDs. Cloudflare terminates transport encryption; this is **not E2EE**.
 
@@ -67,7 +70,8 @@ button for that exact SHA and an **Open GitHub** fallback to
 `deploy-caper-api.yml` in `joswayski/infrastructure`.
 Deployment/Service/ExternalSecret are named `caper-api`; the container is `api`.
 AWS Secrets Manager `production/apps/caper-api` supplies Kubernetes Secret
-`caper-api-cloudflare`. Keep one API replica with `Recreate`, port 3001,
+`caper-api-cloudflare`. Keep one desired API replica with `RollingUpdate`,
+`maxSurge: 1`, `maxUnavailable: 0`, and a 60-second termination grace, port 3001,
 `/api/media` routing, and existing `MEDIA_*` / `CF_*` configuration names.
 The active web Deployment/Service remains `caper` with two replicas: renaming it
 to `caper-web` requires a separate reviewed rollout and SSM deployment-target update.
@@ -87,6 +91,29 @@ needs no public media UDP ports. Clients use SFU plus TURN UDP and TCP/TLS
 fallback; alternate port 53 is filtered from both STUN and TURN URLs. `/api/media/status` reports
 the feature flag; web `/api/health` is independent of provider availability.
 
+## Deployment behavior
+
+- Web-only deployments do not reload already-open tabs; production media control
+  requests route straight to Rust. Keep API changes compatible with old tabs and
+  future desktop releases, which will not all update at deployment time.
+- API rolling updates start a replacement and wait for its readiness probe before
+  terminating the old pod. This removes the deliberate stop-before-start gap,
+  **not** today's call interruptions from separate in-memory registries.
+- On SIGTERM, Rust ends SSE streams, stops accepting connections and gives in-flight HTTP requests
+  up to 30 seconds to finish, then spends up to 20 seconds on existing provider
+  cleanup. If HTTP draining exceeds its deadline, the process exits without
+  provider cleanup rather than racing cleanup against unfinished mutations.
+  As with a crash, provider cleanup is not guaranteed and TURN expiry still applies.
+- A database connection alone does not make calls survive deployments. Future
+  work must persist capabilities, SFU sessions/tracks/subscriptions and leases;
+  coordinate participant mutations and cleanup across pods; and replace
+  process-exit call teardown with session handoff and expiry-based cleanup.
+  Database migrations must remain compatible with both overlapping versions.
+- Deploy the infrastructure grace-period change before the new API image. The
+  infrastructure repository's `docs/operations.md` describes Flux reconciliation;
+  image deployment commands are below. No live rolling-call validation has been
+  performed for these changes; client recovery tests use mocked media/API responses.
+
 ## Limits and lifecycle
 
 - 12 registered sessions total, one microphone publication each, 11 subscriptions.
@@ -101,7 +128,15 @@ the feature flag; web `/api/health` is independent of provider availability.
   Credentials remain bounded by expiry. No durable cleanup queue exists.
 - Serialized negotiations and per-participant operation guards. Ambiguous provider
   creation is not blindly retried; the session is invalidated and cleaned up.
-- Network failure triggers up to three rejoins retaining mute/deafen and device
+- Transient heartbeat failures (network/timeout, HTTP 408/429/5xx) retry after
+  three seconds without tearing down media (healthy heartbeat cadence remains 15 seconds). Snapshots have
+  a five-second deadline including response-body reads; failures lasting at least
+  30 seconds trigger recovery on the next failed poll. Successful snapshots reset
+  that window. Invalid sessions trigger recovery immediately. Failed mute/deafen
+  state sync is retried with the latest local state after a successful heartbeat;
+  ambiguous SFU mutations are not blindly replayed.
+- A transient WebRTC `disconnected` state gets ten seconds to recover in place;
+  `failed` or a sustained disconnect triggers up to three rejoins retaining mute/deafen and device
   choice. Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
@@ -235,10 +270,12 @@ guarantee another listener's autoplay, deafen, network or playout state.
 
 No handshake within ten seconds or no valid event within 25 seconds fails the
 stream. An SSE failure during startup fails Join; during an established call it
-stops capture and uses the existing bounded full-session reconnect with the same
-filter/mute selection. This deliberately sacrifices uninterrupted audio on a
-control-stream failure rather than transmitting while required state is unavailable.
-Cancel/leave aborts the stream and startup event waits. Fifteen-second snapshots
+reopens only the event stream with the same capability, retrying after three
+seconds while keeping healthy audio. A 30-second recovery deadline after loss
+triggers the bounded full-session reconnect if live updates cannot be restored.
+Each restored stream triggers a snapshot to reconcile missed invalidations;
+there is no event replay requirement. Initial Join readiness remains strict.
+Cancel/leave aborts the stream, startup event waits, and delayed retries. Fifteen-second snapshots
 remain a lease heartbeat/recovery mechanism, not the normal track-discovery delay.
 
 The development adapter forwards the streaming body and cancellation and limits
