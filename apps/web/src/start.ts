@@ -1,5 +1,4 @@
 import { createCsrfMiddleware, createMiddleware, createStart } from "@tanstack/react-start";
-import { authkitMiddleware } from "@workos/authkit-tanstack-react-start";
 import { getHealth } from "./server/api";
 
 // Container probes must work before authentication secrets are configured.
@@ -21,6 +20,5 @@ export const startInstance = createStart(() => ({
     healthProbe,
     privateResponses,
     createCsrfMiddleware({ filter: (ctx) => ctx.handlerType === "serverFn" }),
-    authkitMiddleware(),
   ],
 }));

@@ -164,7 +164,7 @@ async fn profile_format_validation_happens_in_the_app_before_database_access() {
 #[tokio::test]
 async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
     let (mut state, _) = state();
-    state.auth = auth::AuthVerifier::new(None, None);
+    state.auth = auth::AuthVerifier::new();
     let router = app(state);
     let health = router
         .clone()
@@ -188,18 +188,6 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
-    let webhook = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/webhooks/workos")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(webhook.status(), StatusCode::SERVICE_UNAVAILABLE);
     let unavailable = router
         .oneshot(
             Request::builder()
@@ -216,7 +204,7 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
 #[tokio::test]
 async fn public_api_rejects_cookies_legacy_headers_and_media_tokens_as_account_auth() {
     let (mut state, _) = state();
-    state.auth = auth::AuthVerifier::new(None, None);
+    state.auth = auth::AuthVerifier::new();
     let router = app(state);
     for (method, path) in [
         ("GET", "/api/account/me"),
