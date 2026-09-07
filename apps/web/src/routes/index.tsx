@@ -13,14 +13,14 @@ export const Route = createFileRoute("/")({
       {
         rel: "preload",
         as: "image",
-        href: "/images/chat-preview-wide.webp",
+        href: "/images/chat-preview-wide.webp?v=20260906",
         type: "image/webp",
         media: "(min-width: 1001px)",
       },
       {
         rel: "preload",
         as: "image",
-        href: "/images/chat-preview-stacked.webp",
+        href: "/images/chat-preview-stacked.webp?v=20260906",
         type: "image/webp",
         media: "(max-width: 1000px)",
       },
