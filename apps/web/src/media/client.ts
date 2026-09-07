@@ -75,7 +75,7 @@ export class PublicCallClient {
   private microphoneDeviceId?: string;
   private statsTimer?: number;
   private diagnostics = "";
-  private noiseSuppression: NoiseSuppression = "dpdfnet2";
+  private noiseSuppression: NoiseSuppression = "dpdfnet8";
   private audioSetup: AudioSetup = "headphones";
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
