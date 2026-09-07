@@ -206,8 +206,12 @@ exclusive ownership of the prepared worker rather than starting another model
 instance. It waits for any unfinished initialization, SSE readiness, transport,
 and initial roster/state synchronization before enabling outgoing audio. A cold
 join does not temporarily publish raw audio. Filter initialization failure fails
-Join instead of downgrading; runtime failure stops capture and processed tracks
-and triggers the bounded reconnect flow with the same selection.
+Join instead of downgrading. DPDFNet runtime overload or underrun switches the
+existing processed track to a bypass, preserving the call, and attempts to enable
+the browser's microphone noise-suppression constraint. The reported track setting
+determines whether the UI says browser suppression is active or unavailable.
+An unrecoverable processor error stops and unpublishes the microphone without
+restarting an otherwise healthy connection.
 
 Preparation has a 60-second readiness timeout. Failed workers are terminated and
 evicted so a later join can retry. Cancellation terminates a worker already handed
@@ -527,10 +531,12 @@ recording. Run a fresh mic test after DPDFNet reports active. Its 14.9 MB model 
 runtime load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the processor acknowledges initialization.
-Loading/initialization failure rejects capture and stops its tracks; runtime
-processor failure also stops audio and requests a reconnect with the same filter.
-There is no automatic browser/raw downgrade. This does not ensure that all CPU
-overload or audio artifacts can be detected.
+Loading/initialization failure rejects capture and stops its tracks. Runtime overload
+or underrun keeps the existing microphone track live, attempts browser suppression
+and reports whether it is active; unsupported or rejected browser suppression leaves
+unprocessed audio. This avoids a call-wide reconnect loop.
+An unrecoverable AudioWorklet processor error still stops the microphone. This does
+not ensure that all CPU overload or audio artifacts can be detected.
 
 Device/mode changes replace the outgoing track and release the previous hardware
 track and AudioContext. Reconnect retains the selected mode. Cancel/leave stops
@@ -542,8 +548,8 @@ The RNNoise/DeepFilter adapter adds 10 ms buffering **in addition to** model and
 system latency. DPDFNet uses a 20 ms analysis window, 10 ms hops and three output
 hops of startup buffering, plus scheduling/device/network latency. Its Worker
 warms up and resets state before readiness. An eight-hop backlog or output
-underrun stops the selected audio processor, rather than downgrading or building
-unbounded delay. Earlier validation below predates the fail-closed behavior.
+underrun terminates inference and switches the existing worklet output to raw input,
+rather than ending the track or building unbounded delay.
 
 DPDFNet model/runtime provenance, checksums, full licenses and reproduction are
 in `apps/web/public/audio/dpdfnet8-v2/README.md`. CEVA code/weights are Apache-2.0;
@@ -675,11 +681,12 @@ caught and fixed session creation incorrectly sending `{}` instead of no body.
 
 Microphone-playback verification, September 7, 2026 (UTC):
 
-- Reproduced DPDFNet stopping the capture during join. In this CPU-only orb,
+- Reproduced DPDFNet stopping the capture during join before the current runtime
+  bypass behavior. In this CPU-only orb,
   its first five processed hops averaged 15.0 ms (18.6 ms maximum) against a
-  10 ms/hop budget. Its fail-closed path can stop audio, trigger reconnect,
-  and previously remount an automatically recording test. DPDFNet remains the
-  fixed product choice; this benchmark records a known CPU-performance risk.
+  10 ms/hop budget. Its former fail-closed path could stop audio, trigger reconnect,
+  and remount an automatically recording test. DPDFNet remains the fixed product
+  choice; the current path bypasses it when that CPU-performance risk occurs.
 - The real private SFU return produced a 1.98-second decoded recording with
   peak amplitude 0.204 from synthetic 440 Hz input. Switching the UI microphone
   selector requested the exact second device ID and changed the returned

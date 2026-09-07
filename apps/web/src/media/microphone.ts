@@ -36,6 +36,7 @@ export async function captureMicrophone(
   let node: AudioWorkletNode | undefined;
   let prepared: ReturnType<DpdfnetPreparation["take"]> | undefined;
   let stopped = false;
+  let bypassing = false;
   const microphone: Microphone = {
     track: raw,
     status: "Noise suppression off",
@@ -83,6 +84,21 @@ export async function captureMicrophone(
     microphone.status = `${engineName} failed — microphone stopped`;
     microphone.stop();
     changed();
+  };
+  const bypass = () => {
+    if (stopped || bypassing) return;
+    bypassing = true;
+    prepared?.stop();
+    prepared = undefined;
+    microphone.status = `${engineName} unavailable — switching to browser suppression`;
+    changed();
+    void raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined).then(() => {
+      if (stopped) return;
+      microphone.status = raw.getSettings().noiseSuppression
+        ? `${engineName} unavailable · browser suppression active`
+        : `${engineName} unavailable — noise suppression bypassed`;
+      changed();
+    });
   };
 
   try {
@@ -142,7 +158,7 @@ export async function captureMicrophone(
     microphone.track = destination.stream.getAudioTracks()[0];
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = fail;
-    node.port.onmessage = ({ data }) => { if (data === "failed") fail(); };
+    node.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") fail(); };
     return microphone;
   } catch {
     microphone.stop();
