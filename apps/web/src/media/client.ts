@@ -148,6 +148,7 @@ export class PublicCallClient {
           ...(token ? { authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(body),
+        keepalive: operation === "leave",
         signal: operation === "join" || operation === "leave" ? controller.signal : AbortSignal.any([controller.signal, this.captureController.signal]),
       });
       if (!response.ok) {
@@ -273,6 +274,7 @@ export class PublicCallClient {
   private makePeerConnection(iceServers: RTCIceServer[]) {
     const pc = new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
     pc.ontrack = (event) => {
+      if (pc !== this.pc) { event.track.stop(); return; }
       const transceiver = event.transceiver;
       const found = [...this.subscriptions].find(([, mid]) => mid === transceiver.mid);
       if (!found) return;
@@ -282,7 +284,7 @@ export class PublicCallClient {
       if (!participant || !kind) return;
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       this.remoteMedia.set(trackId, { trackId, participantId: participant.id, kind, stream });
-      event.track.onended = () => { this.remoteMedia.delete(trackId); this.emit(); };
+      event.track.onended = () => { if (pc === this.pc) { this.remoteMedia.delete(trackId); this.emit(); } };
       this.emit();
     };
     pc.onconnectionstatechange = () => {
@@ -490,8 +492,10 @@ export class PublicCallClient {
       const old = microphone.track;
       track.enabled = !this.muted;
       await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : track);
+      if (generation !== this.generation) throw new Error("Call session changed.");
       track.enabled = this.monitoring || !this.muted;
       if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(track);
+      if (generation !== this.generation) throw new Error("Call session changed.");
       microphone.track = track;
       this.localMedia = new MediaStream([track]);
       this.microphoneDeviceId = deviceId || undefined;
@@ -691,38 +695,29 @@ export class PublicCallClient {
   }
 
   async leave() {
-    if (this.phase === "idle" || this.phase === "leaving") return;
-    ++this.generation;
-    this.resetMonitoring();
-    // The view renders this as the join screen while cleanup prevents another
-    // session from starting until the prior capability has been released.
-    this.phase = "leaving";
-    this.participants = [];
-    this.selfId = undefined;
-    this.emit();
-    await this.teardown(false);
-    this.phase = "idle";
+    if (this.phase === "idle") return;
+    this.leaveImmediately();
     this.emit();
   }
 
   leaveImmediately() {
-    if (this.token) void fetch(`${API_ROOT}/leave`, { method: "POST", keepalive: true, headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` }, body: "{}" }).catch(() => undefined);
     ++this.generation;
     this.phase = "idle";
     this.resetMonitoring();
-    window.clearInterval(this.pollTimer);
-    window.clearTimeout(this.reconnectTimer);
-    for (const publication of this.senders.values()) publication.track.stop();
-    this.stopEverything();
+    this.participants = [];
+    this.selfId = undefined;
+    // Teardown stops local media synchronously. Provider cleanup owns only the
+    // captured old token and must not hold up Leave or the next Join.
+    void this.teardown(false);
   }
 
-  private async teardown(skipLeave: boolean, preserve?: MediaStreamTrack) {
+  private teardown(skipLeave: boolean, preserve?: MediaStreamTrack) {
     window.clearInterval(this.pollTimer);
     window.clearTimeout(this.reconnectTimer);
     const token = this.token;
     for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
     this.stopEverything(preserve);
-    if (!skipLeave && token) await this.api("leave", {}, token).catch(() => undefined);
+    return !skipLeave && token ? this.api("leave", {}, token).catch(() => undefined) : Promise.resolve();
   }
 
   private stopEverything(preserve?: MediaStreamTrack) {

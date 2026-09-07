@@ -9,6 +9,7 @@ class Track extends EventTarget {
   kind = "audio";
   enabled = true;
   readyState = "live";
+  onended?: () => void;
   stop() { this.readyState = "ended"; }
   getSettings() { return { noiseSuppression: true }; }
 }
@@ -92,7 +93,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   const client = new PublicCallClient((state) => states.push(state));
   // These tests isolate signaling with raw mock tracks; enhanced audio is tested separately.
   void client.setNoiseSuppression("off");
-  t.after(() => { client.leaveImmediately(); restore.reverse().forEach((fn) => fn()); });
+  t.after(async () => { client.leaveImmediately(); await tick(); restore.reverse().forEach((fn) => fn()); });
   return { client, track, calls, joinedNames, stateUpdates, states, install, events };
 }
 
@@ -562,24 +563,93 @@ test("join provisioning overlaps permission and leave cleans up both late result
   assert.equal(states.at(-1)?.phase, "idle");
 });
 
-test("leave blocks a new session until slow server cleanup completes", async (t) => {
-  const { client, states, install } = setup(t);
+for (const cleanupFails of [false, true]) test(`leave releases local media and permits rejoin before old cleanup ${cleanupFails ? "fails" : "finishes"}`, async (t) => {
+  const { client, track, states, install } = setup(t);
   let completeLeave!: () => void;
   let joins = 0;
+  let leaveRequest!: RequestInit;
+  let cleanupRequests = 0;
   const original = fetch;
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/leave")) return new Promise<Response>((resolve) => { completeLeave = () => resolve(new Response(null, { status: 204 })); });
-    if (url.endsWith("/join")) joins++;
+    if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
+    if (url.endsWith("/leave") && new Headers(init.headers).get("authorization") === "Bearer session-1") {
+      leaveRequest = init;
+      cleanupRequests++;
+      return new Promise<Response>((resolve, reject) => {
+        completeLeave = () => cleanupFails ? reject(new Error("cleanup unavailable")) : resolve(new Response(null, { status: 204 }));
+      });
+    }
     return original(url, init);
   });
   await client.join("Guest");
+  const oldPeer = Peer.latest;
   const leaving = client.leave();
-  assert.equal(states.at(-1)?.phase, "leaving");
-  await client.join("Second guest");
-  assert.equal(joins, 1);
-  completeLeave();
-  await leaving;
+  assert.equal(track.readyState, "ended", "capture stops synchronously");
+  assert.equal(oldPeer.connectionState, "closed");
+  assert.equal(states.at(-1)?.localMedia, undefined);
+  assert.deepEqual(states.at(-1)?.remoteMedia, []);
+  assert.deepEqual(states.at(-1)?.participants, []);
+  assert.equal(states.at(-1)?.selfId, undefined);
+  await leaving; // The old HTTP request is deliberately unresolved.
   assert.equal(states.at(-1)?.phase, "idle");
+  assert.equal(leaveRequest.keepalive, true, "cleanup can outlive navigation");
+  await client.leave(); // Repeated Leave must not send another cleanup request.
+  assert.equal(cleanupRequests, 1);
+  await client.join("Second guest");
+  const currentTrack = Peer.latest.senders[0].track!;
+  assert.equal(joins, 2);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(leaveRequest.signal?.aborted, false, "new capture must not cancel old cleanup");
+  completeLeave();
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(currentTrack.readyState, "live");
+  assert.equal(currentTrack.enabled, true);
+  assert.equal(new Headers(leaveRequest.headers).get("authorization"), "Bearer session-1");
+});
+
+test("old peer events after leave cannot reconnect or replace the next call's audio", async (t) => {
+  const { client, states, install } = setup(t);
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? Promise.resolve(Response.json({ participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }] }))
+    : original(url, init));
+  await client.join();
+  const oldPeer = Peer.latest;
+  const oldTrack = states.at(-1)!.remoteMedia[0].stream.getAudioTracks()[0] as unknown as Track;
+  await client.leave();
+  await client.join();
+  const currentMedia = states.at(-1)!.remoteMedia[0];
+  oldPeer.connectionState = "disconnected";
+  oldPeer.onconnectionstatechange!();
+  oldTrack.onended!();
+  const lateTrack = new Track();
+  oldPeer.ontrack!({ track: lateTrack, transceiver: { mid: "1" }, streams: [] });
+  assert.equal(lateTrack.readyState, "ended");
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.remoteMedia[0], currentMedia);
+});
+
+test("a microphone replacement finishing after leave cannot overwrite the new call", async (t) => {
+  const { client, states, install } = setup(t);
+  await client.join();
+  const replacement = new Track();
+  const nextCapture = new Track();
+  let captures = 0;
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([captures++ === 0 ? replacement : nextCapture]) } });
+  let finishReplacement!: () => void;
+  Peer.latest.senders[0].replaceTrack = () => new Promise<void>((resolve) => { finishReplacement = resolve; });
+  const replacing = assert.rejects(client.changeMicrophone("old-device"), /Call session changed/);
+  await tick();
+  await client.leave();
+  await client.join();
+  finishReplacement();
+  await replacing;
+  assert.equal(replacement.readyState, "ended");
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], nextCapture);
+  assert.equal(Peer.latest.senders[0].track, nextCapture);
+  assert.equal(nextCapture.readyState, "live");
 });
 
 test("leave during join closes the late capability and never creates a PeerConnection", async (t) => {
