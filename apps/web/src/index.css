@@ -20,6 +20,8 @@ body {
   align-items: baseline;
   overflow: hidden;
   vertical-align: baseline;
+  padding-inline: .08em;
+  margin-inline: -.08em;
   padding-block: .28em;
   margin-block: -.28em;
   -webkit-mask-image: linear-gradient(
