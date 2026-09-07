@@ -432,8 +432,8 @@ Default-preset / snippet validation, September 6, 2026:
   device selectors restored after correcting the removal scope. Signaling/channel state mocked and generated tone used. No new
   live Cloudflare, physical speech-quality or native desktop acceptance claimed.
 - Recording keeps a muted media element attached to the received stream while
-  capturing PCM: Chromium otherwise left its WebRTC jitter buffer undrained and
-  produced silent recordings in this test.
+  MediaRecorder is active: Chromium otherwise leaves its WebRTC jitter buffer
+  undrained and can produce an empty recording.
 
 Received-test / DPDFNet validation, September 6, 2026:
 

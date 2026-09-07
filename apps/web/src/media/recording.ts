@@ -18,6 +18,12 @@ export function recordReceivedAudio(stream: MediaStream): ReceivedRecording {
 
   const mimeType = preferredAudioType();
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  // Chromium does not reliably drain a remote WebRTC jitter buffer for
+  // MediaRecorder alone. A muted sink keeps received packets flowing without
+  // playing the delayed microphone return to the user while it is recorded.
+  const receiver = new Audio();
+  receiver.muted = true;
+  receiver.srcObject = stream;
   const chunks: Blob[] = [];
   let settled = false;
   let cancelled = false;
@@ -26,10 +32,16 @@ export function recordReceivedAudio(stream: MediaStream): ReceivedRecording {
   let reject!: (error: Error) => void;
   const result = new Promise<Blob>((yes, no) => { resolve = yes; reject = no; });
 
+  const cleanup = () => {
+    clearTimeout(timer);
+    receiver.pause();
+    receiver.srcObject = null;
+  };
   const fail = (error: unknown) => {
     if (settled) return;
     settled = true;
-    clearTimeout(timer);
+    cleanup();
+    if (recorder.state === "recording") recorder.stop();
     reject(error instanceof Error ? error : new Error("Audio recording failed."));
   };
   recorder.ondataavailable = ({ data }) => {
@@ -37,14 +49,20 @@ export function recordReceivedAudio(stream: MediaStream): ReceivedRecording {
   };
   recorder.onerror = ({ error }) => fail(error);
   recorder.onstop = () => {
-    clearTimeout(timer);
+    cleanup();
     if (settled || cancelled) return;
     if (chunks.length === 0) return fail(new Error("No audio was recorded. Please try again."));
     settled = true;
     resolve(new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type || "audio/webm" }));
   };
 
-  recorder.start(250);
+  try {
+    recorder.start(250);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+  void receiver.play().catch(fail);
   timer = setTimeout(() => {
     if (recorder.state === "recording") recorder.stop();
   }, MAX_RECORDING_SECONDS * 1_000);
