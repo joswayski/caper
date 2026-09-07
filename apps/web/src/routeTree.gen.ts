@@ -15,8 +15,6 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiAccountProfileRouteImport } from './routes/api/account/profile'
-import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
-import { Route as ApiAuthSignInRouteImport } from './routes/api/auth/sign-in'
 import { Route as ApiMediaSplatRouteImport } from './routes/api/media/$'
 
 const IndexRoute = IndexRouteImport.update({
@@ -49,16 +47,6 @@ const ApiAccountProfileRoute = ApiAccountProfileRouteImport.update({
   path: '/api/account/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
-  id: '/api/auth/callback',
-  path: '/api/auth/callback',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAuthSignInRoute = ApiAuthSignInRouteImport.update({
-  id: '/api/auth/sign-in',
-  path: '/api/auth/sign-in',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ApiMediaSplatRoute = ApiMediaSplatRouteImport.update({
   id: '/api/media/$',
   path: '/api/media/$',
@@ -72,8 +60,6 @@ export interface FileRoutesByFullPath {
   '/profile': typeof ProfileRoute
   '/api/health': typeof ApiHealthRoute
   '/api/account/profile': typeof ApiAccountProfileRoute
-  '/api/auth/callback': typeof ApiAuthCallbackRoute
-  '/api/auth/sign-in': typeof ApiAuthSignInRoute
   '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRoutesByTo {
@@ -83,8 +69,6 @@ export interface FileRoutesByTo {
   '/profile': typeof ProfileRoute
   '/api/health': typeof ApiHealthRoute
   '/api/account/profile': typeof ApiAccountProfileRoute
-  '/api/auth/callback': typeof ApiAuthCallbackRoute
-  '/api/auth/sign-in': typeof ApiAuthSignInRoute
   '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRoutesById {
@@ -95,8 +79,6 @@ export interface FileRoutesById {
   '/profile': typeof ProfileRoute
   '/api/health': typeof ApiHealthRoute
   '/api/account/profile': typeof ApiAccountProfileRoute
-  '/api/auth/callback': typeof ApiAuthCallbackRoute
-  '/api/auth/sign-in': typeof ApiAuthSignInRoute
   '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRouteTypes {
@@ -108,8 +90,6 @@ export interface FileRouteTypes {
     | '/profile'
     | '/api/health'
     | '/api/account/profile'
-    | '/api/auth/callback'
-    | '/api/auth/sign-in'
     | '/api/media/$'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -119,8 +99,6 @@ export interface FileRouteTypes {
     | '/profile'
     | '/api/health'
     | '/api/account/profile'
-    | '/api/auth/callback'
-    | '/api/auth/sign-in'
     | '/api/media/$'
   id:
     | '__root__'
@@ -130,8 +108,6 @@ export interface FileRouteTypes {
     | '/profile'
     | '/api/health'
     | '/api/account/profile'
-    | '/api/auth/callback'
-    | '/api/auth/sign-in'
     | '/api/media/$'
   fileRoutesById: FileRoutesById
 }
@@ -142,8 +118,6 @@ export interface RootRouteChildren {
   ProfileRoute: typeof ProfileRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiAccountProfileRoute: typeof ApiAccountProfileRoute
-  ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
-  ApiAuthSignInRoute: typeof ApiAuthSignInRoute
   ApiMediaSplatRoute: typeof ApiMediaSplatRoute
 }
 
@@ -191,20 +165,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAccountProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/auth/callback': {
-      id: '/api/auth/callback'
-      path: '/api/auth/callback'
-      fullPath: '/api/auth/callback'
-      preLoaderRoute: typeof ApiAuthCallbackRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/auth/sign-in': {
-      id: '/api/auth/sign-in'
-      path: '/api/auth/sign-in'
-      fullPath: '/api/auth/sign-in'
-      preLoaderRoute: typeof ApiAuthSignInRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/api/media/$': {
       id: '/api/media/$'
       path: '/api/media/$'
@@ -222,8 +182,6 @@ const rootRouteChildren: RootRouteChildren = {
   ProfileRoute: ProfileRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiAccountProfileRoute: ApiAccountProfileRoute,
-  ApiAuthCallbackRoute: ApiAuthCallbackRoute,
-  ApiAuthSignInRoute: ApiAuthSignInRoute,
   ApiMediaSplatRoute: ApiMediaSplatRoute,
 }
 export const routeTree = rootRouteImport

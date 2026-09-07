@@ -37,7 +37,6 @@ const BODY_LIMIT: usize = 256 * 1024;
 pub mod accounts;
 mod auth;
 mod db;
-mod webhook;
 
 pub use db::{connect_database, migrate_database};
 
@@ -50,9 +49,6 @@ pub struct Config {
     turn_key_id: Option<String>,
     turn_token: Option<String>,
     provider_base: String,
-    workos_client_id: Option<String>,
-    workos_api_key: Option<String>,
-    workos_webhook_secret: Option<String>,
     #[cfg(test)]
     auth_fixture: bool,
 }
@@ -72,9 +68,6 @@ impl Config {
             turn_key_id: get("CF_TURN_KEY_ID"),
             turn_token: get("CF_TURN_API_TOKEN"),
             provider_base: "https://rtc.live.cloudflare.com/v1".into(),
-            workos_client_id: get("WORKOS_CLIENT_ID"),
-            workos_api_key: get("WORKOS_API_KEY"),
-            workos_webhook_secret: get("WORKOS_WEBHOOK_SECRET"),
             #[cfg(test)]
             auth_fixture: false,
         };
@@ -104,9 +97,6 @@ impl Config {
             turn_key_id: Some("turn".into()),
             turn_token: Some("token".into()),
             provider_base: "mock".into(),
-            workos_client_id: None,
-            workos_api_key: None,
-            workos_webhook_secret: None,
             auth_fixture: true,
         }
     }
@@ -593,10 +583,7 @@ impl AppState {
     ) -> Self {
         let (events, _) = watch::channel(());
         let (shutting_down, _) = watch::channel(false);
-        let auth = auth::AuthVerifier::new(
-            config.workos_client_id.clone(),
-            config.workos_api_key.clone(),
-        );
+        let auth = auth::AuthVerifier::new();
         #[cfg(test)]
         let auth = if config.auth_fixture {
             auth::AuthVerifier::test_bypass()
@@ -768,7 +755,6 @@ pub fn app(state: AppState) -> Router {
         ));
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
-        .route("/api/webhooks/workos", post(webhook::handle))
         .merge(protected)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))

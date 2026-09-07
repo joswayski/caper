@@ -8,7 +8,7 @@ its earliest stage today (and an active work in progress)!
 ## Repository layout
 
 - `apps/web` — TanStack Start website and health endpoint
-- `apps/api` — Rust account and authenticated voice control service
+- `apps/api` — Rust account foundation and retained voice-control engine (access unavailable)
 - `apps/desktop` — React UI inside a minimal Tauri 2 shell
 - `shared` — framework-neutral design tokens shared by both clients
 
@@ -46,14 +46,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The production web container exposes port `3000` and reports readiness at
 `/api/health`. The separate `apps/api/Dockerfile` API container (`caper-api`) exposes port
-`3001` with `/health`. Run `cargo run -p caper-api` alongside the web app and set
-`MEDIA_API_URL=http://127.0.0.1:3001` on the web process for local development.
-The AuthKit trial requires WorkOS configuration and Postgres; see `.env.example`.
-Web pages and voice require login and a completed Caper profile. The prepared
-deployment uses `caper.chat` for the website and `api.caper.chat` for the same Rust
-API shared by all clients. API requests use `Authorization: Bearer <access-token>`;
-desktop/mobile clients call it directly, not a separate native gateway. Browser
-cookies stay on the website, whose server calls Rust internally. Public hostname
-activation and desktop/mobile login UI are not deployed by this PR.
+`3001` with `/health`. Run `cargo run -p caper-api` to develop the API separately;
+the website no longer forwards account or media requests to it.
+The website remains live, but accounts, profiles, and voice-room access are
+currently unavailable. `/login`, `/live`, and `/profile` honestly show or route to
+that unavailable state. The media engine remains in the codebase for future use,
+but production authentication fails closed and does not enable anonymous access.
+No replacement account provider has been selected or implemented.
 See the [media runbook](docs/media.md) for provider configuration, deployment,
 privacy guidance, and the validation matrix.

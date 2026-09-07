@@ -5,7 +5,6 @@ import {
   createRootRoute,
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { AuthKitProvider } from "@workos/authkit-tanstack-react-start/client";
 import "../index.css";
 
 export const Route = createRootRoute({
@@ -35,11 +34,7 @@ export const Route = createRootRoute({
 });
 
 function RootComponent() {
-  return (
-    <RootDocument>
-      <AuthKitProvider><Outlet /></AuthKitProvider>
-    </RootDocument>
-  );
+  return <RootDocument><Outlet /></RootDocument>;
 }
 
 function NotFound() {
