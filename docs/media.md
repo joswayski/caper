@@ -80,8 +80,12 @@ does not roll it out. The image notification includes a green **Deploy Caper API
 button for that exact SHA and an **Open GitHub** fallback to
 `deploy-caper-api.yml` in `joswayski/infrastructure`.
 Deployment/Service/ExternalSecret are named `caper-api`; the container is `api`.
-AWS Secrets Manager `production/apps/caper-api` supplies Kubernetes Secret
-`caper-api-cloudflare`. Keep one desired API replica with `RollingUpdate`,
+The application-wide AWS Secrets Manager record is `production/apps/caper`.
+Infrastructure is migrating from `production/apps/caper-api`; until that cutover
+is verified, the old record remains the active source. Preserve its values and
+do not delete it during preparation. Consumers receive only their required fields:
+the API's Cloudflare projection remains Kubernetes Secret `caper-api-cloudflare`.
+Keep one desired API replica with `RollingUpdate`,
 `maxSurge: 1`, `maxUnavailable: 0`, and a 60-second termination grace, port 3001,
 `/api/media` routing, and existing `MEDIA_*` / `CF_*` configuration names.
 The active web Deployment/Service remains `caper` with two replicas: renaming it
@@ -150,10 +154,13 @@ continue until process exit. Stdout is the fallback, not a replay queue.
 Production needs the companion infrastructure manifest change: separate optional
 `caper-api-axiom` ExternalSecret/envFrom, leaving mandatory Cloudflare credentials
 unchanged. Add `AXIOM_TOKEN` and `AXIOM_ENDPOINT` to the existing AWS Secrets Manager
-record `production/apps/caper-api`, preserving **every existing property**. The
+record `production/apps/caper` after the secret-name migration (the active source
+is `production/apps/caper-api` before cutover), preserving **every existing property**. The
 infrastructure operations runbook includes secure private-file upload commands;
 the Secrets Manager console's key/value editor is also suitable. No IAM or
-Terraform apply is needed. Wait for the new ExternalSecret to be Ready, then use
+Terraform apply is needed for adding these logging properties to the active record;
+the separate secret-name migration has its own infrastructure steps.
+Wait for the new ExternalSecret to be Ready, then use
 **Deploy Caper API** for the logging-capable merged image. No web deployment is
 required for logging. Optional equivalent deployment command:
 
