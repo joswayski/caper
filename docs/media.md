@@ -444,9 +444,7 @@ It does not repair hardware-clipped input or guarantee clean speech.
 
 DPDFNet-8 48 kHz HR is the default microphone mode: capture (browser AEC, AGC and
 noise suppression off) → 48 kHz mono DPDFNet → MediaStream output track → existing
-WebRTC Opus sender → Cloudflare SFU. Runtime performance limitations remain. Browser
-suppression is available as a fallback, with AEC and AGC still off for headphones;
-support varies and the status reports when suppression is unavailable.
+WebRTC Opus sender → Cloudflare SFU. Runtime performance limitations remain.
 The new private test changes the control API as described above, not SFU configuration.
 No LiveKit dependency, external denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
@@ -457,7 +455,7 @@ versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
 
-### Retained engine implementations (only Browser, DPDFNet-8 and Off exposed)
+### Retained engine implementations (no user-facing selector)
 
 | Mode | Purpose |
 | --- | --- |
@@ -466,7 +464,7 @@ No new environment variables or infrastructure configuration are required.
 | DeepFilterNet strong | Original 40 dB limit, retaining about 1% original amplitude. |
 | RNNoise | Independent lightweight 48 kHz neural model, 3.6 MB same-origin download. No VAD gating. |
 | DPDFNet-8 HR (default) | 48 kHz model; approximately 27 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
-| Browser suppression | Built-in fallback; implementation/support varies by browser/device. |
+| Browser suppression | Built-in baseline retained internally; implementation/support varies by browser/device. |
 | Off | No requested noise suppression; Audio setup independently controls AEC and automatic gain. |
 
 DeepFilter presets blend the enhanced and time-aligned original spectrum; they do
@@ -487,14 +485,13 @@ RNNoise provenance/reproduction is in `apps/web/public/audio/rnnoise-v1/README.m
 The shared adapter lives at `/audio/noise-v1/`. Normal web deployment includes
 all new assets; no operator configuration commands are required.
 
-The in-channel filter selector offers DPDFNet-8 (default), Browser, and Off.
-Speakers/Headphones stays fixed to natural headphone input; no audio-setup selector
-is shown. Microphone/output selectors remain;
-output selection also applies to live and recorded mic-test playback.
-Changing a filter/device clears the old recording immediately and disables
-recording during initialization. Runtime failure also discards any old recording.
-For DPDFNet, run a fresh mic test after it reports active. Its 14.9 MB model and runtime
-load lazily from the same versioned asset directory.
+DPDFNet-8 HR is the fixed in-channel noise-suppression filter; no engine selector
+is shown. Speakers/Headphones stays fixed to natural headphone input.
+Microphone/output selectors remain; output selection also applies to live and
+recorded mic-test playback. Changing a device clears the old recording immediately
+and disables recording during initialization. Runtime failure also discards any old
+recording. Run a fresh mic test after DPDFNet reports active. Its 14.9 MB model and
+runtime load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the processor acknowledges initialization.
 Loading/initialization failure rejects capture and stops its tracks; runtime
@@ -648,8 +645,8 @@ Microphone-playback verification, September 7, 2026 (UTC):
 - Reproduced DPDFNet stopping the capture during join. In this CPU-only orb,
   its first five processed hops averaged 15.0 ms (18.6 ms maximum) against a
   10 ms/hop budget. Its fail-closed path can stop audio, trigger reconnect,
-  and previously remount an automatically recording test. Browser remains
-  available as a fallback for devices that cannot sustain DPDFNet in real time.
+  and previously remount an automatically recording test. DPDFNet remains the
+  fixed product choice; this benchmark records a known CPU-performance risk.
 - The real private SFU return produced a 1.98-second decoded recording with
   peak amplitude 0.204 from synthetic 440 Hz input. Switching the UI microphone
   selector requested the exact second device ID and changed the returned

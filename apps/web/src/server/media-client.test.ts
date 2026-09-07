@@ -98,7 +98,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   return { client, track, calls, joinedNames, stateUpdates, states, install, events };
 }
 
-test("DPDFNet suppression is the default; browser suppression remains opt-in", async (t) => {
+test("DPDFNet suppression is the fixed default and prepares before capture", async (t) => {
   const dpdfnet = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
   const engines: string[] = [];
   t.mock.method(NoiseAssets.prototype, "load", async (engine: string) => {
@@ -109,11 +109,6 @@ test("DPDFNet suppression is the default; browser suppression remains opt-in", a
   const client = new PublicCallClient((state) => states.push(state));
   await client.setAudioSetup("headphones");
   assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet8");
-  client.prepareMicrophone();
-  assert.equal(dpdfnet.mock.callCount(), 1);
-  assert.deepEqual(engines, []);
-  await client.setNoiseSuppression("browser");
-  assert.equal(states.at(-1)?.noiseSuppression, "browser");
   client.prepareMicrophone();
   assert.equal(dpdfnet.mock.callCount(), 1);
   assert.deepEqual(engines, []);
