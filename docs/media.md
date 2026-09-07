@@ -2,15 +2,14 @@
 
 ## Scope and architecture
 
-One public **General voice channel**, always available to join while the service
-is enabled. This is not a dial/invite/call flow. No accounts, text chat,
-camera, screen sharing, channel creation, or server-side recording. Mic test offers
-an explicit, tab-memory-only recording of up to ten seconds of received audio. Faker generates
-an adjective/animal nickname once per explicit join in the browser; the Rust
-registry stores it and distributes the same name to every participant. Automatic
-reconnect keeps the nickname; explicit leave/join generates another. The lobby
-does not persist presence. Names can collide or be impersonated; participant
-IDs, not names, distinguish people. Up to 12 people can join with microphone permission,
+One shared **General voice channel**, available to signed-in users with completed
+profiles while the service is enabled. This is not a dial/invite/call flow.
+No text chat, camera, screen sharing, channel creation, or server-side recording.
+Mic test offers an explicit, tab-memory-only recording of up to ten seconds of
+received audio. The Rust registry uses the authenticated account's global display
+name, never a caller-supplied nickname. Display names can collide; participant
+IDs, not names, distinguish people. Presence remains in memory.
+Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
 the registry keeps that code for the call and shares it in roster snapshots. Caper
@@ -30,7 +29,7 @@ two registries do not share sessions: requests can hit a pod that does not know
 the caller, and shutdown still ends the old pod's calls. Do not increase steady-state
 replicas or use sticky sessions as a substitute for shared coordination.
 Restarting the service clears presence and clients rejoin. Each tab receives an unguessable short-lived device
-capability, not an account/login. Clients use Caper track IDs, not arbitrary SFU
+capability bound to its authenticated account, in addition to login. Clients use Caper track IDs, not arbitrary SFU
 session IDs. Cloudflare terminates transport encryption; this is **not E2EE**.
 
 ## Provisioned resources and configuration
@@ -60,8 +59,11 @@ Keep this temporary test separate from any future production app/key.
 | `AXIOM_TOKEN` | Optional server-only ingest API token; absent/empty disables export |
 | `AXIOM_DATASET` | Defaults to the existing `caper` dataset |
 | `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
-| `MEDIA_API_URL` | Web-process-only local/orb adapter target |
-| `DATABASE_URL` | Optional PlanetScale Postgres URL. When set, the API connects and applies `apps/api/migrations` on startup. Use a direct primary URL on port `5432` (`sslmode=verify-full`). Leave empty to boot without a database. |
+| `MEDIA_API_URL` | Web-process-only internal Rust API target, required for account and media routes |
+| `DATABASE_URL` | API-only PlanetScale Postgres URL. Startup applies `apps/api/migrations`. Use a direct primary URL on port `5432` with verified TLS. Missing configuration fails account/media access closed. |
+| `WORKOS_CLIENT_ID` / `WORKOS_API_KEY` | Same WorkOS environment on web and API; API key is server-only |
+| `WORKOS_COOKIE_PASSWORD` | Web-only random secret, at least 32 characters, identical across web replicas |
+| `WORKOS_REDIRECT_URI` | Web-only exact registered HTTPS URL ending in `/api/auth/callback` |
 
 Use `.env.example`; Rust does not auto-load dotenv files. Export a private env
 file before `cargo run -p caper-api`. Run the web process with
@@ -908,47 +910,48 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
   stop the supervised media service for the orb). Revoke the temporary SFU app
   and TURN key after testing. The website can remain up.
 
-## Account database foundation (not yet connected to HTTP login)
+## AuthKit trial and Caper accounts
 
-The target product requires an account for all app browsing and voice use.
-The current media routes remain anonymous: this database foundation alone does
-**not** enforce that policy or ship login. SES, HTTP code generation/verification,
-cookie/CSRF handling, onboarding UI, and route authorization are separate work.
-Never enable a login route without those protections.
+All app pages require login; login/callback and health routes remain public.
+WorkOS owns email codes, hosted authentication, and sessions. Caper owns profiles
+and authorization. The trial uses the free hosted domain and default shared email
+sender, not SES or paid custom domains. WorkOS calls production shared-domain
+email delivery best-effort; this trial is not production delivery validation.
 
-`apps/api/migrations/202609070001_accounts.sql` adds:
+`apps/api/migrations/202609070001_accounts.sql` creates `users`: bigint identity
+PK, immutable unique 21-character NanoID public ID, unique WorkOS subject, unique
+normalized verified email, timestamps, and profile fields. Usernames are lowercase
+ASCII letters/digits/underscore, 3–32 characters and globally unique. Display names
+are global, nonunique, 1–64 Unicode characters. Both start NULL and are completed
+together. Profile responses expose neither bigint IDs nor email. WorkOS subjects,
+not email matches, own accounts; a conflicting email never silently links users.
 
-- `users`: bigint identity PK; unique 21-character NanoID public identifier;
-  unique normalized email and verification timestamp. Usernames are normalized
-  lowercase ASCII letters/digits/underscore, 3–32 characters and globally unique.
-  Display names are global, non-unique, 1–64 Unicode characters. Both profile
-  fields start NULL and must be completed together during onboarding. Never
-  change a public ID or expose bigint IDs/email in public profile responses.
-- `sessions`: bigint PK/FK, unique 32-byte token digest, fixed 30-day expiration.
-  Revocation deletes the row; account deletion cascades to its sessions. Each
-  browser/native login can have its own session. No JWT or device-specific DB
-  model is required. Expired sessions fail lookups even before cleanup runs.
-- `login_challenges`: one current challenge per email (including unregistered
-  emails), 10-minute expiry, five guesses, and a 60-second resend cooldown shared
-  across API replicas. Resend replaces the challenge ID and invalidates the old
-  code. Consumed challenges retain their cooldown until replacement/expiry.
+The official TanStack Start AuthKit SDK handles callback state/PKCE, encrypted
+HttpOnly cookies, refresh and sign-out. Same-origin checks protect profile POSTs;
+server functions (including sign-out) use CSRF middleware. Browser proxies overwrite account
+headers using the verified session, never trust browser-supplied identities.
+Rust verifies RS256 signature, scoped WorkOS issuer/client, expiry and optional
+audience with cached JWKS, and fetches verified email server-side. Account/media
+routes fail closed without auth or DB configuration, even when voice is disabled.
+Media additionally requires a completed profile and account-bound capability.
 
-`accounts::complete_login` consumes the challenge, creates or retrieves a user,
-and inserts the session atomically. Wrong guesses commit their attempt increment;
-an insertion failure rolls back the entire successful-login transaction. This
-supports open email-verified registration; no account exists before verification.
+### Desktop and future mobile
 
-Integration contract: the auth layer generates codes with a CSPRNG and supplies
-HMAC-SHA-256 digests using a durable server-only key, binding the **normalized**
-email, challenge public ID and code with unambiguous encoding. Never store an
-unkeyed hash of a six-digit code. Session tokens need at least 256 random bits;
-only their SHA-256 digest reaches this module. None of these secrets belong in
-logs. These functions accept digests, not browser-supplied proof of identity.
-The HTTP boundary must validate email syntax, add IP/global/daily send limits,
-return non-enumerating responses, handle delivery failure, and require completed
-profiles for app access. Schedule `accounts::delete_expired` in the eventual auth
-maintenance loop; it is not automatically invoked yet. Profile changes must use
-the authenticated internal user ID, not an ID supplied by the client.
+Native clients need not share browser cookies. Use WorkOS's public-client device
+authorization flow in the system browser and poll with the client ID (no API key).
+Send the access JWT in `x-caper-account-token` to `/api/native/account/me`,
+`/api/native/account/profile`, and `/api/native/media/*` through the same web host.
+The native gateway ignores cookies; Rust validates the JWT. Media's existing
+`Authorization` header remains the separate call capability. Store rotating refresh
+tokens in the OS credential store, not localStorage/plain files, and clear/revoke
+them on sign-out. This PR provides the gateway, not Tauri/iOS/Android login UI or
+secure storage integration. Browser WebRTC does not prove native audio support.
+
+Staging settings: 5-minute access JWTs, 7-day inactivity, 30-day maximum session.
+Revocation prevents refresh but an already-issued JWT can work until expiry;
+Rust does not introspect every request. SSE emission stops at token expiry.
+JWKS and verified-email caches have a 5-minute TTL. Do not claim instant global
+logout or continued login availability during a WorkOS outage.
 
 ID choice follows [PlanetScale's public-ID pattern](https://planetscale.com/blog/why-we-chose-nanoids-for-planetscales-api):
 bigint internal keys plus separate NanoIDs, using the standard 21-character
@@ -960,12 +963,18 @@ provide the final guarantee; user-ID generation retries collisions.
 No production database changes are performed by tests. The existing API startup
 migrator applies embedded SQL when `DATABASE_URL` is configured, using a direct
 primary connection on port 5432 (not transaction-pooled 6432), with verified TLS.
-The API Docker build now copies the actual migrations rather than an empty
-directory. Deployment of this image therefore **will create the three tables**;
-review/authorize that migration before deploying. No separate `psql` migration
-command is needed. Leave these additive tables in place for an application
-rollback; do not drop user data. Missing `DATABASE_URL` still permits the current
-anonymous media service to boot; future authentication must fail closed instead.
+The API Docker build copies migrations. Deployment **creates the users table**;
+review/authorize the migration before deployment. This replaces the unmerged,
+undeployed custom-session draft; do not run it against a DB that applied that
+draft's different checksum. No production migration/deployment is part of the trial.
+No separate `psql` migration command is needed. Leave data intact on rollback.
+
+Before an authorized production activation: register the exact callback and logout
+URLs in the matching WorkOS environment; provide the variables above; route all
+public browser/native API paths through WEB, with Rust internal only; select matching
+web/API image pins and authorize the startup migration. Existing direct-to-Rust
+media ingress is incompatible with cookie auth. Infrastructure stages this separately
+as an opt-in overlay: do not activate it merely by merging app code.
 
 Database tests are explicitly ignored in the ordinary no-DB Rust suite. The CI
 `Account database (Postgres)` job runs them against disposable Postgres 17. To run
@@ -981,6 +990,14 @@ Orb setup installs Postgres binaries; an isolated UTF-8 cluster can be initializ
 with `/usr/lib/postgresql/15/bin/initdb -D /tmp/caper-test-pg -A trust -E UTF8` and
 run with `amp orb service start account-test-db --command '/usr/lib/postgresql/15/bin/postgres -D /tmp/caper-test-pg -h 127.0.0.1 -p 55432 -k /tmp'`.
 Local trust authentication is for the disposable loopback-only test server, not
-deployment. Tests cover concurrency, single use, lockout, expiration, rollback,
-profile constraints, account reuse, session revocation, and cleanup. They do not
-validate PlanetScale connectivity, SES delivery, or web/native authentication.
+deployment. Tests cover profile constraints, concurrent username claims, stable
+account reuse and isolation. JWT and HTTP tests cover authentication enforcement.
+Trial smoke testing used real staging hosted Magic Auth, callback, profile creation
+and app access against disposable local TLS Postgres. The sandbox code came from
+WorkOS admin events, not an inbox: this does not verify email delivery. Public-client
+device authorization and refresh also returned a JWT accepted through WEB by Rust;
+revoking that test session made refresh fail with HTTP 400. Browser sign-out returned
+to login and subsequent `/live` access redirected to login. The browser cookie was
+Secure, HttpOnly, SameSite=Lax. Desktop/mobile browser layouts and username-conflict
+UI were inspected. PlanetScale connectivity, physical desktop/mobile login, and live authenticated SFU voice remain
+untested. Earlier media results above predate this authentication boundary.

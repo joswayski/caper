@@ -1,0 +1,17 @@
+.account-page { min-height: 100dvh; display: grid; place-items: center; padding: 48px 24px; }
+.account-card { width: min(100%, 440px); }
+.account-dot { color: var(--terracotta); }
+.account-eyebrow { margin-top: 56px; font-size: .7rem; font-weight: 700; letter-spacing: .14em; color: var(--text-muted); }
+.account-card h1 { font-size: clamp(2.2rem, 7vw, 3.1rem); letter-spacing: -.055em; line-height: 1.08; margin: 20px 0; }
+.account-card p:not(.account-eyebrow):not(.account-error) { color: var(--text-muted); line-height: 1.65; }
+.account-primary { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 16px; padding: 16px 20px; margin-top: 28px; border: 1px solid var(--terracotta); border-radius: 8px; background: var(--terracotta); color: var(--text); font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; }
+.account-primary:disabled { opacity: .6; cursor: wait; }
+.account-card small { display: block; margin-top: 12px; font-size: .8rem; line-height: 1.5; color: var(--text-muted); }
+.account-card label { display: block; margin: 24px 0 8px; font-size: .9rem; font-weight: 700; }
+.account-card input { width: 100%; padding: 13px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.account-card :is(input, button, a):focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
+.account-error { padding: 12px 14px; border: 1px solid var(--terracotta); border-radius: 8px; color: var(--text); line-height: 1.5; }
+.account-secondary { border: 0; background: none; color: var(--text-muted); font: inherit; font-size: .85rem; padding: 16px 0; cursor: pointer; }
+.account-nav { display: flex; justify-content: flex-end; align-items: center; gap: 20px; padding: 12px 24px; border-bottom: 1px solid var(--border); font-size: .85rem; }
+.account-nav a { color: var(--text); }
+.account-nav button { padding: 0; }

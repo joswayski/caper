@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { fakerEN as faker } from "@faker-js/faker";
 import { PublicCallClient, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
@@ -191,19 +190,15 @@ test("failed mode replacement keeps the old microphone and rolls back selection"
   assert.equal(states.at(-1)?.noiseSuppression, "off");
 });
 
-test("random nicknames are submitted once per explicit join", async (t) => {
+test("joins never submit a client-selected identity", async (t) => {
   const { client, joinedNames } = setup(t);
-  let generated = 0;
-  t.mock.method(faker.word, "adjective", () => ++generated === 1 ? "mellow" : "brave");
-  t.mock.method(faker.animal, "type", () => "otter");
-  await client.join();
+  await client.join("Impersonated user");
   await client.setMuted(true);
-  await client.join(); // Already connected: do not regenerate.
-  assert.deepEqual(joinedNames, ["mellow otter"]);
-  assert.equal(generated, 1);
+  await client.join(); // Already connected: do not join twice.
+  assert.deepEqual(joinedNames, [undefined]);
   await client.leave();
   await client.join();
-  assert.deepEqual(joinedNames, ["mellow otter", "brave otter"]);
+  assert.deepEqual(joinedNames, [undefined, undefined]);
 });
 
 test("join, 204 state responses, real sender mute, deafen and immediate device cleanup", async (t) => {

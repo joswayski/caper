@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { proxyMedia } from "./media.ts";
+import { proxyMedia as forwardMedia } from "./media.ts";
+
+const proxyMedia = (request: Request) => forwardMedia(request, "verified-account-fixture");
+
+test("adapter fails closed without an account token", async () => {
+  assert.equal((await forwardMedia(new Request("https://caper.chat/api/media/status"), "")).status, 401);
+});
 
 test("adapter is disabled without configuration and restricts operations/methods", async (t) => {
   const old = process.env.MEDIA_API_URL;
@@ -21,11 +27,12 @@ test("adapter forwards only credentials needed by the fixed API and preserves 20
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "http://media:3001/api/media/leave");
     assert.equal(new Headers(init.headers).get("authorization"), "Bearer ephemeral");
+    assert.equal(new Headers(init.headers).get("x-caper-account-token"), "verified-account-fixture");
     assert.equal(new Headers(init.headers).get("cookie"), null);
     return new Response(null, { status: 204 });
   });
   const response = await proxyMedia(new Request("https://caper.chat/api/media/leave", {
-    method: "POST", headers: { authorization: "Bearer ephemeral", "content-type": "application/json", cookie: "unrelated=true" }, body: "{}",
+    method: "POST", headers: { authorization: "Bearer ephemeral", "content-type": "application/json", cookie: "unrelated=true", "x-caper-account-token": "attacker-supplied" }, body: "{}",
   }));
   assert.equal(response.status, 204);
 });

@@ -11,8 +11,14 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LiveRouteImport } from './routes/live'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as ApiAccountProfileRouteImport } from './routes/api/account/profile'
+import { Route as ApiAuthCallbackRouteImport } from './routes/api/auth/callback'
+import { Route as ApiAuthSignInRouteImport } from './routes/api/auth/sign-in'
 import { Route as ApiMediaSplatRouteImport } from './routes/api/media/$'
+import { Route as ApiNativeSplatRouteImport } from './routes/api/native/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -24,9 +30,34 @@ const LiveRoute = LiveRouteImport.update({
   path: '/live',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProfileRoute = ProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
   id: '/api/health',
   path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAccountProfileRoute = ApiAccountProfileRouteImport.update({
+  id: '/api/account/profile',
+  path: '/api/account/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthCallbackRoute = ApiAuthCallbackRouteImport.update({
+  id: '/api/auth/callback',
+  path: '/api/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthSignInRoute = ApiAuthSignInRouteImport.update({
+  id: '/api/auth/sign-in',
+  path: '/api/auth/sign-in',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiMediaSplatRoute = ApiMediaSplatRouteImport.update({
@@ -34,39 +65,99 @@ const ApiMediaSplatRoute = ApiMediaSplatRouteImport.update({
   path: '/api/media/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiNativeSplatRoute = ApiNativeSplatRouteImport.update({
+  id: '/api/native/$',
+  path: '/api/native/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/live': typeof LiveRoute
+  '/login': typeof LoginRoute
+  '/profile': typeof ProfileRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/account/profile': typeof ApiAccountProfileRoute
+  '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/sign-in': typeof ApiAuthSignInRoute
   '/api/media/$': typeof ApiMediaSplatRoute
+  '/api/native/$': typeof ApiNativeSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/live': typeof LiveRoute
+  '/login': typeof LoginRoute
+  '/profile': typeof ProfileRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/account/profile': typeof ApiAccountProfileRoute
+  '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/sign-in': typeof ApiAuthSignInRoute
   '/api/media/$': typeof ApiMediaSplatRoute
+  '/api/native/$': typeof ApiNativeSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/live': typeof LiveRoute
+  '/login': typeof LoginRoute
+  '/profile': typeof ProfileRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/account/profile': typeof ApiAccountProfileRoute
+  '/api/auth/callback': typeof ApiAuthCallbackRoute
+  '/api/auth/sign-in': typeof ApiAuthSignInRoute
   '/api/media/$': typeof ApiMediaSplatRoute
+  '/api/native/$': typeof ApiNativeSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/live' | '/api/health' | '/api/media/$'
+  fullPaths:
+    | '/'
+    | '/live'
+    | '/login'
+    | '/profile'
+    | '/api/health'
+    | '/api/account/profile'
+    | '/api/auth/callback'
+    | '/api/auth/sign-in'
+    | '/api/media/$'
+    | '/api/native/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/live' | '/api/health' | '/api/media/$'
-  id: '__root__' | '/' | '/live' | '/api/health' | '/api/media/$'
+  to:
+    | '/'
+    | '/live'
+    | '/login'
+    | '/profile'
+    | '/api/health'
+    | '/api/account/profile'
+    | '/api/auth/callback'
+    | '/api/auth/sign-in'
+    | '/api/media/$'
+    | '/api/native/$'
+  id:
+    | '__root__'
+    | '/'
+    | '/live'
+    | '/login'
+    | '/profile'
+    | '/api/health'
+    | '/api/account/profile'
+    | '/api/auth/callback'
+    | '/api/auth/sign-in'
+    | '/api/media/$'
+    | '/api/native/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LiveRoute: typeof LiveRoute
+  LoginRoute: typeof LoginRoute
+  ProfileRoute: typeof ProfileRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  ApiAccountProfileRoute: typeof ApiAccountProfileRoute
+  ApiAuthCallbackRoute: typeof ApiAuthCallbackRoute
+  ApiAuthSignInRoute: typeof ApiAuthSignInRoute
   ApiMediaSplatRoute: typeof ApiMediaSplatRoute
+  ApiNativeSplatRoute: typeof ApiNativeSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -85,11 +176,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LiveRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/profile': {
+      id: '/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/health': {
       id: '/api/health'
       path: '/api/health'
       fullPath: '/api/health'
       preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/account/profile': {
+      id: '/api/account/profile'
+      path: '/api/account/profile'
+      fullPath: '/api/account/profile'
+      preLoaderRoute: typeof ApiAccountProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/callback': {
+      id: '/api/auth/callback'
+      path: '/api/auth/callback'
+      fullPath: '/api/auth/callback'
+      preLoaderRoute: typeof ApiAuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/sign-in': {
+      id: '/api/auth/sign-in'
+      path: '/api/auth/sign-in'
+      fullPath: '/api/auth/sign-in'
+      preLoaderRoute: typeof ApiAuthSignInRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/media/$': {
@@ -99,24 +225,38 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMediaSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/native/$': {
+      id: '/api/native/$'
+      path: '/api/native/$'
+      fullPath: '/api/native/$'
+      preLoaderRoute: typeof ApiNativeSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LiveRoute: LiveRoute,
+  LoginRoute: LoginRoute,
+  ProfileRoute: ProfileRoute,
   ApiHealthRoute: ApiHealthRoute,
+  ApiAccountProfileRoute: ApiAccountProfileRoute,
+  ApiAuthCallbackRoute: ApiAuthCallbackRoute,
+  ApiAuthSignInRoute: ApiAuthSignInRoute,
   ApiMediaSplatRoute: ApiMediaSplatRoute,
+  ApiNativeSplatRoute: ApiNativeSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
+import type { startInstance } from './start.ts'
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

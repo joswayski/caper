@@ -138,6 +138,46 @@ async fn joined(s: &AppState, name: &str) -> Value {
 }
 
 #[tokio::test]
+async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
+    let (mut state, _) = state();
+    state.auth = auth::AuthVerifier::new(None, None);
+    let router = app(state);
+    let health = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::NO_CONTENT);
+    let missing = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/account/me")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+    let unavailable = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/account/me")
+                .header("x-caper-account-token", "not-a-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn snapshot_includes_only_valid_cloudflare_country_codes() {
     let (s, _) = state();
     let join = |name: &str, country: &str| {
