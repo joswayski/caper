@@ -138,6 +138,30 @@ async fn joined(s: &AppState, name: &str) -> Value {
 }
 
 #[tokio::test]
+async fn profile_format_validation_happens_in_the_app_before_database_access() {
+    let (state, _) = state();
+    let router = app(state);
+    for (username, display_name) in [
+        ("ab".to_owned(), "Other".to_owned()),
+        ("with-hyphen".to_owned(), "Other".to_owned()),
+        ("a".repeat(33), "Other".to_owned()),
+        ("other".to_owned(), "  ".to_owned()),
+        ("other".to_owned(), "🌱".repeat(65)),
+        ("other".to_owned(), "line\nbreak".to_owned()),
+    ] {
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/api/account/profile",
+            None,
+            json!({"username":username,"displayName":display_name}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
 async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
     let (mut state, _) = state();
     state.auth = auth::AuthVerifier::new(None, None);

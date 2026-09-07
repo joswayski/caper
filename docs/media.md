@@ -931,6 +931,10 @@ are global, nonunique, 1–64 Unicode characters. Both start NULL and are comple
 together. Profile responses expose neither bigint IDs nor email. WorkOS subjects,
 not email matches, own accounts; a conflicting email never silently links users.
 
+The table keeps only primary-key, required-field and uniqueness constraints.
+Format, length, normalization and onboarding validation live in the application,
+not SQL `CHECK` expressions.
+
 The official TanStack Start AuthKit SDK handles callback state/PKCE, encrypted
 HttpOnly cookies, refresh and sign-out. Same-origin checks protect profile POSTs;
 server functions (including sign-out) use CSRF middleware. Browser proxies overwrite account

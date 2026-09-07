@@ -36,20 +36,6 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
             .await
             .is_err()
     );
-    for username in ["ab", "with-hyphen", "UPPER SPACE", &"a".repeat(33)] {
-        assert!(
-            set_profile(&pool, other.id, username, "Other")
-                .await
-                .is_err()
-        );
-    }
-    for display in ["", "  ", &"🌱".repeat(65)] {
-        assert!(
-            set_profile(&pool, other.id, "other", display)
-                .await
-                .is_err()
-        );
-    }
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -65,8 +51,6 @@ async fn identity_constraints_and_concurrency(pool: PgPool) {
             .await
             .is_err()
     );
-    assert!(sqlx::query("INSERT INTO users (public_id, workos_user_id, email) VALUES ('short', 'user_X', 'x@example.com')")
-        .execute(&pool).await.is_err());
     let removed: (Option<String>, Option<String>) = sqlx::query_as(
         "SELECT to_regclass('sessions')::text, to_regclass('login_challenges')::text",
     )
