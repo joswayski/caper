@@ -1,14 +1,28 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { recordReceivedAudio } from "../media/recording.ts";
+
+function install(t: TestContext, key: string, value: unknown) {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
+  Object.defineProperty(globalThis, key, { configurable: true, value });
+  t.after(() => descriptor
+    ? Object.defineProperty(globalThis, key, descriptor)
+    : Reflect.deleteProperty(globalThis, key));
+}
 
 test("received recording keeps browser timestamps and finishes without stopping borrowed audio", async (t) => {
   let instance!: FakeMediaRecorder;
+  let receiver!: FakeAudio;
   let trackStops = 0;
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "MediaRecorder");
-  t.after(() => descriptor
-    ? Object.defineProperty(globalThis, "MediaRecorder", descriptor)
-    : Reflect.deleteProperty(globalThis, "MediaRecorder"));
+
+  class FakeAudio {
+    muted = false;
+    srcObject: MediaStream | null = null;
+    playing = false;
+    constructor() { receiver = this; }
+    async play() { this.playing = true; }
+    pause() { this.playing = false; }
+  }
 
   class FakeMediaRecorder {
     static isTypeSupported(type: string) { return type === "audio/webm;codecs=opus"; }
@@ -28,30 +42,38 @@ test("received recording keeps browser timestamps and finishes without stopping 
     stop() {
       this.state = "inactive";
       queueMicrotask(() => {
-        this.ondataavailable?.({ data: new Blob(["timestamped opus"], { type: this.mimeType }) });
+        if (receiver.playing) this.ondataavailable?.({ data: new Blob(["timestamped opus"], { type: this.mimeType }) });
         this.onstop?.();
       });
     }
   }
-  Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: FakeMediaRecorder });
+  install(t, "MediaRecorder", FakeMediaRecorder);
+  install(t, "Audio", FakeAudio);
   const stream = { getAudioTracks: () => [{ readyState: "live", stop: () => trackStops++ }] } as unknown as MediaStream;
 
   const recording = recordReceivedAudio(stream);
   assert.equal(instance.mimeType, "audio/webm;codecs=opus");
+  assert.equal(receiver.muted, true);
+  assert.equal(receiver.srcObject, stream);
+  assert.equal(receiver.playing, true);
   recording.finish();
   const blob = await recording.result;
 
   assert.equal(blob.type, "audio/webm;codecs=opus");
   assert.equal(await blob.text(), "timestamped opus");
+  assert.equal(receiver.playing, false);
+  assert.equal(receiver.srcObject, null);
   assert.equal(trackStops, 0);
 });
 
 test("cancelling a recording rejects without stopping borrowed audio", async (t) => {
   let trackStops = 0;
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "MediaRecorder");
-  t.after(() => descriptor
-    ? Object.defineProperty(globalThis, "MediaRecorder", descriptor)
-    : Reflect.deleteProperty(globalThis, "MediaRecorder"));
+  class FakeAudio {
+    muted = false;
+    srcObject: MediaStream | null = null;
+    async play() {}
+    pause() {}
+  }
   class FakeMediaRecorder {
     static isTypeSupported() { return false; }
     state: RecordingState = "inactive";
@@ -63,7 +85,8 @@ test("cancelling a recording rejects without stopping borrowed audio", async (t)
     start() { this.state = "recording"; }
     stop() { this.state = "inactive"; queueMicrotask(() => this.onstop?.()); }
   }
-  Object.defineProperty(globalThis, "MediaRecorder", { configurable: true, value: FakeMediaRecorder });
+  install(t, "MediaRecorder", FakeMediaRecorder);
+  install(t, "Audio", FakeAudio);
   const stream = { getAudioTracks: () => [{ readyState: "live", stop: () => trackStops++ }] } as unknown as MediaStream;
 
   const recording = recordReceivedAudio(stream);

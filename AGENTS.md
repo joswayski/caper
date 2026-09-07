@@ -17,7 +17,7 @@ Adapted from the conventions in `joswayski/captures`.
 - Other agents may work concurrently, particularly on desktop. Use an isolated worktree for new concurrent work; never stash, overwrite, or publish another agent's changes.
 - Keep macOS, Windows, and Linux parity explicit. Document unsupported or untested capture/device behavior instead of assuming browser and Tauri APIs are interchangeable.
 - Never expose provider secrets or log SDP, credentials, or raw media. No unrestricted Cloudflare API proxy.
-- Keep one authoritative media registry. Do not scale the API beyond one instance without shared coordination and recovery; web replicas are independent of this constraint.
+- Keep one desired API replica until shared media coordination and recovery exist. A temporary second API pod during rolling updates is intentionally accepted for this work-in-progress app; split in-memory registries still interrupt calls. Web replicas are independent of this constraint.
 
 ## Visual design
 

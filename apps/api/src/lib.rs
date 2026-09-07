@@ -355,6 +355,7 @@ pub struct AppState {
     registry: Arc<Mutex<Registry>>,
     database: Option<PgPool>,
     events: watch::Sender<()>,
+    shutting_down: watch::Sender<bool>,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -367,13 +368,20 @@ impl AppState {
         database: Option<PgPool>,
     ) -> Self {
         let (events, _) = watch::channel(());
+        let (shutting_down, _) = watch::channel(false);
         Self {
             config,
             provider,
             registry: Arc::new(Mutex::new(Registry::default())),
             database,
             events,
+            shutting_down,
         }
+    }
+
+    /// End long-lived event streams so HTTP draining can complete on deployment.
+    pub fn begin_shutdown(&self) {
+        self.shutting_down.send_replace(true);
     }
 
     #[must_use]
@@ -547,6 +555,7 @@ struct EventStreamState {
     token: String,
     updates: watch::Receiver<()>,
     cancellation: watch::Receiver<()>,
+    shutdown: watch::Receiver<bool>,
     first: bool,
 }
 
@@ -555,6 +564,13 @@ async fn events(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_enabled(&s)?;
+    let shutdown = s.shutting_down.subscribe();
+    if *shutdown.borrow() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "API is draining",
+        ));
+    }
     let token = bearer(&headers)?.to_owned();
     let (updates, cancellation) = {
         // Authentication, subscription and connection replacement are atomic with roster
@@ -578,14 +594,19 @@ async fn events(
             token,
             updates,
             cancellation,
+            shutdown,
             first: true,
         },
         |mut stream| async move {
+            if *stream.shutdown.borrow() {
+                return None;
+            }
             let event = if stream.first {
                 stream.first = false;
                 "ready"
             } else {
                 tokio::select! {
+                    _ = stream.shutdown.changed() => return None,
                     changed = stream.updates.changed() => {
                         if changed.is_err() { return None; }
                         "changed"
