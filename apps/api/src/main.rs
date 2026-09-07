@@ -25,9 +25,12 @@ async fn main() {
         .expect("bind media API");
     tracing::info!(%bind, "media API listening");
     let shutdown_state = state.clone();
-    serve_with_drain(listener, app(state), shutdown_signal())
-        .await
-        .expect("serve media API");
+    serve_with_drain(listener, app(state), async {
+        shutdown_signal().await;
+        shutdown_state.begin_shutdown();
+    })
+    .await
+    .expect("serve media API");
     shutdown_cleanup(&shutdown_state).await;
 }
 

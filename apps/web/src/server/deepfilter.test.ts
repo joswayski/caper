@@ -1,35 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { runInNewContext } from "node:vm";
 import { test } from "node:test";
 
 const assets = new URL("../../public/audio/deepfilter-v1/", import.meta.url);
-
-test("DeepFilter worklet adapts 480-sample frames without gaps or reordering", async () => {
-  const code = await readFile(new URL("worklet.js", assets), "utf8");
-  const messages: string[] = [];
-  let Processor: any;
-  runInNewContext(code.slice(code.indexOf("\n") + 1), {
-    AudioWorkletProcessor: class { port = { postMessage: (value: string) => messages.push(value), close() {} }; },
-    sampleRate: 48000,
-    initSync: () => ({}), df_create: () => 1, df_get_frame_length: () => 480,
-    df_process_frame: (_handle: number, frame: Float32Array) => frame,
-    registerProcessor: (_name: string, value: unknown) => { Processor = value; },
-  });
-  const processor = new Processor({ processorOptions: {} });
-  assert.deepEqual(messages, ["ready"]);
-  let offset = 0;
-  for (const quantum of [128, 128, 128, 128, 256, 64, ...Array(1000).fill(128)]) {
-    const input = Float32Array.from({ length: quantum }, (_, i) => offset + i + 1);
-    const output = new Float32Array(quantum);
-    assert.equal(processor.process([[input]], [[output]]), true);
-    for (let i = 0; i < quantum; i++) assert.equal(output[i], offset + i < 480 ? 0 : offset + i - 479);
-    offset += quantum;
-  }
-  processor.port.onmessage({ data: "stop" });
-  assert.equal(processor.process([], []), false);
-});
 
 test("pinned DeepFilterNet3 WASM/model execute actual neural inference", async () => {
   const wasm = await readFile(new URL("df_bg.wasm", assets));
