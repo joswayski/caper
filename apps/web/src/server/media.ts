@@ -44,9 +44,16 @@ export async function proxyMedia(request: Request, accountToken: string): Promis
   // Limit time to headers, not the lifetime of a healthy SSE response.
   const timer = streaming ? setTimeout(() => controller.abort(), 25_000) : undefined;
   try {
+    const upstreamHeaders = new Headers({
+      "content-type": "application/json",
+      authorization: `Bearer ${accountToken}`,
+      "x-caper-media-token": (request.headers.get("authorization") ?? "").replace(/^Bearer /, ""),
+    });
+    const countryCode = request.headers.get("cf-ipcountry");
+    if (countryCode) upstreamHeaders.set("cf-ipcountry", countryCode);
     const upstream = await fetch(`${base.replace(/\/$/, "")}/api/media/${operation}`, {
       method: request.method,
-      headers: { "content-type": "application/json", authorization: `Bearer ${accountToken}`, "x-caper-media-token": (request.headers.get("authorization") ?? "").replace(/^Bearer /, "") },
+      headers: upstreamHeaders,
       body: body as BodyInit | undefined,
       signal: AbortSignal.any([request.signal, streaming ? controller.signal : AbortSignal.timeout(25_000)]),
       redirect: "error",

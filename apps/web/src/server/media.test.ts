@@ -20,7 +20,7 @@ test("adapter is disabled without configuration and restricts operations/methods
   assert.equal((await proxyMedia(new Request("https://caper.chat/api/media/join", { method: "POST", headers: { "sec-fetch-site": "cross-site" } }))).status, 403);
 });
 
-test("adapter forwards only credentials needed by the fixed API and preserves 204", async (t) => {
+test("adapter forwards the Cloudflare country code and credentials needed by the fixed API", async (t) => {
   const old = process.env.MEDIA_API_URL;
   process.env.MEDIA_API_URL = "http://media:3001";
   t.after(() => { if (old) process.env.MEDIA_API_URL = old; else delete process.env.MEDIA_API_URL; });
@@ -28,12 +28,13 @@ test("adapter forwards only credentials needed by the fixed API and preserves 20
     assert.equal(url, "http://media:3001/api/media/leave");
     assert.equal(new Headers(init.headers).get("authorization"), "Bearer verified-account-fixture");
     assert.equal(new Headers(init.headers).get("x-caper-media-token"), "ephemeral");
+    assert.equal(new Headers(init.headers).get("cf-ipcountry"), "US");
     assert.equal(new Headers(init.headers).get("x-caper-account-token"), null);
     assert.equal(new Headers(init.headers).get("cookie"), null);
     return new Response(null, { status: 204 });
   });
   const response = await proxyMedia(new Request("https://caper.chat/api/media/leave", {
-    method: "POST", headers: { authorization: "Bearer ephemeral", "content-type": "application/json", cookie: "unrelated=true", "x-caper-account-token": "attacker-supplied" }, body: "{}",
+    method: "POST", headers: { authorization: "Bearer ephemeral", "content-type": "application/json", "cf-ipcountry": "US", cookie: "unrelated=true", "x-caper-account-token": "attacker-supplied" }, body: "{}",
   }));
   assert.equal(response.status, 204);
 });
