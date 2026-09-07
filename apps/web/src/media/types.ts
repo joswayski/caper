@@ -11,6 +11,7 @@ export interface CallTrack {
 export interface Participant {
   id: string;
   name: string;
+  countryCode?: string;
   muted: boolean;
   deafened: boolean;
   tracks: CallTrack[];
