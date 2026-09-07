@@ -106,9 +106,7 @@ test("preparation skips unused assets for DPDFNet and only warms the selected WA
   const states: CallViewState[] = [];
   const client = new PublicCallClient((state) => states.push(state));
   await client.setAudioSetup("headphones");
-  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet2");
-  client.prepareMicrophone(); // The current DPDFNet-2 default has no shared WASM entry.
-  await client.setNoiseSuppression("dpdfnet8");
+  assert.equal(states.at(-1)?.noiseSuppression, "dpdfnet8");
   client.prepareMicrophone();
   assert.deepEqual(engines, []);
   await client.setNoiseSuppression("deepfilter-gentle");

@@ -123,9 +123,6 @@ export default defineConfig(async () => {
         "/audio/rnnoise-v1/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
-        "/audio/dpdfnet2-v1/**": {
-          headers: { "cache-control": "public, max-age=31536000, immutable" },
-        },
         "/audio/dpdfnet8-v1/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },

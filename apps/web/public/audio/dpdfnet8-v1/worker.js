@@ -1,8 +1,8 @@
-import * as ort from '../dpdfnet2-v1/ort.wasm.bundle.min.mjs';
-import { DpdfnetStream } from '../dpdfnet2-v1/dsp.js';
+import * as ort from './ort.wasm.bundle.min.mjs';
+import { DpdfnetStream } from './dsp.js';
 
 ort.env.wasm.numThreads = 1;
-ort.env.wasm.wasmPaths = new URL('../dpdfnet2-v1/', import.meta.url).href;
+ort.env.wasm.wasmPaths = './';
 
 let stream;
 try {
