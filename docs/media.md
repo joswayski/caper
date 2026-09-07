@@ -84,8 +84,8 @@ the API's Cloudflare projection remains Kubernetes Secret `caper-api-cloudflare`
 Keep one desired API replica with `RollingUpdate`,
 `maxSurge: 1`, `maxUnavailable: 0`, and a 60-second termination grace, port 3001,
 `/api/media` routing, and existing `MEDIA_*` / `CF_*` configuration names.
-The active web Deployment/Service remains `caper` with two replicas: renaming it
-to `caper-web` requires a separate reviewed rollout and SSM deployment-target update.
+The web Deployment, Service, Ingress, PDB, container, and deployment target are
+named `caper-web`; it runs with two replicas.
 
 Web and API images publish independently. `api-image.yml` runs only when
 `apps/api`, workspace Cargo files, the unused desktop crate manifest, or that
@@ -330,7 +330,7 @@ changes are required. Optional equivalent operator commands (replace the SHA):
 ```sh
 MERGED_SHA=<full-merge-commit-sha>
 gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-gh workflow run deploy-caper.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
 ```
 
 For a new failure, copy its `x-caper-error-id` from Network → failed request →
@@ -637,13 +637,13 @@ After merge and both image builds, the operator can deploy the exact merge SHA:
 ```sh
 gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
 # Wait for the API rollout to finish successfully, then:
-gh workflow run deploy-caper.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
 ```
 
 These are operator instructions, not commands automatically run by this change.
 The later default-preset/snippet change is web-only and requires no further API
 deployment when private received tests are already deployed. After its web image
-build, use only the `deploy-caper.yml` command above with that merge SHA.
+build, use only the `deploy-caper-web.yml` command above with that merge SHA.
 
 ### Audio setup and speech consistency
 
@@ -1048,7 +1048,7 @@ is resumed only after both APIs are ready to use the new schema. From infrastruc
 flux resume kustomization production-apps -n flux-system
 flux reconcile kustomization production-apps -n flux-system --with-source
 kubectl -n default rollout status deployment/caper-api --timeout=15m
-kubectl -n default exec deployment/caper -- node -e \
+kubectl -n default exec deployment/caper-web -- node -e \
   'fetch("http://caper-api:3001/api/account/me",{headers:{authorization:"Bearer unavailable-check"}}).then(r=>{console.log(r.status);if(r.status!==503)process.exit(1)})'
 ```
 

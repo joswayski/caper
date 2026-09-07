@@ -38,19 +38,19 @@ jobs:
           context: .
           platforms: linux/arm64
           load: true
-          tags: caper:arm64
+          tags: caper-web:arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Assert linux/arm64 image and runtime
         run: |
           set -euo pipefail
-          test "$(docker image inspect caper:arm64 --format '{{.Os}}')" = linux
-          test "$(docker image inspect caper:arm64 --format '{{.Architecture}}')" = arm64
-          test "$(docker run --rm --platform linux/arm64 --entrypoint uname caper:arm64 -m)" = aarch64
+          test "$(docker image inspect caper-web:arm64 --format '{{.Os}}')" = linux
+          test "$(docker image inspect caper-web:arm64 --format '{{.Architecture}}')" = arm64
+          test "$(docker run --rm --platform linux/arm64 --entrypoint uname caper-web:arm64 -m)" = aarch64
       - name: Verify health endpoint
         run: |
           set -euo pipefail
-          container="$(docker run --detach --platform linux/arm64 --publish 3000:3000 caper:arm64)"
+          container="$(docker run --detach --platform linux/arm64 --publish 3000:3000 caper-web:arm64)"
           trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 30); do
             response="$(curl --fail --silent http://127.0.0.1:3000/api/health 2>/dev/null || true)"
@@ -122,7 +122,7 @@ jobs:
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}
-          DEPLOY_WORKFLOW_URL: https://github.com/joswayski/infrastructure/actions/workflows/deploy-caper.yml
+          DEPLOY_WORKFLOW_URL: https://github.com/joswayski/infrastructure/actions/workflows/deploy-caper-web.yml
           GITHUB_TOKEN: ${{ github.token }}
           IMAGE_DIGEST: ${{ steps.record.outputs.digest }}
         run: |
@@ -175,7 +175,7 @@ jobs:
                 else [] end))
               }],
               components: [{type: 1, components: [
-                {type: 2, style: 3, label: "Deploy Caper web", custom_id: ("production-deploy:v1:caper:" + $git_sha)},
+                {type: 2, style: 3, label: "Deploy Caper web", custom_id: ("production-deploy:v1:caper-web:" + $git_sha)},
                 {type: 2, style: 5, label: "Open GitHub", url: $deploy_url}
               ]}]
             }')"
