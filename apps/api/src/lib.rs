@@ -733,7 +733,29 @@ pub fn app(state: AppState) -> Router {
         .route("/api/media/leave", post(leave))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+                    // Only router-owned paths: never log query strings, headers,
+                    // arbitrary unmatched URLs, SDP, or request bodies.
+                    let route = request
+                        .extensions()
+                        .get::<axum::extract::MatchedPath>()
+                        .map_or("unmatched", axum::extract::MatchedPath::as_str);
+                    tracing::info_span!("http_request", http_method = %request.method(),
+                        http_route = route, request_id = %Uuid::new_v4())
+                })
+                .on_response(
+                    |response: &Response, latency: Duration, _span: &tracing::Span| {
+                        tracing::info!(
+                            event_name = "http_response",
+                            status = response.status().as_u16(),
+                            duration_ms = latency.as_secs_f64() * 1000.0,
+                            "HTTP response completed"
+                        );
+                    },
+                ),
+        )
         .layer(axum::middleware::from_fn(
             |request: axum::extract::Request, next: axum::middleware::Next| async move {
                 let mut response = if request
@@ -1830,5 +1852,7 @@ pub async fn shutdown_cleanup(s: &AppState) {
     }
 }
 
+#[cfg(test)]
+mod request_logging_tests;
 #[cfg(test)]
 mod tests;

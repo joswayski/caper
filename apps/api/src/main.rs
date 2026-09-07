@@ -4,25 +4,40 @@ use std::{future::IntoFuture, sync::Arc, time::Duration};
 // Leave 20 seconds for provider cleanup and a margin inside Kubernetes' 60s grace.
 const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
+mod telemetry;
+
 #[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-    let config = Config::from_env().unwrap_or_else(|error| {
-        eprintln!("configuration error: {error}");
-        std::process::exit(2);
-    });
+async fn main() -> std::process::ExitCode {
+    let telemetry = telemetry::init();
+    tracing::info!(event_name = "service_starting", "media API starting");
+    let result = run().await;
+    if let Err(error) = &result {
+        tracing::error!(
+            event_name = "service_failed",
+            error,
+            "media API stopped with an error"
+        );
+    } else {
+        tracing::info!(event_name = "service_stopped", "media API stopped");
+    }
+    // HTTP drain (30s) + provider cleanup (20s) + log flush (3s) fit the 60s pod grace.
+    telemetry.shutdown();
+    if result.is_ok() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
+    }
+}
+
+async fn run() -> Result<(), String> {
+    let config = Config::from_env()?;
     let bind = config.bind;
-    let database = connect_database().await.unwrap_or_else(|error| {
-        eprintln!("database error: {error}");
-        std::process::exit(2);
-    });
+    let database = connect_database().await?;
     let state = caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
     spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await
-        .expect("bind media API");
+        .map_err(|_| "could not bind media API".to_owned())?;
     tracing::info!(%bind, "media API listening");
     let shutdown_state = state.clone();
     serve_with_drain(listener, app(state), async {
@@ -30,8 +45,9 @@ async fn main() {
         shutdown_state.begin_shutdown();
     })
     .await
-    .expect("serve media API");
+    .map_err(|_| "media API serving or HTTP draining failed".to_owned())?;
     shutdown_cleanup(&shutdown_state).await;
+    Ok(())
 }
 
 async fn serve_with_drain(
