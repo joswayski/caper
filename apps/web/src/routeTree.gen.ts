@@ -10,16 +10,19 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as HealthRouteImport } from './routes/health'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ProfileRouteImport } from './routes/profile'
-import { Route as ApiHealthRouteImport } from './routes/api/health'
-import { Route as ApiAccountProfileRouteImport } from './routes/api/account/profile'
-import { Route as ApiMediaSplatRouteImport } from './routes/api/media/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HealthRoute = HealthRouteImport.update({
+  id: '/health',
+  path: '/health',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LiveRoute = LiveRouteImport.update({
@@ -37,88 +40,43 @@ const ProfileRoute = ProfileRouteImport.update({
   path: '/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiHealthRoute = ApiHealthRouteImport.update({
-  id: '/api/health',
-  path: '/api/health',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAccountProfileRoute = ApiAccountProfileRouteImport.update({
-  id: '/api/account/profile',
-  path: '/api/account/profile',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiMediaSplatRoute = ApiMediaSplatRouteImport.update({
-  id: '/api/media/$',
-  path: '/api/media/$',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/health': typeof HealthRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
   '/profile': typeof ProfileRoute
-  '/api/health': typeof ApiHealthRoute
-  '/api/account/profile': typeof ApiAccountProfileRoute
-  '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/health': typeof HealthRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
   '/profile': typeof ProfileRoute
-  '/api/health': typeof ApiHealthRoute
-  '/api/account/profile': typeof ApiAccountProfileRoute
-  '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/health': typeof HealthRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
   '/profile': typeof ProfileRoute
-  '/api/health': typeof ApiHealthRoute
-  '/api/account/profile': typeof ApiAccountProfileRoute
-  '/api/media/$': typeof ApiMediaSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths:
-    | '/'
-    | '/live'
-    | '/login'
-    | '/profile'
-    | '/api/health'
-    | '/api/account/profile'
-    | '/api/media/$'
+  fullPaths: '/' | '/health' | '/live' | '/login' | '/profile'
   fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/live'
-    | '/login'
-    | '/profile'
-    | '/api/health'
-    | '/api/account/profile'
-    | '/api/media/$'
-  id:
-    | '__root__'
-    | '/'
-    | '/live'
-    | '/login'
-    | '/profile'
-    | '/api/health'
-    | '/api/account/profile'
-    | '/api/media/$'
+  to: '/' | '/health' | '/live' | '/login' | '/profile'
+  id: '__root__' | '/' | '/health' | '/live' | '/login' | '/profile'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  HealthRoute: typeof HealthRoute
   LiveRoute: typeof LiveRoute
   LoginRoute: typeof LoginRoute
   ProfileRoute: typeof ProfileRoute
-  ApiHealthRoute: typeof ApiHealthRoute
-  ApiAccountProfileRoute: typeof ApiAccountProfileRoute
-  ApiMediaSplatRoute: typeof ApiMediaSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -128,6 +86,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/health': {
+      id: '/health'
+      path: '/health'
+      fullPath: '/health'
+      preLoaderRoute: typeof HealthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/live': {
@@ -151,38 +116,15 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProfileRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/health': {
-      id: '/api/health'
-      path: '/api/health'
-      fullPath: '/api/health'
-      preLoaderRoute: typeof ApiHealthRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/account/profile': {
-      id: '/api/account/profile'
-      path: '/api/account/profile'
-      fullPath: '/api/account/profile'
-      preLoaderRoute: typeof ApiAccountProfileRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/media/$': {
-      id: '/api/media/$'
-      path: '/api/media/$'
-      fullPath: '/api/media/$'
-      preLoaderRoute: typeof ApiMediaSplatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  HealthRoute: HealthRoute,
   LiveRoute: LiveRoute,
   LoginRoute: LoginRoute,
   ProfileRoute: ProfileRoute,
-  ApiHealthRoute: ApiHealthRoute,
-  ApiAccountProfileRoute: ApiAccountProfileRoute,
-  ApiMediaSplatRoute: ApiMediaSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

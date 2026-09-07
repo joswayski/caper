@@ -45,9 +45,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The production web container exposes port `3000` and reports readiness at
-`/api/health`. The separate `apps/api/Dockerfile` API container (`caper-api`) exposes port
-`3001` with `/health`. Run `cargo run -p caper-api` to develop the API separately;
-the website no longer forwards account or media requests to it.
+`/health`. The separate `apps/api/Dockerfile` API container (`caper-api`) exposes port
+`3001` with `/health`. In production, Traefik routes public `caper.chat/api/*`
+requests directly to that Rust service. Run `cargo run -p caper-api` to develop
+the API separately; the website does not proxy account or media requests.
 The website remains live, but accounts, profiles, and voice-room access are
 currently unavailable. `/login`, `/live`, and `/profile` honestly show or route to
 that unavailable state. The media engine remains in the codebase for future use,

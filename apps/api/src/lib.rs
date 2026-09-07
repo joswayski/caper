@@ -755,6 +755,7 @@ pub fn app(state: AppState) -> Router {
         ));
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
+        .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(protected)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))

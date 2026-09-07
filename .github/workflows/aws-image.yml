@@ -53,7 +53,7 @@ jobs:
           container="$(docker run --detach --platform linux/arm64 --publish 3000:3000 caper-web:arm64)"
           trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
           for attempt in $(seq 1 30); do
-            response="$(curl --fail --silent http://127.0.0.1:3000/api/health 2>/dev/null || true)"
+            response="$(curl --fail --silent http://127.0.0.1:3000/health 2>/dev/null || true)"
             [[ "$response" == '{"status":"ok"}' ]] && exit 0
             sleep 1
           done
