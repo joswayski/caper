@@ -54,7 +54,16 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   const stateUpdates: Array<{ muted: boolean; deafened: boolean }> = [];
   const states: CallViewState[] = [];
   const events: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const audioSinks: FakeAudio[] = [];
   const restore: Array<() => void> = [];
+  class FakeAudio {
+    muted = false;
+    srcObject: MediaStream | null = null;
+    playing = false;
+    constructor() { audioSinks.push(this); }
+    async play() { this.playing = true; }
+    pause() { this.playing = false; }
+  }
   const install = (key: string, value: unknown) => {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { value, configurable: true });
@@ -64,6 +73,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([track.readyState === "ended" ? new Track() : track]) } });
   install("MediaStream", Stream);
   install("RTCPeerConnection", Peer);
+  install("Audio", FakeAudio);
   install("fetch", async (url: string, options: RequestInit) => {
     const op = url.split("/").at(-1)!;
     calls.push(op);
@@ -95,7 +105,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   // These tests isolate signaling with raw mock tracks; enhanced audio is tested separately.
   void client.setNoiseSuppression("off");
   t.after(async () => { client.leaveImmediately(); await tick(); restore.reverse().forEach((fn) => fn()); });
-  return { client, track, calls, joinedNames, stateUpdates, states, install, events };
+  return { client, track, calls, joinedNames, stateUpdates, states, install, events, audioSinks };
 }
 
 test("DPDFNet suppression is the fixed default and prepares before capture", async (t) => {
@@ -224,7 +234,7 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
 });
 
 test("mic test detaches channel audio, plays a separately received track, and restores prior state", async (t) => {
-  const { client, track, states, stateUpdates } = setup(t);
+  const { client, track, states, stateUpdates, audioSinks } = setup(t);
   await client.join("Guest");
   const channelPeer = Peer.latest;
   await client.setMuted(true);
@@ -240,6 +250,10 @@ test("mic test detaches channel audio, plays a separately received track, and re
   assert.equal(track.enabled, true, "sender detachment, not track disabling, isolates the channel");
   assert.equal(channelPeer.senders[0].track, null, "the microphone must not reach the channel");
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
+  assert.equal(audioSinks.length, 1);
+  assert.equal(audioSinks[0].muted, true);
+  assert.equal(audioSinks[0].srcObject, states.at(-1)?.monitorStream);
+  assert.equal(audioSinks[0].playing, true, "the received track drains before recording starts");
 
   await client.setMonitoring(false);
   assert.equal(states.at(-1)?.monitoring, false);
@@ -251,6 +265,8 @@ test("mic test detaches channel audio, plays a separately received track, and re
   assert.equal(track.readyState, "live", "stopping must not stop microphone capture");
   assert.equal(channelPeer.senders[0].track, null);
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: false });
+  assert.equal(audioSinks[0].playing, false);
+  assert.equal(audioSinks[0].srcObject, null);
 });
 
 test("monitor capture replacement stays private and retains the same received stream", async (t) => {
