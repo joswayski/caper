@@ -109,8 +109,9 @@ function setup(t: TestContext, options: {
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-test("DPDFNet-8 readiness comes from its worker; runtime failure stops the published track", async (t) => {
+test("DPDFNet-8 readiness comes from its worker; runtime overload bypasses without stopping the published track", async (t) => {
   const { install } = setup(t);
+  let changes = 0;
   let worker!: { onmessage?: (event: { data: unknown }) => void; terminated: boolean };
   install("Worker", class {
     onmessage?: (event: { data: unknown }) => void;
@@ -118,20 +119,21 @@ test("DPDFNet-8 readiness comes from its worker; runtime failure stops the publi
     constructor(url: string) { assert.equal(url, "/audio/dpdfnet8-v2/worker.js"); worker = this; }
     terminate() { this.terminated = true; }
   });
-  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined);
+  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => { changes++; });
   await tick();
   worker.onmessage!({ data: { type: "ready" } });
   const microphone = await capturing;
   assert.equal(microphone.track, Context.latest!.processed);
   assert.ok(microphone.status.startsWith("DPDFNet-8 HR active"));
   microphone.track.enabled = false;
-  WorkletNode.latest!.port.emit("failed");
+  WorkletNode.latest!.port.emit("bypassed");
   await tick();
   assert.equal(microphone.track, Context.latest!.processed);
   assert.equal(microphone.track.enabled, false);
-  assert.match(microphone.status, /failed — microphone stopped/);
-  assert.equal(microphone.track.readyState, "ended");
+  assert.match(microphone.status, /unavailable — noise suppression bypassed/);
+  assert.equal(microphone.track.readyState, "live");
   assert.equal(worker.terminated, true);
+  assert.equal(changes, 1);
   microphone.stop();
 });
 

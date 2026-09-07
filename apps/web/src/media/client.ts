@@ -78,6 +78,7 @@ export class PublicCallClient {
   private diagnostics = "";
   private noiseSuppression: NoiseSuppression = "dpdfnet8";
   private audioSetup: AudioSetup = "headphones";
+  private microphoneStatus?: string;
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
   private joinTiming = "";
@@ -115,7 +116,7 @@ export class PublicCallClient {
       diagnostics: this.diagnostics,
       noiseSuppression: this.noiseSuppression,
       audioSetup: this.audioSetup,
-      noiseSuppressionStatus: this.captures.get(this.senders.get("microphone")?.track!)?.status,
+      noiseSuppressionStatus: this.captures.get(this.senders.get("microphone")?.track!)?.status ?? this.microphoneStatus,
       error,
     });
   }
@@ -453,10 +454,12 @@ export class PublicCallClient {
   }
 
   private async openMicrophone(deviceId?: string) {
-    const microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => {
-      if (this.phase === "connected" && this.senders.get("microphone")?.track.readyState === "ended") this.scheduleReconnect();
+    let microphone: Microphone;
+    microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => {
+      this.microphoneStatus = microphone.status;
       this.emit();
     }, this.audioSetup, this.noiseAssets, this.dpdfnet);
+    this.microphoneStatus = microphone.status;
     this.captures.set(microphone.track, microphone);
     return microphone.track;
   }
@@ -769,6 +772,7 @@ export class PublicCallClient {
     window.clearInterval(this.statsTimer);
     this.diagnostics = "";
     this.joinTiming = "";
+    this.microphoneStatus = undefined;
     this.stopReceivedMonitor();
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());
     this.pc?.getSenders().forEach((sender) => { if (sender.track !== preserve) sender.track?.stop(); });

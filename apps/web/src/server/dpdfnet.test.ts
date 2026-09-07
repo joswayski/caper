@@ -112,19 +112,28 @@ test("DPDFNet adapter prebuffers three hops and stays continuous across variable
   assert.ok(live.every((sample) => sample !== 0), "no holes after startup");
 });
 
-test("DPDFNet adapter fails explicitly on overload and underrun", async () => {
+test("DPDFNet adapter bypasses on overload and underrun without ending audio", async () => {
   const overloaded = await loadWorklet();
-  for (let i = 0; i < 35; i++) overloaded.processor.process([[new Float32Array(128)]], [[new Float32Array(128)]]);
+  let overloadOutput = new Float32Array();
+  for (let i = 0; i < 35; i++) {
+    const input = new Float32Array(128).fill(i + 1);
+    overloadOutput = new Float32Array(128);
+    assert.equal(overloaded.processor.process([[input]], [[overloadOutput]]), true);
+  }
   assert.equal(overloaded.messages.filter((message) => (message as any)?.type === "process").length, 8);
-  assert.equal(overloaded.messages.at(-1), "failed");
+  assert.equal(overloaded.messages.at(-1), "bypassed");
+  assert.deepEqual(overloadOutput, new Float32Array(128).fill(35));
 
   const underrun = await loadWorklet();
   for (let i = 0; i < 3; i++) underrun.processor.port.onmessage({
     data: { type: "output", samples: new Float32Array(480).fill(i + 1).buffer },
   });
   assert.equal(underrun.processor.process([[new Float32Array(1_440)]], [[new Float32Array(1_440)]]), true);
-  assert.equal(underrun.processor.process([[new Float32Array(1)]], [[new Float32Array(1)]]), false);
-  assert.equal(underrun.messages.at(-1), "failed");
+  const input = new Float32Array([0.25]);
+  const output = new Float32Array(1);
+  assert.equal(underrun.processor.process([[input]], [[output]]), true);
+  assert.equal(underrun.messages.at(-1), "bypassed");
+  assert.deepEqual(output, input);
 });
 
 test("DPDFNet adapter keeps silence and missing input deterministic", async () => {

@@ -84,6 +84,13 @@ export async function captureMicrophone(
     microphone.stop();
     changed();
   };
+  const bypass = () => {
+    if (stopped) return;
+    microphone.status = `${engineName} unavailable — noise suppression bypassed`;
+    prepared?.stop();
+    prepared = undefined;
+    changed();
+  };
 
   try {
     if (typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") throw new Error("Unsupported browser");
@@ -142,7 +149,7 @@ export async function captureMicrophone(
     microphone.track = destination.stream.getAudioTracks()[0];
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = fail;
-    node.port.onmessage = ({ data }) => { if (data === "failed") fail(); };
+    node.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") fail(); };
     return microphone;
   } catch {
     microphone.stop();
