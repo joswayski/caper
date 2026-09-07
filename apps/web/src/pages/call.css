@@ -26,6 +26,8 @@
 .participant-volume output { color: var(--text-muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
 .participant-volume input { width: 100%; margin: 0; accent-color: var(--terracotta); }
 .participant-volume small { color: var(--text-muted); font-size: .68rem; }
+.participant-mute { display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px solid var(--border); font-size: .78rem; font-weight: 700; }
+.participant-mute input { width: 16px; height: 16px; accent-color: var(--terracotta); }
 .stage { min-width: 0; padding: 28px; background: #101214; }
 .stage-title > p { color: var(--text-muted); font-size: .8rem; }
 .join-card { width: min(460px, 100%); margin: clamp(32px, 7vh, 72px) auto; }
@@ -79,7 +81,8 @@
   .call-room { grid-template: auto 1fr auto / 1fr; }
   .people-panel { padding: 16px; border-right: 0; border-bottom: 1px solid var(--border); }
   .people-panel ul { max-height: 240px; overflow-y: auto; }
-  .participant.volume-open { padding-bottom: 124px; }
+  .people-panel ul.volume-menu-open { max-height: 420px; }
+  .participant.volume-open { padding-bottom: 161px; }
   .voice-channel { margin-top: 16px; }
   .stage { padding: 20px; }
   .stage-title { align-items: flex-start; }

@@ -65,6 +65,7 @@ export default function Call() {
   const [actionPending, setActionPending] = useState(false);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
+  const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
@@ -113,7 +114,7 @@ export default function Call() {
         <aside className="people-panel">
           <div className="panel-heading"><div><p className="eyebrow">Caper</p><h1>Voice channel</h1></div></div>
           <div className="voice-channel"><span aria-hidden="true">◖))</span> General {connected && <small aria-label={`${state.participants.length} in voice`}>{state.participants.length}</small>}</div>
-          <ul aria-label="People in voice">
+          <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label="People in voice">
             {state.participants.map((participant) => {
               const self = participant.id === state.selfId;
               const speaking = activeParticipants.has(participant.id);
@@ -148,6 +149,18 @@ export default function Call() {
                     aria-label={`${participant.name} volume`}
                     onChange={(event) => setParticipantVolumes((current) => ({ ...current, [participant.id]: Number(event.target.value) }))}
                   />
+                  <label className="participant-mute">
+                    <span>Mute</span>
+                    <input
+                      type="checkbox"
+                      checked={mutedParticipants.has(participant.id)}
+                      onChange={(event) => setMutedParticipants((current) => {
+                        const next = new Set(current);
+                        event.target.checked ? next.add(participant.id) : next.delete(participant.id);
+                        return next;
+                      })}
+                    />
+                  </label>
                   <small>Only changes what you hear.</small>
                 </div>}
               </li>;
@@ -170,7 +183,7 @@ export default function Call() {
           </div> : state.monitorStream && !actionPending
             ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} />
             : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Creating a private return through the call service. Press Record when it’s ready." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
-          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
+          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {!idle && <p className="noise-status">Use headphones · natural input, without browser echo cancellation or automatic volume adjustment.</p>}
