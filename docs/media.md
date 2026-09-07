@@ -59,13 +59,12 @@ Keep this temporary test separate from any future production app/key.
 | `AXIOM_TOKEN` | Optional server-only ingest API token; absent/empty disables export |
 | `AXIOM_DATASET` | Defaults to the existing `caper` dataset |
 | `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
-| `MEDIA_API_URL` | Web-process-only internal Rust API target, required for account and media routes |
 | `DATABASE_URL` | API-only runtime URL: pooled port `6432`, database `/caperchat`, restricted app role, verified TLS. Missing configuration fails account/media access closed. |
 | `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Neither DB secret belongs in WEB. |
 
 Use `.env.example`; Rust does not auto-load dotenv files. Export a private env
-file before `cargo run -p caper-api`. Run the web process with
-`MEDIA_API_URL=http://127.0.0.1:3001 npm run dev:web`. Remote browsers require HTTPS.
+file before `cargo run -p caper-api`. Run the independent web process with
+`npm run dev:web`. Remote browsers require HTTPS.
 In an orb use supervised services and portal URLs, not direct sandbox host URLs.
 
 Image CI builds `apps/api/Dockerfile` and publishes
@@ -948,7 +947,7 @@ closed with 503 in production, even when voice is otherwise configured.
 
 The prepared production address is **`https://api.caper.chat`**, routed directly
 to the existing Rust `caper-api` service. `https://caper.chat` serves the website
-and browser login/cookie endpoints through `caper-web`. No second Rust backend
+and the account-unavailable page through `caper-web`. No second Rust backend
 and no native-specific gateway exists. Infrastructure PR #77 prepares DNS/TLS
 and ingress wiring; this document is not a claim that the hostname is deployed.
 
@@ -958,12 +957,13 @@ Authorization headers, cookies, or call capabilities cannot enable them.
 | Method | Public endpoint | Purpose |
 | --- | --- | --- |
 | GET | `/health` | Unauthenticated health check |
-| GET | `/api/account/me` | Current Caper profile; provisions verified account on first use |
-| POST | `/api/account/profile` | Set `username` and `displayName` in a JSON body |
-| GET | `/api/media/status` | Voice availability for a completed account |
-| POST | `/api/media/join` | Join General; requires completed profile |
-| GET | `/api/media/events` | Authenticated SSE stream |
-| POST | `/api/media/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Existing voice-control operations; all paths under `/api/media` |
+| GET | `/api/account/me` | Unavailable; no account provisioning |
+| POST | `/api/account/profile` | Unavailable; no profile writes |
+| GET | `/api/media/status`, `/api/media/events` | Unavailable; no production voice or SSE access |
+| POST | `/api/media/join`, `/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Unavailable; all paths under `/api/media` |
+
+Rust returns 401 without a bearer credential and 503 with one; neither permits
+access. The browser adapter returns 503, or 403 for rejected cross-origin POSTs.
 
 The retained engine's test-only flow binds call capabilities to fixture accounts.
 No production browser or native transport can currently obtain or use one.
@@ -1002,23 +1002,58 @@ Use direct port 5432: those locks require session affinity; pooled port 6432 is
 rejected for migrations with no runtime-URL fallback. Both URLs must target the same
 existing `/caperchat` database. Startup does not create the database or grant roles.
 
-Because this app has no users and the initial migration was rewritten, an operator
-may reset only Caper's account schema before a later authorized rollout. Connect
-directly to the existing `caperchat` database (not a cluster/admin database), verify
-the target with `SELECT current_database();`, then run exactly:
+The initial migration was rewritten for the approved empty installation. Existing
+SQLx checksums will fail until the unused account schema is reset. This is not a
+forward migration: stop the old API and suspend application reconciliation first,
+then reset only the dedicated `caperchat` database's `public` schema, which contains
+the unused users, obsolete event receipts, and migration ledger. Do not run this
+against a schema with unrelated objects or user data.
 
-```sql
-BEGIN;
-DROP TABLE IF EXISTS public.users;
-DELETE FROM public._sqlx_migrations
-WHERE version IN (202609070001, 202609070002);
-COMMIT;
+From the infrastructure checkout with the production kube context selected:
+
+```bash
+flux suspend kustomization production-apps -n flux-system
+kubectl -n default scale deployment/caper-api --replicas=0
+kubectl -n default wait --for=delete pod -l app.kubernetes.io/name=caper-api --timeout=5m
 ```
 
-Then run `caper-api --migrate` with `MIGRATION_DATABASE_URL` targeting that same
-database. Do not drop or recreate `caperchat`, another schema, role, cluster, or
-any table besides `public.users`; do not truncate all migration history. These are
-post-merge operator instructions only—this change performs no production writes.
+From this checkout, securely export `DATABASE_URL` (runtime role) and
+`MIGRATION_DATABASE_URL` (schema owner, direct port 5432) for `caperchat`:
+
+```bash
+CAPER_RUNTIME_ROLE="$(psql "$DATABASE_URL" -Atc 'SELECT current_user')"
+psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+DO $$ BEGIN
+  IF current_database() <> 'caperchat' THEN
+    RAISE EXCEPTION 'Expected caperchat database';
+  END IF;
+END $$;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+SQL
+cargo run --locked --release -p caper-api -- --migrate
+psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v runtime_role="$CAPER_RUNTIME_ROLE" <<'SQL'
+GRANT USAGE ON SCHEMA public TO :"runtime_role";
+GRANT SELECT, INSERT, UPDATE ON public.users TO :"runtime_role";
+GRANT USAGE ON SEQUENCE public.users_id_seq TO :"runtime_role";
+SQL
+```
+
+Do not recreate the database, other schemas, roles, or cluster. Verify the new
+API image pin in infrastructure `main` before resuming reconciliation; never restart the old image against
+the reset schema. Coordinate with Captures' separate schema reset so reconciliation
+is resumed only after both APIs are ready to use the new schema. From infrastructure:
+
+```bash
+flux resume kustomization production-apps -n flux-system
+flux reconcile kustomization production-apps -n flux-system --with-source
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+kubectl -n default exec deployment/caper -- node -e \
+  'fetch("http://caper-api:3001/api/account/me",{headers:{authorization:"Bearer unavailable-check"}}).then(r=>{console.log(r.status);if(r.status!==503)process.exit(1)})'
+```
+
+The credential-bearing account request must return 503. These are operator
+instructions only; this change performs no production writes.
 
 An optional operator command remains available to migrate without starting HTTP;
 it reads only the securely exported `MIGRATION_DATABASE_URL`:
@@ -1029,11 +1064,11 @@ cargo run --locked --release -p caper-api -- --migrate
 caper-api --migrate
 ```
 
-The API Docker build copies migrations. Startup **creates the users table**;
-review/authorize deployment with that effect in mind. This replaces the unmerged,
-undeployed custom-session draft; do not run it against a DB that applied that
-draft's different checksum. No production migration/deployment is part of the trial.
-No separate `psql` migration command is needed. Leave data intact on rollback.
+The API Docker build copies migrations. Fresh startup creates the users table;
+existing installations need the one-time reset above before the new image starts.
+Old images are not compatible with the rewritten schema; do not roll them back
+without an explicitly reviewed schema recovery. No production reset or deployment
+is performed by this PR.
 
 Do not activate account or media ingress merely by merging this application code.
 Authentication must be designed and implemented first.
