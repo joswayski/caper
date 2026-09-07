@@ -1,7 +1,6 @@
--- Internal references stay bigint; public IDs are random, immutable NanoIDs.
+-- Bigint for internal references; username is the globally unique public identifier.
 CREATE TABLE users (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    public_id text NOT NULL UNIQUE,
     workos_user_id text NOT NULL UNIQUE,
     email text NOT NULL UNIQUE,
     email_verified_at timestamptz NOT NULL DEFAULT now(),

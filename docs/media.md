@@ -924,7 +924,7 @@ sender, not SES or paid custom domains. WorkOS calls production shared-domain
 email delivery best-effort; this trial is not production delivery validation.
 
 `apps/api/migrations/202609070001_accounts.sql` creates `users`: bigint identity
-PK, immutable unique 21-character NanoID public ID, unique WorkOS subject, unique
+PK, unique WorkOS subject, unique
 normalized verified email, timestamps, and profile fields. Usernames are lowercase
 ASCII letters/digits/underscore, 3–32 characters and globally unique. Display names
 are global, nonunique, 1–64 Unicode characters. Both start NULL and are completed
@@ -988,10 +988,9 @@ Rust does not introspect every request. SSE emission stops at token expiry.
 JWKS and verified-email caches have a 5-minute TTL. Do not claim instant global
 logout or continued login availability during a WorkOS outage.
 
-ID choice follows [PlanetScale's public-ID pattern](https://planetscale.com/blog/why-we-chose-nanoids-for-planetscales-api):
-bigint internal keys plus separate NanoIDs, using the standard 21-character
-generator rather than their shorter 12-character alphabet. Unique constraints
-provide the final guarantee; user-ID generation retries collisions.
+The username is the globally unique public identifier. Bigint IDs stay internal
+for joins; profile responses contain only `username` and `displayName`. There is
+no additional generated public ID.
 
 ### Deployment and verification
 

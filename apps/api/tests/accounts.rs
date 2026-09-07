@@ -9,7 +9,6 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
         .await
         .unwrap();
     assert!(user.id > 0);
-    assert_eq!(user.public_id.len(), 21);
     assert_eq!(user.email, "jose+test@example.com");
     assert!(!user.onboarded());
 
@@ -17,7 +16,6 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(same.id, user.id);
-    assert_eq!(same.public_id, user.public_id);
     assert_eq!(same.email, "changed@example.com");
 
     let profile = set_profile(&pool, user.id, " Jose_1 ", " José 🌱 ")
@@ -27,6 +25,10 @@ async fn workos_identity_sync_and_profiles(pool: PgPool) {
     assert_eq!(profile.username.as_deref(), Some("jose_1"));
     assert_eq!(profile.display_name.as_deref(), Some("José 🌱"));
     assert!(profile.onboarded());
+    assert_eq!(
+        serde_json::to_value(profile.public()).unwrap(),
+        serde_json::json!({"username":"jose_1", "displayName":"José 🌱"})
+    );
 
     let other = sync_workos_user(&pool, "user_OTHER", "other@example.com")
         .await

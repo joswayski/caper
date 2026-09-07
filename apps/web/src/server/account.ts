@@ -3,7 +3,6 @@ import { redirect } from "@tanstack/react-router";
 import { getAuth } from "@workos/authkit-tanstack-react-start";
 
 export interface Account {
-  id: string;
   username: string | null;
   displayName: string | null;
 }
