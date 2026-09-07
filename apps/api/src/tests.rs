@@ -106,7 +106,7 @@ async fn call(
         .uri(path)
         .header("content-type", "application/json");
     if let Some(t) = token {
-        b = b.header("authorization", format!("Bearer {t}"));
+        b = b.header("x-caper-media-token", t);
     }
     let response = app
         .oneshot(b.body(Body::from(body.to_string())).unwrap())
@@ -168,13 +168,45 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
         .oneshot(
             Request::builder()
                 .uri("/api/account/me")
-                .header("x-caper-account-token", "not-a-token")
+                .header("authorization", "Bearer not-a-token")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn public_api_rejects_cookies_legacy_headers_and_media_tokens_as_account_auth() {
+    let (mut state, _) = state();
+    state.auth = auth::AuthVerifier::new(None, None);
+    let router = app(state);
+    for (method, path) in [
+        ("GET", "/api/account/me"),
+        ("POST", "/api/account/profile"),
+        ("GET", "/api/media/status"),
+        ("GET", "/api/media/events"),
+        ("POST", "/api/media/join"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("host", "api.caper.chat")
+                    .header("cookie", "wos-session=fixture")
+                    .header("x-caper-account-token", "legacy-token")
+                    .header("x-caper-media-token", "call-capability")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
 }
 
 #[tokio::test]
@@ -244,7 +276,7 @@ async fn monitor_joined(s: &AppState, token: &str, role: &str) -> (StatusCode, V
 async fn event_response(s: &AppState, token: Option<&str>, cross_site: bool) -> Response {
     let mut request = Request::builder().method("GET").uri("/api/media/events");
     if let Some(token) = token {
-        request = request.header("authorization", format!("Bearer {token}"));
+        request = request.header("x-caper-media-token", token);
     }
     if cross_site {
         request = request.header("sec-fetch-site", "cross-site");

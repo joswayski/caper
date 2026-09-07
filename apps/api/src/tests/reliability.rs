@@ -388,10 +388,7 @@ async fn subscription_error_returns_original_failure_before_slow_discovery_and_r
         .method("POST")
         .uri("/api/media/subscribe")
         .header("content-type", "application/json")
-        .header(
-            "authorization",
-            format!("Bearer {}", b["token"].as_str().unwrap()),
-        )
+        .header("x-caper-media-token", b["token"].as_str().unwrap())
         .body(Body::from(json!({"trackId":track}).to_string()))
         .unwrap();
     let response =

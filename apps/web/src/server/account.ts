@@ -15,7 +15,7 @@ export const loadAccount = createServerFn({ method: "GET" }).handler(async (): P
   const base = process.env.MEDIA_API_URL;
   if (!base) throw new Error("The account service is not configured yet.");
   const response = await fetch(`${base.replace(/\/$/, "")}/api/account/me`, {
-    headers: { "x-caper-account-token": auth.accessToken },
+    headers: { authorization: `Bearer ${auth.accessToken}` },
     signal: AbortSignal.timeout(10_000),
     redirect: "error",
   });

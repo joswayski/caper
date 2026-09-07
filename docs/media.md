@@ -936,17 +936,43 @@ audience with cached JWKS, and fetches verified email server-side. Account/media
 routes fail closed without auth or DB configuration, even when voice is disabled.
 Media additionally requires a completed profile and account-bound capability.
 
-### Desktop and future mobile
+### Public API: web, desktop and mobile
 
-Native clients need not share browser cookies. Use WorkOS's public-client device
-authorization flow in the system browser and poll with the client ID (no API key).
-Send the access JWT in `x-caper-account-token` to `/api/native/account/me`,
-`/api/native/account/profile`, and `/api/native/media/*` through the same web host.
-The native gateway ignores cookies; Rust validates the JWT. Media's existing
-`Authorization` header remains the separate call capability. Store rotating refresh
-tokens in the OS credential store, not localStorage/plain files, and clear/revoke
-them on sign-out. This PR provides the gateway, not Tauri/iOS/Android login UI or
-secure storage integration. Browser WebRTC does not prove native audio support.
+The prepared production address is **`https://api.caper.chat`**, routed directly
+to the existing Rust `caper-api` service. `https://caper.chat` serves the website
+and browser login/cookie endpoints through `caper-web`. No second Rust backend
+and no native-specific gateway exists. Infrastructure PR #77 prepares DNS/TLS
+and ingress wiring; this document is not a claim that the hostname is deployed.
+
+All account/media requests require `Authorization: Bearer <WorkOS access JWT>`.
+The API ignores session cookies and does not trust legacy account identity headers.
+The website server injects its authenticated session JWT when calling the same
+Rust API over the internal `MEDIA_API_URL`; browser cookies never need to cross
+to the API hostname. Direct native/server clients use the public hostname.
+
+| Method | Public endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Unauthenticated health check |
+| GET | `/api/account/me` | Current Caper profile; provisions verified account on first use |
+| POST | `/api/account/profile` | Set `username` and `displayName` in a JSON body |
+| GET | `/api/media/status` | Voice availability for a completed account |
+| POST | `/api/media/join` | Join General; requires completed profile |
+| GET | `/api/media/events` | Authenticated SSE stream |
+| POST | `/api/media/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Existing voice-control operations; all paths under `/api/media` |
+
+After joining, send the returned call capability as raw `X-Caper-Media-Token`
+alongside the account Bearer token for operations on that call. The call capability
+cannot authenticate an account. Browser media transport retains its existing
+same-origin call-capability header; WEB translates it to `X-Caper-Media-Token`
+and replaces Authorization with the verified account JWT before forwarding.
+
+Native clients use WorkOS's public-client device authorization flow in the system
+browser and poll with the client ID (no API key). Store rotating refresh tokens
+in the OS credential store, not localStorage/plain files, and clear/revoke them on
+sign-out. Tauri/iOS/Android login UI and secure storage integration are not included.
+Arbitrary third-party browser CORS access, API keys and developer OAuth consent
+are not implemented; native/server HTTP clients do not require CORS. Browser WebRTC
+does not prove native audio support.
 
 Staging settings: 5-minute access JWTs, 7-day inactivity, 30-day maximum session.
 Revocation prevents refresh but an already-issued JWT can work until expiry;
@@ -989,7 +1015,7 @@ No separate `psql` migration command is needed. Leave data intact on rollback.
 
 Before an authorized production activation: register the exact callback and logout
 URLs in the matching WorkOS environment; provide the variables above; route all
-public browser/native API paths through WEB, with Rust internal only; select matching
+website paths through WEB and `api.caper.chat` directly to Rust; select matching
 web/API image pins and authorize the startup migration. Existing direct-to-Rust
 media ingress is incompatible with cookie auth. Infrastructure stages this separately
 as an opt-in overlay: do not activate it merely by merging app code.
@@ -1013,7 +1039,7 @@ account reuse and isolation. JWT and HTTP tests cover authentication enforcement
 Trial smoke testing used real staging hosted Magic Auth, callback, profile creation
 and app access against disposable local TLS Postgres. The sandbox code came from
 WorkOS admin events, not an inbox: this does not verify email delivery. Public-client
-device authorization and refresh also returned a JWT accepted through WEB by Rust;
+device authorization and refresh also returned a JWT accepted by Rust in the earlier trial;
 revoking that test session made refresh fail with HTTP 400. Browser sign-out returned
 to login and subsequent `/live` access redirected to login. The browser cookie was
 Secure, HttpOnly, SameSite=Lax. Desktop/mobile browser layouts and username-conflict

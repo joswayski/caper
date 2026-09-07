@@ -26,8 +26,9 @@ test("adapter forwards only credentials needed by the fixed API and preserves 20
   t.after(() => { if (old) process.env.MEDIA_API_URL = old; else delete process.env.MEDIA_API_URL; });
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "http://media:3001/api/media/leave");
-    assert.equal(new Headers(init.headers).get("authorization"), "Bearer ephemeral");
-    assert.equal(new Headers(init.headers).get("x-caper-account-token"), "verified-account-fixture");
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer verified-account-fixture");
+    assert.equal(new Headers(init.headers).get("x-caper-media-token"), "ephemeral");
+    assert.equal(new Headers(init.headers).get("x-caper-account-token"), null);
     assert.equal(new Headers(init.headers).get("cookie"), null);
     return new Response(null, { status: 204 });
   });
@@ -65,7 +66,8 @@ test("SSE proxy streams immediately, survives the ordinary deadline, and forward
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "http://media:3001/api/media/events");
     assert.equal(init.method, "GET");
-    assert.equal(new Headers(init.headers).get("authorization"), "Bearer ephemeral");
+    assert.equal(new Headers(init.headers).get("authorization"), "Bearer verified-account-fixture");
+    assert.equal(new Headers(init.headers).get("x-caper-media-token"), "ephemeral");
     signal = init.signal!;
     return new Response(new ReadableStream<Uint8Array>({
       start(controller) { stream = controller; controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n")); },

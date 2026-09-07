@@ -9,6 +9,6 @@ export const Route = createFileRoute("/api/account/profile")({
     if (!sameOrigin(request)) return new Response(null, { status: 403, headers });
     const auth = await getAuth();
     if (!auth.user) return new Response(null, { status: 401, headers });
-    return proxyAccount(request, auth.accessToken, "profile");
+    return proxyAccount(request, auth.accessToken);
   } } },
 });

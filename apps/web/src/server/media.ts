@@ -1,7 +1,8 @@
 const operations = new Set(["status", "join", "snapshot", "events", "publish", "subscribe", "negotiate", "close", "state", "leave"]);
 
 // Browser adapter: account token comes ONLY from the verified server-side session.
-// Never forward a caller-supplied x-caper-account-token header.
+// Browser Authorization carries the call capability, not account identity.
+// Replace it with the verified session JWT when calling the public Rust API.
 export async function proxyMedia(request: Request, accountToken: string): Promise<Response> {
   const operation = new URL(request.url).pathname.slice("/api/media/".length);
   const headers = { "cache-control": "no-store" };
@@ -45,7 +46,7 @@ export async function proxyMedia(request: Request, accountToken: string): Promis
   try {
     const upstream = await fetch(`${base.replace(/\/$/, "")}/api/media/${operation}`, {
       method: request.method,
-      headers: { "content-type": "application/json", authorization: request.headers.get("authorization") ?? "", "x-caper-account-token": accountToken },
+      headers: { "content-type": "application/json", authorization: `Bearer ${accountToken}`, "x-caper-media-token": (request.headers.get("authorization") ?? "").replace(/^Bearer /, "") },
       body: body as BodyInit | undefined,
       signal: AbortSignal.any([request.signal, streaming ? controller.signal : AbortSignal.timeout(25_000)]),
       redirect: "error",

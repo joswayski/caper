@@ -818,8 +818,9 @@ async fn account_auth(
 ) -> Result<Response, ApiError> {
     let token = request
         .headers()
-        .get("x-caper-account-token")
+        .get("authorization")
         .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
         .filter(|value| !value.is_empty());
     #[cfg(test)]
     let token = if state.auth.is_test_bypass() {
@@ -838,7 +839,7 @@ async fn account_auth(
     if path.starts_with("/api/media/") && !principal.user.onboarded() {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "profile required"));
     }
-    // Authorization remains the participant capability. When present, bind it
+    // The media header carries the participant capability. When present, bind it
     // to the independently authenticated account before entering any handler.
     if path.starts_with("/api/media/")
         && let Ok(token) = bearer(request.headers())
@@ -918,9 +919,8 @@ fn ensure_enabled(s: &AppState) -> Result<(), ApiError> {
 }
 fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
     headers
-        .get("authorization")
+        .get("x-caper-media-token")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))
 }
