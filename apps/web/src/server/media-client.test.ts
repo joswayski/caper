@@ -763,6 +763,24 @@ test("initial subscription negotiation completes before microphone audio is enab
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
+test("a received participant track is exposed for that participant's speaking indicator", async (t) => {
+  const { client, states, install } = setup(t);
+  const original = fetch;
+  install("fetch", (url: string, options: RequestInit) => {
+    if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({
+      participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }],
+    }));
+    return original(url, options);
+  });
+
+  await client.join();
+
+  const remote = states.at(-1)?.remoteMedia.find((media) => media.participantId === "other");
+  assert.equal(remote?.trackId, "remote");
+  assert.equal(remote?.kind, "microphone");
+  assert.equal(remote?.stream.getAudioTracks().length, 1);
+});
+
 test("cancel before SSE readiness never publishes and releases capture", async (t) => {
   const { client, track, calls, states } = setup(t, { eventsReady: false });
   const joining = client.join();
