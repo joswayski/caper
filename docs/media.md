@@ -1,5 +1,9 @@
 # Public voice-channel MVP
 
+For proposed workspace/channel persistence and deployment-safe voice state, see
+the [voice persistence plan](voice-persistence-plan.md). It is not implemented;
+the behavior documented below remains current.
+
 ## Scope and architecture
 
 One public **General voice channel**, always available to join while the service
