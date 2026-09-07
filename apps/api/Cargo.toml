@@ -9,6 +9,7 @@ rust-version.workspace = true
 async-trait = "0.1"
 axum = "0.8"
 futures-util = "0.3"
+nanoid = "0.4"
 opentelemetry = { version = "0.32", default-features = false, features = ["logs"] }
 opentelemetry-appender-tracing = { version = "0.32", default-features = false, features = ["experimental_span_attributes"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }

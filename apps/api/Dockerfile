@@ -13,7 +13,7 @@ RUN mkdir -p apps/desktop/src-tauri/src \
     && printf '\n' > apps/desktop/src-tauri/src/lib.rs
 COPY apps/api/src apps/api/src
 COPY apps/api/build.rs apps/api/build.rs
-RUN mkdir -p apps/api/migrations
+COPY apps/api/migrations apps/api/migrations
 
 RUN cargo build --locked --release --package caper-api
 

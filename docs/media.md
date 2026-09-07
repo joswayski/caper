@@ -907,3 +907,80 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 - Take down: disable `MEDIA_ENABLED` and restart the API (GitOps in production;
   stop the supervised media service for the orb). Revoke the temporary SFU app
   and TURN key after testing. The website can remain up.
+
+## Account database foundation (not yet connected to HTTP login)
+
+The target product requires an account for all app browsing and voice use.
+The current media routes remain anonymous: this database foundation alone does
+**not** enforce that policy or ship login. SES, HTTP code generation/verification,
+cookie/CSRF handling, onboarding UI, and route authorization are separate work.
+Never enable a login route without those protections.
+
+`apps/api/migrations/202609070001_accounts.sql` adds:
+
+- `users`: bigint identity PK; unique 21-character NanoID public identifier;
+  unique normalized email and verification timestamp. Usernames are normalized
+  lowercase ASCII letters/digits/underscore, 3–32 characters and globally unique.
+  Display names are global, non-unique, 1–64 Unicode characters. Both profile
+  fields start NULL and must be completed together during onboarding. Never
+  change a public ID or expose bigint IDs/email in public profile responses.
+- `sessions`: bigint PK/FK, unique 32-byte token digest, fixed 30-day expiration.
+  Revocation deletes the row; account deletion cascades to its sessions. Each
+  browser/native login can have its own session. No JWT or device-specific DB
+  model is required. Expired sessions fail lookups even before cleanup runs.
+- `login_challenges`: one current challenge per email (including unregistered
+  emails), 10-minute expiry, five guesses, and a 60-second resend cooldown shared
+  across API replicas. Resend replaces the challenge ID and invalidates the old
+  code. Consumed challenges retain their cooldown until replacement/expiry.
+
+`accounts::complete_login` consumes the challenge, creates or retrieves a user,
+and inserts the session atomically. Wrong guesses commit their attempt increment;
+an insertion failure rolls back the entire successful-login transaction. This
+supports open email-verified registration; no account exists before verification.
+
+Integration contract: the auth layer generates codes with a CSPRNG and supplies
+HMAC-SHA-256 digests using a durable server-only key, binding the **normalized**
+email, challenge public ID and code with unambiguous encoding. Never store an
+unkeyed hash of a six-digit code. Session tokens need at least 256 random bits;
+only their SHA-256 digest reaches this module. None of these secrets belong in
+logs. These functions accept digests, not browser-supplied proof of identity.
+The HTTP boundary must validate email syntax, add IP/global/daily send limits,
+return non-enumerating responses, handle delivery failure, and require completed
+profiles for app access. Schedule `accounts::delete_expired` in the eventual auth
+maintenance loop; it is not automatically invoked yet. Profile changes must use
+the authenticated internal user ID, not an ID supplied by the client.
+
+ID choice follows [PlanetScale's public-ID pattern](https://planetscale.com/blog/why-we-chose-nanoids-for-planetscales-api):
+bigint internal keys plus separate NanoIDs, using the standard 21-character
+generator rather than their shorter 12-character alphabet. Unique constraints
+provide the final guarantee; user-ID generation retries collisions.
+
+### Deployment and verification
+
+No production database changes are performed by tests. The existing API startup
+migrator applies embedded SQL when `DATABASE_URL` is configured, using a direct
+primary connection on port 5432 (not transaction-pooled 6432), with verified TLS.
+The API Docker build now copies the actual migrations rather than an empty
+directory. Deployment of this image therefore **will create the three tables**;
+review/authorize that migration before deploying. No separate `psql` migration
+command is needed. Leave these additive tables in place for an application
+rollback; do not drop user data. Missing `DATABASE_URL` still permits the current
+anonymous media service to boot; future authentication must fail closed instead.
+
+Database tests are explicitly ignored in the ordinary no-DB Rust suite. The CI
+`Account database (Postgres)` job runs them against disposable Postgres 17. To run
+locally, supply a **disposable local** Postgres URL whose role can create databases:
+
+```bash
+DATABASE_URL='postgres://user@127.0.0.1:55432/postgres' \
+  cargo test --locked -p caper-api --test accounts -- --ignored
+```
+
+SQLx creates a fresh migrated database per test. Never use a production URL.
+Orb setup installs Postgres binaries; an isolated UTF-8 cluster can be initialized
+with `/usr/lib/postgresql/15/bin/initdb -D /tmp/caper-test-pg -A trust -E UTF8` and
+run with `amp orb service start account-test-db --command '/usr/lib/postgresql/15/bin/postgres -D /tmp/caper-test-pg -h 127.0.0.1 -p 55432 -k /tmp'`.
+Local trust authentication is for the disposable loopback-only test server, not
+deployment. Tests cover concurrency, single use, lockout, expiration, rollback,
+profile constraints, account reuse, session revocation, and cleanup. They do not
+validate PlanetScale connectivity, SES delivery, or web/native authentication.

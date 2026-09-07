@@ -34,6 +34,7 @@ const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
 const BODY_LIMIT: usize = 256 * 1024;
 
+pub mod accounts;
 mod db;
 
 pub use db::connect_database;
