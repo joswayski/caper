@@ -1,6 +1,4 @@
-type Mode = "dpdfnet2" | "dpdfnet8";
 interface PreparedWorker {
-  mode: Mode;
   worker: Worker;
   ready: Promise<void>;
   stop(): void;
@@ -10,12 +8,12 @@ interface PreparedWorker {
 export class DpdfnetPreparation {
   private prepared?: PreparedWorker;
 
-  async prepare(mode: Mode) {
-    await this.get(mode).ready;
+  async prepare() {
+    await this.get().ready;
   }
 
-  take(mode: Mode) {
-    const prepared = this.get(mode);
+  take() {
+    const prepared = this.get();
     this.prepared = undefined;
     // Transfer synchronously so the capture owns cleanup before awaiting readiness.
     // A used worker is never returned: its recurrent/DSP state belongs to that capture.
@@ -28,16 +26,15 @@ export class DpdfnetPreparation {
     prepared?.stop();
   }
 
-  private get(mode: Mode): PreparedWorker {
-    if (this.prepared?.mode === mode) return this.prepared;
-    this.stop();
-    const worker = new Worker(mode === "dpdfnet8" ? "/audio/dpdfnet8-v1/worker.js" : "/audio/dpdfnet2-v1/worker.js", { type: "module", name: `caper-${mode}` });
+  private get(): PreparedWorker {
+    if (this.prepared) return this.prepared;
+    const worker = new Worker("/audio/dpdfnet8-v2/worker.js", { type: "module", name: "caper-dpdfnet8" });
     let resolve!: () => void;
     let reject!: (error: Error) => void;
     const ready = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     let stopped = false;
     const prepared: PreparedWorker = {
-      mode, worker, ready,
+      worker, ready,
       stop() {
         if (stopped) return;
         stopped = true;

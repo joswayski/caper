@@ -30,17 +30,17 @@ function setup(t: TestContext) {
 test("preparation shares one idle worker and only resolves after its warm-up acknowledgement", async (t) => {
   const { preparation, workers } = setup(t);
   let ready = false;
-  const first = preparation.prepare("dpdfnet8").then(() => { ready = true; });
-  const second = preparation.prepare("dpdfnet8");
+  const first = preparation.prepare().then(() => { ready = true; });
+  const second = preparation.prepare();
   assert.equal(workers.length, 1);
-  assert.equal(workers[0].url, "/audio/dpdfnet8-v1/worker.js");
+  assert.equal(workers[0].url, "/audio/dpdfnet8-v2/worker.js");
   await Promise.resolve();
   assert.equal(ready, false);
   workers[0].emit("ready");
   await Promise.all([first, second]);
-  await preparation.prepare("dpdfnet8");
+  await preparation.prepare();
   assert.equal(workers.length, 1);
-  const owned = preparation.take("dpdfnet8");
+  const owned = preparation.take();
   await owned.ready;
   assert.equal(owned.worker, workers[0]);
   preparation.stop();
@@ -52,14 +52,14 @@ test("preparation shares one idle worker and only resolves after its warm-up ack
 
 test("simultaneous captures and later joins never share recurrent or DSP state", async (t) => {
   const { preparation, workers } = setup(t);
-  const first = preparation.take("dpdfnet8");
-  const second = preparation.take("dpdfnet8");
+  const first = preparation.take();
+  const second = preparation.take();
   assert.notEqual(first.worker, second.worker);
   workers.forEach((worker) => worker.emit("ready"));
   await Promise.all([first.ready, second.ready]);
   first.stop();
   second.stop();
-  const later = preparation.take("dpdfnet8");
+  const later = preparation.take();
   assert.equal(workers.length, 3);
   assert.notEqual(later.worker, first.worker);
   workers[2].emit("ready");
@@ -69,12 +69,12 @@ test("simultaneous captures and later joins never share recurrent or DSP state",
 
 test("stopping unfinished preparation terminates the worker and permits a fresh retry", async (t) => {
   const { preparation, workers } = setup(t);
-  const pending = preparation.prepare("dpdfnet8");
+  const pending = preparation.prepare();
   const rejected = assert.rejects(pending, /stopped/);
   preparation.stop();
   await rejected;
   assert.equal(workers[0].terminateCalls, 1);
-  const retry = preparation.prepare("dpdfnet8");
+  const retry = preparation.prepare();
   workers[1].emit("ready");
   await retry;
 });
@@ -82,14 +82,14 @@ test("stopping unfinished preparation terminates the worker and permits a fresh 
 for (const failure of ["message", "error", "timeout"] as const) test(`failed preparation is terminated and evicted (${failure})`, async (t) => {
   const { preparation, workers } = setup(t);
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const pending = preparation.prepare("dpdfnet8");
+  const pending = preparation.prepare();
   const rejected = assert.rejects(pending, /failed|timed out/);
   if (failure === "message") workers[0].emit("failed");
   else if (failure === "error") workers[0].onerror!();
   else t.mock.timers.tick(60_000);
   await rejected;
   assert.equal(workers[0].terminateCalls, 1);
-  const retry = preparation.prepare("dpdfnet8");
+  const retry = preparation.prepare();
   workers[1].emit("ready");
   await retry;
   t.mock.timers.tick(60_000);
@@ -98,11 +98,11 @@ for (const failure of ["message", "error", "timeout"] as const) test(`failed pre
 
 test("an idle worker failure after readiness is also evicted", async (t) => {
   const { preparation, workers } = setup(t);
-  const pending = preparation.prepare("dpdfnet8");
+  const pending = preparation.prepare();
   workers[0].emit("ready");
   await pending;
   workers[0].onerror!();
-  const retry = preparation.prepare("dpdfnet8");
+  const retry = preparation.prepare();
   assert.equal(workers[0].terminateCalls, 1);
   assert.equal(workers.length, 2);
   workers[1].emit("ready");
@@ -111,7 +111,7 @@ test("an idle worker failure after readiness is also evicted", async (t) => {
 
 test("a capture can cancel an exclusively transferred worker before readiness", async (t) => {
   const { preparation, workers } = setup(t);
-  const owned = preparation.take("dpdfnet8");
+  const owned = preparation.take();
   const rejected = assert.rejects(owned.ready, /stopped/);
   const lateReady = workers[0].onmessage!;
   owned.stop();

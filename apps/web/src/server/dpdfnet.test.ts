@@ -4,17 +4,24 @@ import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import * as ort from "onnxruntime-web";
-import { DpdfnetStream } from "../../public/audio/dpdfnet2-v1/dsp.js";
+import { DpdfnetStream } from "../../public/audio/dpdfnet8-v2/dsp.js";
 
-const assets = new URL("../../public/audio/dpdfnet2-v1/", import.meta.url);
+const assets = new URL("../../public/audio/dpdfnet8-v2/", import.meta.url);
 
-for (const variant of ["2", "8"]) test(`pinned DPDFNet-${variant} model performs stateful inference on real spectra`, async () => {
+test("shipped browser ONNX runtime is the intact pinned WASM binary", async () => {
+  // Model inference below uses node_modules; also verify the bytes actually served to browsers.
+  const wasm = await readFile(new URL("ort-wasm-simd-threaded.wasm", assets));
+  assert.equal(wasm.length, 11_905_541);
+  assert.equal(createHash("sha256").update(wasm).digest("hex"), "45eaee27761ad883742a8d4b8fce1538d60ce43b51adf1726fafccc59b8c1a15");
+  assert.equal(WebAssembly.validate(wasm), true);
+});
+
+test("pinned DPDFNet-8 model performs stateful inference on real spectra", async () => {
   ort.env.wasm.numThreads = 1;
-  const modelAssets = new URL(`../dpdfnet${variant}-v1/`, assets);
-  const model = await readFile(new URL(`dpdfnet${variant}_48khz_hr.onnx`, modelAssets));
-  assert.equal(model.length, variant === "2" ? 10_493_337 : 14_857_107);
-  assert.equal(createHash("sha256").update(model).digest("hex"), variant === "2" ? "7f0575a5cec0ba4ffd8f8bd657e06d007e4ccdd955d76faab922b9d3291dc14b" : "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631");
-  const metadata = JSON.parse(await readFile(new URL("metadata.json", modelAssets), "utf8"));
+  const model = await readFile(new URL("dpdfnet8_48khz_hr.onnx", assets));
+  assert.equal(model.length, 14_857_107);
+  assert.equal(createHash("sha256").update(model).digest("hex"), "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631");
+  const metadata = JSON.parse(await readFile(new URL("metadata.json", assets), "utf8"));
   assert.equal(metadata.erbNormInit.length, 481);
   assert.equal(metadata.specNormInit.length, 96);
   const state = new Float32Array(metadata.stateSize);
@@ -43,7 +50,7 @@ for (const variant of ["2", "8"]) test(`pinned DPDFNet-${variant} model performs
   assert.equal(calls, 8);
   assert.ok(energy > 0, "actual model output must not remain silent");
   // Diagnostic only: shared CI/orb CPU speed is not a correctness gate.
-  console.log(`DPDFNet-${variant}: ${(elapsed / calls).toFixed(1)} ms/hop (${elapsed.toFixed(0)} ms total; includes startup, not a sustained benchmark)`);
+  console.log(`DPDFNet-8: ${(elapsed / calls).toFixed(1)} ms/hop (${elapsed.toFixed(0)} ms total; includes startup, not a sustained benchmark)`);
   await session.release();
 });
 

@@ -76,7 +76,7 @@ export class PublicCallClient {
   private microphoneDeviceId?: string;
   private statsTimer?: number;
   private diagnostics = "";
-  private noiseSuppression: NoiseSuppression = "dpdfnet2";
+  private noiseSuppression: NoiseSuppression = "dpdfnet8";
   private audioSetup: AudioSetup = "headphones";
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
@@ -90,8 +90,8 @@ export class PublicCallClient {
   prepareMicrophone() {
     // Download/compile only: no permission prompt, hardware capture or AudioContext.
     if (this.phase !== "idle") return; // Do not hold a spare model alongside an active capture.
-    if (this.noiseSuppression === "dpdfnet2" || this.noiseSuppression === "dpdfnet8") {
-      void this.dpdfnet.prepare(this.noiseSuppression).catch(() => undefined);
+    if (this.noiseSuppression === "dpdfnet8") {
+      void this.dpdfnet.prepare().catch(() => undefined);
       return;
     }
     this.dpdfnet.stop();

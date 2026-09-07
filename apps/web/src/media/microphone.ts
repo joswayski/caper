@@ -1,7 +1,7 @@
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
 
-export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet2" | "dpdfnet8" | "browser" | "off";
+export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet8" | "browser" | "off";
 export type AudioSetup = "speakers" | "headphones";
 export interface Microphone {
   track: MediaStreamTrack;
@@ -65,8 +65,8 @@ export async function captureMicrophone(
     return microphone;
   }
 
-  const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet2" || mode === "dpdfnet8" ? "dpdfnet2" : "deepfilter";
-  const engineName = engine === "rnnoise" ? "RNNoise" : engine === "dpdfnet2" ? (mode === "dpdfnet8" ? "DPDFNet-8 HR" : "DPDFNet-2 HR") : "DeepFilterNet";
+  const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet8" ? "dpdfnet8" : "deepfilter";
+  const engineName = engine === "rnnoise" ? "RNNoise" : engine === "dpdfnet8" ? "DPDFNet-8 HR" : "DeepFilterNet";
   const attenuationLimit = mode === "deepfilter-gentle" ? 12 : mode === "deepfilter-strong" ? 40 : 20;
   const presetName = mode === "deepfilter-gentle" ? "gentle" : mode === "deepfilter-strong" ? "strong" : "balanced";
 
@@ -83,20 +83,20 @@ export async function captureMicrophone(
     if (context.sampleRate !== 48_000 || !context.audioWorklet) throw new Error("Unsupported audio context");
     // Resume immediately, before downloads, to retain the Join button's user activation.
     void context.resume().catch(() => undefined);
-    const { module, model } = engine === "dpdfnet2" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
-    await context.audioWorklet.addModule(engine === "dpdfnet2" ? "/audio/dpdfnet2-v1/worklet.js" : "/audio/noise-v1/worklet.js");
+    const { module, model } = engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
+    await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet.js" : "/audio/noise-v1/worklet.js");
     signal.throwIfAborted();
-    node = new AudioWorkletNode(context, engine === "dpdfnet2" ? "caper-dpdfnet2" : "caper-noise", {
+    node = new AudioWorkletNode(context, engine === "dpdfnet8" ? "caper-dpdfnet8" : "caper-noise", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
       channelCount: 1, channelCountMode: "explicit",
       processorOptions: { engine, module, model, attenuationLimit },
     });
-    if (engine === "dpdfnet2") {
-      prepared = dpdfnet.take(mode === "dpdfnet8" ? "dpdfnet8" : "dpdfnet2");
+    if (engine === "dpdfnet8") {
+      prepared = dpdfnet.take();
     }
     await new Promise<void>((resolve, reject) => {
       // ORT's first model compile is substantially slower than the small WASM engines.
-      const timer = setTimeout(() => finish(new Error("Noise suppression timed out")), engine === "dpdfnet2" ? 60_000 : 15_000);
+      const timer = setTimeout(() => finish(new Error("Noise suppression timed out")), engine === "dpdfnet8" ? 60_000 : 15_000);
       const abort = () => finish(new Error("Microphone setup cancelled"));
       const finish = (error?: Error) => {
         clearTimeout(timer);
@@ -106,7 +106,10 @@ export async function captureMicrophone(
       if (prepared) void prepared.ready.then(() => finish(), finish);
       signal.addEventListener("abort", abort, { once: true });
       node!.onprocessorerror = () => finish(new Error("Noise suppression failed"));
-      node!.port.onmessage = ({ data }) => finish(data === "ready" ? undefined : new Error("Noise suppression failed"));
+      node!.port.onmessage = ({ data }) => {
+        if (data !== "ready") finish(new Error("Noise suppression failed"));
+        else if (!prepared) finish(); // DPDFNet must wait for its worker, not the worklet.
+      };
     });
     // The context may be blocked by autoplay policy. Do not hang joining forever.
     if (context.state !== "running") throw new Error("Audio context did not start");
@@ -129,7 +132,7 @@ export async function captureMicrophone(
     source.connect(node);
     node.connect(destination);
     microphone.track = destination.stream.getAudioTracks()[0];
-    microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet2" ? `${engineName} active · experimental · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
+    microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = fail;
     node.port.onmessage = ({ data }) => { if (data === "failed") fail(); };
     return microphone;

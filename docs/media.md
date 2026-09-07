@@ -166,7 +166,7 @@ cleanup retries and credential expiry remain unchanged. Local audio stays stoppe
 even on cleanup failure. Immediate rejoin still obeys the server's capacity and
 join-rate limits.
 
-Verification with the real browser UI, DPDFNet-2 processing of synthetic silence,
+Verification with the real browser UI, DPDFNet processing of synthetic silence,
 and the production API through the development adapter: desktop Join became
 enabled 8 ms after Leave while all captured tracks were ended and peers closed;
 the real `/leave` response took 5,600 ms. Holding that response in the browser
@@ -184,28 +184,67 @@ cleanup response. Do not treat background request duration as local leave latenc
 
 ## Join startup and preparation
 
-The enabled `/live` screen can download and compile DeepFilterNet or RNNoise
-before Join when selected by the client. The current UI defaults to DPDFNet-2
-and exposes DPDFNet-2/8 only, so it does not download unused DeepFilter assets.
-DPDFNet's worker-owned ONNX initialization still happens during Join; this WASM
-cache does not prewarm it. The marketing page does not download these assets.
-A call-client-owned cache retains compiled DeepFilter/RNNoise code and model
-bytes across joins, reconnects and device changes on that screen.
-The browser HTTP cache can reuse asset bytes after a full navigation, but the
-application does not persist compiled modules across page loads.
+The enabled `/live` screen starts one DPDFNet-8 worker before Join. It downloads
+the model/runtime, initializes ONNX inference, and runs the existing synthetic
+warm-up before acknowledging readiness. Its live recurrent and overlap-add state
+start fresh after warm-up. The marketing page does not start this work, and the
+voice page does not download unused DeepFilter assets.
 
 Preparation never requests microphone permission, captures audio, creates an
-AudioContext, or publishes a track. It shifts up to about 24 MB of asset loading
-and compilation earlier, trading memory/bandwidth on the voice screen for less
-work after Join. WASM compilation can run concurrently with the model download.
-Join still opens the microphone and initializes a dedicated worklet/model
-instance, then waits for its ready acknowledgement before publication. A cold
-join waits for unfinished preparation; it does not temporarily publish raw audio.
-Enhanced-filter initialization failure now fails Join instead of silently
-publishing browser-filtered/raw audio. A runtime failure stops both capture and
-processed tracks and triggers the bounded reconnect flow with the same selection.
-Downloads have a 30-second timeout; failures are evicted so a later join can retry.
-Cancelling a join stops capture immediately without cancelling shared preparation.
+AudioContext, provisions an SFU session, or publishes a track. It shifts roughly
+27 MB of model/runtime loading and initialization earlier, trading bandwidth and
+one idle worker's memory on the voice screen for less work after Join. This is
+preparation for the next capture, not a pool of spare workers during a call.
+The browser HTTP cache can reuse bytes after navigation; the application does
+not persist initialized workers across page loads.
+
+Join still opens the microphone and initializes a dedicated worklet, but takes
+exclusive ownership of the prepared worker rather than starting another model
+instance. It waits for any unfinished initialization, SSE readiness, transport,
+and initial roster/state synchronization before enabling outgoing audio. A cold
+join does not temporarily publish raw audio. Filter initialization failure fails
+Join instead of downgrading; runtime failure stops capture and processed tracks
+and triggers the bounded reconnect flow with the same selection.
+
+Preparation has a 60-second readiness timeout. Failed workers are terminated and
+evicted so a later join can retry. Cancellation terminates a worker already handed
+to capture. Page exit also disposes unused preparation. Explicit Leave stops the
+used worker immediately and starts fresh preparation for the next Join; a worker
+that has processed microphone samples is never reused by another capture. Device
+changes and automatic recovery still create fresh workers without holding a spare
+throughout the call. The legacy DeepFilter/RNNoise client modes retain their
+separate shared code/bytes cache and 30-second download timeout.
+
+The displayed join duration measures click-to-locally-ready-to-talk, not the first
+word heard on a remote device. Remote subscription, receiver jitter buffering and
+playback still affect join-to-heard latency. Keep two-device listening checks
+separate from local preparation benchmarks.
+
+September 7, 2026 verification (Chromium in an orb, synthetic silence, not physical
+microphone or remote-listening measurements):
+
+- Three unprepared captures with cached asset bytes took 403–464 ms to become
+  filter-ready; three prewarmed captures took 6–7 ms. Their 395–447 ms preparation
+  ran before capture, without microphone access or AudioContext creation. All six
+  kept DPDFNet-8 active and produced worker output during the 300 ms smoke check.
+- The actual voice UI joined through the production API/SFU in 1,781 ms from the
+  orb. It reused one worker, showed a live disabled sender while connecting, and
+  enabled it only with the connected UI. Leave ended capture/closed the peer and
+  prepared a fresh worker. A separate client probe joined in 2,056 ms with no
+  observed enabled sender before connected; prewarm made zero media API calls.
+  These network timings are not comparable to Jose's earlier 707 ms measurement.
+- A CPU-contended run on the animated landing page hit processor failure, including
+  without prewarming. Do not treat preparation as a fix for sustained inference
+  overload or relax the fail-closed guard to manufacture better timing. Repeat
+  physical speech and constrained-device checks separately.
+- PR #53's relocated v1 browser runtime failed `WebAssembly.validate`; the deployed
+  copy was also invalid when inspected. v2 restores the original pinned runtime
+  with a binary-safe copy and changes the URL to avoid cached corrupt responses.
+  A new test checks the shipped runtime's size, SHA-256 and WASM validity, in
+  addition to the model inference test (which loads the runtime from node_modules).
+
+Deploy the web image after merging, then refresh the app. No API rollout or new
+provider configuration is needed. The new worker request uses `/audio/dpdfnet8-v2/`.
 
 September 6, 2026 investigation (not a post-deployment performance guarantee):
 
@@ -270,7 +309,7 @@ sustained voice, and Jose's own join-to-heard timing still need acceptance check
 
 The actual modified `PublicCallClient`, served by local Vite and using the
 production API through the same-origin adapter, also completed a warm join with
-real DPDFNet-2 processing of synthetic silence: 1,576 ms total; microphone/session
+real DPDFNet processing of synthetic silence: 1,576 ms total; microphone/session
 468 ms, live updates 107 ms, ICE/signaling 447 ms, transport 345 ms, roster/state
 208 ms. The selected filter reported active; no observed pre-connected state had
 an enabled sender. An earlier cold attempt failed at 23,580 ms with a live-update
@@ -397,16 +436,15 @@ It does not repair hardware-clipped input or guarantee clean speech.
 
 ## On-device noise suppression
 
-DPDFNet-2 48 kHz HR is the default microphone mode. Capture (browser AEC, AGC and
+DPDFNet-8 48 kHz HR is the default microphone mode. Capture (browser AEC, AGC and
 noise suppression off) → 48 kHz mono DPDFNet → MediaStream output track → existing
-WebRTC Opus sender → Cloudflare SFU. The model and DSP settings are unchanged from
-the experimental option Jose preferred; runtime performance limitations remain.
+WebRTC Opus sender → Cloudflare SFU. Runtime performance limitations remain.
 The new private test changes the control API as described above, not SFU configuration.
 No LiveKit dependency, external denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
 
-The default model and runtime (~23 MB combined) are vendored and loaded from Caper's
-`/audio/dpdfnet2-v1/` path when joining. They are
+The default model and runtime (~27 MB combined) are vendored and loaded from Caper's
+`/audio/dpdfnet8-v2/` path during voice-page preparation or an unprepared join. They are
 versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
@@ -419,7 +457,7 @@ No new environment variables or infrastructure configuration are required.
 | DeepFilterNet gentle | 12 dB limit, retaining about 25% original amplitude; more voice **and noise** return. |
 | DeepFilterNet strong | Original 40 dB limit, retaining about 1% original amplitude. |
 | RNNoise | Independent lightweight 48 kHz neural model, 3.6 MB same-origin download. No VAD gating. |
-| DPDFNet-2 HR (default) | 48 kHz model; approximately 23 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
+| DPDFNet-8 HR (default) | 48 kHz model; approximately 27 MB model/runtime download. Worker-based ONNX inference; substantially heavier than RNNoise. |
 | Browser suppression | Built-in baseline; implementation/support varies by browser/device. |
 | Off | No requested noise suppression; Audio setup independently controls AEC and automatic gain. |
 
@@ -441,15 +479,14 @@ RNNoise provenance/reproduction is in `apps/web/public/audio/rnnoise-v1/README.m
 The shared adapter lives at `/audio/noise-v1/`. Normal web deployment includes
 all new assets; no operator configuration commands are required.
 
-An in-channel noise-suppression selector offers DPDFNet-2 HR (default) and
-DPDFNet-8 HR (experimental) for comparison. Speakers/Headphones stays fixed to
-natural headphone input; no mode selector is shown.
+DPDFNet-8 HR is the fixed in-channel noise-suppression filter. Speakers/Headphones
+stays fixed to natural headphone input; no mode selector is shown.
 Microphone/output selectors remain; output selection also applies to live and
 recorded mic-test playback. New visitors use DPDFNet with natural headphone input.
 Changing a filter/device clears the old recording immediately and disables
 recording during initialization. Runtime failure also discards any old recording.
-Run a fresh mic test after the chosen model reports active. Model 8
-adds a lazy 14.9 MB model download and reuses model 2's vendored runtime/DSP.
+Run a fresh mic test after DPDFNet-8 reports active. Its 14.9 MB model and runtime
+load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the processor acknowledges initialization.
 Loading/initialization failure rejects capture and stops its tracks; runtime
@@ -471,7 +508,7 @@ underrun stops the selected audio processor, rather than downgrading or building
 unbounded delay. Earlier validation below predates the fail-closed behavior.
 
 DPDFNet model/runtime provenance, checksums, full licenses and reproduction are
-in `apps/web/public/audio/dpdfnet2-v1/README.md`. CEVA code/weights are Apache-2.0;
+in `apps/web/public/audio/dpdfnet8-v2/README.md`. CEVA code/weights are Apache-2.0;
 ONNX Runtime is MIT with third-party notices. All assets load from Caper, lazily.
 No inference runs inside the AudioWorklet callback and no raw PCM goes to a
 denoising service. It is the default based on owner listening feedback, not a
@@ -480,12 +517,11 @@ proven universal Krisp replacement.
 Quality guidance checked against [upstream DPDFNet](https://github.com/ceva-ip/DPDFNet):
 keep the current 960-point unnormalized FFT, 480-sample hop, Vorbis window and
 metadata-initialized recurrent normalization. Do not normalize again outside the
-model or add an extra gate/AGC. Upstream lists 7.17G MACs for DPDFNet-8 HR versus
-2.42G for DPDFNet-2 HR. This is a published operation count, not a measured Caper
-CPU/latency result. Both pinned models now pass real stateful inference tests;
-model 8 also reaches ready/output in Chromium against the built app. This is not
-a physical listening comparison or sustained performance benchmark. Its quality
-advantage is unknown; it is offered for owner A/B testing, not promoted to default.
+model or add an extra gate/AGC. Upstream lists 7.17G MACs for DPDFNet-8 HR. This is
+a published operation count, not a measured Caper CPU/latency result. The pinned
+model passes real stateful inference tests and reaches ready/output in Chromium
+against the built app. This is not a physical listening comparison or sustained
+performance benchmark.
 Keep input gain below hardware clipping, use a consistent close mic position,
 and disable duplicate OS/vendor voice filters when comparing quality. Check the
 active/fallback status before attributing a sound to DPDFNet.

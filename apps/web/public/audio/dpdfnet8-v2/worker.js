@@ -11,7 +11,7 @@ try {
       if (!response.ok) throw new Error('metadata download failed');
       return response.json();
     }),
-    ort.InferenceSession.create('./dpdfnet2_48khz_hr.onnx', {
+    ort.InferenceSession.create('./dpdfnet8_48khz_hr.onnx', {
       executionProviders: ['wasm'], graphOptimizationLevel: 'all',
     }),
   ]);

@@ -57,4 +57,4 @@ class DpdfnetProcessor extends AudioWorkletProcessor {
     return true;
   }
 }
-registerProcessor('caper-dpdfnet2', DpdfnetProcessor);
+registerProcessor('caper-dpdfnet8', DpdfnetProcessor);
