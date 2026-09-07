@@ -109,8 +109,9 @@ function setup(t: TestContext, options: {
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-test("DPDFNet-8 readiness comes from its worker; runtime overload bypasses without stopping the published track", async (t) => {
-  const { install } = setup(t);
+for (const browserSuppression of [true, false]) test(`DPDFNet runtime overload keeps the track live when browser suppression is ${browserSuppression ? "available" : "unavailable"}`, async (t) => {
+  const { install, raw } = setup(t);
+  if (!browserSuppression) raw.applyConstraints = async () => undefined;
   let changes = 0;
   let worker!: { onmessage?: (event: { data: unknown }) => void; terminated: boolean };
   install("Worker", class {
@@ -130,10 +131,11 @@ test("DPDFNet-8 readiness comes from its worker; runtime overload bypasses witho
   await tick();
   assert.equal(microphone.track, Context.latest!.processed);
   assert.equal(microphone.track.enabled, false);
-  assert.match(microphone.status, /unavailable — noise suppression bypassed/);
+  assert.match(microphone.status, browserSuppression ? /unavailable · browser suppression active/ : /unavailable — noise suppression bypassed/);
+  assert.equal(raw.getSettings().noiseSuppression, browserSuppression);
   assert.equal(microphone.track.readyState, "live");
   assert.equal(worker.terminated, true);
-  assert.equal(changes, 1);
+  assert.equal(changes, 2);
   microphone.stop();
 });
 

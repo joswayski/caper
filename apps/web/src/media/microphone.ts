@@ -36,6 +36,7 @@ export async function captureMicrophone(
   let node: AudioWorkletNode | undefined;
   let prepared: ReturnType<DpdfnetPreparation["take"]> | undefined;
   let stopped = false;
+  let bypassing = false;
   const microphone: Microphone = {
     track: raw,
     status: "Noise suppression off",
@@ -85,11 +86,19 @@ export async function captureMicrophone(
     changed();
   };
   const bypass = () => {
-    if (stopped) return;
-    microphone.status = `${engineName} unavailable — noise suppression bypassed`;
+    if (stopped || bypassing) return;
+    bypassing = true;
     prepared?.stop();
     prepared = undefined;
+    microphone.status = `${engineName} unavailable — switching to browser suppression`;
     changed();
+    void raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined).then(() => {
+      if (stopped) return;
+      microphone.status = raw.getSettings().noiseSuppression
+        ? `${engineName} unavailable · browser suppression active`
+        : `${engineName} unavailable — noise suppression bypassed`;
+      changed();
+    });
   };
 
   try {

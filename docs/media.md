@@ -207,7 +207,9 @@ instance. It waits for any unfinished initialization, SSE readiness, transport,
 and initial roster/state synchronization before enabling outgoing audio. A cold
 join does not temporarily publish raw audio. Filter initialization failure fails
 Join instead of downgrading. DPDFNet runtime overload or underrun switches the
-existing processed track to an explicitly reported raw bypass, preserving the call.
+existing processed track to a bypass, preserving the call, and attempts to enable
+the browser's microphone noise-suppression constraint. The reported track setting
+determines whether the UI says browser suppression is active or unavailable.
 An unrecoverable processor error stops and unpublishes the microphone without
 restarting an otherwise healthy connection.
 
@@ -499,9 +501,10 @@ recording. Run a fresh mic test after DPDFNet reports active. Its 14.9 MB model 
 runtime load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the processor acknowledges initialization.
-Loading/initialization failure rejects capture and stops its tracks; runtime
-overload or underrun reports that suppression was bypassed and keeps the existing
-microphone track live with unprocessed audio, avoiding a call-wide reconnect loop.
+Loading/initialization failure rejects capture and stops its tracks. Runtime overload
+or underrun keeps the existing microphone track live, attempts browser suppression
+and reports whether it is active; unsupported or rejected browser suppression leaves
+unprocessed audio. This avoids a call-wide reconnect loop.
 An unrecoverable AudioWorklet processor error still stops the microphone. This does
 not ensure that all CPU overload or audio artifacts can be detected.
 
