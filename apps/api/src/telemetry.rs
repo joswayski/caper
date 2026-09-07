@@ -146,9 +146,15 @@ fn bridge(
 // Do not export dependency debug logs (URLs, SQL, headers) or exporter-internal
 // events that could recursively generate more log traffic.
 fn export_target(metadata: &tracing::Metadata<'_>) -> bool {
-    metadata.target() == "caper_api"
-        || metadata.target().starts_with("caper_api::")
-        || metadata.target() == "tower_http::trace::on_failure"
+    // Legacy cleanup warnings include raw provider identifiers. Keep those
+    // events local; request spans already use the attribute allowlist above.
+    let provider_identifiers = metadata.is_event()
+        && (metadata.fields().field("session").is_some()
+            || metadata.fields().field("mid").is_some());
+    !provider_identifiers
+        && (metadata.target() == "caper_api"
+            || metadata.target().starts_with("caper_api::")
+            || metadata.target() == "tower_http::trace::on_failure")
 }
 
 // The SDK's internal debug diagnostics may include response bodies and URLs.

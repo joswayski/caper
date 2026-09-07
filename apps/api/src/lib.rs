@@ -1412,7 +1412,7 @@ async fn retry_backlog(s: &AppState) {
         .await;
         if !matches!(result, Ok(Ok(ref value)) if validate_provider_envelope(value).is_ok()) {
             job.attempts = job.attempts.saturating_add(1);
-            tracing::warn!(attempts = job.attempts, "provider cleanup retry failed");
+            tracing::warn!(attempts=job.attempts, session=%job.session, mid=%job.mid, "provider cleanup retry failed");
             let mut r = s.registry.lock().await;
             if r.cleanup.len() < MAX_CLEANUP_BACKLOG {
                 r.cleanup.push_back(job);

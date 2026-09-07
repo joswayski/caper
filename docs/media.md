@@ -128,7 +128,9 @@ SDP, credentials, raw media, provider session IDs/MIDs, arbitrary unmatched URLs
 or dependency debug output are exported. Future log statements must follow the
 same privacy rules—this is not an arbitrary-string redaction engine. The richer
 provider error references from reliability PR #66 are exported when that work is
-also deployed; enabling Axiom alone does not add those diagnostic fields.
+also deployed; enabling Axiom alone does not add those diagnostic fields. Legacy
+cleanup events with session/MID fields remain stdout-only; PR #66 replaces those
+with exportable diagnostics.
 
 The SDK's dedicated worker batches up to 128 records, flushing every second,
 with a 2,048-record queue and a two-second export timeout. Producers use

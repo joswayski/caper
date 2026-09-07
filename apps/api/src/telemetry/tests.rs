@@ -88,6 +88,7 @@ fn standalone_logs_and_allowlisted_span_fields_export_without_dependency_noise()
         let span = tracing::info_span!(target: "caper_api", "request", http_route = "/api/media/join", request_id = "request-1", authorization = "SECRET");
         let _entered = span.enter();
         tracing::warn!(target: "caper_api", operation = "publish", upstream_status = 503u64, "provider unavailable");
+        tracing::warn!(target: "caper_api", attempts = 1, session = "SECRET_SESSION", mid = "SECRET_MID", "legacy cleanup warning");
         tracing::error!(target: "reqwest", url = "https://SECRET", "dependency error");
         tracing::error!(target: "opentelemetry_sdk", "exporter error");
     });
