@@ -60,7 +60,8 @@ Keep this temporary test separate from any future production app/key.
 | `AXIOM_DATASET` | Defaults to the existing `caper` dataset |
 | `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
 | `MEDIA_API_URL` | Web-process-only internal Rust API target, required for account and media routes |
-| `DATABASE_URL` | API-only PlanetScale Postgres URL. Startup applies `apps/api/migrations`. Use a direct primary URL on port `5432` with verified TLS. Missing configuration fails account/media access closed. |
+| `DATABASE_URL` | API-only runtime URL: pooled port `6432`, database `/caperchat`, restricted app role, verified TLS. Startup never migrates. Missing configuration fails account/media access closed. |
+| `MIGRATION_DATABASE_URL` | Migration-command-only URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Never falls back to `DATABASE_URL`; do not inject into API/web deployments. |
 | `WORKOS_CLIENT_ID` / `WORKOS_API_KEY` | Same WorkOS environment on web and API; API key is server-only |
 | `WORKOS_COOKIE_PASSWORD` | Web-only random secret, at least 32 characters, identical across web replicas |
 | `WORKOS_REDIRECT_URI` | Web-only exact registered HTTPS URL ending in `/api/auth/callback` |
@@ -960,11 +961,25 @@ provide the final guarantee; user-ID generation retries collisions.
 
 ### Deployment and verification
 
-No production database changes are performed by tests. The existing API startup
-migrator applies embedded SQL when `DATABASE_URL` is configured, using a direct
-primary connection on port 5432 (not transaction-pooled 6432), with verified TLS.
-The API Docker build copies migrations. Deployment **creates the users table**;
-review/authorize the migration before deployment. This replaces the unmerged,
+No production database changes are performed by tests. Normal API startup uses
+only `DATABASE_URL` and never runs migrations. The separate command below reads
+only `MIGRATION_DATABASE_URL`, applies embedded SQL, then exits without starting
+HTTP or media. Use direct port 5432: SQLx advisory locks require session affinity.
+The command rejects PlanetScale's pooled port 6432 and never falls back to the app
+credential. Both URLs must target the same existing `/caperchat` database; this
+command does not create the database or grant roles.
+
+After authorization, from an IP-allowed operator environment with the migration
+secret exported securely, run before rolling out the matching API image:
+
+```bash
+cargo run --locked --release -p caper-api -- --migrate
+# Or with the built binary / API container entrypoint:
+caper-api --migrate
+```
+
+The API Docker build copies migrations. This command **creates the users table**;
+review/authorize it before deployment. This replaces the unmerged,
 undeployed custom-session draft; do not run it against a DB that applied that
 draft's different checksum. No production migration/deployment is part of the trial.
 No separate `psql` migration command is needed. Leave data intact on rollback.
@@ -972,7 +987,7 @@ No separate `psql` migration command is needed. Leave data intact on rollback.
 Before an authorized production activation: register the exact callback and logout
 URLs in the matching WorkOS environment; provide the variables above; route all
 public browser/native API paths through WEB, with Rust internal only; select matching
-web/API image pins and authorize the startup migration. Existing direct-to-Rust
+web/API image pins and run the separately authorized migration command. Existing direct-to-Rust
 media ingress is incompatible with cookie auth. Infrastructure stages this separately
 as an opt-in overlay: do not activate it merely by merging app code.
 

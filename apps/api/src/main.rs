@@ -30,6 +30,12 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run() -> Result<(), String> {
+    let mut args = std::env::args().skip(1);
+    match (args.next().as_deref(), args.next()) {
+        (Some("--migrate"), None) => return caper_api::migrate_database().await,
+        (None, None) => {}
+        _ => return Err("usage: caper-api [--migrate]".into()),
+    }
     let config = Config::from_env()?;
     let bind = config.bind;
     let database = connect_database().await?;

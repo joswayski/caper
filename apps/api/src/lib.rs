@@ -38,7 +38,7 @@ pub mod accounts;
 mod auth;
 mod db;
 
-pub use db::connect_database;
+pub use db::{connect_database, migrate_database};
 
 #[derive(Clone)]
 pub struct Config {
