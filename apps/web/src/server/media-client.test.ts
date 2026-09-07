@@ -578,6 +578,58 @@ test("provider join failure releases microphone acquired before publication", as
   assert.equal(states.at(-1)?.error, "unavailable");
 });
 
+test("failed join reports immediately while old capability cleanup remains isolated", async (t) => {
+  const { client, states, install } = setup(t);
+  const original = fetch;
+  let joins = 0;
+  let finishLeave!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
+    if (url.endsWith("/publish") && joins === 1) return Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }));
+    if (url.endsWith("/leave") && new Headers(init.headers).get("authorization") === "Bearer session-1") {
+      return new Promise<Response>((resolve) => { finishLeave = () => resolve(new Response(null, { status: 204 })); });
+    }
+    return original(url, init);
+  });
+
+  await client.join("Guest"); // Must not wait for the unresolved Leave request.
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.equal(states.at(-1)?.error, "publication unavailable");
+  assert.equal(Peer.latest.connectionState, "closed");
+
+  await client.join("Second guest");
+  const currentTrack = Peer.latest.senders[0].track!;
+  assert.equal(states.at(-1)?.phase, "connected");
+  finishLeave();
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(currentTrack.readyState, "live", "old cleanup must not touch the newer generation");
+});
+
+test("automatic rejoin is not blocked by old capability cleanup", async (t) => {
+  const { client, states, install } = setup(t);
+  const original = fetch;
+  let joins = 0;
+  let finishLeave!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
+    if (url.endsWith("/leave") && new Headers(init.headers).get("authorization") === "Bearer session-1") {
+      return new Promise<Response>((resolve) => { finishLeave = () => resolve(new Response(null, { status: 204 })); });
+    }
+    return original(url, init);
+  });
+  await client.join("Guest");
+
+  await (client as unknown as { rejoin(): Promise<void> }).rejoin();
+  assert.equal(joins, 2);
+  assert.equal(states.at(-1)?.phase, "connected");
+  const currentTrack = Peer.latest.senders[0].track!;
+  finishLeave();
+  await tick();
+  assert.equal(currentTrack.readyState, "live");
+  assert.equal(states.at(-1)?.phase, "connected");
+});
+
 test("join provisioning overlaps permission and leave cleans up both late results", async (t) => {
   const { client, track, calls, states, install } = setup(t);
   let grant!: (s: Stream) => void;

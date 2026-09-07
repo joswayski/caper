@@ -7,8 +7,11 @@ use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tower::ServiceExt;
 
+mod reliability;
+
 struct Mock {
     next: AtomicUsize,
+    next_turn: AtomicUsize,
     provisioning: AtomicUsize,
     closes: Mutex<Vec<(String, String)>>,
     revocations: Mutex<Vec<String>>,
@@ -19,6 +22,7 @@ impl Mock {
     fn new() -> Self {
         Self {
             next: AtomicUsize::new(1),
+            next_turn: AtomicUsize::new(1),
             provisioning: AtomicUsize::new(0),
             closes: Mutex::new(vec![]),
             revocations: Mutex::new(vec![]),
@@ -49,7 +53,10 @@ impl Provider for Mock {
         }
         Ok(vec![IceServer {
             urls: json!(["stun:test"]),
-            username: Some("temporary-user".into()),
+            username: Some(format!(
+                "temporary-user-{}",
+                self.next_turn.fetch_add(1, Ordering::SeqCst)
+            )),
             credential: None,
         }])
     }
@@ -630,6 +637,7 @@ async fn parent_leave_rejects_in_flight_monitor_and_cascades_children() {
             .values()
             .all(|p| p.monitor.is_none())
     );
+    retry_backlog(&s).await;
     assert_eq!(mock.revocations.lock().await.len(), 3);
 }
 
@@ -672,7 +680,10 @@ async fn parent_expiry_cascades_monitor_cleanup() {
     );
     spawn_cleanup(s.clone());
     tokio::time::timeout(Duration::from_secs(1), async {
-        while !s.registry.lock().await.participants.is_empty() {
+        while !s.registry.lock().await.participants.is_empty()
+            || mock.revocations.lock().await.len() < 2
+            || !mock.closes.lock().await.iter().any(|(_, mid)| mid == "s")
+        {
             tokio::task::yield_now().await;
         }
     })
@@ -813,7 +824,7 @@ async fn ownership_subscription_and_negotiation() {
     );
     assert_eq!(
         call(
-            app(s),
+            app(s.clone()),
             "POST",
             "/api/media/close",
             Some(ta),
@@ -823,6 +834,7 @@ async fn ownership_subscription_and_negotiation() {
         .0,
         StatusCode::OK
     );
+    retry_backlog(&s).await;
     assert!(
         m.closes
             .lock()
@@ -860,8 +872,13 @@ async fn expiry_removes_and_cleans() {
     };
     remove_participant(&s, id).await;
     assert!(s.registry.lock().await.participants.is_empty());
+    assert!(
+        m.closes.lock().await.is_empty(),
+        "local removal never waits for provider cleanup"
+    );
+    retry_backlog(&s).await;
     assert!(m.closes.lock().await.iter().any(|(_, mid)| mid == "1"));
-    assert_eq!(*m.revocations.lock().await, vec!["temporary-user"]);
+    assert_eq!(*m.revocations.lock().await, vec!["temporary-user-1"]);
 }
 
 #[test]

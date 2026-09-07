@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
 };
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -101,6 +101,74 @@ pub enum ProviderError {
     Unavailable,
     #[error("provider rejected request")]
     Rejected,
+    #[error("provider request failed")]
+    Request(Box<ProviderFailure>),
+}
+
+// Bounded diagnostic fields only: never reqwest errors (which contain URLs),
+// SDP, response descriptions/bodies, or provider credentials.
+#[derive(Debug)]
+pub struct ProviderFailure {
+    id: Uuid,
+    operation: &'static str,
+    kind: &'static str,
+    status: Option<u16>,
+    ray: Option<String>,
+    code: Option<String>,
+    elapsed_ms: Option<u128>,
+}
+impl ProviderError {
+    fn invalid_response(operation: &'static str) -> Self {
+        Self::Request(Box::new(ProviderFailure {
+            id: Uuid::new_v4(),
+            operation,
+            kind: "invalid_response",
+            status: None,
+            ray: None,
+            code: None,
+            elapsed_ms: None,
+        }))
+    }
+
+    fn transient(&self) -> bool {
+        match self {
+            Self::Unavailable => true,
+            Self::Rejected => false,
+            Self::Request(f) => {
+                matches!(f.kind, "timeout" | "transport")
+                    || f.status
+                        .is_some_and(|s| matches!(s, 408 | 429 | 500 | 502 | 503 | 504))
+            }
+        }
+    }
+}
+fn diagnostic_token(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-.:".contains(&b)))
+    .then(|| value.to_owned())
+}
+fn provider_code(value: &Value) -> Option<String> {
+    let code = value
+        .get("errorCode")
+        .filter(|v| !v.is_null())
+        .or_else(|| {
+            value
+                .get("tracks")?
+                .as_array()?
+                .iter()
+                .find_map(|t| t.get("errorCode").filter(|v| !v.is_null()))
+        })
+        .or_else(|| value.pointer("/errors/0/code"))?;
+    if let Some(code) = code.as_str() {
+        diagnostic_token(code)
+    } else if code.is_number() {
+        diagnostic_token(&code.to_string())
+    } else {
+        None
+    }
 }
 
 #[async_trait]
@@ -154,6 +222,7 @@ impl Provider for Cloudflare {
     async fn create_session(&self, c: &Config) -> Result<String, ProviderError> {
         let value = self
             .request(
+                "create_session",
                 reqwest::Method::POST,
                 c,
                 &format!("apps/{}/sessions/new", required(&c.app_id)),
@@ -167,33 +236,25 @@ impl Provider for Cloudflare {
             .ok_or(ProviderError::Rejected)
     }
     async fn turn(&self, c: &Config) -> Result<Vec<IceServer>, ProviderError> {
-        let response = self
-            .client
-            .post(format!(
-                "{}/turn/keys/{}/credentials/generate-ice-servers",
-                c.provider_base,
-                required(&c.turn_key_id)
-            ))
-            .bearer_auth(required(&c.turn_token))
-            .json(&json!({"ttl": TURN_TTL}))
-            .send()
-            .await
-            .map_err(|_| ProviderError::Unavailable)?;
-        if response.status() != StatusCode::CREATED {
-            return Err(if response.status().is_server_error() {
-                ProviderError::Unavailable
-            } else {
-                ProviderError::Rejected
-            });
-        }
+        let value = self
+            .execute(
+                "turn_issue",
+                self.client
+                    .post(format!(
+                        "{}/turn/keys/{}/credentials/generate-ice-servers",
+                        c.provider_base,
+                        required(&c.turn_key_id)
+                    ))
+                    .bearer_auth(required(&c.turn_token))
+                    .json(&json!({"ttl": TURN_TTL})),
+            )
+            .await?;
         #[derive(Deserialize)]
         struct Turn {
             #[serde(rename = "iceServers")]
             ice_servers: Vec<IceServer>,
         }
-        let mut servers = response
-            .json::<Turn>()
-            .await
+        let mut servers = serde_json::from_value::<Turn>(value)
             .map(|v| v.ice_servers)
             .map_err(|_| ProviderError::Rejected)?;
         for server in &mut servers {
@@ -218,21 +279,16 @@ impl Provider for Cloudflare {
             .pop_if_empty()
             .push(username)
             .push("revoke");
-        let response = self
-            .client
-            .post(url)
-            .bearer_auth(required(&c.turn_token))
-            .send()
-            .await
-            .map_err(|_| ProviderError::Unavailable)?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(ProviderError::Rejected)
-        }
+        self.execute(
+            "turn_revoke",
+            self.client.post(url).bearer_auth(required(&c.turn_token)),
+        )
+        .await?;
+        Ok(())
     }
     async fn session_tracks(&self, c: &Config, session: &str) -> Result<Value, ProviderError> {
         self.request(
+            "session_tracks",
             reqwest::Method::GET,
             c,
             &format!("apps/{}/sessions/{session}", required(&c.app_id)),
@@ -242,6 +298,11 @@ impl Provider for Cloudflare {
     }
     async fn tracks_new(&self, c: &Config, s: &str, body: Value) -> Result<Value, ProviderError> {
         self.request(
+            if body["tracks"][0]["location"] == "remote" {
+                "subscribe"
+            } else {
+                "publish"
+            },
             reqwest::Method::POST,
             c,
             &format!("apps/{}/sessions/{s}/tracks/new", required(&c.app_id)),
@@ -251,6 +312,7 @@ impl Provider for Cloudflare {
     }
     async fn negotiate(&self, c: &Config, s: &str, body: Value) -> Result<Value, ProviderError> {
         self.request(
+            "negotiate",
             reqwest::Method::PUT,
             c,
             &format!("apps/{}/sessions/{s}/renegotiate", required(&c.app_id)),
@@ -260,6 +322,7 @@ impl Provider for Cloudflare {
     }
     async fn close(&self, c: &Config, s: &str, mid: &str) -> Result<Value, ProviderError> {
         self.request(
+            "close",
             reqwest::Method::PUT,
             c,
             &format!("apps/{}/sessions/{s}/tracks/close", required(&c.app_id)),
@@ -271,6 +334,7 @@ impl Provider for Cloudflare {
 impl Cloudflare {
     async fn request(
         &self,
+        operation: &'static str,
         method: reqwest::Method,
         c: &Config,
         path: &str,
@@ -287,25 +351,165 @@ impl Cloudflare {
         } else {
             request.json(&body)
         };
-        let response = request
-            .send()
-            .await
-            .map_err(|_| ProviderError::Unavailable)?;
-        if !response.status().is_success() {
-            tracing::warn!(status=%response.status(), "Cloudflare request failed");
-            return Err(if response.status().is_server_error() {
-                ProviderError::Unavailable
-            } else {
-                ProviderError::Rejected
-            });
+        // Retries belong to the bounded cleanup queue, never to this transport:
+        // creates and SDP mutations can succeed despite an ambiguous response.
+        self.execute(operation, request).await
+    }
+
+    async fn execute(
+        &self,
+        operation: &'static str,
+        request: reqwest::RequestBuilder,
+    ) -> Result<Value, ProviderError> {
+        let started = Instant::now();
+        let id = Uuid::new_v4();
+        let failure = |kind, status, ray: Option<String>, code: Option<String>| {
+            let elapsed_ms = started.elapsed().as_millis();
+            tracing::warn!(%id, operation, kind, status, ray, code, elapsed_ms,
+                "Cloudflare operation failed");
+            ProviderError::Request(Box::new(ProviderFailure {
+                id,
+                operation,
+                kind,
+                status,
+                ray,
+                code,
+                elapsed_ms: Some(elapsed_ms),
+            }))
+        };
+        let response = request.send().await.map_err(|error| {
+            failure(
+                if error.is_timeout() {
+                    "timeout"
+                } else {
+                    "transport"
+                },
+                None,
+                None,
+                None,
+            )
+        })?;
+        let status = response.status();
+        let ray = response
+            .headers()
+            .get("cf-ray")
+            .and_then(|v| v.to_str().ok())
+            .and_then(diagnostic_token);
+        let mut response = response;
+        let read_body = async {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                if bytes.len() + chunk.len() > BODY_LIMIT {
+                    return Ok(None);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok::<_, reqwest::Error>(Some(bytes))
+        };
+        // Once HTTP failure is known, diagnostic collection must not turn an
+        // immediate error into a ten-second wait for a broken upstream body.
+        let bytes = if status.is_success() {
+            read_body.await
+        } else {
+            tokio::time::timeout(Duration::from_millis(250), read_body)
+                .await
+                .map_err(|_| {
+                    failure(
+                        "http_body_timeout",
+                        Some(status.as_u16()),
+                        ray.clone(),
+                        None,
+                    )
+                })?
+        };
+        let bytes = bytes
+            .map_err(|error| {
+                failure(
+                    if error.is_timeout() {
+                        "timeout"
+                    } else {
+                        "response_body"
+                    },
+                    Some(status.as_u16()),
+                    ray.clone(),
+                    None,
+                )
+            })?
+            .ok_or_else(|| {
+                failure(
+                    "response_too_large",
+                    Some(status.as_u16()),
+                    ray.clone(),
+                    None,
+                )
+            })?;
+        // Revocation may legitimately return 204/empty; if a body is present,
+        // still preserve provider error envelopes rather than assuming success.
+        let value = if operation == "turn_revoke" && bytes.is_empty() {
+            Ok(json!({}))
+        } else {
+            serde_json::from_slice::<Value>(&bytes)
+        };
+        if !status.is_success() {
+            return Err(failure(
+                "http",
+                Some(status.as_u16()),
+                ray,
+                value.as_ref().ok().and_then(provider_code),
+            ));
         }
-        let value: Value = response.json().await.map_err(|_| ProviderError::Rejected)?;
-        validate_provider_envelope(&value)?;
+        let value =
+            value.map_err(|_| failure("invalid_json", Some(status.as_u16()), ray.clone(), None))?;
+        if validate_provider_envelope(&value).is_err() {
+            return Err(failure(
+                "provider_error",
+                Some(status.as_u16()),
+                ray,
+                provider_code(&value),
+            ));
+        }
+        let shape_valid =
+            match operation {
+                "create_session" => value
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| !v.is_empty()),
+                "turn_issue" => {
+                    status == StatusCode::CREATED
+                        && value.get("iceServers").is_some_and(|v| {
+                            serde_json::from_value::<Vec<IceServer>>(v.clone()).is_ok()
+                        })
+                }
+                "session_tracks" => value.get("tracks").and_then(Value::as_array).is_some(),
+                "publish" | "subscribe" => value
+                    .get("tracks")
+                    .and_then(Value::as_array)
+                    .is_some_and(|v| {
+                        !v.is_empty()
+                            && v.iter()
+                                .all(|t| t.get("mid").and_then(Value::as_str).is_some())
+                    }),
+                _ => true,
+            };
+        if !shape_valid {
+            return Err(failure(
+                "invalid_response",
+                Some(status.as_u16()),
+                ray,
+                provider_code(&value),
+            ));
+        }
+        tracing::debug!(%id, operation, status = status.as_u16(), elapsed_ms = started.elapsed().as_millis(), "Cloudflare operation succeeded");
         Ok(value)
     }
 }
 fn validate_provider_envelope(value: &Value) -> Result<(), ProviderError> {
     if !value.is_object()
+        || value.get("success").and_then(Value::as_bool) == Some(false)
+        || value
+            .get("errors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty())
         || value.get("errorCode").is_some_and(|v| !v.is_null())
         || value
             .get("tracks")
@@ -356,6 +560,8 @@ pub struct AppState {
     database: Option<PgPool>,
     events: watch::Sender<()>,
     shutting_down: watch::Sender<bool>,
+    cleanup_lock: Arc<Mutex<()>>,
+    expiry_lock: Arc<Mutex<()>>,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -376,6 +582,8 @@ impl AppState {
             database,
             events,
             shutting_down,
+            cleanup_lock: Arc::new(Mutex::new(())),
+            expiry_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -429,11 +637,25 @@ enum MonitorRole {
     Sender,
     Receiver,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
+enum CleanupAction {
+    Close { session: String, mid: String },
+    Discover { session: String },
+    Revoke { username: String },
+}
+impl CleanupAction {
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Close { .. } => "close",
+            Self::Discover { .. } => "session_tracks",
+            Self::Revoke { .. } => "turn_revoke",
+        }
+    }
+}
 struct CleanupJob {
-    session: String,
-    mid: String,
+    action: CleanupAction,
     attempts: u8,
+    not_before: Instant,
 }
 struct Track {
     id: Uuid,
@@ -451,20 +673,48 @@ enum Kind {
 struct ApiError {
     status: StatusCode,
     message: &'static str,
+    error_id: Option<Uuid>,
 }
 impl ApiError {
     fn new(status: StatusCode, message: &'static str) -> Self {
-        Self { status, message }
+        Self {
+            status,
+            message,
+            error_id: None,
+        }
     }
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({"error":self.message}))).into_response()
+        let mut response = (self.status, Json(json!({"error":self.message}))).into_response();
+        if let Some(id) = self.error_id {
+            response
+                .headers_mut()
+                .insert("x-caper-error-id", id.to_string().parse().unwrap());
+        }
+        response
     }
 }
 impl From<ProviderError> for ApiError {
-    fn from(_: ProviderError) -> Self {
-        Self::new(StatusCode::BAD_GATEWAY, "media provider unavailable")
+    fn from(error: ProviderError) -> Self {
+        let id = match error {
+            ProviderError::Request(f) => {
+                tracing::warn!(id = %f.id, operation = f.operation, kind = f.kind,
+                    upstream_status = f.status, ray = f.ray, code = f.code,
+                    provider_elapsed_ms = f.elapsed_ms, "media request failed");
+                f.id
+            }
+            error => {
+                let id = Uuid::new_v4();
+                tracing::warn!(%id, kind = %error, "media response validation failed");
+                id
+            }
+        };
+        // Preserve the response contract for old browser tabs/native clients.
+        Self {
+            error_id: Some(id),
+            ..Self::new(StatusCode::BAD_GATEWAY, "media provider unavailable")
+        }
     }
 }
 
@@ -750,9 +1000,13 @@ async fn join(
                     .iter()
                     .filter_map(|server| server.username.as_deref())
                 {
-                    if s.provider.revoke_turn(&s.config, username).await.is_err() {
-                        tracing::warn!("TURN revocation failed after session creation failure");
-                    }
+                    enqueue_action(
+                        &s,
+                        CleanupAction::Revoke {
+                            username: username.into(),
+                        },
+                    )
+                    .await;
                 }
             }
             return Err(error.into());
@@ -801,7 +1055,7 @@ async fn join(
         });
         if !parent_valid {
             drop(r);
-            revoke_participant_turn(&s, &p).await;
+            enqueue_turn_revocation(&s, &p).await;
             return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "parent session ended",
@@ -961,7 +1215,9 @@ async fn publish(
         enqueue_cleanup(&s, session.clone(), i.mid.clone()).await;
         remove_participant(&s, id).await;
         return Err(ApiError::from(
-            result.err().unwrap_or(ProviderError::Rejected),
+            result
+                .err()
+                .unwrap_or_else(|| ProviderError::invalid_response("publish")),
         ));
     }
     let result = result.unwrap();
@@ -1065,23 +1321,16 @@ async fn subscribe(
         .and_then(Value::as_array)
         .and_then(|a| a.first())
         .and_then(|t| t.get("mid"))
-        .and_then(Value::as_str)
-        .ok_or(ProviderError::Rejected)
-        .map_err(ApiError::from);
-    let Ok(mid) = mid else {
-        // Do not retry tracks/new after an ambiguous response. Discover and close any MID
-        // the provider allocated before invalidating this connection's capability.
-        if let Ok(info) = s.provider.session_tracks(&s.config, &session).await
-            && let Some(tracks) = info.get("tracks").and_then(Value::as_array)
-        {
-            for track in tracks {
-                if let Some(mid) = track.get("mid").and_then(Value::as_str) {
-                    enqueue_cleanup(&s, session.clone(), mid.to_owned()).await;
-                }
-            }
-        }
+        .and_then(Value::as_str);
+    let Some(mid) = mid else {
+        // The mutation may have succeeded. Invalidate locally now, then discover
+        // orphan MIDs in the worker; never replace the original provider failure.
         remove_participant(&s, me).await;
-        return Err(mid.unwrap_err());
+        enqueue_action(&s, CleanupAction::Discover { session }).await;
+        return Err(result
+            .err()
+            .unwrap_or_else(|| ProviderError::invalid_response("subscribe"))
+            .into());
     };
     let mid = mid.to_owned();
     let result = result.unwrap();
@@ -1100,7 +1349,7 @@ async fn subscribe(
     if pending != has_offer {
         enqueue_cleanup(&s, session, mid).await;
         remove_participant(&s, me).await;
-        return Err(ProviderError::Rejected.into());
+        return Err(ProviderError::invalid_response("subscribe").into());
     }
     let mut r = s.registry.lock().await;
     if !r
@@ -1167,7 +1416,10 @@ async fn negotiate(
         .await;
     if !matches!(result.as_ref(), Ok(v) if validate_provider_envelope(v).is_ok()) {
         remove_participant(&s, id).await;
-        return Err(result.err().unwrap_or(ProviderError::Rejected).into());
+        return Err(result
+            .err()
+            .unwrap_or_else(|| ProviderError::invalid_response("negotiate"))
+            .into());
     }
     let result = result.unwrap();
     let mut r = s.registry.lock().await;
@@ -1211,7 +1463,10 @@ async fn close(
     if !matches!(result.as_ref(), Ok(v) if validate_provider_envelope(v).is_ok()) {
         enqueue_cleanup(&s, session, i.mid).await;
         remove_participant(&s, id).await;
-        return Err(result.err().unwrap_or(ProviderError::Rejected).into());
+        return Err(result
+            .err()
+            .unwrap_or_else(|| ProviderError::invalid_response("close"))
+            .into());
     }
     let result = result.unwrap();
     let mut r = s.registry.lock().await;
@@ -1290,7 +1545,7 @@ async fn close_dependents(s: &AppState, source: Uuid) {
             })
             .collect::<Vec<_>>()
     };
-    run_cleanup_jobs(s, jobs).await;
+    enqueue_track_cleanup(s, jobs).await;
 }
 async fn remove_participant(s: &AppState, id: Uuid) {
     let removed = {
@@ -1318,7 +1573,7 @@ async fn remove_participant(s: &AppState, id: Uuid) {
         removed
     };
     for p in removed {
-        revoke_participant_turn(s, &p).await;
+        enqueue_turn_revocation(s, &p).await;
         let sources: Vec<_> = p.tracks.values().map(|t| t.id).collect();
         let jobs = p
             .tracks
@@ -1326,83 +1581,165 @@ async fn remove_participant(s: &AppState, id: Uuid) {
             .chain(p.subscriptions.keys())
             .map(|mid| (p.session.clone(), mid.clone()))
             .collect();
-        run_cleanup_jobs(s, jobs).await;
+        enqueue_track_cleanup(s, jobs).await;
         for source in sources {
             close_dependents(s, source).await;
         }
     }
 }
-async fn revoke_participant_turn(s: &AppState, p: &Participant) {
+async fn enqueue_turn_revocation(s: &AppState, p: &Participant) {
     for username in &p.turn_usernames {
-        if s.provider.revoke_turn(&s.config, username).await.is_err() {
-            tracing::warn!("TURN revocation failed; credential remains bounded by expiry");
+        enqueue_action(
+            s,
+            CleanupAction::Revoke {
+                username: username.clone(),
+            },
+        )
+        .await;
+    }
+}
+fn enqueue_action_locked(r: &mut Registry, action: CleanupAction) {
+    if r.cleanup.iter().any(|job| job.action == action) {
+        return;
+    }
+    if r.cleanup.len() >= MAX_CLEANUP_BACKLOG {
+        tracing::error!(
+            operation = action.operation(),
+            "cleanup backlog full; dropping new job; provider resources may remain"
+        );
+        return;
+    }
+    r.cleanup.push_back(CleanupJob {
+        action,
+        attempts: 0,
+        not_before: Instant::now(),
+    });
+}
+async fn enqueue_action(s: &AppState, action: CleanupAction) {
+    enqueue_action_locked(&mut *s.registry.lock().await, action);
+}
+fn enqueue_cleanup_locked(r: &mut Registry, session: String, mid: String) {
+    enqueue_action_locked(r, CleanupAction::Close { session, mid });
+}
+async fn enqueue_cleanup(s: &AppState, session: String, mid: String) {
+    enqueue_action(s, CleanupAction::Close { session, mid }).await;
+}
+async fn enqueue_track_cleanup(s: &AppState, jobs: Vec<(String, String)>) {
+    let mut registry = s.registry.lock().await;
+    for (session, mid) in jobs {
+        enqueue_cleanup_locked(&mut registry, session, mid);
+    }
+}
+async fn execute_cleanup(s: &AppState, action: &CleanupAction) -> Result<(), ProviderError> {
+    match action {
+        // force:true only stops this MID's data flow; no SDP mutation or resource
+        // creation. Caper never reuses these MIDs via tracks/update.
+        CleanupAction::Close { session, mid } => {
+            let value = s.provider.close(&s.config, session, mid).await?;
+            validate_provider_envelope(&value)
+        }
+        CleanupAction::Revoke { username } => s.provider.revoke_turn(&s.config, username).await,
+        CleanupAction::Discover { session } => {
+            let info = s.provider.session_tracks(&s.config, session).await?;
+            validate_provider_envelope(&info)?;
+            let tracks = info
+                .get("tracks")
+                .and_then(Value::as_array)
+                .ok_or(ProviderError::Rejected)?;
+            for track in tracks {
+                if let Some(mid) = track.get("mid").and_then(Value::as_str) {
+                    enqueue_cleanup(s, session.clone(), mid.into()).await;
+                }
+            }
+            Ok(())
         }
     }
 }
-fn enqueue_cleanup_locked(r: &mut Registry, session: String, mid: String) {
-    if r.cleanup.len() >= MAX_CLEANUP_BACKLOG {
-        tracing::error!("cleanup backlog full; dropping oldest job");
-        r.cleanup.pop_front();
-    }
-    if !r
-        .cleanup
-        .iter()
-        .any(|j| j.session == session && j.mid == mid)
-    {
-        r.cleanup.push_back(CleanupJob {
-            session,
-            mid,
-            attempts: 0,
-        });
-    }
-}
-async fn enqueue_cleanup(s: &AppState, session: String, mid: String) {
-    let mut registry = s.registry.lock().await;
-    enqueue_cleanup_locked(&mut registry, session, mid);
-}
-async fn run_cleanup_jobs(s: &AppState, jobs: Vec<(String, String)>) {
-    let mut set = tokio::task::JoinSet::new();
-    for (session, mid) in jobs {
-        let state = s.clone();
-        set.spawn(async move {
-            let result = tokio::time::timeout(
-                Duration::from_secs(12),
-                state.provider.close(&state.config, &session, &mid),
-            )
-            .await;
-            if !matches!(result, Ok(Ok(ref value)) if validate_provider_envelope(value).is_ok()) {
-                enqueue_cleanup(&state, session, mid).await;
-            }
-        });
-    }
-    while set.join_next().await.is_some() {}
-}
 async fn retry_backlog(s: &AppState) {
+    // One batch at a time, including during shutdown. At most four provider
+    // requests in flight and 512 queued; an outage cannot spawn unbounded tasks.
+    let _guard = s.cleanup_lock.lock().await;
     let jobs = {
         let mut r = s.registry.lock().await;
-        r.cleanup.drain(..).collect::<Vec<_>>()
-    };
-    for mut job in jobs {
-        let result = tokio::time::timeout(
-            Duration::from_secs(12),
-            s.provider.close(&s.config, &job.session, &job.mid),
-        )
-        .await;
-        if !matches!(result, Ok(Ok(ref value)) if validate_provider_envelope(value).is_ok()) {
-            job.attempts = job.attempts.saturating_add(1);
-            tracing::warn!(attempts=job.attempts, session=%job.session, mid=%job.mid, "provider cleanup retry failed");
-            let mut r = s.registry.lock().await;
-            if r.cleanup.len() < MAX_CLEANUP_BACKLOG {
+        let mut jobs = vec![];
+        for _ in 0..r.cleanup.len() {
+            let job = r.cleanup.pop_front().unwrap();
+            if jobs.len() < 4 && job.not_before <= Instant::now() {
+                jobs.push(job);
+            } else {
                 r.cleanup.push_back(job);
             }
         }
-    }
+        jobs
+    };
+    stream::iter(jobs)
+        .for_each_concurrent(4, |mut job| async move {
+            let result =
+                tokio::time::timeout(Duration::from_secs(12), execute_cleanup(s, &job.action))
+                    .await;
+            let error = match result {
+                Ok(Ok(())) => return,
+                Ok(Err(error)) => error,
+                Err(_) => ProviderError::Unavailable,
+            };
+            job.attempts += 1;
+            if !error.transient() || job.attempts >= 5 {
+                tracing::warn!(
+                    operation = job.action.operation(),
+                    attempts = job.attempts,
+                    "provider cleanup abandoned; resource may remain until provider expiry"
+                );
+                return;
+            }
+            // Delayed, jittered retries only for reads, force-close and revocation.
+            // Never repeat auth/validation failures or ambiguous creation/SDP mutations.
+            let delay_ms =
+                1_000 * (1u64 << job.attempts) + u64::from(Uuid::new_v4().as_bytes()[0]) * 4;
+            job.not_before = Instant::now() + Duration::from_millis(delay_ms);
+            tracing::warn!(
+                operation = job.action.operation(),
+                attempts = job.attempts,
+                delay_ms,
+                "provider cleanup retry scheduled"
+            );
+            let mut r = s.registry.lock().await;
+            if r.cleanup.len() < MAX_CLEANUP_BACKLOG {
+                // Preserve retry budget if the same action was queued while in flight.
+                r.cleanup.retain(|queued| queued.action != job.action);
+                r.cleanup.push_back(job);
+            } else {
+                tracing::error!("cleanup backlog full; dropping retry");
+            }
+        })
+        .await;
 }
 pub fn spawn_cleanup(s: AppState) {
+    let worker = s.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(250));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut shutdown = worker.shutting_down.subscribe();
+        while !*shutdown.borrow() {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => retry_backlog(&worker).await,
+            }
+        }
+    });
+    // Provider cleanup must not delay lease/capability expiry.
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            tick.tick().await;
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut shutdown = s.shutting_down.subscribe();
+        while !*shutdown.borrow() {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => {},
+            }
+            let _expiry_guard = s.expiry_lock.lock().await;
+            if *shutdown.borrow() {
+                break;
+            }
             let expired = {
                 let mut r = s.registry.lock().await;
                 let mut expired = r
@@ -1438,9 +1775,9 @@ pub fn spawn_cleanup(s: AppState) {
                 removed
             };
             for p in expired {
-                revoke_participant_turn(&s, &p).await;
+                enqueue_turn_revocation(&s, &p).await;
                 let sources = p.tracks.values().map(|t| t.id).collect::<Vec<_>>();
-                run_cleanup_jobs(
+                enqueue_track_cleanup(
                     &s,
                     p.tracks
                         .keys()
@@ -1453,13 +1790,15 @@ pub fn spawn_cleanup(s: AppState) {
                     close_dependents(&s, source).await;
                 }
             }
-            retry_backlog(&s).await;
         }
     });
 }
 
 /// Close every registered provider track before process termination.
 pub async fn shutdown_cleanup(s: &AppState) {
+    s.begin_shutdown();
+    // Finish any local expiry/enqueue pass before deciding the queue is drained.
+    let _expiry_guard = s.expiry_lock.lock().await;
     let ids = {
         s.registry
             .lock()
@@ -1469,13 +1808,26 @@ pub async fn shutdown_cleanup(s: &AppState) {
             .copied()
             .collect::<Vec<_>>()
     };
-    let _ = tokio::time::timeout(Duration::from_secs(20), async {
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
         for id in ids {
             remove_participant(s, id).await;
         }
-        retry_backlog(s).await;
+        loop {
+            retry_backlog(s).await;
+            if s.registry.lock().await.cleanup.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     })
     .await;
+    let remaining = s.registry.lock().await.cleanup.len();
+    if result.is_err() {
+        tracing::warn!(
+            remaining,
+            "shutdown cleanup deadline reached; queued or in-flight resources may remain"
+        );
+    }
 }
 
 #[cfg(test)]

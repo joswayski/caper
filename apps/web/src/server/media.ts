@@ -48,7 +48,9 @@ export async function proxyMedia(request: Request): Promise<Response> {
       signal: AbortSignal.any([request.signal, streaming ? controller.signal : AbortSignal.timeout(25_000)]),
       redirect: "error",
     });
+    const errorId = upstream.headers.get("x-caper-error-id");
     return new Response(upstream.body, { status: upstream.status, headers: {
+      ...(errorId ? { "x-caper-error-id": errorId } : {}),
       ...headers,
       "content-type": upstream.headers.get("content-type") ?? "application/json",
       ...(streaming ? { "x-accel-buffering": "no" } : {}),
