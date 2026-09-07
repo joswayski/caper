@@ -703,7 +703,7 @@ test("leave during join closes the late capability and never creates a PeerConne
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const changedEvent = () => new TextEncoder().encode("event: changed\ndata: {}\n\n");
 
-test("Join gates publication on SSE and audio on transport, initial roster, and state readiness", async (t) => {
+test("Join overlaps silent publication with SSE and state with transport, but gates audio on all readiness", async (t) => {
   const { client, track, calls, states, events, install } = setup(t, { eventsReady: false });
   const original = fetch;
   let snapshot!: () => void;
@@ -716,7 +716,8 @@ test("Join gates publication on SSE and audio on transport, initial roster, and 
   const joining = client.join();
   await tick();
   assert.equal(states.at(-1)?.phase, "joining");
-  assert.equal(calls.includes("publish"), false, "HTTP headers alone are not an SSE handshake");
+  assert.equal(calls.includes("publish"), true, "silent negotiation must not wait for SSE readiness");
+  assert.equal(track.enabled, false, "HTTP headers alone cannot open audio");
   Peer.latest.connectionState = "connecting";
   Peer.latest.iceGatheringState = "gathering"; // A stalled probe must not delay publication.
   events[0].enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
@@ -724,23 +725,99 @@ test("Join gates publication on SSE and audio on transport, initial roster, and 
   assert.equal(calls.includes("publish"), true);
   assert.equal(track.enabled, false, "publication establishes transport with silence");
   assert.equal(typeof snapshot, "undefined");
+  assert.equal(typeof state, "function", "registry state updates run during the transport handshake");
   Peer.latest.connectionState = "connected";
   Peer.latest.dispatchEvent(new Event("connectionstatechange"));
   await tick();
-  assert.equal(track.enabled, false);
-  snapshot();
-  await tick();
+  assert.equal(typeof snapshot, "undefined");
   assert.equal(track.enabled, false, "state synchronization must finish before audio is enabled");
-  assert.equal(states.at(-1)?.phase, "joining");
-  events[0].enqueue(changedEvent());
-  await tick();
   state();
   await tick();
-  assert.equal(track.enabled, false, "an update during state sync must be reconciled before opening audio");
+  assert.equal(states.at(-1)?.phase, "joining");
+  assert.equal(track.enabled, false, "the initial roster is still required");
+  events[0].enqueue(changedEvent());
+  await tick();
+  snapshot();
+  await tick();
+  assert.equal(track.enabled, false, "an update during roster sync must be reconciled before opening audio");
   snapshot();
   await joining;
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(track.enabled, true);
+});
+
+test("early state acknowledgement still waits for transport before roster negotiation or audio", async (t) => {
+  const { client, track, calls, states } = setup(t);
+  t.mock.method(Peer.prototype, "setRemoteDescription", async () => { Peer.latest.connectionState = "connecting"; });
+  const joining = client.join();
+  await tick();
+  assert.equal(calls.includes("state"), true);
+  assert.equal(calls.includes("snapshot"), false);
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.phase, "joining");
+  Peer.latest.connectionState = "connected";
+  Peer.latest.dispatchEvent(new Event("connectionstatechange"));
+  await joining;
+  assert.equal(calls.includes("snapshot"), true);
+  assert.equal(track.enabled, true);
+});
+
+test("publication failure cancels an unfinished SSE handshake without enabling audio", async (t) => {
+  const { client, track, states, install } = setup(t, { eventsReady: false });
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/publish")
+    ? Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }))
+    : original(url, init));
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.equal(track.enabled, false);
+  assert.equal(track.readyState, "ended");
+  assert.equal(Peer.latest.connectionState, "closed");
+});
+
+test("state failure cancels an unfinished transport handshake without enabling audio", async (t) => {
+  const { client, track, calls, states, install } = setup(t);
+  t.mock.method(Peer.prototype, "setRemoteDescription", async () => { Peer.latest.connectionState = "connecting"; });
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/state")
+    ? Promise.resolve(Response.json({ error: "state unavailable" }, { status: 503 }))
+    : original(url, init));
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.equal(calls.includes("snapshot"), false);
+  assert.equal(track.enabled, false);
+  assert.equal(track.readyState, "ended");
+  assert.equal(Peer.latest.connectionState, "closed");
+});
+
+test("a newer unsynchronized mute change during the initial roster is repaired before opening audio", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await client.setMuted(true);
+  const original = fetch;
+  let snapshot!: () => void;
+  let latestState!: () => void;
+  const updates: Array<{ muted: boolean }> = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/snapshot")) return new Promise<Response>((resolve) => { snapshot = () => resolve(Response.json({ participants: [] })); });
+    if (url.endsWith("/state")) {
+      updates.push(JSON.parse(init.body as string));
+      if (updates.length === 2) return Promise.resolve(Response.json({ error: "temporary state failure" }, { status: 503 }));
+      if (updates.length === 3) return new Promise<Response>((resolve) => { latestState = () => resolve(new Response(null, { status: 204 })); });
+    }
+    return original(url, init);
+  });
+  const joining = client.join();
+  await tick();
+  await assert.rejects(client.setMuted(false), /temporary state failure/);
+  snapshot();
+  await tick();
+  assert.deepEqual(updates.map((update) => update.muted), [true, false, false]);
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.phase, "joining");
+  latestState();
+  await joining;
+  assert.equal(track.enabled, true);
+  assert.equal(states.at(-1)?.phase, "connected");
 });
 
 test("initial subscription negotiation completes before microphone audio is enabled", async (t) => {
@@ -781,13 +858,15 @@ test("a received participant track is exposed for that participant's speaking in
   assert.equal(remote?.stream.getAudioTracks().length, 1);
 });
 
-test("cancel before SSE readiness never publishes and releases capture", async (t) => {
+test("cancel before SSE readiness stops silent publication and releases capture", async (t) => {
   const { client, track, calls, states } = setup(t, { eventsReady: false });
   const joining = client.join();
   await tick();
+  assert.equal(calls.includes("publish"), true);
+  assert.equal(track.enabled, false);
   await client.leave();
   await joining;
-  assert.equal(calls.includes("publish"), false);
+  assert.equal(Peer.latest.connectionState, "closed");
   assert.equal(track.readyState, "ended");
   assert.equal(states.at(-1)?.phase, "idle");
 });

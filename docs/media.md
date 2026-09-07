@@ -339,13 +339,43 @@ to receive the public stream. One stream per participant is retained; a new one
 replaces the previous stream. Auth/expiry is rechecked for every event, and SSE
 alone never renews the lease. There is no durable event log or second registry.
 
-Join/rejoin waits for the selected audio processor and an actual SSE `ready`
-frame before publishing. Publication starts with the audio track disabled (silence).
-Only after transport connection, initial roster/subscription negotiation, state
-synchronization and a final live-stream/track check does the client enable audio
+Join/rejoin waits for the selected audio processor before publication. The SSE
+handshake and publication run concurrently; the published track stays disabled
+(silence). After both finish, mute/deafen state synchronization overlaps the
+transport handshake. Snapshot/subscription negotiation still waits for transport
+and the initial state acknowledgement. A newer dirty state is repaired before
+completion, and SSE invalidations during roster synchronization are drained.
+Only after actual SSE readiness, transport connection, initial roster/subscription
+negotiation, state synchronization and a final live-stream/track check does the client enable audio
 and show Connected, respecting mute/monitor state. This gates the joining client's
 setup; it does not wait for an acknowledgement from every remote speaker device or
 guarantee another listener's autoplay, deafen, network or playout state.
+
+Diagnostics now report elapsed groups: `microphone + session`, `signaling + live
+updates`, `transport + state`, and `roster`. Parallel work is not added twice;
+these groups are not directly comparable to the earlier individual-stage labels.
+There is no pre-Join SFU connection, provider change, API schema change or audio
+quality change. A web deployment and page refresh activate the new ordering.
+
+September 7 concurrency validation: `npm run check` passed; web tests passed,
+including both handshake completion orders, failure/cancellation of concurrent
+startup, dirty-state repair and the existing subscription/readiness gates. Real
+Chromium UI with synthetic silence and the production API/SFU issued `events`
+and `publish` five milliseconds apart, then started `state` while transport was
+still `new`. With another participant present, that orb run took 2,649 ms,
+including 1,424 ms of roster/subscription work (one `subscribe` plus `negotiate`).
+This is not a before/after speed claim or comparable to Jose's 537–741 ms runs.
+A second real-SFU check deliberately held delivery of the SSE handshake: transport
+connected and publication completed, but the UI stayed Connecting and the sender
+stayed disabled. Releasing the handshake allowed the remaining gates to finish
+and enabled the DPDFNet-8-processed track. Physical join-to-heard remains unmeasured.
+
+Further latency work should measure provider-request duration separately from
+API/client time and evaluate batched subscriptions for populated channels. Merely
+replacing SSE with WebSockets does not remove media transport establishment or
+Cloudflare control calls. Standby media transports would require separating
+channel membership from connection lifetime, including authentication, capacity,
+expiry and idle-resource policy; they are not implemented here.
 
 No handshake within ten seconds or no valid event within 25 seconds fails the
 stream. An SSE failure during startup fails Join; during an established call it
