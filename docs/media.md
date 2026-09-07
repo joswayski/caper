@@ -54,7 +54,12 @@ Keep this temporary test separate from any future production app/key.
 | `CF_TURN_KEY_ID` | TURN key ID |
 | `CF_TURN_API_TOKEN` | TURN key secret for generating short-lived credentials |
 | `MEDIA_BIND` | Default `0.0.0.0:3001` |
-| `RUST_LOG` | Suggested `caper_api=info` |
+| `RUST_LOG` | Default `caper_api=info,tower_http=info` |
+| `LOG_FORMAT` | `json` for structured stdout; otherwise human-readable output |
+| `ENVIRONMENT` | Log resource environment; default `development` |
+| `AXIOM_TOKEN` | Optional server-only ingest API token; absent/empty disables export |
+| `AXIOM_DATASET` | Defaults to the existing `caper` dataset |
+| `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
 | `MEDIA_API_URL` | Web-process-only local/orb adapter target |
 | `DATABASE_URL` | Optional PlanetScale Postgres URL. When set, the API connects and applies `apps/api/migrations` on startup. Use a direct primary URL on port `5432` (`sslmode=verify-full`). Leave empty to boot without a database. |
 
@@ -93,6 +98,84 @@ Outbound HTTPS to `rtc.live.cloudflare.com` is required for the Rust API. AWS
 needs no public media UDP ports. Clients use SFU plus TURN UDP and TCP/TLS
 fallback; alternate port 53 is filtered from both STUN and TURN URLs. `/api/media/status` reports
 the feature flag; web `/api/health` is independent of provider availability.
+
+## Axiom API logging
+
+The Rust API exports structured **log events**, including events outside request
+spans, through OpenTelemetry OTLP/HTTP to the existing `caper` Events dataset.
+This follows the Godis logging convention rather than installing a cluster-wide
+collector. Stdout remains available; browser and native-client telemetry are not
+collected. Axiom setup documentation: https://axiom.co/docs/send-data/opentelemetry.
+
+`AXIOM_TOKEN` must be an ingest-only API token authorized for `caper`. Do not
+commit it, prefix it with `VITE_`, put it in command-line arguments, or paste it
+into a PR/chat. `AXIOM_ENDPOINT` is the dataset's actual Axiom edge URL plus
+`/v1/logs` (for example `https://<your-edge>.axiom.co/v1/logs`). The application
+requires HTTPS, an Axiom hostname, and no embedded credentials/query/fragment.
+It deliberately does not default to Godis's region. Do not mix this configuration
+with `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_LOGS_HEADERS`: those can
+override the selected authorization/dataset and therefore disable this exporter.
+Missing tokens and invalid Axiom configuration leave voice available with local
+logging; configuration errors are reported without echoing supplied values.
+
+Request logs contain `event_name=http_response`, status, numeric `duration_ms`,
+router-owned `http_route`, method, and a generated request ID. Durations measure
+time to response headers, not an SSE stream's lifetime. Log resources identify
+`service.name=caper-api`, package version, environment, and pod `HOSTNAME`.
+Only Caper events and Tower's HTTP failure events are exported; span attributes
+are limited to method, matched route, and request ID. No headers, query strings,
+SDP, credentials, raw media, provider session IDs/MIDs, arbitrary unmatched URLs,
+or dependency debug output are exported. Future log statements must follow the
+same privacy rules—this is not an arbitrary-string redaction engine. The richer
+provider error references from reliability PR #66 are exported when that work is
+also deployed; enabling Axiom alone does not add those diagnostic fields.
+
+The SDK's dedicated worker batches up to 128 records, flushing every second,
+with a 2,048-record queue and a two-second export timeout. Producers use
+non-blocking enqueue; full queues drop records rather than delaying voice.
+Failed batches are not automatically retried or durably buffered. Axiom export
+failures print a static stderr warning; SDK internal logging is disabled because
+its debug errors can contain upstream bodies/URLs. Queue overflow can lose logs
+without an individual warning. Shutdown allows at most three seconds for the
+caller to flush after HTTP draining and media cleanup; a timed-out worker can
+continue until process exit. Stdout is the fallback, not a replay queue.
+
+### Enable it after merge
+
+Production needs the companion infrastructure manifest change: separate optional
+`caper-api-axiom` ExternalSecret/envFrom, leaving mandatory Cloudflare credentials
+unchanged. Add `AXIOM_TOKEN` and `AXIOM_ENDPOINT` to the existing AWS Secrets Manager
+record `production/apps/caper-api`, preserving **every existing property**. The
+infrastructure operations runbook includes secure private-file upload commands;
+the Secrets Manager console's key/value editor is also suitable. No IAM or
+Terraform apply is needed. Wait for the new ExternalSecret to be Ready, then use
+**Deploy Caper API** for the logging-capable merged image. No web deployment is
+required for logging. Optional equivalent deployment command:
+
+```sh
+CAPER_API_SHA=REPLACE_WITH_FULL_MERGED_LOGGING_COMMIT_SHA
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$CAPER_API_SHA"
+```
+
+If that image is already running, secret updates alone do not change process
+environment. After ESO sync, an authorized operator must restart the API using
+the infrastructure runbook; restarting currently interrupts calls. To disable
+export, set the existing remote `AXIOM_TOKEN` property to empty, sync, and restart.
+Deleting its properties can leave ESO's last successfully retained token intact.
+
+With `LOG_FORMAT=json`, inspect only the safe startup marker:
+
+```sh
+kubectl -n default logs deployment/caper-api -c api --since=5m \
+  | jq -c 'select(.event_name == "telemetry_initialized") | {event_name, axiom_enabled}'
+```
+
+`axiom_enabled: true` means configured, not delivery verified. Confirm recent
+`service_starting` and `http_response` records in Axiom's `caper` dataset. Tests
+cover standalone logs, span allowlisting, route/query privacy, OTLP headers and
+payloads against a mock collector, queue saturation, and bounded shutdown during
+an exporter outage. No token or endpoint was supplied during implementation, so
+live ingestion into the user's dataset has not been verified.
 
 ## Deployment behavior
 
