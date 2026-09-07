@@ -148,9 +148,12 @@ the feature flag; web `/api/health` is independent of provider availability.
   billing records. Microphone/output selectors are available in-channel when the
   browser exposes selectable devices. Output selection requires both `setSinkId`
   and a non-default output from `enumerateDevices`; otherwise the UI directs the
-  user to device audio controls. In particular, iOS Safari does not expose its
-  system audio routes for in-page selection, so switch speakers, headphones or
-  Bluetooth in Control Center. Joining requires microphone permission.
+  user to device audio controls. Safari 26 added speaker selection on iOS and
+  iPadOS. Earlier versions may expose `setSinkId` without exposing selectable
+  system routes. Safari 26.0–26.6 also has a confirmed WebKit bug where selecting
+  an output for a single-track remote WebRTC stream reports success without
+  changing the route; the WebKit fix landed after Safari 26.6 and its release
+  version is not documented. Joining requires microphone permission.
 
 ## Leaving voice
 
