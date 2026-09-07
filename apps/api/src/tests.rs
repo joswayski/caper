@@ -188,6 +188,18 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+    let webhook = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/webhooks/workos")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(webhook.status(), StatusCode::SERVICE_UNAVAILABLE);
     let unavailable = router
         .oneshot(
             Request::builder()

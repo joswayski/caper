@@ -924,7 +924,8 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## AuthKit trial and Caper accounts
 
-All app pages require login; login/callback and health routes remain public.
+The marketing homepage is public, with a top-right Log in button. Voice and
+profile pages still require login; login/callback and health routes remain public.
 WorkOS owns email codes, hosted authentication, and sessions. Caper owns profiles
 and authorization. The trial uses the free hosted domain and default shared email
 sender, not SES or paid custom domains. WorkOS calls production shared-domain
@@ -1001,6 +1002,37 @@ or the internal sequence. Stored as `external_id` for integrations and external
 references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
+
+### WorkOS account lifecycle webhooks
+
+Register `https://api.caper.chat/api/webhooks/workos` in the same WorkOS environment
+for **user.updated** and **user.deleted**. Store that endpoint's signing secret as
+`WORKOS_WEBHOOK_SECRET` in AWS Secrets Manager `production/apps/caper`, projected
+only into the API. Deploy the matching API image and webhook secret projection
+before testing delivery. No GitHub or web-server copy of this secret is needed.
+Without the secret, this endpoint returns 503; existing login remains available.
+
+The endpoint verifies WorkOS-Signature against the raw body with a three-minute
+timestamp tolerance, bounds bodies to 256 KiB, and commits event receipts and
+account mutations together. Duplicate deliveries are harmless; older provider
+updates and cached login snapshots cannot overwrite newer lifecycle data.
+Only verified-email data is synchronized; Caper usernames/display names stay local.
+Unverified email blocks subsequent authenticated requests until a newer verified
+provider snapshot arrives. Updates do not provision unknown accounts.
+
+Deletion retains a terminal local tombstone, including for users deleted before
+first login. It clears provider email and its verification timestamp, prevents
+account resurrection, and denies subsequent authenticated API requests. Internal
+and external IDs, username and display name remain: this is authorization
+revocation, **not personal-data erasure**. Existing audio/streams are not instantly
+terminated by a webhook; normal request/heartbeat and session expiry still apply.
+Receipts retain event IDs/types/timestamps, not payloads; automatic retention
+cleanup and a self-service account deletion UI are not implemented.
+
+Migration `202609070002_workos_lifecycle.sql` adds lifecycle timestamps and event
+receipts on API startup; the deployed initial users migration is unchanged.
+After setup, send test deliveries and inspect WorkOS delivery status. Local signed
+fixtures and database tests do not establish production webhook delivery.
 
 ### Deployment and verification
 
