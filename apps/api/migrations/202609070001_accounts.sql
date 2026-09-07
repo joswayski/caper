@@ -1,6 +1,7 @@
--- Bigint for internal references; username is the globally unique public identifier.
+-- Bigint for joins; random public IDs hide signup order and survive username changes.
 CREATE TABLE users (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    public_id text NOT NULL UNIQUE,
     workos_user_id text NOT NULL UNIQUE,
     email text NOT NULL UNIQUE,
     email_verified_at timestamptz NOT NULL DEFAULT now(),

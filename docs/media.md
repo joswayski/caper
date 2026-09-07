@@ -924,7 +924,7 @@ sender, not SES or paid custom domains. WorkOS calls production shared-domain
 email delivery best-effort; this trial is not production delivery validation.
 
 `apps/api/migrations/202609070001_accounts.sql` creates `users`: bigint identity
-PK, unique WorkOS subject, unique
+PK, unique random 21-character NanoID public ID, unique WorkOS subject, unique
 normalized verified email, timestamps, and profile fields. Usernames are lowercase
 ASCII letters/digits/underscore, 3–32 characters and globally unique. Display names
 are global, nonunique, 1–64 Unicode characters. Both start NULL and are completed
@@ -988,9 +988,11 @@ Rust does not introspect every request. SSE emission stops at token expiry.
 JWKS and verified-email caches have a 5-minute TTL. Do not claim instant global
 logout or continued login availability during a WorkOS outage.
 
-The username is the globally unique public identifier. Bigint IDs stay internal
-for joins; profile responses contain only `username` and `displayName`. There is
-no additional generated public ID.
+Bigint IDs stay internal for joins and are never exposed in profile responses.
+Random NanoIDs provide permanent public references without revealing signup order
+or the internal sequence. The API returns that public ID as `id`, alongside
+`username` and `displayName`. Usernames are globally unique, changeable handles;
+changing a username or email does not change either account ID.
 
 ### Deployment and verification
 
