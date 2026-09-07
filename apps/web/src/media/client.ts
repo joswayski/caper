@@ -216,16 +216,23 @@ export class PublicCallClient {
     this.token = joined.token;
     this.selfId = joined.id;
     const pc = this.pc = this.makePeerConnection(joined.iceServers);
-    const events = await this.openEvents(generation);
+    // Negotiate with a disabled track while the independent event stream opens.
+    // Both promises have rejection handlers before either can fail.
+    const [events] = await Promise.all([
+      this.openEvents(generation),
+      this.publishTrack("microphone", microphone, generation),
+    ]);
     signal.throwIfAborted();
-    const liveUpdates = performance.now();
-    await this.publishTrack("microphone", microphone, generation);
-    const published = performance.now();
-    await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
+    const signaled = performance.now();
+    // State updates touch only the Rust registry, not SDP or the media transport.
+    await Promise.all([
+      waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal),
+      this.setState(this.muted, this.deafened),
+    ]);
     const connected = performance.now();
-    // Keep sending silence through negotiation and initial roster/state synchronization.
+    // Subscription negotiation still waits for transport. Never open audio early.
     await this.poll();
-    await this.setState(this.muted, this.deafened);
+    if (this.stateDirty) await this.setState(this.muted, this.deafened);
     if (this.pollAgain) await this.poll();
     signal.throwIfAborted();
     if (generation !== this.generation || !events.connected || pc.connectionState !== "connected" || microphone.readyState !== "live") {
@@ -234,7 +241,7 @@ export class PublicCallClient {
     this.phase = "connected";
     // Monitoring has already detached the public sender; only its private return uses audio.
     microphone.enabled = this.monitoring || !this.muted;
-    this.joinTiming = `${label} in ${(performance.now() - started).toFixed(0)} ms · microphone + session ${(prepared - started).toFixed(0)} ms · live updates ${(liveUpdates - prepared).toFixed(0)} ms · ICE + signaling ${(published - liveUpdates).toFixed(0)} ms · transport ${(connected - published).toFixed(0)} ms · roster + state ${(performance.now() - connected).toFixed(0)} ms`;
+    this.joinTiming = `${label} in ${(performance.now() - started).toFixed(0)} ms · microphone + session ${(prepared - started).toFixed(0)} ms · signaling + live updates ${(signaled - prepared).toFixed(0)} ms · transport + state ${(connected - signaled).toFixed(0)} ms · roster ${(performance.now() - connected).toFixed(0)} ms`;
     this.emit();
     this.startPolling();
   }
