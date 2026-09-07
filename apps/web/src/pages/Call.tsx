@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { PublicCallClient } from "../media/client";
+import type { NoiseSuppression } from "../media/microphone";
 import type { CallViewState } from "../media/types";
 import MicPlayback from "./MicPlayback";
 import VoiceWaveform from "./VoiceWaveform";
@@ -123,16 +124,17 @@ export default function Call() {
             </form>}
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this public channel can hear you. Mic test can keep a brief recording temporarily in this browser; Caper does not store recordings on its servers. Other visitors may record. Not end-to-end encrypted.</div>
           </div> : state.monitorStream && !actionPending
-            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}:${state.noiseSuppressionStatus}`} stream={state.monitorStream} output={output} status={state.monitorStatus} />
-            : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Creating a private return through the call service. Recording starts as soon as it’s ready." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
+            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} />
+            : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Creating a private return through the call service. Press Record when it’s ready." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened} output={output} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… The test will restart once ready.</p>}
+          {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {!idle && <p className="noise-status">Use headphones · natural input, without browser echo cancellation or automatic volume adjustment.</p>}
           {state.noiseSuppressionStatus && <p className="noise-status" role="status">{state.noiseSuppressionStatus}</p>}
           {state.diagnostics && <details className="call-diagnostics"><summary>Connection diagnostics</summary><p>{state.diagnostics}</p><small>Local estimates, not billing totals. Counters reset on reconnect.</small></details>}
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
+          <label className="device-control"><span>Noise suppression</span><select disabled={controlsDisabled} value={state.noiseSuppression ?? "browser"} onChange={(event) => { const value = event.target.value as NoiseSuppression; void act(() => clientRef.current!.setNoiseSuppression(value)); }}><option value="browser">Browser (recommended)</option><option value="dpdfnet8">DPDFNet-8 (experimental)</option><option value="off">Off</option></select></label>
           <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
           {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-control"><span>Audio output</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Audio output"}</option>)}</select></label> : <p className="noise-status">Choose your audio output in system settings; this browser cannot switch outputs.</p>}
           <div className="control-buttons">
