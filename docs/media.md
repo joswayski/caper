@@ -110,6 +110,43 @@ the feature flag; web `/api/health` is independent of provider availability.
   billing records. Microphone/output selectors are available in-channel. Output
   selection requires `setSinkId`; otherwise use OS settings. Joining requires microphone permission.
 
+## Leaving voice
+
+Explicit Leave/Cancel and page unload share synchronous local teardown: stop
+capture and processed tracks, close the PeerConnection and event stream, clear
+playback/roster state, and invalidate the old call generation. Explicit Leave
+then shows an enabled Join button without awaiting the provider cleanup response.
+The old capability is captured before reset and sent to `/leave` with Fetch
+`keepalive`; completion or failure never changes the next call's state. Late
+peer events and microphone replacement completions are also session-guarded.
+Automatic reconnect and join-error teardown still await server cleanup.
+
+The four-to-five-second leave delay was separate from ICE gathering. The Rust
+endpoint already removes registry membership/tokens and notifies SSE listeners
+before awaiting TURN revocation and track/dependent cleanup. The previous client
+kept its `leaving` phase until that entire HTTP request returned. Server cleanup
+still runs; it is no longer a UI gate. If the request cannot reach the API,
+remote presence may persist until the existing 45-second lease expires; provider
+cleanup retries and credential expiry remain unchanged. Local audio stays stopped
+even on cleanup failure. Immediate rejoin still obeys the server's capacity and
+join-rate limits.
+
+Verification with the real browser UI, DPDFNet-2 processing of synthetic silence,
+and the production API through the development adapter: desktop Join became
+enabled 8 ms after Leave while all captured tracks were ended and peers closed;
+the real `/leave` response took 5,600 ms. Holding that response in the browser
+allowed a successful next Join before releasing it, without interrupting the new
+call. At a 390px mobile viewport the same UI transition took 11 ms. These are
+single local browser observations, not latency percentiles or physical-device
+coverage. An initial cold join failed before the leave test and was retried;
+these results do not resolve the earlier cold-start limitation.
+
+This is a web-only rollout. Deploy its merged web image through the existing
+`deploy-caper.yml` workflow; no API image, migration, or provider changes are
+required. Check that Leave immediately stops local audio and restores Join while
+an old `/leave` request is pending, including repeated leave/rejoin and a failed
+cleanup response. Do not treat background request duration as local leave latency.
+
 ## Join startup and preparation
 
 The enabled `/live` screen can download and compile DeepFilterNet or RNNoise
