@@ -1000,6 +1000,18 @@ early-stage tradeoff. SQLx advisory locks serialize concurrent startup migration
 Use direct port 5432: those locks require session affinity; pooled port 6432 is
 rejected for migrations with no runtime-URL fallback. Both URLs must target the same
 existing `/caperchat` database. Startup does not create the database or grant roles.
+The direct migration connection explicitly sets `search_path=public`, so a schema
+named for the migration role or a database-level custom search path cannot redirect
+new tables or SQLx's ledger. This startup override is not applied to the runtime
+pool because PlanetScale PgBouncer rejects search-path startup overrides. The
+profile update explicitly targets `public.users`. Manual `SELECT * FROM users`
+works when `public` is on the search path with no other `users` table ahead of it:
+PostgreSQL's common `"$user", public` default lets a same-named user schema shadow
+unqualified objects. Pinning migrations does not discover or move tables or
+`_sqlx_migrations` ledgers that an earlier run created elsewhere.
+If the provider-free migration is already applied in `public`, this search-path
+fix requires no reset, new migration, or grant changes. The reset below is only
+for the original provider removal; do not repeat it for this fix.
 
 The initial migration was rewritten for the approved empty installation. Existing
 SQLx checksums will fail until the unused account schema is reset. This is not a
