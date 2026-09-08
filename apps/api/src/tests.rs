@@ -166,17 +166,14 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
     let (mut state, _) = state();
     state.auth = auth::AuthVerifier::new();
     let router = app(state);
-    let health = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(health.status(), StatusCode::NO_CONTENT);
+    for path in ["/health", "/api/health"] {
+        let health = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::NO_CONTENT);
+    }
     let missing = router
         .clone()
         .oneshot(

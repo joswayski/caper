@@ -100,7 +100,7 @@ workflow and path allowlist instead of riding these two.
 Outbound HTTPS to `rtc.live.cloudflare.com` is required for the Rust API. AWS
 needs no public media UDP ports. Clients use SFU plus TURN UDP and TCP/TLS
 fallback; alternate port 53 is filtered from both STUN and TURN URLs. `/api/media/status` reports
-the feature flag; web `/api/health` is independent of provider availability.
+the feature flag; web `/health` is independent of provider availability.
 
 ## Axiom API logging
 
@@ -938,32 +938,31 @@ Format, length, normalization and onboarding validation live in the application,
 not SQL `CHECK` expressions.
 
 Provider middleware, callbacks, token verification, key fetching, session hooks,
-and browser forwarding have been removed. Same-origin checks remain on POST routes
-and server functions retain CSRF middleware. Web account/media routes return 503
-without forwarding browser credentials. The Rust account/media boundary also fails
-closed with 503 in production, even when voice is otherwise configured.
+and browser forwarding have been removed. Server functions retain CSRF middleware.
+The web service owns no `/api` routes; Traefik sends same-origin `/api/*` requests
+directly to Rust. The Rust account/media boundary fails closed with 503 in
+production, even when voice is otherwise configured.
 
 ### Public API: web, desktop and mobile
 
-The prepared production address is **`https://api.caper.chat`**, routed directly
-to the existing Rust `caper-api` service. `https://caper.chat` serves the website
-and the account-unavailable page through `caper-web`. No second Rust backend
-and no native-specific gateway exists. Infrastructure PR #77 prepares DNS/TLS
-and ingress wiring; this document is not a claim that the hostname is deployed.
+The public browser API is **`https://caper.chat/api/*`**, routed by Traefik
+directly to the existing Rust `caper-api` service. `https://caper.chat/*` serves
+the website through `caper-web`. `https://api.caper.chat` remains a direct API
+alias. No second Rust backend or native-specific gateway exists.
 
 Account and media endpoints are intentionally unavailable. Supplying arbitrary
 Authorization headers, cookies, or call capabilities cannot enable them.
 
 | Method | Public endpoint | Purpose |
 | --- | --- | --- |
-| GET | `/health` | Unauthenticated health check |
+| GET | `/health`, `/api/health` | Unauthenticated health checks |
 | GET | `/api/account/me` | Unavailable; no account provisioning |
 | POST | `/api/account/profile` | Unavailable; no profile writes |
 | GET | `/api/media/status`, `/api/media/events` | Unavailable; no production voice or SSE access |
 | POST | `/api/media/join`, `/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Unavailable; all paths under `/api/media` |
 
 Rust returns 401 without a bearer credential and 503 with one; neither permits
-access. The browser adapter returns 503, or 403 for rejected cross-origin POSTs.
+access.
 
 The retained engine's test-only flow binds call capabilities to fixture accounts.
 No production browser or native transport can currently obtain or use one.

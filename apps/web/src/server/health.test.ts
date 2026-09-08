@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getHealth } from "./api.ts";
+import { getWebHealth } from "./health.ts";
 
 test("health endpoint reports readiness without caching", async () => {
-  const response = getHealth(new Request("http://localhost/api/health"));
+  const response = getWebHealth(new Request("http://localhost/health"));
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
