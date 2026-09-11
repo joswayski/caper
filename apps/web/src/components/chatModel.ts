@@ -39,7 +39,7 @@ export function createChatModel(invalidate: () => void) {
   const text = (value: string, x: number, y: number, size = 15, color = ink, bold = false, z = 24) => {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d")!;
-    const font = `${bold ? 700 : 400} ${size * 3}px "Segoe UI", sans-serif`;
+    const font = `${bold ? 700 : 400} ${size * 3}px "Satoshi", "Avenir Next", "Segoe UI", sans-serif`;
     ctx.font = font;
     canvas.width = Math.ceil(ctx.measureText(value).width + 9);
     canvas.height = size * 4.5;
