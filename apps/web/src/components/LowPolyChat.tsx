@@ -13,7 +13,9 @@ export default function LowPolyChat() {
     // same web font as the poster so the handoff cannot swap typefaces.
     const regularPreviewFont = document.fonts.load('400 48px "Satoshi"');
     const boldPreviewFont = document.fonts.load('700 48px "Satoshi"');
-    void Promise.all([import("./mountChatPreview"), regularPreviewFont, boldPreviewFont]).then(([{ mountChatPreview }]) => {
+    void import("./mountChatPreview").then(async ({ mountChatPreview }) => {
+      // A blocked font CDN should still reveal the model using its fallback stack.
+      await Promise.allSettled([regularPreviewFont, boldPreviewFont]);
       if (cancelled) return;
       unmount = mountChatPreview(host, () => {
         if (!cancelled) host.classList.add("is-live");
