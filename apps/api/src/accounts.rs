@@ -40,7 +40,7 @@ pub async fn set_profile(
     display_name: &str,
 ) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as(
-        "UPDATE users SET username = $2, display_name = $3, updated_at = now()
+        "UPDATE public.users SET username = $2, display_name = $3, updated_at = now()
          WHERE id = $1 AND deleted_at IS NULL RETURNING *",
     )
     .bind(user_id)
