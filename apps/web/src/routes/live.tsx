@@ -1,5 +1,6 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import Call from "../pages/Call";
 
 export const Route = createFileRoute("/live")({
-  beforeLoad: () => { throw redirect({ href: "/login" }); },
+  component: Call,
 });

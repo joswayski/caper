@@ -8,7 +8,7 @@ its earliest stage today (and an active work in progress)!
 ## Repository layout
 
 - `apps/web` — TanStack Start website and health endpoint
-- `apps/api` — Rust account foundation and retained voice-control engine (access unavailable)
+- `apps/api` — Rust voice-control service and inactive account foundation
 - `apps/desktop` — React UI inside a minimal Tauri 2 shell
 - `shared` — framework-neutral design tokens shared by both clients
 
@@ -47,12 +47,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 The production web container exposes port `3000` and reports readiness at
 `/health`. The separate `apps/api/Dockerfile` API container (`caper-api`) exposes port
 `3001` with `/health`. In production, Traefik routes public `caper.chat/api/*`
-requests directly to that Rust service. Run `cargo run -p caper-api` to develop
-the API separately; the website does not proxy account or media requests.
-The website remains live, but accounts, profiles, and voice-room access are
-currently unavailable. `/login`, `/live`, and `/profile` honestly show or route to
-that unavailable state. The media engine remains in the codebase for future use,
-but production authentication fails closed and does not enable anonymous access.
-No replacement account provider has been selected or implemented.
+requests directly to that Rust service. Run `cargo run -p caper-api` alongside
+`npm run dev:web`; Vite forwards development `/api` requests to port `3001`.
+The `/live` demo offers one public General voice channel: choose a guest name
+and join without an account or profile. Set `MEDIA_ENABLED=true` and the four
+server-only Cloudflare variables in `.env.example` in the API environment to
+enable calls. No database is required; leave database URLs unset for local voice
+testing. Accounts remain unavailable; no replacement account provider has been
+selected or implemented. Guest names are unverified and are not reserved.
 See the [media runbook](docs/media.md) for provider configuration, deployment,
 privacy guidance, and the validation matrix.

@@ -29,7 +29,7 @@ export class CallEvents {
       watchdog(START_TIMEOUT_MS);
       const run = async () => {
         const response = await fetch("/api/media/events", {
-          headers: { accept: "text/event-stream", authorization: `Bearer ${token}` },
+          headers: { accept: "text/event-stream", "x-caper-media-token": token },
           signal: this.controller.signal,
           cache: "no-store",
         });

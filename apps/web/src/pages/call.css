@@ -35,6 +35,8 @@
 .join-card h1 { margin: 0; font-size: clamp(2rem, 3.5vw, 3rem); line-height: 1.08; letter-spacing: -.05em; }
 .join-card > p { color: var(--text-muted); line-height: 1.6; }
 .join-card form { display: grid; gap: 10px; margin-top: 30px; }
+.join-card label { font-size: .85rem; font-weight: 700; }
+.join-card input { width: 100%; min-width: 0; height: 48px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); font: inherit; }
 .device-control { width: min(240px, 25vw); display: grid; gap: 5px; }
 .device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
 .device-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }

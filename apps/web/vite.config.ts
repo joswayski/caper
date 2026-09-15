@@ -141,6 +141,7 @@ export default defineConfig(async () => {
   server: {
     port: Number(process.env.PORT ?? 5174),
     allowedHosts: [".onamp.dev"],
+    proxy: { "/api": "http://127.0.0.1:3001" },
     fs: { allow: [searchForWorkspaceRoot(import.meta.dirname)] },
   },
   };
