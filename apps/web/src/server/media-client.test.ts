@@ -25,6 +25,7 @@ class Peer extends EventTarget {
   connectionState = "connected";
   iceGatheringState = "complete";
   localDescription?: { toJSON(): object };
+  remoteDescriptions: RTCSessionDescriptionInit[] = [];
   ontrack?: (event: { track: Track; transceiver: { mid: string }; streams: Stream[] }) => void;
   onconnectionstatechange?: () => void;
   senders: Array<{ track: Track | null; replaceTrack(t: Track | null): Promise<void> }> = [];
@@ -37,13 +38,17 @@ class Peer extends EventTarget {
   async createOffer() { return { type: "offer", sdp: "v=0" }; }
   async createAnswer() { return { type: "answer", sdp: "v=0" }; }
   async setLocalDescription(description: object) { this.localDescription = { toJSON: () => description }; }
-  async setRemoteDescription(description?: { type: string }) {
+  async setRemoteDescription(description: RTCSessionDescriptionInit) {
+    this.remoteDescriptions.push(description);
     if (description?.type === "offer") this.ontrack?.({ track: new Track(), transceiver: { mid: "1" }, streams: [] });
   }
   getSenders() { return this.senders; }
   getReceivers() { return []; }
   close() { this.connectionState = "closed"; }
 }
+
+const providerSdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=0\r\n";
+const senderSdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=1\r\n";
 
 function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   Peer.all = [];
@@ -94,8 +99,8 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
         cancel() { options.signal!.removeEventListener("abort", abort); },
       }), { headers: { "content-type": "text/event-stream" } });
     }
-    if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: "v=0" } });
-    if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: "v=0" } });
+    if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
+    if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
     if (op === "snapshot") return Response.json({ participants: [] });
     if (op === "state") stateUpdates.push(JSON.parse(options.body as string));
     return new Response(null, { status: 204 });
@@ -214,6 +219,7 @@ test("joins never submit a client-selected identity", async (t) => {
 test("join, 204 state responses, real sender mute, deafen and immediate device cleanup", async (t) => {
   const { client, track, calls, states } = setup(t);
   await client.join("Guest");
+  assert.deepEqual(Peer.latest.remoteDescriptions, [{ type: "answer", sdp: senderSdp }]);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.localMedia?.getAudioTracks()[0], track);
   await client.setMuted(true);
@@ -236,6 +242,8 @@ test("mic test detaches channel audio, plays a separately received track, and re
   await client.setDeafened(false);
 
   await client.setMonitoring(true);
+  assert.deepEqual(Peer.all[1].remoteDescriptions, [{ type: "answer", sdp: senderSdp }], "private sender uses the same DTX as the channel");
+  assert.deepEqual(Peer.all[2].remoteDescriptions, [{ type: "offer", sdp: providerSdp }], "receive-only monitor needs no sender override");
   assert.equal(states.at(-1)?.monitoring, true);
   assert.equal(states.at(-1)?.muted, true);
   assert.equal(states.at(-1)?.deafened, true);
@@ -1036,6 +1044,10 @@ test("an SSE track notification subscribes without waiting for the heartbeat tim
   await tick();
   assert.ok(calls.includes("subscribe"));
   assert.ok(calls.includes("negotiate"));
+  assert.deepEqual(Peer.latest.remoteDescriptions, [
+    { type: "answer", sdp: senderSdp },
+    { type: "offer", sdp: senderSdp },
+  ], "subscription renegotiation must not reset the microphone's DTX preference");
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
 });
 

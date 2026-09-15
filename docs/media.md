@@ -233,10 +233,59 @@ live ingestion into the user's dataset has not been verified.
   choice. Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
-  browser echo cancellation and gain control are off for headphones. DTX is not guaranteed.
+  browser echo cancellation and gain control are off for headphones. Codec-managed
+  Opus DTX is requested for outgoing audio (see below); savings are not guaranteed.
 - Speaking indicators and diagnostics use browser stats where available, not
   billing records. Microphone/output selectors are available in-channel. Output
   selection requires `setSinkId`; otherwise use OS settings. Joining requires microphone permission.
+
+### Codec-managed silence suppression (Opus DTX)
+
+The retained web voice engine requests `usedtx=1` for Opus in remote publication
+answers and subsequent subscription offers, including the private mic-test sender.
+[RFC 7587](https://www.rfc-editor.org/rfc/rfc7587.html#section-7) defines this as a
+receiver preference: the **remote** description controls our outgoing encoder.
+Setting it only in our local offer would request the opposite direction.
+The preference is reapplied during renegotiation and is retained when replacing
+the microphone track. Non-Opus codecs are left alone.
+
+There is no application volume threshold, noise gate, speech-triggered track
+detachment, or added buffering. DPDFNet processing, bitrate preferences, packet
+duration and FEC are unchanged. Opus decides when to reduce transmission during
+silence; it does not replace noise removal. Browser WebRTC exposes no DTX
+sensitivity or hangover tuning. DTX is not lossless silence removal: RFC 7587
+notes a possible quality tradeoff, and this change cannot guarantee preservation
+of every whisper, consonant, laugh or word ending. Prefer continuous transmission
+if physical listening tests reveal degradation; do not add an aggressive gate.
+
+September 15, 2026 verification: all 119 web tests and `npm run check` passed.
+Tests cover remote answer/offer handling, independent media payload IDs, existing
+or absent format parameters, unchanged FEC/bitrate/packet duration, idempotence,
+publication, private monitoring, renegotiation and existing mute/device behavior.
+Two local Chromium Opus loopback runs with generated speech measured 14 silence
+packets / 231 RTP payload bytes versus 150–151 packets / 4,800–4,832 bytes over
+three seconds without DTX. These are sender RTP measurements, not billed egress.
+After silence, synthetic speech at 30 dB below the preceding phrase resumed at
+the same observed onset (within 1 ms between the two receivers); sampled decoded
+energy was 81–87% of the control. This is a coarse regression check, not a
+speech-quality score or proof that individual words are intact. The test bypasses
+DPDFNet and uses no hardware microphone, SFU, TURN, or production credentials.
+
+Reproduce with local Vite, installed `agent-browser` and `espeak-ng`:
+
+```sh
+espeak-ng -s 145 -v en-us -w /tmp/caper-dtx-speech.wav 'Please keep the first quiet words, soft endings, and short pauses.'
+node scripts/test-opus-dtx.mjs http://localhost:<vite-port> /tmp/caper-dtx-speech.wav
+```
+
+Before accepting audio quality, compare DTX on/off with real quiet speech,
+whispers, initial consonants after several seconds of silence, short pauses,
+word endings and laughter, with DPDFNet active and under device load. Verify live
+SFU forwarding, forced TURN, loss/jitter, joining another participant, and device
+replacement separately. Firefox, Safari and native desktop remain unverified.
+The current unavailable account boundary still prevents production voice access.
+This web-only change does not enable accounts/media, require API deployment,
+change provider configuration, or implement native Tauri audio.
 
 ## Leaving voice
 

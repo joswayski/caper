@@ -3,7 +3,7 @@ import { ReceivedMonitor } from "./monitor.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
 import { CallEvents } from "./events.ts";
-import { localDescription, preferOpus, waitFor } from "./rtc.ts";
+import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
 export { waitFor } from "./rtc.ts";
 import type {
   CallSnapshot,
@@ -339,7 +339,7 @@ export class PublicCallClient {
       }, token);
       if (generation !== this.generation || pc !== this.pc) throw new Error("Call session changed.");
       if (!response.sessionDescription) throw new Error("The media service did not answer publication.");
-      await pc.setRemoteDescription(response.sessionDescription);
+      await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
       if (generation !== this.generation) throw new Error("Call session changed.");
       this.senders.set(kind, { sender: transceiver.sender, mid, track });
       if (kind === "microphone") this.localMedia = new MediaStream([track]);
@@ -554,7 +554,7 @@ export class PublicCallClient {
       if (!mid) throw new Error("The media service did not return a subscription identifier.");
       this.subscriptions.set(trackId, mid);
       if (response.sessionDescription) {
-        await pc.setRemoteDescription(response.sessionDescription);
+        await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
         await pc.setLocalDescription(await pc.createAnswer());
         await this.api("negotiate", { sessionDescription: await localDescription(pc, this.captureController.signal) }, token);
       } else if (response.requiresImmediateRenegotiation) {
