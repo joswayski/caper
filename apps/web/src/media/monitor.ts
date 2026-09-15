@@ -1,4 +1,4 @@
-import { localDescription, preferOpus, waitFor } from "./rtc.ts";
+import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
 import type { JoinResponse, SessionDescriptionResponse } from "./types";
 
 type Request = <T = void>(operation: string, body: object, token: string) => Promise<T>;
@@ -67,7 +67,7 @@ export class ReceivedMonitor {
       }, joined[0].token);
       this.check();
       if (!publication.sessionDescription || !publication.trackId) throw new Error("Mic test publication failed.");
-      await tx.setRemoteDescription(publication.sessionDescription);
+      await tx.setRemoteDescription(withOpusDtx(publication.sessionDescription));
       this.check();
       const rx = this.peer(joined[1].iceServers);
       rx.ontrack = ({ track: received }) => {
