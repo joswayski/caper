@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
@@ -94,7 +95,7 @@ export default function Call() {
 
   useEffect(() => {
     let current = true;
-    setName(`Guest-${crypto.randomUUID().slice(0, 8)}`);
+    setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
     fetch("/api/media/status", { signal: AbortSignal.timeout(10_000) })
       .then(async (response) => response.ok ? response.json() as Promise<{ enabled: boolean }> : { enabled: false })
       .then((result) => {

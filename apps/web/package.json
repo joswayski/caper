@@ -18,7 +18,8 @@
     "onnxruntime-web": "1.23.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "three": "^0.185.1"
+    "three": "^0.185.1",
+    "unique-names-generator": "^4.7.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

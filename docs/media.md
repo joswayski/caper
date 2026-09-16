@@ -968,8 +968,8 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts (currently unavailable)
 
-The temporary `/live` demo is public again. The browser assigns a random
-`Guest-xxxxxxxx` name for each visit and keeps it through reconnects. No account,
+The temporary `/live` demo is public again. The browser uses `unique-names-generator`
+to assign a readable color-and-animal name for each visit and keeps it through reconnects. No account,
 profile, or database is needed for voice. The API accepts names of 1–40 Unicode
 characters after trimming, with no control characters. Names are unverified,
 nonunique, and not reserved. Country flags use the API-provided Cloudflare country
