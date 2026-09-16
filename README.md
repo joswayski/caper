@@ -49,7 +49,7 @@ The production web container exposes port `3000` and reports readiness at
 `3001` with `/health`. In production, Traefik routes public `caper.chat/api/*`
 requests directly to that Rust service. Run `cargo run -p caper-api` alongside
 `npm run dev:web`; Vite forwards development `/api` requests to port `3001`.
-The `/live` demo offers one public General voice channel: choose a guest name
+The `/live` demo offers one public General voice channel: get a random guest name
 and join without an account or profile. Set `MEDIA_ENABLED=true` and the four
 server-only Cloudflare variables in `.env.example` in the API environment to
 enable calls. No database is required; leave database URLs unset for local voice

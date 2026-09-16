@@ -968,9 +968,12 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts (currently unavailable)
 
-The temporary `/live` demo is public again. Choose a guest name (1–40 Unicode
-characters after trimming, no control characters); no account, profile, or database
-is needed for voice. Names are unverified, nonunique, and not reserved. Account
+The temporary `/live` demo is public again. The browser assigns a random
+`Guest-xxxxxxxx` name for each visit and keeps it through reconnects. No account,
+profile, or database is needed for voice. The API accepts names of 1–40 Unicode
+characters after trimming, with no control characters. Names are unverified,
+nonunique, and not reserved. Country flags use the API-provided Cloudflare country
+code; no flag is invented when location is unavailable. Account
 sign-up, sign-in, and profiles remain unavailable. Login/profile pages point to
 the guest demo. The Rust API still rejects production account credentials with
 503; account authentication is not applied to media routes.
