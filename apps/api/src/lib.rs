@@ -625,7 +625,6 @@ struct Registry {
 }
 struct Participant {
     id: Uuid,
-    account_id: i64,
     token: String,
     name: String,
     country_code: Option<String>,
@@ -739,6 +738,11 @@ pub fn app(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/account/me", get(account_me))
         .route("/api/account/profile", post(account_profile))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            account_auth,
+        ));
+    let media = Router::new()
         .route("/api/media/status", get(status))
         .route("/api/media/join", post(join))
         .route("/api/media/snapshot", post(snapshot))
@@ -748,15 +752,12 @@ pub fn app(state: AppState) -> Router {
         .route("/api/media/negotiate", post(negotiate))
         .route("/api/media/close", post(close))
         .route("/api/media/state", post(update_state))
-        .route("/api/media/leave", post(leave))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            account_auth,
-        ));
+        .route("/api/media/leave", post(leave));
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(protected)
+        .merge(media)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(
@@ -827,25 +828,6 @@ async fn account_auth(
             state.database.as_ref(),
         )
         .await?;
-    let path = request.uri().path();
-    if path.starts_with("/api/media/") && !principal.user.onboarded() {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "profile required"));
-    }
-    // The media header carries the participant capability. When present, bind it
-    // to the independently authenticated account before entering any handler.
-    if path.starts_with("/api/media/")
-        && let Ok(token) = bearer(request.headers())
-    {
-        let registry = state.registry.lock().await;
-        if let Some(id) = registry.tokens.get(token)
-            && registry
-                .participants
-                .get(id)
-                .is_none_or(|p| p.account_id != principal.user.id)
-        {
-            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"));
-        }
-    }
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
@@ -953,12 +935,10 @@ struct EventStreamState {
     cancellation: watch::Receiver<()>,
     shutdown: watch::Receiver<bool>,
     first: bool,
-    jwt_expires_at: u64,
 }
 
 async fn events(
     State(s): State<AppState>,
-    Extension(principal): Extension<auth::Principal>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_enabled(&s)?;
@@ -994,15 +974,8 @@ async fn events(
             cancellation,
             shutdown,
             first: true,
-            jwt_expires_at: principal.expires_at,
         },
         |mut stream| async move {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(u64::MAX, |duration| duration.as_secs());
-            if now >= stream.jwt_expires_at {
-                return None;
-            }
             if *stream.shutdown.borrow() {
                 return None;
             }
@@ -1027,12 +1000,7 @@ async fn events(
             // even when the cleanup sweep is not running.
             let valid = {
                 let r = stream.state.registry.lock().await;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(u64::MAX, |duration| duration.as_secs());
-                now < stream.jwt_expires_at
-                    && authenticate(&r, &stream.token).is_ok()
-                    && stream.cancellation.has_changed().is_ok()
+                authenticate(&r, &stream.token).is_ok() && stream.cancellation.has_changed().is_ok()
             };
             valid.then(|| {
                 (
@@ -1089,28 +1057,14 @@ fn country_code(headers: &HeaderMap) -> Option<String> {
 
 async fn join(
     State(s): State<AppState>,
-    Extension(principal): Extension<auth::Principal>,
     headers: HeaderMap,
     Json(input): Json<Join>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
-    let name = principal
-        .user
-        .display_name
-        .as_deref()
-        .expect("profile checked by middleware");
-    #[cfg(test)]
-    let name = if s.auth.is_test_bypass() {
-        let name = input.name.as_deref().unwrap_or_default().trim();
-        if name.is_empty() || name.chars().count() > 40 || name.chars().any(char::is_control) {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
-        }
-        name
-    } else {
-        name
-    };
-    #[cfg(not(test))]
-    let _ = input.name;
+    let name = input.name.as_deref().unwrap_or_default().trim();
+    if name.is_empty() || name.chars().count() > 40 || name.chars().any(char::is_control) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
+    }
     let country_code = country_code(&headers);
     let monitor = {
         let mut r = s.registry.lock().await;
@@ -1197,7 +1151,6 @@ async fn join(
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let p = Participant {
         id,
-        account_id: principal.user.id,
         token: token.clone(),
         name: name.into(),
         country_code,

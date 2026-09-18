@@ -968,11 +968,42 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts (currently unavailable)
 
-The marketing homepage and health routes remain public. There is currently no
-sign-up, sign-in, session, profile, or voice-room access. Login, live, and profile
-pages route to an honest unavailable state. No replacement identity service has
-been selected. The Rust API rejects every production account credential with 503;
-only its compile-time test bypass can exercise the retained media engine.
+The temporary `/live` demo is public again. The browser uses `unique-names-generator`
+to assign a readable color-and-animal name for each visit and keeps it through reconnects. No account,
+profile, or database is needed for voice. The API accepts names of 1–40 Unicode
+characters after trimming, with no control characters. Names are unverified,
+nonunique, and not reserved. Country flags use the API-provided Cloudflare country
+code; no flag is invented when location is unavailable. Account
+sign-up, sign-in, and profiles remain unavailable. Login/profile pages point to
+the guest demo. The Rust API still rejects production account credentials with
+503; account authentication is not applied to media routes.
+
+`MEDIA_ENABLED=true` and all four Cloudflare credentials remain required. Existing
+12-participant capacity, global join and per-participant operation limits,
+45-second leases, one-hour call lifetime, private monitor isolation, and
+leave/expiry cleanup still apply.
+This is an anonymous public test channel, not an abuse-resistant public launch.
+Anyone can consume its limited capacity. Keep provider usage under observation
+and disable media after testing if needed.
+
+For local testing, export the server-only variables from `.env.example`, leave
+database URLs unset, and run `cargo run -p caper-api` with `npm run dev:web`.
+Vite proxies `/api` to the Rust service on port 3001. Production keeps its existing
+Traefik routing; deploy the web and API changes together through GitOps, with
+`MEDIA_ENABLED=true` in the API deployment configuration. No migration is added.
+After the approved deployment, verify:
+
+```bash
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+curl --fail --silent --show-error https://caper.chat/api/media/status
+# Expected: enabled is true. Then open /live in two browsers and test audio/leave.
+```
+
+Guest restoration validation: Rust provider mocks cover unauthenticated joins,
+name validation, capability enforcement and revocation; browser client tests cover
+name retention on reconnect and media/SSE headers. These do not prove live SFU,
+multi-network/TURN, sustained voice, physical devices, or native Tauri support.
 
 `apps/api/migrations/202609070001_accounts.sql` creates a provider-neutral `users`
 table: bigint identity PK, unique random public ID, nullable unique email, nullable
@@ -988,9 +1019,8 @@ not SQL `CHECK` expressions.
 
 Provider middleware, callbacks, token verification, key fetching, session hooks,
 and browser forwarding have been removed. Server functions retain CSRF middleware.
-The web service owns no `/api` routes; Traefik sends same-origin `/api/*` requests
-directly to Rust. The Rust account/media boundary fails closed with 503 in
-production, even when voice is otherwise configured.
+The production web service owns no `/api` routes; Traefik sends same-origin
+`/api/*` requests directly to Rust. Only account routes retain unavailable auth.
 
 ### Public API: web, desktop and mobile
 
@@ -999,22 +1029,23 @@ directly to the existing Rust `caper-api` service. `https://caper.chat/*` serves
 the website through `caper-web`. `https://api.caper.chat` remains a direct API
 alias. No second Rust backend or native-specific gateway exists.
 
-Account and media endpoints are intentionally unavailable. Supplying arbitrary
-Authorization headers, cookies, or call capabilities cannot enable them.
+Account endpoints remain unavailable. Media status and guest join are public;
+all subsequent media requests require the issued `x-caper-media-token` capability
+header (including SSE and private monitor joins). Tokens stay in browser memory,
+not URLs, cookies, or persistent storage. Possession authorizes that call session.
 
 | Method | Public endpoint | Purpose |
 | --- | --- | --- |
 | GET | `/health`, `/api/health` | Unauthenticated health checks |
 | GET | `/api/account/me` | Unavailable; no account provisioning |
 | POST | `/api/account/profile` | Unavailable; no profile writes |
-| GET | `/api/media/status`, `/api/media/events` | Unavailable; no production voice or SSE access |
-| POST | `/api/media/join`, `/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Unavailable; all paths under `/api/media` |
+| GET | `/api/media/status` | Public availability flag |
+| POST | `/api/media/join` | Public guest join with `{ "name": "Guest name" }`; issues a call capability |
+| GET | `/api/media/events` | Capability-protected roster events |
+| POST | `/api/media/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Capability-protected operations; all paths under `/api/media` |
 
-Rust returns 401 without a bearer credential and 503 with one; neither permits
-access.
-
-The retained engine's test-only flow binds call capabilities to fixture accounts.
-No production browser or native transport can currently obtain or use one.
+Account routes return 401 without a bearer credential and 503 with one; neither
+permits account access. Guest media capabilities are not account credentials.
 
 Native account flows are not implemented. A future design must include secure
 credential storage and explicit browser/native parity before account access returns.
@@ -1022,7 +1053,7 @@ Arbitrary third-party browser CORS access, API keys and developer OAuth consent
 are not implemented; native/server HTTP clients do not require CORS. Browser WebRTC
 does not prove native audio support.
 
-Bigint IDs stay internal for joins and are never exposed in profile responses.
+Bigint account IDs stay internal and are never exposed in profile responses.
 Random NanoIDs provide permanent public references without revealing signup order
 or the internal sequence. Stored as `external_id` for integrations and external
 references, the API returns this value as `id`, alongside

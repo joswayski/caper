@@ -205,15 +205,17 @@ test("failed mode replacement keeps the old microphone and rolls back selection"
   assert.equal(states.at(-1)?.noiseSuppression, "off");
 });
 
-test("joins never submit a client-selected identity", async (t) => {
+test("guest name is trimmed, preserved on reconnect, and replaceable after leaving", async (t) => {
   const { client, joinedNames } = setup(t);
-  await client.join("Impersonated user");
+  await client.join("  Jose 🌱  ");
   await client.setMuted(true);
   await client.join(); // Already connected: do not join twice.
-  assert.deepEqual(joinedNames, [undefined]);
+  assert.deepEqual(joinedNames, ["Jose 🌱"]);
+  await (client as unknown as { rejoin(): Promise<void> }).rejoin();
+  assert.deepEqual(joinedNames, ["Jose 🌱", "Jose 🌱"]);
   await client.leave();
-  await client.join();
-  assert.deepEqual(joinedNames, [undefined, undefined]);
+  await client.join("Another guest");
+  assert.deepEqual(joinedNames, ["Jose 🌱", "Jose 🌱", "Another guest"]);
 });
 
 test("join, 204 state responses, real sender mute, deafen and immediate device cleanup", async (t) => {
@@ -483,7 +485,7 @@ test("stop during pending test joins releases late capabilities without publishi
       grants.push(() => resolve(Response.json({ token: role, iceServers: [] })));
     });
     if (url.endsWith("/publish")) published++;
-    if (url.endsWith("/leave")) left.push((options.headers as Record<string, string>).authorization);
+    if (url.endsWith("/leave")) left.push(new Headers(options.headers).get("x-caper-media-token")!);
     return originalFetch(url, options);
   });
   const starting = client.setMonitoring(true);
@@ -493,7 +495,7 @@ test("stop during pending test joins releases late capabilities without publishi
   grants.forEach((grant) => grant());
   await starting;
   assert.equal(published, 0);
-  assert.deepEqual(left.sort(), ["Bearer receiver", "Bearer sender"]);
+  assert.deepEqual(left.sort(), ["receiver", "sender"]);
   assert.equal(states.at(-1)!.monitorStream, undefined);
   assert.equal(Peer.all[0].senders[0].track, track);
 });
@@ -605,7 +607,7 @@ test("failed join reports immediately while old capability cleanup remains isola
   install("fetch", (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
     if (url.endsWith("/publish") && joins === 1) return Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }));
-    if (url.endsWith("/leave") && new Headers(init.headers).get("authorization") === "Bearer session-1") {
+    if (url.endsWith("/leave") && new Headers(init.headers).get("x-caper-media-token") === "session-1") {
       return new Promise<Response>((resolve) => { finishLeave = () => resolve(new Response(null, { status: 204 })); });
     }
     return original(url, init);
@@ -632,7 +634,7 @@ test("automatic rejoin is not blocked by old capability cleanup", async (t) => {
   let finishLeave!: () => void;
   install("fetch", (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
-    if (url.endsWith("/leave") && new Headers(init.headers).get("authorization") === "Bearer session-1") {
+    if (url.endsWith("/leave") && new Headers(init.headers).get("x-caper-media-token") === "session-1") {
       return new Promise<Response>((resolve) => { finishLeave = () => resolve(new Response(null, { status: 204 })); });
     }
     return original(url, init);
@@ -673,7 +675,7 @@ for (const cleanupFails of [false, true]) test(`leave releases local media and p
   const original = fetch;
   install("fetch", (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) return Promise.resolve(Response.json({ token: `session-${++joins}`, id: "self", iceServers: [] }));
-    if (url.endsWith("/leave") && new Headers(init.headers).get("authorization") === "Bearer session-1") {
+    if (url.endsWith("/leave") && new Headers(init.headers).get("x-caper-media-token") === "session-1") {
       leaveRequest = init;
       cleanupRequests++;
       return new Promise<Response>((resolve, reject) => {
@@ -706,7 +708,7 @@ for (const cleanupFails of [false, true]) test(`leave releases local media and p
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(currentTrack.readyState, "live");
   assert.equal(currentTrack.enabled, true);
-  assert.equal(new Headers(leaveRequest.headers).get("authorization"), "Bearer session-1");
+  assert.equal(new Headers(leaveRequest.headers).get("x-caper-media-token"), "session-1");
 });
 
 test("old peer events after leave cannot reconnect or replace the next call's audio", async (t) => {
@@ -759,7 +761,7 @@ test("leave during join closes the late capability and never creates a PeerConne
   let leaveToken: string | undefined;
   install("fetch", (url: string, init: RequestInit) => {
     if (url.endsWith("/join")) return new Promise((resolve) => { finish = resolve; });
-    leaveToken = new Headers(init.headers).get("authorization") ?? undefined;
+    leaveToken = new Headers(init.headers).get("x-caper-media-token") ?? undefined;
     return Promise.resolve(new Response(null, { status: 204 }));
   });
   const joining = client.join("Guest");
@@ -768,7 +770,7 @@ test("leave during join closes the late capability and never creates a PeerConne
   finish(Response.json({ token: "late", id: "late", iceServers: [] }));
   await joining;
   assert.equal(track.readyState, "ended");
-  assert.equal(leaveToken, "Bearer late");
+  assert.equal(leaveToken, "late");
 });
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));

@@ -93,7 +93,7 @@ async function latestChanges(): Promise<LatestChange[]> {
   return productChanges;
 }
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
   let changes: LatestChange[] = [];
   try {
     changes = await latestChanges();
@@ -114,6 +114,7 @@ export default defineConfig(async () => {
     react(),
     nitro({
       routeRules: {
+        ...(command === "serve" ? { "/api/**": { proxy: "http://127.0.0.1:3001/api/**" } } : {}),
         "/audio/deepfilter-v1/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },

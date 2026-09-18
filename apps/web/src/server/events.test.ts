@@ -10,7 +10,7 @@ function setup(t: TestContext) {
   const errors: Error[] = [];
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     assert.equal(url, "/api/media/events", "capability must never enter a URL");
-    assert.equal(new Headers(init.headers).get("authorization"), "Bearer test-capability");
+    assert.equal(new Headers(init.headers).get("x-caper-media-token"), "test-capability");
     signal = init.signal!;
     const abort = () => controller.error(signal.reason);
     return new Response(new ReadableStream<Uint8Array>({

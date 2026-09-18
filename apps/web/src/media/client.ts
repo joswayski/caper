@@ -41,6 +41,7 @@ function transientControlError(error: unknown) {
 export class PublicCallClient {
   private pc?: RTCPeerConnection;
   private token?: string;
+  private name = "Guest";
   private selfId?: string;
   private phase: CallViewState["phase"] = "idle";
   private participants: Participant[] = [];
@@ -151,7 +152,7 @@ export class PublicCallClient {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...(token ? { "x-caper-media-token": token } : {}),
         },
         body: JSON.stringify(body),
         keepalive: operation === "leave",
@@ -169,7 +170,7 @@ export class PublicCallClient {
 
   private async prepareJoin() {
     const capture = this.openMicrophone(this.microphoneDeviceId);
-    const joining = this.api<JoinResponse>("join", {}, undefined);
+    const joining = this.api<JoinResponse>("join", { name: this.name }, undefined);
     const [captureResult, joinResult] = await Promise.allSettled([capture, joining]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
       if (captureResult.status === "fulfilled") this.stopMicrophone(captureResult.value);
@@ -179,10 +180,10 @@ export class PublicCallClient {
     return { microphone: captureResult.value, joined: joinResult.value };
   }
 
-  // Keep the existing call signature, but identity now comes from the account.
-  async join(_name = "", microphoneDeviceId?: string) {
+  async join(name = "Guest", microphoneDeviceId?: string) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
     const started = performance.now();
+    this.name = name.trim();
     this.microphoneDeviceId = microphoneDeviceId || undefined;
     this.phase = "joining";
     this.emit();

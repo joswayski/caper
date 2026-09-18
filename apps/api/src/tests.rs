@@ -203,13 +203,7 @@ async fn public_api_rejects_cookies_legacy_headers_and_media_tokens_as_account_a
     let (mut state, _) = state();
     state.auth = auth::AuthVerifier::new();
     let router = app(state);
-    for (method, path) in [
-        ("GET", "/api/account/me"),
-        ("POST", "/api/account/profile"),
-        ("GET", "/api/media/status"),
-        ("GET", "/api/media/events"),
-        ("POST", "/api/media/join"),
-    ] {
+    for (method, path) in [("GET", "/api/account/me"), ("POST", "/api/account/profile")] {
         let response = router
             .clone()
             .oneshot(
@@ -228,6 +222,85 @@ async fn public_api_rejects_cookies_legacy_headers_and_media_tokens_as_account_a
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()["cache-control"], "no-store");
     }
+}
+
+#[tokio::test]
+async fn guest_voice_works_without_account_auth_and_requires_call_capabilities() {
+    let (mut s, _) = state();
+    s.auth = auth::AuthVerifier::new();
+    let router = app(s.clone());
+    let (status, body) = call(router.clone(), "GET", "/api/media/status", None, json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], true);
+    for name in ["".to_owned(), "   ".into(), "x".repeat(41), "a\nb".into()] {
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/api/media/join",
+            None,
+            json!({"name":name}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let a = joined(&s, "  Jose 🌱  ").await;
+    let b = joined(&s, &"x".repeat(40)).await;
+    assert_ne!(a["token"], b["token"]);
+    let token = a["token"].as_str().expect("guest receives capability");
+    for invalid in [None, Some("invented-token")] {
+        let (status, _) = call(
+            router.clone(),
+            "POST",
+            "/api/media/snapshot",
+            invalid,
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = call(
+            router.clone(),
+            "GET",
+            "/api/media/events",
+            invalid,
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, roster) = call(
+        router.clone(),
+        "POST",
+        "/api/media/snapshot",
+        Some(token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        roster["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "Jose 🌱")
+    );
+    let (status, _) = call(
+        router.clone(),
+        "POST",
+        "/api/media/leave",
+        Some(token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(
+        router,
+        "POST",
+        "/api/media/snapshot",
+        Some(token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

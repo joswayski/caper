@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
@@ -75,6 +76,7 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
 
 export default function Call() {
   const [state, setState] = useState(initialState);
+  const [name, setName] = useState("");
   const [available, setAvailable] = useState<boolean>();
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
@@ -93,6 +95,7 @@ export default function Call() {
 
   useEffect(() => {
     let current = true;
+    setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
     fetch("/api/media/status", { signal: AbortSignal.timeout(10_000) })
       .then(async (response) => response.ok ? response.json() as Promise<{ enabled: boolean }> : { enabled: false })
       .then((result) => {
@@ -192,11 +195,12 @@ export default function Call() {
           {idle ? <div className="join-card">
             <span className="voice-symbol" aria-hidden="true">◖))</span>
             <h1>Drop in. Talk. Head out.</h1>
-            <p>One shared voice channel for Caper members. No invites or ringing anyone.</p>
-            <p>Your account’s display name is how everyone will see you.</p>
+            <p>One shared voice channel, open to everyone. No account, invites, or setup.</p>
+            <p>You get a random guest name for this visit. No name to pick or account to create.</p>
             <p>Use headphones; echo cancellation is off. You can choose your microphone and output after joining.</p>
-            {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join("", deviceId || undefined); }}>
-              <button className="primary-button" disabled={available !== true || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
+            {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join(name.trim(), deviceId || undefined); }}>
+              <p>Joining as <strong>{name || "…"}</strong></p>
+              <button className="primary-button" disabled={available !== true || !name.trim() || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
             <div className="privacy-note">Your browser will ask for microphone access. Everyone in this shared channel can hear you and see your approximate country, inferred from your IP address. Caper does not store your IP address. Mic test can keep a brief recording temporarily in this browser; Caper does not store recordings on its servers. Other participants may record. Not end-to-end encrypted.</div>
           </div> : state.monitorStream && !actionPending

@@ -11,7 +11,6 @@ pub(crate) struct AuthVerifier {
 #[derive(Clone)]
 pub(crate) struct Principal {
     pub user: accounts::User,
-    pub expires_at: u64,
 }
 
 impl AuthVerifier {
@@ -47,7 +46,6 @@ impl AuthVerifier {
                     username: Some("test".into()),
                     display_name: Some("Test User".into()),
                 },
-                expires_at: u64::MAX,
             });
         }
 
