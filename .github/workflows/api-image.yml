@@ -39,7 +39,7 @@ jobs:
           tags: caper-api:test
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
-      - name: Verify public health and protected API without secrets
+      - name: Verify public health, protected accounts, and disabled media without secrets
         run: |
           set -euo pipefail
           container="$(docker run -d -p 3001:3001 caper-api:test)"
@@ -49,10 +49,11 @@ jobs:
             sleep 1
           done
           test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/health)" = 204
-          for path in /api/account/me /api/media/status; do
-            test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' "http://127.0.0.1:3001$path")" = 401
-          done
-          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"name":"test"}' http://127.0.0.1:3001/api/media/join)" = 401
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/api/account/me)" = 401
+          test "$(curl --silent --show-error -o /tmp/media-status.json -w '%{http_code}' http://127.0.0.1:3001/api/media/status)" = 200
+          jq -e '.enabled == false' /tmp/media-status.json
+          test "$(curl --silent --show-error -o /tmp/media-join.json -w '%{http_code}' -H 'Content-Type: application/json' -d '{"name":"test"}' http://127.0.0.1:3001/api/media/join)" = 503
+          jq -e '.error == "media disabled"' /tmp/media-join.json
       - name: Configure AWS credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v6.2.3
