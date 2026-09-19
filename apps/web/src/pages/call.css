@@ -16,7 +16,7 @@
 .avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 3px rgb(99 122 67 / .2); }
 .participant-name { min-width: 0; display: grid; flex: 1; }
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
-.participant-country { position: absolute; right: -3px; bottom: -1px; padding: 1px; border-radius: 3px; background: var(--surface); font-size: .75rem; line-height: 1; }
+.participant-country { position: absolute; right: -3px; bottom: -1px; width: 16px; height: 12px; border: 1px solid var(--surface); border-radius: 3px; box-shadow: 0 0 0 1px rgb(0 0 0 / .2); }
 .participant-name small { color: var(--text-muted); font-size: .72rem; }
 .participant-menu-button { width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font-size: .7rem; letter-spacing: -.08em; cursor: pointer; }
 .participant-menu-button:hover, .participant-menu-button[aria-expanded="true"] { color: var(--text); background: var(--border); }

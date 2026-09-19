@@ -9,12 +9,14 @@ import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
 
 function ParticipantCountry({ code }: { code?: string }) {
   if (!code || !/^[A-Z]{2}$/.test(code)) return null;
   const name = regionNames.of(code) ?? code;
-  const flag = String.fromCodePoint(...[...code].map((letter) => 0x1f1e6 + letter.charCodeAt(0) - 65));
-  return <span className="participant-country" aria-label={`From ${name}`} title={name}>{flag}</span>;
+  const source = flags[`../../../../node_modules/flag-icons/flags/4x3/${code.toLowerCase()}.svg`];
+  if (!source) return null;
+  return <img className="participant-country" src={source} alt={`From ${name}`} title={name} />;
 }
 
 function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStream; muted: boolean; name: string; output: string; volume: number }) {
