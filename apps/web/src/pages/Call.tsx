@@ -7,7 +7,7 @@ import MicPlayback from "./MicPlayback";
 import VoiceActivity from "./VoiceActivity";
 import "./call.css";
 
-const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, monitoring: false, participants: [], remoteMedia: [] };
+const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, monitoring: false, participants: [], remoteMedia: [] };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
 
@@ -161,14 +161,14 @@ export default function Call() {
                     return next;
                   })}
                 />
-                {!self && <button className="participant-menu-button" type="button" aria-label={`Volume for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>•••</button>}
+                {!self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
                 {volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
                   <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
                   <input
                     type="range"
                     min="0"
                     max="200"
-                    step="5"
+                    step="1"
                     value={participantVolumes[participant.id] ?? 100}
                     aria-label={`${participant.name} volume`}
                     onChange={(event) => setParticipantVolumes((current) => ({ ...current, [participant.id]: Number(event.target.value) }))}
@@ -218,6 +218,7 @@ export default function Call() {
         {!idle && <footer className="call-controls" aria-label="Voice controls">
           <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
           {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-control"><span>Audio output</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Audio output"}</option>)}</select></label> : <p className="noise-status">Choose your audio output in system settings; this browser cannot switch outputs.</p>}
+          <label className="volume-control"><span>My microphone volume <output>{state.inputVolume}%</output></span><input type="range" min="0" max="200" step="1" value={state.inputVolume} aria-label="My microphone volume" onChange={(event) => clientRef.current?.setInputVolume(Number(event.target.value))} /><small>Only changes how others hear you.</small></label>
           <div className="control-buttons">
             <button disabled={!connected || state.monitoring} type="button" className={state.muted ? "active" : ""} aria-pressed={state.muted} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? "Unmute" : "Mute"}</button>
             <button disabled={!connected || state.monitoring} type="button" className={state.deafened ? "active" : ""} aria-pressed={state.deafened} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? "Listen" : "Deafen"}</button>
