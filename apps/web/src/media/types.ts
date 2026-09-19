@@ -44,6 +44,7 @@ export interface CallViewState {
   phase: CallPhase;
   muted: boolean;
   deafened: boolean;
+  inputVolume: number;
   monitoring: boolean;
   monitorStream?: MediaStream;
   monitorConnecting?: boolean;

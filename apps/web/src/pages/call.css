@@ -18,7 +18,7 @@
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
 .participant-country { position: absolute; right: -3px; bottom: -1px; padding: 1px; border-radius: 3px; background: var(--surface); font-size: .75rem; line-height: 1; }
 .participant-name small { color: var(--text-muted); font-size: .72rem; }
-.participant-menu-button { width: 28px; height: 28px; flex: 0 0 auto; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font-size: .7rem; letter-spacing: -.08em; cursor: pointer; }
+.participant-menu-button { height: 28px; flex: 0 0 auto; padding: 0 7px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font-size: .7rem; font-weight: 700; cursor: pointer; }
 .participant-menu-button:hover, .participant-menu-button[aria-expanded="true"] { color: var(--text); background: var(--border); }
 .participant-volume { position: absolute; z-index: 2; top: 52px; right: 8px; width: 220px; display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
 .participant-volume div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -39,6 +39,11 @@
 .device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
 .device-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
 .device-control select { width: 100%; height: 34px; padding: 0 8px; font-size: .8rem; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
+.volume-control { width: min(240px, 25vw); display: grid; gap: 5px; }
+.volume-control > span { display: flex; justify-content: space-between; color: var(--text-muted); font-size: .8rem; font-weight: 700; }
+.volume-control output { font-variant-numeric: tabular-nums; }
+.volume-control input { width: 100%; margin: 0; accent-color: var(--terracotta); }
+.volume-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
 .call-page :focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 .primary-button { height: 48px; margin-top: 5px; border: 0; border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .primary-button:disabled { opacity: .5; cursor: wait; }
@@ -93,5 +98,6 @@
   .mic-meter { gap: 3px; }
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
   .device-control { width: 100%; }
+  .volume-control { width: 100%; }
   .control-buttons { display: grid; grid-template-columns: repeat(2, 1fr); }
 }

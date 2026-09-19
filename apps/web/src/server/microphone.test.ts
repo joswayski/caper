@@ -55,11 +55,18 @@ class SourceNode {
   disconnect() { this.disconnectCalls++; this.connections = []; }
 }
 
+class GainNode extends SourceNode {
+  readonly gain = { value: 1, setValueAtTime: (value: number) => { this.gain.value = value; } };
+  readonly context: Context;
+  constructor(context: Context) { super(); this.context = context; }
+}
+
 class Context {
   static latest: Context | undefined;
   readonly sampleRate = 48_000;
   state: AudioContextState = "running";
   readonly source = new SourceNode();
+  readonly gain = new GainNode(this);
   readonly processed = new Track();
   readonly destination = { stream: new Stream([this.processed]) };
   closeCalls = 0;
@@ -70,6 +77,7 @@ class Context {
   async suspend() { this.suspendCalls++; this.state = "suspended"; }
   async resume() { this.resumeCalls++; this.state = "running"; }
   createMediaStreamSource(_stream: MediaStream) { return this.source; }
+  createGain() { return this.gain; }
   createMediaStreamDestination() { return this.destination; }
   async close() { this.closeCalls++; this.state = "closed"; }
 }
@@ -306,7 +314,8 @@ test("a ready acknowledgement connects raw input to DeepFilter and returns only 
   const context = Context.latest!;
   assert.notEqual(microphone.track, raw);
   assert.equal(microphone.track, context.processed);
-  assert.deepEqual(context.source.connections, [WorkletNode.latest]);
+  assert.deepEqual(context.source.connections, [context.gain]);
+  assert.deepEqual(context.gain.connections, [WorkletNode.latest]);
   assert.deepEqual(WorkletNode.latest!.connections, [context.destination]);
   assert.equal(microphone.status, "DeepFilterNet active · balanced · on-device");
   microphone.stop();
@@ -326,6 +335,22 @@ test("off mode skips every asset and retains echo cancellation capture constrain
   assert.deepEqual((constraints!.audio as MediaTrackConstraints).deviceId, { exact: "device" });
   assert.equal(microphone.track, raw);
   assert.equal(microphone.status, "Noise suppression off");
+  microphone.stop();
+});
+
+test("input volume clamps to 0–200% and changes the outgoing gain without replacing the track", async (t) => {
+  setup(t);
+  const capturing = captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined, "headphones", undefined, undefined, 200);
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  const track = microphone.track;
+  assert.equal(Context.latest!.gain.gain.value, 2);
+  microphone.setInputVolume(-10);
+  assert.equal(Context.latest!.gain.gain.value, 0);
+  microphone.setInputVolume(250);
+  assert.equal(Context.latest!.gain.gain.value, 2);
+  assert.equal(microphone.track, track);
   microphone.stop();
 });
 

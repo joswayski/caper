@@ -63,6 +63,7 @@ export class PublicCallClient {
   private reconnects = 0;
   private muted = false;
   private deafened = false;
+  private inputVolume = 100;
   private monitoring = false;
   private monitorStream?: MediaStream;
   private receivedMonitor?: ReceivedMonitor;
@@ -104,6 +105,7 @@ export class PublicCallClient {
       phase: this.phase,
       muted: this.muted,
       deafened: this.deafened,
+      inputVolume: this.inputVolume,
       monitoring: this.monitoring,
       monitorStream: this.monitorStream,
       monitorConnecting: this.monitorConnecting,
@@ -465,7 +467,7 @@ export class PublicCallClient {
     microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => {
       this.microphoneStatus = microphone.status;
       this.emit();
-    }, this.audioSetup, this.noiseAssets, this.dpdfnet);
+    }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume);
     this.microphoneStatus = microphone.status;
     this.captures.set(microphone.track, microphone);
     return microphone.track;
@@ -475,6 +477,12 @@ export class PublicCallClient {
     const capture = this.captures.get(track);
     if (capture) { capture.stop(); this.captures.delete(track); }
     else track.stop();
+  }
+
+  setInputVolume(volume: number) {
+    this.inputVolume = Math.max(0, Math.min(volume, 200));
+    this.captures.get(this.senders.get("microphone")?.track!)?.setInputVolume(this.inputVolume);
+    this.emit();
   }
 
   async setNoiseSuppression(mode: NoiseSuppression) {

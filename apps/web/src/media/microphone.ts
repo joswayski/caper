@@ -6,6 +6,7 @@ export type AudioSetup = "speakers" | "headphones";
 export interface Microphone {
   track: MediaStreamTrack;
   status: string;
+  setInputVolume(volume: number): void;
   pause(): Promise<void>;
   resume(): Promise<void>;
   stop(): void;
@@ -20,6 +21,7 @@ export async function captureMicrophone(
   audioSetup: AudioSetup = "speakers",
   assets = new NoiseAssets(),
   dpdfnet = new DpdfnetPreparation(),
+  inputVolume = 100,
 ): Promise<Microphone> {
   signal.throwIfAborted();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: {
@@ -32,6 +34,7 @@ export async function captureMicrophone(
   const raw = stream.getAudioTracks()[0];
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
+  let gain: GainNode | undefined;
   let destination: MediaStreamAudioDestinationNode | undefined;
   let node: AudioWorkletNode | undefined;
   let prepared: ReturnType<DpdfnetPreparation["take"]> | undefined;
@@ -40,6 +43,10 @@ export async function captureMicrophone(
   const microphone: Microphone = {
     track: raw,
     status: "Noise suppression off",
+    setInputVolume(volume) {
+      const value = Math.max(0, Math.min(volume, 200)) / 100;
+      if (gain) gain.gain.setValueAtTime(value, gain.context.currentTime);
+    },
     async pause() {
       if (!stopped && context?.state === "running") await context.suspend();
     },
@@ -53,6 +60,7 @@ export async function captureMicrophone(
       stream.getTracks().forEach((track) => track.stop());
       destination?.stream.getTracks().forEach((track) => track.stop());
       source?.disconnect();
+      gain?.disconnect();
       node?.port.postMessage("stop");
       node?.disconnect();
       node?.port.close();
@@ -73,7 +81,6 @@ export async function captureMicrophone(
       : "Browser suppression unavailable — noise suppression off";
     return microphone;
   }
-
   const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet8" ? "dpdfnet8" : "deepfilter";
   const engineName = engine === "rnnoise" ? "RNNoise" : engine === "dpdfnet8" ? "DPDFNet-8 HR" : "DeepFilterNet";
   const attenuationLimit = mode === "deepfilter-gentle" ? 12 : mode === "deepfilter-strong" ? 40 : 20;
@@ -107,6 +114,12 @@ export async function captureMicrophone(
     if (context.sampleRate !== 48_000 || !context.audioWorklet) throw new Error("Unsupported audio context");
     // Resume immediately, before downloads, to retain the Join button's user activation.
     void context.resume().catch(() => undefined);
+    source = context.createMediaStreamSource(stream);
+    gain = context.createGain();
+    destination = context.createMediaStreamDestination();
+    destination.channelCount = 1;
+    microphone.track = destination.stream.getAudioTracks()[0];
+    microphone.setInputVolume(inputVolume);
     const { module, model } = engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
     await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet.js" : "/audio/noise-v1/worklet.js");
     signal.throwIfAborted();
@@ -150,12 +163,8 @@ export async function captureMicrophone(
       });
       node.port.start();
     }
-    source = context.createMediaStreamSource(stream);
-    destination = context.createMediaStreamDestination();
-    destination.channelCount = 1;
-    source.connect(node);
+    source.connect(gain).connect(node);
     node.connect(destination);
-    microphone.track = destination.stream.getAudioTracks()[0];
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = fail;
     node.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") fail(); };
