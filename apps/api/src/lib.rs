@@ -656,18 +656,18 @@ struct Participant {
     monitor: Option<Monitor>,
     events: Option<watch::Sender<()>>,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 struct Monitor {
     parent: Uuid,
     role: MonitorRole,
 }
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 enum MonitorRole {
     Sender,
     Receiver,
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 enum CleanupAction {
     Close { session: String, mid: String },
     Discover { session: String },
@@ -687,10 +687,43 @@ struct CleanupJob {
     attempts: u8,
     not_before: Instant,
 }
+#[derive(Clone, Deserialize, Serialize)]
 struct Track {
     id: Uuid,
     kind: Kind,
     provider_name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeploymentHandoff {
+    participants: Vec<HandoffParticipant>,
+    joins_ms_ago: Vec<u64>,
+    cleanup: Vec<HandoffCleanupJob>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct HandoffParticipant {
+    id: Uuid,
+    token: String,
+    name: String,
+    country_code: Option<String>,
+    session: String,
+    turn_usernames: Vec<String>,
+    muted: bool,
+    deafened: bool,
+    lease_ms_ago: u64,
+    joined_ms_ago: u64,
+    tracks: HashMap<String, Track>,
+    subscriptions: HashMap<String, Uuid>,
+    operations_ms_ago: Vec<u64>,
+    monitor: Option<Monitor>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct HandoffCleanupJob {
+    action: CleanupAction,
+    attempts: u8,
+    not_before_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2045,11 +2078,218 @@ pub fn spawn_cleanup(s: AppState) {
     });
 }
 
-/// Close every registered provider track before process termination.
+fn elapsed_millis(instant: Instant) -> u64 {
+    u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn prior_instant(now: Instant, millis: u64) -> Instant {
+    now.checked_sub(Duration::from_millis(millis))
+        .unwrap_or(now)
+}
+
+impl DeploymentHandoff {
+    fn capture(registry: &Registry) -> Self {
+        let now = Instant::now();
+        Self {
+            participants: registry
+                .participants
+                .values()
+                .map(|participant| HandoffParticipant {
+                    id: participant.id,
+                    token: participant.token.clone(),
+                    name: participant.name.clone(),
+                    country_code: participant.country_code.clone(),
+                    session: participant.session.clone(),
+                    turn_usernames: participant.turn_usernames.clone(),
+                    muted: participant.muted,
+                    deafened: participant.deafened,
+                    lease_ms_ago: elapsed_millis(participant.lease),
+                    joined_ms_ago: elapsed_millis(participant.joined),
+                    tracks: participant.tracks.clone(),
+                    subscriptions: participant.subscriptions.clone(),
+                    operations_ms_ago: participant
+                        .operations
+                        .iter()
+                        .map(|operation| elapsed_millis(*operation))
+                        .collect(),
+                    monitor: participant.monitor,
+                })
+                .collect(),
+            joins_ms_ago: registry
+                .joins
+                .iter()
+                .map(|join| elapsed_millis(*join))
+                .collect(),
+            cleanup: registry
+                .cleanup
+                .iter()
+                .map(|job| HandoffCleanupJob {
+                    action: job.action.clone(),
+                    attempts: job.attempts,
+                    not_before_ms: u64::try_from(
+                        job.not_before.saturating_duration_since(now).as_millis(),
+                    )
+                    .unwrap_or(u64::MAX),
+                })
+                .collect(),
+        }
+    }
+
+    fn into_registry(self, handoff_age_ms: u64) -> Registry {
+        let now = Instant::now();
+        let mut registry = Registry {
+            joins: self
+                .joins_ms_ago
+                .into_iter()
+                .map(|millis| prior_instant(now, millis.saturating_add(handoff_age_ms)))
+                .collect(),
+            cleanup: self
+                .cleanup
+                .into_iter()
+                .map(|job| CleanupJob {
+                    action: job.action,
+                    attempts: job.attempts,
+                    not_before: now
+                        .checked_add(Duration::from_millis(
+                            job.not_before_ms.saturating_sub(handoff_age_ms),
+                        ))
+                        .unwrap_or(now),
+                })
+                .collect(),
+            ..Registry::default()
+        };
+        for participant in self.participants {
+            let id = participant.id;
+            let token = participant.token.clone();
+            registry.tokens.insert(token.clone(), id);
+            registry.participants.insert(
+                id,
+                Participant {
+                    id,
+                    token,
+                    name: participant.name,
+                    country_code: participant.country_code,
+                    session: participant.session,
+                    turn_usernames: participant.turn_usernames,
+                    muted: participant.muted,
+                    deafened: participant.deafened,
+                    // A planned replacement cannot receive snapshots while no API
+                    // process is serving, so do not charge that gap against the lease.
+                    lease: prior_instant(now, participant.lease_ms_ago),
+                    joined: prior_instant(
+                        now,
+                        participant.joined_ms_ago.saturating_add(handoff_age_ms),
+                    ),
+                    tracks: participant.tracks,
+                    subscriptions: participant.subscriptions,
+                    pending_offer: false,
+                    operation: false,
+                    operations: participant
+                        .operations_ms_ago
+                        .into_iter()
+                        .map(|millis| prior_instant(now, millis.saturating_add(handoff_age_ms)))
+                        .collect(),
+                    monitor: participant.monitor,
+                    events: None,
+                },
+            );
+        }
+        registry
+    }
+}
+
+/// Restore a registry saved by the previous non-overlapping API pod.
+pub async fn restore_deployment_handoff(state: &AppState) -> Result<(), String> {
+    let Some(pool) = state.database.as_ref() else {
+        return Ok(());
+    };
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| "failed to begin media deployment handoff")?;
+    let saved: Option<(Value, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT payload, saved_at FROM media_deployment_handoff WHERE singleton = true FOR UPDATE",
+    )
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| "failed to read media deployment handoff")?;
+    let Some((payload, saved_at)) = saved else {
+        transaction
+            .commit()
+            .await
+            .map_err(|_| "failed to finish media deployment handoff")?;
+        return Ok(());
+    };
+    let handoff = serde_json::from_value::<DeploymentHandoff>(payload)
+        .map_err(|_| "media deployment handoff is invalid")?;
+    sqlx::query("DELETE FROM media_deployment_handoff WHERE singleton = true")
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| "failed to consume media deployment handoff")?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| "failed to commit media deployment handoff")?;
+    let handoff_age_ms = u64::try_from(
+        chrono::Utc::now()
+            .signed_duration_since(saved_at)
+            .num_milliseconds()
+            .max(0),
+    )
+    .unwrap_or(u64::MAX);
+    *state.registry.lock().await = handoff.into_registry(handoff_age_ms);
+    let expired = {
+        let registry = state.registry.lock().await;
+        registry
+            .participants
+            .values()
+            .filter(|participant| {
+                participant.lease.elapsed() >= LEASE
+                    || participant.joined.elapsed() >= MAX_CALL_DURATION
+            })
+            .map(|participant| participant.id)
+            .collect::<Vec<_>>()
+    };
+    for id in expired {
+        remove_participant(state, id).await;
+    }
+    let restored = state.registry.lock().await.participants.len();
+    tracing::info!(restored, "restored media sessions from deployment handoff");
+    Ok(())
+}
+
+async fn save_deployment_handoff(state: &AppState, pool: &PgPool) -> Result<usize, String> {
+    let registry = state.registry.lock().await;
+    let participants = registry.participants.len();
+    let payload = serde_json::to_value(DeploymentHandoff::capture(&registry))
+        .map_err(|_| "failed to serialize media deployment handoff")?;
+    sqlx::query(
+        "INSERT INTO media_deployment_handoff (singleton, payload, saved_at)
+         VALUES (true, $1, now())
+         ON CONFLICT (singleton) DO UPDATE SET payload = EXCLUDED.payload, saved_at = now()",
+    )
+    .bind(payload)
+    .execute(pool)
+    .await
+    .map_err(|_| "failed to save media deployment handoff")?;
+    Ok(participants)
+}
+
+/// Preserve active provider sessions for the replacement pod when possible;
+/// otherwise close every registered provider track before process termination.
 pub async fn shutdown_cleanup(s: &AppState) {
     s.begin_shutdown();
     // Finish any local expiry/enqueue pass before deciding the queue is drained.
     let _expiry_guard = s.expiry_lock.lock().await;
+    if let Some(pool) = s.database.as_ref() {
+        match save_deployment_handoff(s, pool).await {
+            Ok(preserved) => {
+                tracing::info!(preserved, "saved media sessions for deployment handoff");
+                return;
+            }
+            Err(error) => tracing::error!(error, "media deployment handoff failed"),
+        }
+    }
     let ids = {
         s.registry
             .lock()

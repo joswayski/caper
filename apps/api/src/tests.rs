@@ -1307,3 +1307,70 @@ fn database_url_requires_postgres_and_tls() {
         "DATABASE_URL must be a PostgreSQL URL"
     );
 }
+
+#[test]
+fn deployment_handoff_preserves_sessions_and_accounts_for_restart_time() {
+    let now = Instant::now();
+    let id = Uuid::new_v4();
+    let source_id = Uuid::new_v4();
+    let mut registry = Registry::default();
+    registry.joins.push_back(now - Duration::from_secs(4));
+    registry.cleanup.push_back(CleanupJob {
+        action: CleanupAction::Close {
+            session: "provider-session".into(),
+            mid: "remote-mid".into(),
+        },
+        attempts: 2,
+        not_before: now + Duration::from_secs(7),
+    });
+    registry.tokens.insert("capability".into(), id);
+    registry.participants.insert(
+        id,
+        Participant {
+            id,
+            token: "capability".into(),
+            name: "Caper Friend".into(),
+            country_code: Some("CA".into()),
+            session: "provider-session".into(),
+            turn_usernames: vec!["temporary-user".into()],
+            muted: true,
+            deafened: false,
+            lease: now - Duration::from_secs(3),
+            joined: now - Duration::from_secs(20),
+            tracks: HashMap::from([(
+                "local-mid".into(),
+                Track {
+                    id: source_id,
+                    kind: Kind::Microphone,
+                    provider_name: "provider-track".into(),
+                },
+            )]),
+            subscriptions: HashMap::from([("remote-mid".into(), source_id)]),
+            pending_offer: true,
+            operation: true,
+            operations: VecDeque::from([now - Duration::from_secs(2)]),
+            monitor: None,
+            events: Some(watch::channel(()).0),
+        },
+    );
+
+    let restored = DeploymentHandoff::capture(&registry).into_registry(5_000);
+    let participant = restored.participants.get(&id).unwrap();
+    assert_eq!(authenticate(&restored, "capability").unwrap(), id);
+    assert_eq!(participant.name, "Caper Friend");
+    assert_eq!(participant.country_code.as_deref(), Some("CA"));
+    assert_eq!(participant.session, "provider-session");
+    assert_eq!(participant.turn_usernames, ["temporary-user"]);
+    assert!(participant.muted);
+    assert_eq!(participant.tracks["local-mid"].id, source_id);
+    assert_eq!(participant.subscriptions["remote-mid"], source_id);
+    assert!(participant.lease.elapsed() >= Duration::from_secs(3));
+    assert!(participant.lease.elapsed() < Duration::from_secs(5));
+    assert!(participant.joined.elapsed() >= Duration::from_secs(25));
+    assert!(participant.operations[0].elapsed() >= Duration::from_secs(7));
+    assert!(!participant.pending_offer);
+    assert!(!participant.operation);
+    assert!(participant.events.is_none());
+    assert!(restored.joins[0].elapsed() >= Duration::from_secs(9));
+    assert!(restored.cleanup[0].not_before <= Instant::now() + Duration::from_secs(3));
+}

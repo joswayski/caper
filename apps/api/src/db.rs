@@ -141,6 +141,9 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON public.auth_email_challenges, public.account_sessions TO {role}"
         ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.media_deployment_handoff TO {role}"
+        ),
         format!("GRANT USAGE ON SEQUENCE public.users_id_seq TO {role}"),
     ] {
         sqlx::query(&statement)
@@ -251,6 +254,7 @@ mod tests {
             ("public.users", "UPDATE"),
             ("public.auth_email_challenges", "DELETE"),
             ("public.account_sessions", "DELETE"),
+            ("public.media_deployment_handoff", "DELETE"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")

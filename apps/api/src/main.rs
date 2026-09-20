@@ -1,5 +1,6 @@
 use caper_api::{
-    Cloudflare, Config, RuntimeEnvironment, app, connect_database, shutdown_cleanup, spawn_cleanup,
+    Cloudflare, Config, RuntimeEnvironment, app, connect_database, restore_deployment_handoff,
+    shutdown_cleanup, spawn_cleanup,
 };
 use std::{future::IntoFuture, sync::Arc, time::Duration};
 
@@ -54,10 +55,11 @@ async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     let mut state =
         caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
     state.enable_accounts_from_env(environment).await?;
-    spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|_| "could not bind media API".to_owned())?;
+    restore_deployment_handoff(&state).await?;
+    spawn_cleanup(state.clone());
     tracing::info!(%bind, "media API listening");
     let shutdown_state = state.clone();
     serve_with_drain(listener, app(state), async {

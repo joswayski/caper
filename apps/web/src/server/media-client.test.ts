@@ -354,7 +354,7 @@ test("transient heartbeat failures preserve audio, recover the same session, and
   }
   status = 200;
   await polling.poll();
-  now += 30_000;
+  now += 10 * 60_000;
   status = 503;
   await polling.poll();
   assert.equal(states.at(-1)?.phase, "connected", "a later outage gets its own grace window");
@@ -373,7 +373,7 @@ test("prolonged control outage still triggers rejoin", async (t) => {
   install("fetch", async () => { throw new TypeError("Network unavailable"); });
   await polling.poll();
   assert.equal(states.at(-1)?.phase, "connected");
-  now = 30_000;
+  now = 10 * 60_000;
   await polling.poll();
   assert.equal(states.at(-1)?.phase, "reconnecting");
 });
@@ -1024,7 +1024,7 @@ test("persistent SSE outage is bounded even while snapshots succeed", async (t) 
   await tick();
   await (client as unknown as { poll(): Promise<void> }).poll();
   assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.tick(27_000);
+  t.mock.timers.tick(10 * 60_000 - 3_000);
   await tick();
   assert.equal(states.at(-1)?.phase, "reconnecting");
 });

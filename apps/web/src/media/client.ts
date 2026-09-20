@@ -21,7 +21,9 @@ const CONNECT_TIMEOUT_MS = 12_000;
 const MAX_REJOINS = 3;
 const FETCH_TIMEOUT_MS = 25_000;
 const SNAPSHOT_TIMEOUT_MS = 5_000;
-const CONTROL_RECOVERY_MS = 30_000;
+// A non-overlapping API deployment can include image pull and startup time while
+// healthy WebRTC audio continues directly through Cloudflare.
+const CONTROL_RECOVERY_MS = 10 * 60_000;
 const DISCONNECT_GRACE_MS = 10_000;
 
 class CallApiError extends Error {
