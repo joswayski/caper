@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node scripts/staging.mjs",
     "dev:web": "npm run dev --workspace @caper/web",
+    "secrets:check": "node scripts/secrets-check.mjs",
     "build": "npm run build:web",
     "build:web": "npm run build --workspace @caper/web",
     "start:web": "npm run start --workspace @caper/web",

@@ -3,13 +3,13 @@
 ## Scope and architecture
 
 One shared **General voice channel**, available to guests while the service is
-enabled. Accounts are optional and are not yet connected to voice identity. This
-is not a dial/invite/call flow.
+enabled. Accounts are optional. Signed-in participants use their account display
+name; guests receive a random name. This is not a dial/invite/call flow.
 No text chat, camera, screen sharing, channel creation, or server-side recording.
 Mic test offers an explicit, tab-memory-only recording of up to ten seconds of
-received audio. The Rust registry uses a caller-supplied guest name. Guest names
-can collide and are not verified or reserved; participant IDs, not names,
-distinguish people. Presence remains in memory.
+received audio. The Rust API replaces a signed-in participant's submitted name
+with the account display name. Guest names can collide and are not verified or
+reserved; participant IDs, not names, distinguish people. Presence remains in memory.
 Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
@@ -49,7 +49,7 @@ Keep this temporary test separate from any future production app/key.
 
 | Variable | Meaning |
 | --- | --- |
-| `APP_SECRET_ID` | Optional AWS Secrets Manager JSON record loaded by the API before other configuration. Only account, media, and Axiom keys are accepted; process environment values are used when the read fails. Database URLs and AWS credentials are never accepted from the record. |
+| `APP_SECRET_ID` | Optional AWS Secrets Manager JSON record loaded by the API before other configuration. Application settings in this record take precedence over process environment fallback. AWS credentials, region, and this secret ID remain bootstrap settings outside the record. |
 | `MEDIA_ENABLED` | `true` enables voice; absent/false disables it |
 | `CF_SFU_APP_ID` | SFU app ID, not account ID |
 | `CF_SFU_APP_SECRET` | SFU secret, server-only |
@@ -66,6 +66,11 @@ Keep this temporary test separate from any future production app/key.
 | `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Startup grants the parsed runtime role access to migrated application tables. Neither DB secret belongs in WEB. |
 | `DATABASE_ALLOW_INSECURE` | Local development only. Set by Compose so the API may connect without TLS to the private `postgres` service. Hosted databases still default to verified TLS. |
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
+| `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
+| `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
+| `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
+| `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source-IP hash in one hour; default `10` |
+| `AUTH_GLOBAL_HOURLY_LIMIT` | Code requests accepted across the service in one hour; default `500` |
 | `AWS_REGION` | SES region; production and staging use `us-east-1` |
 | `SES_FROM_ADDRESS` | Verified Caper sender, including the friendly name |
 | `SES_CONFIGURATION_SET` | Required SES transactional configuration set |
@@ -74,6 +79,12 @@ Use `.env.example`; Rust does not auto-load dotenv files. Export a private env
 file before `cargo run -p caper-api`. Run the independent web process with
 `npm run dev:web`. Remote browsers require HTTPS.
 In an orb use supervised services and portal URLs, not direct sandbox host URLs.
+
+`npm run secrets:check` reads `staging/apps/caper` with the `staging` AWS profile
+and reports key names as `Secrets Manager`, `in sync`, `differs`, `fallback only`,
+or `missing`; it never prints values. Pass `--environment production --profile
+production --cluster` to also report each production ExternalSecret's Ready
+condition from the current kubectl context.
 
 Image CI builds `apps/api/Dockerfile` and publishes
 `production/caper:api-<full-40-character-sha>` after merge to main via `api-image.yml`,
@@ -289,9 +300,8 @@ whispers, initial consonants after several seconds of silence, short pauses,
 word endings and laughter, with DPDFNet active and under device load. Verify live
 SFU forwarding, forced TURN, loss/jitter, joining another participant, and device
 replacement separately. Firefox, Safari, and future native clients remain unverified.
-The current unavailable account boundary still prevents production voice access.
-This web-only change does not enable accounts/media, require API deployment,
-or change provider configuration.
+Account identity does not change media transport. Authenticated display names in
+live SFU voice still require staging validation after deployment.
 
 ## Leaving voice
 
@@ -988,16 +998,21 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts
 
-The `/live` demo remains public. The browser uses `unique-names-generator`
-to assign a readable color-and-animal name for each visit and keeps it through reconnects. No account,
-profile, or database is needed for voice. The API accepts names of 1–40 Unicode
-characters after trimming, with no control characters. Names are unverified,
-nonunique, and not reserved. Country flags use the API-provided Cloudflare country
-code; no flag is invented when location is unavailable. The web login page sends
-email codes and then requires a unique username and display name. Account login is
-enabled when `AUTH_SECRET`, the database URLs, and SES settings are configured.
-Account authentication is not yet applied to media routes, and desktop/native
-account screens remain future work.
+The `/live` demo remains public. For guests, the browser uses
+`unique-names-generator` to assign a readable color-and-animal name for each visit
+and keeps it through reconnects. No account, profile, or database is needed for
+guest voice. The API accepts guest names of 1–64 Unicode characters after trimming,
+with no control characters. Guest names are unverified, nonunique, and not reserved.
+When a valid account bearer token or browser session cookie accompanies a join, the
+API uses the stored display name instead of the submitted name. Country flags use
+the API-provided Cloudflare country code; no flag is invented when location is
+unavailable. The web login page sends email codes and then requires a unique
+username and display name. Account login is enabled when `AUTH_SECRET`, the database
+URLs, and SES settings are configured. Desktop/native account screens remain future work.
+Each code is six uppercase `A-Z0-9` characters, expires after 10 minutes, and has
+three attempts by default. A replacement code consumes the prior active code for
+that email. Request limits default to 3/email/15 minutes, 5/email/day, 10/IP/hour,
+and 500 globally/hour; all are configurable through the application secret.
 
 `MEDIA_ENABLED=true` and all four Cloudflare credentials remain required. Existing
 12-participant capacity, global join and per-participant operation limits,
@@ -1194,9 +1209,10 @@ Old images are not compatible with the rewritten schema; do not roll them back
 without an explicitly reviewed schema recovery. No production reset or deployment
 is performed by this PR.
 
-Do not activate account login merely by merging this application code. Add
-`AUTH_SECRET` to `production/apps/caper`, project it into the API through a reviewed
-infrastructure change, verify SES workload identity, then deploy and test the API.
+Do not activate account login merely by merging this application code. Populate the
+account, database, SES, and auth-limit keys in `production/apps/caper`, project them
+into the API through a reviewed infrastructure change, verify SES workload identity,
+then deploy and test the API.
 
 Database tests are explicitly ignored in the ordinary no-DB Rust suite. The CI
 `Account database (Postgres)` job runs them against disposable Postgres 17. To run
@@ -1216,4 +1232,5 @@ deployment. Database tests cover code issuance, resend throttling, session creat
 authentication, and revocation without calling SES.
 Provider-specific staging results are obsolete. PlanetScale connectivity, physical
 desktop/mobile account access, and live authenticated SFU voice remain untested.
-Earlier media results above predate the current unavailable account boundary.
+Earlier media results above predate account-backed participant display names and do
+not validate that integration.

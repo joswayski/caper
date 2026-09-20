@@ -248,7 +248,7 @@ async fn guest_voice_works_without_account_auth_and_requires_call_capabilities()
     let (status, body) = call(router.clone(), "GET", "/api/media/status", None, json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["enabled"], true);
-    for name in ["".to_owned(), "   ".into(), "x".repeat(41), "a\nb".into()] {
+    for name in ["".to_owned(), "   ".into(), "x".repeat(65), "a\nb".into()] {
         let (status, _) = call(
             router.clone(),
             "POST",
@@ -260,7 +260,7 @@ async fn guest_voice_works_without_account_auth_and_requires_call_capabilities()
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
     let a = joined(&s, "  Jose 🌱  ").await;
-    let b = joined(&s, &"x".repeat(40)).await;
+    let b = joined(&s, &"x".repeat(64)).await;
     assert_ne!(a["token"], b["token"]);
     let token = a["token"].as_str().expect("guest receives capability");
     for invalid in [None, Some("invented-token")] {
@@ -317,6 +317,49 @@ async fn guest_voice_works_without_account_auth_and_requires_call_capabilities()
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn authenticated_join_uses_the_account_display_name() {
+    let (s, _) = state();
+    for (header, value) in [
+        ("authorization", "Bearer test-fixture"),
+        ("cookie", "caper_session=test-fixture"),
+    ] {
+        let response = app(s.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/media/join")
+                    .header("content-type", "application/json")
+                    .header(header, value)
+                    .body(Body::from(json!({"name":"Random Guest"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let joined: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), BODY_LIMIT).await.unwrap())
+                .unwrap();
+        let snapshot = call(
+            app(s.clone()),
+            "POST",
+            "/api/media/snapshot",
+            Some(joined["token"].as_str().unwrap()),
+            json!({}),
+        )
+        .await
+        .1;
+
+        assert!(
+            snapshot["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|participant| participant["name"] == "Test User")
+        );
+    }
 }
 
 #[tokio::test]
