@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 async-trait = "0.1"
 aws-config = "=1.8.14"
+aws-sdk-secretsmanager = "=1.108.0"
 aws-sdk-sesv2 = "=1.120.0"
 axum = "0.8"
 base64 = "0.22"

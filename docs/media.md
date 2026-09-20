@@ -49,6 +49,7 @@ Keep this temporary test separate from any future production app/key.
 
 | Variable | Meaning |
 | --- | --- |
+| `APP_SECRET_ID` | Optional AWS Secrets Manager JSON record loaded by the API before other configuration. Only account, media, and Axiom keys are accepted; process environment values are used when the read fails. Database URLs and AWS credentials are never accepted from the record. |
 | `MEDIA_ENABLED` | `true` enables voice; absent/false disables it |
 | `CF_SFU_APP_ID` | SFU app ID, not account ID |
 | `CF_SFU_APP_SECRET` | SFU secret, server-only |

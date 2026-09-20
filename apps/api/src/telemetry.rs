@@ -1,5 +1,6 @@
 //! Optional Axiom OTLP log export, following the Godis telemetry convention.
 //! Export IO runs on the SDK's bounded background worker, never on voice requests.
+use caper_api::RuntimeEnvironment;
 use std::{collections::HashMap, time::Duration};
 
 use opentelemetry::KeyValue;
@@ -92,11 +93,15 @@ impl TelemetryGuard {
     }
 }
 
-pub fn init() -> TelemetryGuard {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("caper_api=info,tower_http=info"));
-    let json = std::env::var("LOG_FORMAT").is_ok_and(|v| v.eq_ignore_ascii_case("json"));
-    let provider = match AxiomConfig::read(|key| std::env::var(key).ok())
+pub fn init(environment: &RuntimeEnvironment) -> TelemetryGuard {
+    let filter = environment
+        .get("RUST_LOG")
+        .and_then(|value| EnvFilter::try_new(value).ok())
+        .unwrap_or_else(|| EnvFilter::new("caper_api=info,tower_http=info"));
+    let json = environment
+        .get("LOG_FORMAT")
+        .is_some_and(|v| v.eq_ignore_ascii_case("json"));
+    let provider = match AxiomConfig::read(|key| environment.get(key))
         .and_then(|config| config.map(build_provider).transpose())
     {
         Ok(provider) => provider,

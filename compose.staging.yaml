@@ -27,7 +27,8 @@ services:
     environment:
       DATABASE_URL: postgres://caper_runtime:caper_runtime@postgres:5432/caperchat?sslmode=disable
       MIGRATION_DATABASE_URL: postgres://caper_migrate:caper_migrate@postgres:5432/caperchat?sslmode=disable
-      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in staging/apps/caper or .env}
+      APP_SECRET_ID: staging/apps/caper
+      AUTH_SECRET: ${AUTH_SECRET:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?Authenticate the staging AWS profile}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Authenticate the staging AWS profile}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:?Authenticate the staging AWS profile}
