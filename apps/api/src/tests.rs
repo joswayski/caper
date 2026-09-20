@@ -186,6 +186,7 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
         .unwrap();
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
     let unavailable = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/account/me")
@@ -196,6 +197,21 @@ async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
         .await
         .unwrap();
     assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for (path, body) in [
+        (
+            "/api/auth/email/request",
+            json!({"email":"person@example.com"}),
+        ),
+        (
+            "/api/auth/email/verify",
+            json!({"challengeId":Uuid::new_v4(),"code":"123456","tokenTransport":"bearer"}),
+        ),
+    ] {
+        assert_eq!(
+            call(router.clone(), "POST", path, None, body).await.0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
 }
 
 #[tokio::test]

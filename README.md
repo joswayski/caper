@@ -8,7 +8,7 @@ its earliest stage today (and an active work in progress)!
 ## Repository layout
 
 - `apps/web` — TanStack Start website and health endpoint
-- `apps/api` — Rust voice-control service and inactive account foundation
+- `apps/api` — Rust voice-control and account service
 - `apps/desktop` — React UI inside a minimal Tauri 2 shell
 - `shared` — framework-neutral design tokens shared by both clients
 
@@ -53,7 +53,8 @@ The `/live` demo offers one public General voice channel: get a random guest nam
 and join without an account or profile. Set `MEDIA_ENABLED=true` and the four
 server-only Cloudflare variables in `.env.example` in the API environment to
 enable calls. No database is required; leave database URLs unset for local voice
-testing. Accounts remain unavailable; no replacement account provider has been
-selected or implemented. Guest names are unverified and are not reserved.
+testing. The account API supports email sign-in codes when its database, SES, and
+`AUTH_SECRET` settings are configured; web and desktop login screens are not wired
+up yet. Guest names remain unverified and are not reserved.
 See the [media runbook](docs/media.md) for provider configuration, deployment,
 privacy guidance, and the validation matrix.
