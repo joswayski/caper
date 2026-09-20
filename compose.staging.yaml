@@ -1,0 +1,71 @@
+name: caper-staging
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: caperchat
+      POSTGRES_USER: caper_migrate
+      POSTGRES_PASSWORD: caper_migrate
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U caper_migrate -d caperchat"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - caper-staging-postgres:/var/lib/postgresql/data
+      - ./compose/staging/postgres-init.sql:/docker-entrypoint-initdb.d/runtime-role.sql:ro
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://caper_runtime:caper_runtime@postgres:5432/caperchat?sslmode=disable
+      MIGRATION_DATABASE_URL: postgres://caper_migrate:caper_migrate@postgres:5432/caperchat?sslmode=disable
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in staging/apps/caper or .env}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?Authenticate the staging AWS profile}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Authenticate the staging AWS profile}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:?Authenticate the staging AWS profile}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      SES_FROM_ADDRESS: Caper <noreply@staging.caper.chat>
+      SES_CONFIGURATION_SET: staging-caper-transactional
+      MEDIA_ENABLED: ${MEDIA_ENABLED:-false}
+      MEDIA_BIND: 0.0.0.0:3001
+      CF_SFU_APP_ID: ${CF_SFU_APP_ID:-}
+      CF_SFU_APP_SECRET: ${CF_SFU_APP_SECRET:-}
+      CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}
+      CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN:-}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      RUST_LOG: ${RUST_LOG:-caper_api=info,tower_http=info}
+      ENVIRONMENT: staging
+      AXIOM_TOKEN: ${AXIOM_TOKEN:-}
+      AXIOM_DATASET: ${AXIOM_DATASET:-caper}
+      AXIOM_ENDPOINT: ${AXIOM_ENDPOINT:-}
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+
+  gateway:
+    image: caddy:2.10-alpine
+    depends_on:
+      - api
+      - web
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./compose/staging/Caddyfile:/etc/caddy/Caddyfile:ro
+
+volumes:
+  caper-staging-postgres:
