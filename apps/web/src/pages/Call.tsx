@@ -213,7 +213,7 @@ export default function Call() {
   return (
     <main className="call-page">
       <header className="call-header">
-        <a className="wordmark" href="/">caper</a>
+        <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
         <AccountNav />
       </header>
       <section className="call-room">

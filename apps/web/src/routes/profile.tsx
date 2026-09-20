@@ -44,7 +44,7 @@ function Profile() {
 
   return <main className="account-page">
     <section className="account-card">
-      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="account-dot">.</span></a>
+      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
       <p className="account-eyebrow">{account.username ? "YOUR ACCOUNT" : "ONE LAST THING"}</p>
       <h1>{account.username ? "Make it yours." : "Choose how you show up."}</h1>
       <p>Your username is unique. Your display name is what people see in conversations.</p>

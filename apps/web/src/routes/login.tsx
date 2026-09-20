@@ -71,7 +71,7 @@ function Login() {
 
   return <main className="account-page">
     <section className="account-card">
-      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="account-dot">.</span></a>
+      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
       <p className="account-eyebrow">WELCOME TO CAPER</p>
       <h1>{challengeId ? "Check your email." : "Come on in."}</h1>
       {challengeId ? <>

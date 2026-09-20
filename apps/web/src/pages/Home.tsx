@@ -26,7 +26,7 @@ export default function Home({ initialNow, latestChanges }: HomeProps) {
   return (
     <main className="page">
       <header className="site-header shell">
-        <a className="wordmark" href="/" aria-label="Caper home">caper</a>
+        <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
         <div className="site-header-actions"><AccountNav /><a className="login-button" href="/live">Try voice</a></div>
       </header>
 
