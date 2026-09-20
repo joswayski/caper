@@ -24,7 +24,6 @@
 .participant-volume div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .participant-volume strong { font-size: .78rem; }
 .participant-volume output { color: var(--text-muted); font-size: .75rem; font-variant-numeric: tabular-nums; }
-.participant-volume input { width: 100%; margin: 0; accent-color: var(--terracotta); }
 .participant-volume small { color: var(--text-muted); font-size: .68rem; }
 .participant-mute { display: flex; align-items: center; justify-content: space-between; padding-top: 10px; border-top: 1px solid var(--border); font-size: .78rem; font-weight: 700; }
 .participant-mute input { width: 16px; height: 16px; accent-color: var(--terracotta); }
@@ -40,8 +39,14 @@
 .volume-control { width: min(240px, 25vw); display: grid; gap: 5px; }
 .volume-control > span { display: flex; justify-content: space-between; color: var(--text-muted); font-size: .8rem; font-weight: 700; }
 .volume-control output { font-variant-numeric: tabular-nums; }
-.volume-control input { width: 100%; margin: 0; accent-color: var(--terracotta); }
 .volume-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
+.range-slider { position: relative; width: 100%; height: 20px; display: flex; align-items: center; touch-action: none; user-select: none; }
+.range-slider[data-disabled] { opacity: .5; }
+.range-slider-track { position: relative; height: 4px; flex: 1; overflow: hidden; border-radius: 999px; background: var(--border); }
+.range-slider-fill { position: absolute; height: 100%; border-radius: inherit; background: var(--terracotta-bright); }
+.range-slider-thumb { width: 16px; height: 16px; display: block; border: 2px solid var(--terracotta-bright); border-radius: 50%; background: var(--text); box-shadow: 0 1px 4px rgb(0 0 0 / .35); cursor: grab; }
+.range-slider-thumb:active { cursor: grabbing; }
+.range-slider-thumb:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 .call-page :focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 .primary-button { height: 48px; margin-top: 5px; border: 0; border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .primary-button:disabled { opacity: .5; cursor: wait; }
@@ -57,22 +62,22 @@
 .mic-test-heading h3 { margin: 0; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: -.04em; }
 .mic-test-copy { max-width: 580px; margin: 12px 0 0; color: var(--text-muted); line-height: 1.55; }
 .voice-processing-control { display: grid; gap: 8px; margin-top: 24px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
-.voice-processing-control label, .voice-processing-control > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
-.voice-processing-control label { font-size: .82rem; font-weight: 800; }
+.voice-processing-control > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.voice-processing-heading { font-size: .82rem; font-weight: 800; }
 .voice-processing-control output { color: var(--terracotta-bright); font-variant-numeric: tabular-nums; }
-.voice-processing-control input { width: 100%; margin: 0; accent-color: var(--terracotta); }
-.voice-processing-control input:disabled { opacity: .55; cursor: not-allowed; }
 .voice-processing-control small { color: var(--text-muted); font-size: .68rem; }
 .recording-clock { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin: 0; font-variant-numeric: tabular-nums; font-weight: 800; }
 .recording-clock i { width: 10px; height: 10px; border-radius: 50%; background: var(--terracotta-bright); box-shadow: 0 0 0 5px rgb(219 104 73 / .14); animation: recording-pulse 1.2s ease-in-out infinite; }
 @keyframes recording-pulse { 50% { opacity: .45; transform: scale(.8); } }
-.mic-meter-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 18px; color: var(--text-muted); font-size: .7rem; font-weight: 750; }
+.mic-test-action-row { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: end; gap: 12px; margin-top: 18px; }
+.mic-level { min-width: 0; }
+.mic-meter-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: .7rem; font-weight: 750; }
 .mic-meter-label small { font-size: .65rem; font-weight: 500; }
-.mic-meter { height: 58px; display: flex; align-items: center; gap: 5px; margin: 7px 0 10px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
+.mic-meter { height: 48px; display: flex; align-items: center; gap: 5px; margin-top: 7px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
 .mic-meter i { height: 8px; min-width: 3px; flex: 1; border-radius: 999px; background: var(--border); transition: height 80ms linear, background-color 80ms linear; }
-.mic-meter i.lit { height: 32px; background: var(--caper); }
-.stop-recording-button { width: 100%; min-height: 48px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
-.stop-recording-button:disabled { opacity: .55; cursor: wait; }
+.mic-meter i.lit { height: 28px; background: var(--caper); }
+.mic-test-button { width: 160px; height: 48px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
+.mic-test-button:disabled { opacity: .55; cursor: wait; }
 .mic-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .mic-comparison article { min-width: 0; min-height: 102px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
 .mic-comparison article.latest { border-color: #53633f; }
@@ -128,6 +133,10 @@
   .stage-placeholder { min-height: 300px; }
   .mic-test-card { margin: 24px auto; padding: 20px; }
   .mic-test-heading { align-items: flex-start; }
+  .mic-test-action-row { grid-template-columns: 120px minmax(0, 1fr); gap: 10px; }
+  .mic-test-button { width: 120px; }
+  .mic-meter-label { gap: 4px; }
+  .mic-meter-label small { font-size: .6rem; }
   .mic-comparison { grid-template-columns: 1fr; }
   .mic-meter { gap: 3px; }
   .call-diagnostics dl { grid-template-columns: 1fr; }
@@ -137,4 +146,9 @@
   .device-select select { width: 100%; }
   .volume-control { width: 100%; }
   .control-buttons { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 350px) {
+  .mic-test-action-row { grid-template-columns: 1fr; }
+  .mic-test-button { width: 100%; }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import Slider from "../components/Slider";
 import { createVoiceComparison, MAX_RECORDING_SECONDS, recordReceivedAudio, type ReceivedRecording } from "../media/recording";
 
 function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }) {
@@ -192,14 +193,18 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
     </div>
     <p className="mic-test-copy">Record once to compare the same sample with and without voice enhancement.</p>
     <div className="voice-processing-control">
-      <label htmlFor="voice-processing"><span>Voice processing</span><output>{processingStrength}%</output></label>
-      <input id="voice-processing" type="range" min="0" max="100" step="1" value={processingStrength} disabled={recording} onChange={(event) => onProcessingStrengthChange(Number(event.target.value))} />
+      <div className="voice-processing-heading"><span>Voice processing</span><output>{processingStrength}%</output></div>
+      <Slider label="Voice processing" value={processingStrength} disabled={recording} onChange={onProcessingStrengthChange} />
       <div><small>Natural</small><small>Enhanced</small></div>
     </div>
-    <div className="mic-meter-label"><span>Input level</span><small>Lights up while recording</small></div>
-    <InputMeter active={recording} stream={stream} />
-    {!recording && <button type="button" className="stop-recording-button" disabled={processing} onClick={startRecording}>{processing ? "Preparing comparison…" : clips.natural ? "Record another sample" : "Record one sample"}</button>}
-    {recording && <button type="button" className="stop-recording-button" onClick={() => sessionRef.current?.finish()}>Stop &amp; play back</button>}
+    <div className="mic-test-action-row">
+      {!recording && <button type="button" className="mic-test-button" disabled={processing} onClick={startRecording}>{processing ? "Preparing…" : "Mic Test"}</button>}
+      {recording && <button type="button" className="mic-test-button" onClick={() => sessionRef.current?.finish()}>Stop Testing</button>}
+      <div className="mic-level">
+        <div className="mic-meter-label"><span>Input level</span><small>Lights up while recording</small></div>
+        <InputMeter active={recording} stream={stream} />
+      </div>
+    </div>
     {error && <p className="call-error" role="alert">{error}</p>}
     {deviceError && <p className="call-error" role="alert">Audio output unavailable; choose another device.</p>}
     <div className="mic-comparison" aria-label="Recorded samples">
