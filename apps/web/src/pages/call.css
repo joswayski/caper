@@ -70,7 +70,15 @@
 .mic-playback audio { width: 100%; }
 .mic-playback button { justify-self: start; min-height: 40px; padding: 0 16px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-weight: 750; cursor: pointer; }
 .mic-test-privacy { display: block; margin-top: 20px; color: var(--text-muted); line-height: 1.5; }
-.call-diagnostics { color: var(--text-muted); margin-top: 20px; font-size: .8rem; }
+.call-diagnostics { width: min(620px, 100%); margin-top: 24px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); background: var(--surface); }
+.diagnostics-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.diagnostics-heading h3 { margin: 0; color: var(--text); font-size: .9rem; letter-spacing: -.01em; }
+.diagnostics-heading small { font-size: .7rem; }
+.call-diagnostics dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; margin: 12px 0 0; }
+.call-diagnostics dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; padding: 7px 0; border-top: 1px solid var(--border); }
+.call-diagnostics dt { font-size: .75rem; }
+.call-diagnostics dd { margin: 0; color: var(--text); font-size: .78rem; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.call-diagnostics > p { margin: 12px 0 0; font-size: .7rem; line-height: 1.45; }
 .call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
 .control-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .control-buttons button, .stage-placeholder button { min-height: 40px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font-size: .82rem; font-weight: 750; cursor: pointer; }
@@ -96,6 +104,7 @@
   .mic-test-card { margin: 24px auto; padding: 20px; }
   .mic-test-heading { align-items: flex-start; }
   .mic-meter { gap: 3px; }
+  .call-diagnostics dl { grid-template-columns: 1fr; }
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
   .device-control { width: 100%; }
   .volume-control { width: 100%; }

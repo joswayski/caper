@@ -22,6 +22,7 @@ class Stream {
 class Peer extends EventTarget {
   static latest: Peer;
   static all: Peer[] = [];
+  static stats = new Map<string, Record<string, unknown>>();
   connectionState = "connected";
   iceGatheringState = "complete";
   localDescription?: { toJSON(): object };
@@ -44,6 +45,7 @@ class Peer extends EventTarget {
   }
   getSenders() { return this.senders; }
   getReceivers() { return []; }
+  async getStats() { return Peer.stats; }
   close() { this.connectionState = "closed"; }
 }
 
@@ -52,6 +54,7 @@ const senderSdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/4
 
 function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   Peer.all = [];
+  Peer.stats = new Map();
   const track = new Track();
   const calls: string[] = [];
   const joinedNames: string[] = [];
@@ -150,6 +153,26 @@ test("preparation does not allocate a spare during a call; Leave warms the next 
   client.leaveImmediately();
   assert.equal(prepare.mock.callCount(), 2);
   assert.equal(stop.mock.callCount(), 2);
+});
+
+test("connection diagnostics are structured and include live transport rates", async (t) => {
+  const { client, states } = setup(t);
+  Peer.stats = new Map([
+    ["outbound", { type: "outbound-rtp", bytesSent: 1_500 }],
+    ["inbound", { type: "inbound-rtp", bytesReceived: 2_500, packetsLost: 3, jitter: 0.006 }],
+    ["local", { type: "local-candidate", candidateType: "relay" }],
+    ["pair", { type: "candidate-pair", state: "succeeded", nominated: true, currentRoundTripTime: 0.004, localCandidateId: "local" }],
+  ]);
+  await client.join();
+  await tick();
+  const diagnostics = states.at(-1)?.diagnostics;
+  assert.equal(diagnostics?.receivedBytes, 2_500);
+  assert.equal(diagnostics?.sentBytes, 1_500);
+  assert.equal(diagnostics?.packetsLost, 3);
+  assert.equal(diagnostics?.maxJitterMs, 6);
+  assert.equal(diagnostics?.roundTripMs, 4);
+  assert.equal(diagnostics?.route, "relay");
+  assert.equal(diagnostics?.receiveBitrate, 0, "the first sample establishes the bitrate baseline");
 });
 
 test("mode/device replacement preserves mute, releases old capture, and can select system default", async (t) => {

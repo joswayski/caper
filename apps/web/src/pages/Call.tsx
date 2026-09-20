@@ -11,6 +11,37 @@ const initialState: CallViewState = { phase: "idle", muted: false, deafened: fal
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
 
+function formatBytes(bytes: number) {
+  return `${(bytes / 1e6).toFixed(2)} MB`;
+}
+
+function formatBitrate(bitsPerSecond: number) {
+  return `${Math.round(bitsPerSecond / 1_000)} kbps`;
+}
+
+function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallViewState["diagnostics"]> }) {
+  const values = [
+    ["Joined", diagnostics.join],
+    ["Microphone + session", `${Math.round(diagnostics.microphoneSessionMs)} ms`],
+    ["Signaling + live updates", `${Math.round(diagnostics.signalingMs)} ms`],
+    ["Transport + state", `${Math.round(diagnostics.transportMs)} ms`],
+    ["Roster", `${Math.round(diagnostics.rosterMs)} ms`],
+    ["Received", formatBytes(diagnostics.receivedBytes)],
+    ["Live receive", formatBitrate(diagnostics.receiveBitrate)],
+    ["Sent", formatBytes(diagnostics.sentBytes)],
+    ["Live send", formatBitrate(diagnostics.sendBitrate)],
+    ["Packets lost", String(diagnostics.packetsLost)],
+    ["Max jitter", `${Math.round(diagnostics.maxJitterMs)} ms`],
+    ["RTT", `${Math.round(diagnostics.roundTripMs)} ms`],
+    ["Route", diagnostics.route === "relay" ? "TURN relay" : diagnostics.route === "direct" ? "Direct" : "Not observed yet"],
+  ];
+  return <section className="call-diagnostics" aria-labelledby="connection-diagnostics-heading">
+    <div className="diagnostics-heading"><h3 id="connection-diagnostics-heading">Connection diagnostics</h3><small>Updates every second</small></div>
+    <dl>{values.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+    <p>Local estimates, not billing totals. Counters reset on reconnect.</p>
+  </section>;
+}
+
 function ParticipantCountry({ code }: { code?: string }) {
   if (!code || !/^[A-Z]{2}$/.test(code)) return null;
   const name = regionNames.of(code) ?? code;
@@ -213,7 +244,7 @@ export default function Call() {
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {!idle && <p className="noise-status">Use headphones · natural input, without browser echo cancellation or automatic volume adjustment.</p>}
           {state.noiseSuppressionStatus && <p className="noise-status" role="status">{state.noiseSuppressionStatus}</p>}
-          {state.diagnostics && <details className="call-diagnostics"><summary>Connection diagnostics</summary><p>{state.diagnostics}</p><small>Local estimates, not billing totals. Counters reset on reconnect.</small></details>}
+          {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
           <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
