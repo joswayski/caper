@@ -61,12 +61,32 @@ class GainNode extends SourceNode {
   constructor(context: Context) { super(); this.context = context; }
 }
 
+class FilterNode extends SourceNode {
+  type = "lowpass";
+  readonly frequency = { value: 350 };
+  readonly Q = { value: 1 };
+  readonly gain = { value: 0 };
+}
+
+class CompressorNode extends SourceNode {
+  readonly threshold = { value: -24 };
+  readonly knee = { value: 30 };
+  readonly ratio = { value: 12 };
+  readonly attack = { value: 0.003 };
+  readonly release = { value: 0.25 };
+}
+
 class Context {
   static latest: Context | undefined;
   readonly sampleRate = 48_000;
   state: AudioContextState = "running";
   readonly source = new SourceNode();
   readonly gain = new GainNode(this);
+  readonly makeup = new GainNode(this);
+  readonly filters = [new FilterNode(), new FilterNode(), new FilterNode()];
+  readonly compressors = [new CompressorNode(), new CompressorNode()];
+  filterIndex = 0;
+  compressorIndex = 0;
   readonly processed = new Track();
   readonly destination = { stream: new Stream([this.processed]) };
   closeCalls = 0;
@@ -77,7 +97,10 @@ class Context {
   async suspend() { this.suspendCalls++; this.state = "suspended"; }
   async resume() { this.resumeCalls++; this.state = "running"; }
   createMediaStreamSource(_stream: MediaStream) { return this.source; }
-  createGain() { return this.gain; }
+  createGainCalls = 0;
+  createGain() { return this.createGainCalls++ === 0 ? this.gain : this.makeup; }
+  createBiquadFilter() { return this.filters[this.filterIndex++]; }
+  createDynamicsCompressor() { return this.compressors[this.compressorIndex++]; }
   createMediaStreamDestination() { return this.destination; }
   async close() { this.closeCalls++; this.state = "closed"; }
 }
@@ -305,7 +328,7 @@ test("DeepFilter waits for a valid ready acknowledgement", async (t) => {
   assert.equal(raw.readyState, "ended");
 });
 
-test("a ready acknowledgement connects raw input to DeepFilter and returns only its destination track", async (t) => {
+test("a ready acknowledgement connects raw input through enhancement and returns only its destination track", async (t) => {
   const { raw } = setup(t);
   const capturing = captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined);
   await tick();
@@ -316,7 +339,13 @@ test("a ready acknowledgement connects raw input to DeepFilter and returns only 
   assert.equal(microphone.track, context.processed);
   assert.deepEqual(context.source.connections, [context.gain]);
   assert.deepEqual(context.gain.connections, [WorkletNode.latest]);
-  assert.deepEqual(WorkletNode.latest!.connections, [context.destination]);
+  assert.deepEqual(WorkletNode.latest!.connections, [context.filters[0]]);
+  assert.deepEqual(context.compressors[1].connections, [context.destination]);
+  assert.equal(context.filters[0].frequency.value, 75);
+  assert.equal(context.filters[1].gain.value, 2);
+  assert.equal(context.compressors[0].ratio.value, 3);
+  assert.equal(context.makeup.gain.value, 1.35);
+  assert.equal(context.compressors[1].threshold.value, -2);
   assert.equal(microphone.status, "DeepFilterNet active · balanced · on-device");
   microphone.stop();
 });
@@ -351,6 +380,26 @@ test("input volume clamps to 0–200% and changes the outgoing gain without repl
   microphone.setInputVolume(250);
   assert.equal(Context.latest!.gain.gain.value, 2);
   assert.equal(microphone.track, track);
+  microphone.stop();
+});
+
+test("voice enhancement can be compared without replacing the outgoing track", async (t) => {
+  setup(t);
+  const capturing = captureMicrophone(undefined, "deepfilter", new AbortController().signal, () => undefined, "headphones", undefined, undefined, 100, "natural");
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  const context = Context.latest!;
+  const track = microphone.track;
+  assert.deepEqual(WorkletNode.latest!.connections, [context.destination], "natural mode bypasses tone and dynamics processing");
+
+  microphone.setVoiceEnhancement("enhanced");
+  assert.equal(microphone.track, track);
+  assert.equal(WorkletNode.latest!.connections[0], context.filters[0]);
+  assert.equal(context.makeup.gain.value, 1.35);
+
+  microphone.setVoiceEnhancement("natural");
+  assert.deepEqual(WorkletNode.latest!.connections, [context.destination]);
   microphone.stop();
 });
 

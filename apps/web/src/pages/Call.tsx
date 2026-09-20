@@ -8,7 +8,7 @@ import MicPlayback from "./MicPlayback";
 import VoiceActivity from "./VoiceActivity";
 import "./call.css";
 
-const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, monitoring: false, participants: [], remoteMedia: [] };
+const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceEnhancement: "enhanced", monitoring: false, participants: [], remoteMedia: [] };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
 
@@ -18,6 +18,17 @@ function formatBytes(bytes: number) {
 
 function formatBitrate(bitsPerSecond: number) {
   return `${Math.round(bitsPerSecond / 1_000)} kbps`;
+}
+
+function deviceOptions(devices: MediaDeviceInfo[], kind: MediaDeviceKind) {
+  const labels = new Set<string>();
+  return devices.filter((device) => device.kind === kind).sort((left, right) => Number(right.deviceId === "default") - Number(left.deviceId === "default")).flatMap((device) => {
+    const label = device.label.replace(/^Default\s*[-–—]\s*/i, "") || (kind === "audioinput" ? "Microphone" : "Audio output");
+    const key = label.toLocaleLowerCase();
+    if (labels.has(key)) return [];
+    labels.add(key);
+    return [{ device, label }];
+  });
 }
 
 function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallViewState["diagnostics"]> }) {
@@ -36,11 +47,11 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
     ["RTT", `${Math.round(diagnostics.roundTripMs)} ms`],
     ["Route", diagnostics.route === "relay" ? "TURN relay" : diagnostics.route === "direct" ? "Direct" : "Not observed yet"],
   ];
-  return <section className="call-diagnostics" aria-labelledby="connection-diagnostics-heading">
-    <div className="diagnostics-heading"><h3 id="connection-diagnostics-heading">Connection diagnostics</h3><small>Updates every second</small></div>
+  return <details className="call-diagnostics">
+    <summary><span>Connection details</span><small>For troubleshooting</small></summary>
     <dl>{values.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     <p>Local estimates, not billing totals. Counters reset on reconnect.</p>
-  </section>;
+  </details>;
 }
 
 function ParticipantCountry({ code }: { code?: string }) {
@@ -145,7 +156,13 @@ export default function Call() {
 
   useEffect(() => {
     if (!connected) return;
-    const update = () => void navigator.mediaDevices.enumerateDevices().then(setDevices).catch(() => setActionError("Device list unavailable. Use system settings."));
+    const update = () => void navigator.mediaDevices.enumerateDevices().then((next) => {
+      setDevices(next);
+      const inputs = deviceOptions(next, "audioinput");
+      const outputs = deviceOptions(next, "audiooutput");
+      setDeviceId((current) => inputs.some(({ device }) => device.deviceId === current) ? current : inputs[0]?.device.deviceId || "");
+      setOutput((current) => outputs.some(({ device }) => device.deviceId === current) ? current : outputs[0]?.device.deviceId || "");
+    }).catch(() => setActionError("Device list unavailable. Use system settings."));
     update();
     navigator.mediaDevices.addEventListener("devicechange", update);
     return () => navigator.mediaDevices.removeEventListener("devicechange", update);
@@ -230,28 +247,24 @@ export default function Call() {
           {idle ? <div className="join-card">
             <span className="voice-symbol" aria-hidden="true">◖))</span>
             <h1>Drop in. Talk. Head out.</h1>
-            <p>One shared voice channel, open to everyone. No account, invites, or setup.</p>
-            <p>You get a random guest name for this visit. No name to pick or account to create.</p>
-            <p>Use headphones; echo cancellation is off. You can choose your microphone and output after joining.</p>
+            <p>Join the shared General channel as a guest. No account or invite needed.</p>
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join(name.trim(), deviceId || undefined); }}>
               <p>Joining as <strong>{name || "…"}</strong></p>
               <button className="primary-button" disabled={available !== true || !name.trim() || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
             </form>}
-            <div className="privacy-note">Your browser will ask for microphone access. Everyone in this shared channel can hear you and see your approximate country, inferred from your IP address. Caper does not store your IP address. Mic test can keep a brief recording temporarily in this browser; Caper does not store recordings on its servers. Other participants may record. Not end-to-end encrypted.</div>
+            <p className="privacy-note">You’ll be asked for microphone access when you join.</p>
           </div> : state.monitorStream && !actionPending
-            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} />
-            : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Creating a private return through the call service. Press Record when it’s ready." : connected ? "Your microphone is live unless muted. Stay as long as you like; leave whenever." : "Setting up your microphone and connection."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
+            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} enhancement={state.voiceEnhancement ?? "enhanced"} onEnhancementChange={(mode) => clientRef.current?.setVoiceEnhancement(mode)} />
+            : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Getting your private test ready." : connected ? "Say hello, or run a mic test to hear yourself first." : "Getting everything ready."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          {!idle && <p className="noise-status">Use headphones · natural input, without browser echo cancellation or automatic volume adjustment.</p>}
-          {state.noiseSuppressionStatus && <p className="noise-status" role="status">{state.noiseSuppressionStatus}</p>}
           {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
-          <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}><option value="">System default</option>{devices.filter((device) => device.kind === "audioinput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Microphone"}</option>)}</select></label>
-          {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-control"><span>Audio output</span><select value={output} onChange={(event) => setOutput(event.target.value)}><option value="">System default</option>{devices.filter((device) => device.kind === "audiooutput").map((device) => <option value={device.deviceId} key={device.deviceId}>{device.label || "Audio output"}</option>)}</select></label> : <p className="noise-status">Choose your audio output in system settings; this browser cannot switch outputs.</p>}
-          <label className="volume-control"><span>My microphone volume <output>{state.inputVolume}%</output></span><input type="range" min="0" max="200" step="1" value={state.inputVolume} aria-label="My microphone volume" onChange={(event) => clientRef.current?.setInputVolume(Number(event.target.value))} /><small>Only changes how others hear you.</small></label>
+          <label className="device-control"><span>Microphone</span><select disabled={controlsDisabled || !deviceOptions(devices, "audioinput").length} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}>{!deviceOptions(devices, "audioinput").length && <option value="">Loading…</option>}{deviceOptions(devices, "audioinput").map(({ device, label }) => <option value={device.deviceId} key={device.deviceId}>{label}</option>)}</select></label>
+          {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-control"><span>Audio output</span><select disabled={!deviceOptions(devices, "audiooutput").length} value={output} onChange={(event) => setOutput(event.target.value)}>{!deviceOptions(devices, "audiooutput").length && <option value="">Loading…</option>}{deviceOptions(devices, "audiooutput").map(({ device, label }) => <option value={device.deviceId} key={device.deviceId}>{label}</option>)}</select></label> : <p className="noise-status">Choose your audio output in system settings; this browser cannot switch outputs.</p>}
+          <label className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><input type="range" min="0" max="200" step="1" value={state.inputVolume} aria-label="My voice level" onChange={(event) => clientRef.current?.setInputVolume(Number(event.target.value))} /><small>Changes how loud you sound to others.</small></label>
           <div className="control-buttons">
             <button disabled={!connected || state.monitoring} type="button" className={state.muted ? "active" : ""} aria-pressed={state.muted} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? "Unmute" : "Mute"}</button>
             <button disabled={!connected || state.monitoring} type="button" className={state.deafened ? "active" : ""} aria-pressed={state.deafened} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? "Listen" : "Deafen"}</button>

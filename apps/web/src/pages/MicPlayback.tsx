@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { MAX_RECORDING_SECONDS, recordReceivedAudio, type ReceivedRecording } from "../media/recording";
+import type { VoiceEnhancement } from "../media/microphone";
 
 function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }) {
   const [level, setLevel] = useState(0);
@@ -38,37 +39,88 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
   </div>;
 }
 
-export default function MicPlayback({ stream, output, status }: { stream: MediaStream; output: string; status?: string }) {
-  const playbackRef = useRef<HTMLAudioElement>(null);
-  const urlRef = useRef<string | undefined>(undefined);
+interface Clip {
+  url: string;
+  silent: boolean;
+}
+
+const voiceModes: Array<{ id: VoiceEnhancement; label: string; description: string; article: string }> = [
+  { id: "natural", label: "Natural", description: "Noise cleanup only", article: "a" },
+  { id: "enhanced", label: "Enhanced", description: "Fuller and more even", article: "an" },
+];
+
+function RecordingPlayback({ clip, label, output, autoPlay, onDeviceError }: {
+  clip: Clip;
+  label: string;
+  output: string;
+  autoPlay: boolean;
+  onDeviceError(): void;
+}) {
+  const ref = useRef<HTMLAudioElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    let current = true;
+    const prepare = async () => {
+      const setSinkId = (element as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId?.bind(element);
+      try {
+        if (setSinkId) await setSinkId(output);
+      } catch {
+        if (current) onDeviceError();
+        return;
+      }
+      if (autoPlay) void element.play().catch(() => undefined);
+    };
+    void prepare();
+    return () => { current = false; };
+  }, [autoPlay, clip.url, output]);
+  return <audio ref={ref} aria-label={`${label} microphone sample`} controls src={clip.url} />;
+}
+
+export default function MicPlayback({ stream, output, status, enhancement, onEnhancementChange }: {
+  stream: MediaStream;
+  output: string;
+  status?: string;
+  enhancement: VoiceEnhancement;
+  onEnhancementChange(mode: VoiceEnhancement): void;
+}) {
+  const urlsRef = useRef<Partial<Record<VoiceEnhancement, string>>>({});
   const sessionRef = useRef<ReceivedRecording | undefined>(undefined);
   const generation = useRef(0);
+  const recordingMode = useRef<VoiceEnhancement>(enhancement);
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [url, setUrl] = useState<string>();
-  const [playbackStatus, setPlaybackStatus] = useState<"starting" | "playing" | "ready">();
+  const [clips, setClips] = useState<Partial<Record<VoiceEnhancement, Clip>>>({});
+  const [latest, setLatest] = useState<VoiceEnhancement>();
   const [error, setError] = useState<string>();
   const [deviceError, setDeviceError] = useState(false);
-  const [silent, setSilent] = useState(false);
 
-  const discard = () => {
+  const discardAll = () => {
     generation.current++;
     sessionRef.current?.cancel();
     sessionRef.current = undefined;
-    playbackRef.current?.pause();
-    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-    urlRef.current = undefined;
+    Object.values(urlsRef.current).forEach((url) => { if (url) URL.revokeObjectURL(url); });
+    urlsRef.current = {};
     setRecording(false);
-    setUrl(undefined);
-    setPlaybackStatus(undefined);
-    setSilent(false);
+    setClips({});
+    setLatest(undefined);
     setError(undefined);
     setDeviceError(false);
   };
 
   const startRecording = () => {
-    discard();
+    generation.current++;
+    sessionRef.current?.cancel();
+    sessionRef.current = undefined;
+    const mode = enhancement;
+    recordingMode.current = mode;
+    const previous = urlsRef.current[mode];
+    if (previous) URL.revokeObjectURL(previous);
+    delete urlsRef.current[mode];
+    setClips((current) => ({ ...current, [mode]: undefined }));
+    setLatest(undefined);
     setError(undefined);
+    setDeviceError(false);
     setElapsed(0);
     const current = generation.current;
     try {
@@ -90,10 +142,10 @@ export default function MicPlayback({ stream, output, status }: { stream: MediaS
           }
         } finally { void context.close(); }
         if (generation.current !== current) return;
-        setSilent(!hasSignal);
-        urlRef.current = URL.createObjectURL(blob);
-        setUrl(urlRef.current);
-        setPlaybackStatus("starting");
+        const url = URL.createObjectURL(blob);
+        urlsRef.current[mode] = url;
+        setClips((existing) => ({ ...existing, [mode]: { url, silent: !hasSignal } }));
+        setLatest(mode);
       }).catch((reason) => {
         if (generation.current !== current) return;
         sessionRef.current = undefined;
@@ -107,7 +159,7 @@ export default function MicPlayback({ stream, output, status }: { stream: MediaS
 
   useEffect(() => {
     // Reconnects and device changes must never start a new recording implicitly.
-    return () => discard();
+    return () => discardAll();
   }, [stream]);
   useEffect(() => {
     if (!recording) return;
@@ -115,55 +167,44 @@ export default function MicPlayback({ stream, output, status }: { stream: MediaS
     const timer = window.setInterval(() => setElapsed(Math.min(MAX_RECORDING_SECONDS, (performance.now() - started) / 1_000)), 100);
     return () => window.clearInterval(timer);
   }, [recording]);
-  useEffect(() => {
-    const element = playbackRef.current;
-    if (!element || !url) return;
-    let current = true;
-    const play = async () => {
-      try {
-        if (element.setSinkId) await element.setSinkId(output);
-      } catch {
-        if (!current) return;
-        setDeviceError(true);
-        setPlaybackStatus("ready");
-        return;
-      }
-      if (!current) return;
-      setDeviceError(false);
-      if (playbackStatus !== "starting") return;
-      try { await element.play(); }
-      catch {
-        if (current) setPlaybackStatus("ready");
-      }
-    };
-    void play();
-    return () => { current = false; };
-  }, [url, output]);
-
   return <section className="mic-test-card" aria-labelledby="mic-test-heading">
     <div className="mic-test-heading">
       <div>
-        <p className="eyebrow">Private microphone check</p>
-        <h3 id="mic-test-heading">{recording ? "Recording your microphone" : url ? "Here’s how you sound" : "Microphone test"}</h3>
+        <p className="eyebrow">Microphone test</p>
+        <h3 id="mic-test-heading">{recording ? `Recording ${voiceModes.find((mode) => mode.id === recordingMode.current)?.label}` : "Find your voice"}</h3>
       </div>
       {recording && <p className="recording-clock"><i aria-hidden="true" />{elapsed.toFixed(1)}s</p>}
     </div>
-    <p className="mic-test-copy">{recording
-      ? `Speak normally, then stop when you’re ready. Recording ends automatically after ${MAX_RECORDING_SECONDS} seconds.`
-      : url ? "Playback starts automatically. Listen for clarity, volume, and background noise."
-      : "Press Record, speak normally, then stop to hear the audio returned through Cloudflare."}</p>
+    <p className="mic-test-copy">Choose a sound, record a short sample, then switch modes and record again to compare them.</p>
+    <div className="voice-mode-picker" role="radiogroup" aria-label="Voice sound">
+      {voiceModes.map((mode) => <button
+        key={mode.id}
+        type="button"
+        role="radio"
+        aria-checked={enhancement === mode.id}
+        disabled={recording}
+        onClick={() => onEnhancementChange(mode.id)}
+      >
+        <span>{mode.label}{mode.id === "enhanced" && <small>Recommended</small>}</span>
+        <em>{mode.description}</em>
+      </button>)}
+    </div>
+    <div className="mic-meter-label"><span>Input level</span><small>Lights up while recording</small></div>
     <InputMeter active={recording} stream={stream} />
-    {status && <p className="noise-status">{status}</p>}
-    {!recording && !url && <button type="button" className="stop-recording-button" onClick={startRecording}>Record microphone</button>}
+    {status && <p className="mic-test-status"><i aria-hidden="true" />{status}</p>}
+    {!recording && <button type="button" className="stop-recording-button" onClick={startRecording}>Record {enhancement} sample</button>}
     {recording && <button type="button" className="stop-recording-button" onClick={() => sessionRef.current?.finish()}>Stop &amp; play back</button>}
     {error && <p className="call-error" role="alert">{error}</p>}
-    {silent && <p className="call-error" role="alert">No audible signal was detected in the returned recording. Check your selected microphone and hardware mute, or try Browser noise suppression.</p>}
     {deviceError && <p className="call-error" role="alert">Audio output unavailable; choose another device.</p>}
-    {url && <div className="mic-playback">
-      <p className="noise-status" role="status">{playbackStatus === "playing" ? "Playing your recording…" : playbackStatus === "ready" ? "Recording ready. Press play to listen." : "Starting playback…"}</p>
-      <audio ref={playbackRef} aria-label="Recorded microphone test" controls src={url} onPlay={() => setPlaybackStatus("playing")} onPause={() => setPlaybackStatus("ready")} onEnded={() => setPlaybackStatus("ready")} onError={() => setError("The recording could not be played. Please record another test.")} />
-      <button type="button" onClick={startRecording}>Test again</button>
-    </div>}
-    <small className="mic-test-privacy">The recording stays in this tab and is deleted when you test again or end the mic test.</small>
+    <div className="mic-comparison" aria-label="Recorded samples">
+      {voiceModes.map((mode) => <article key={mode.id} className={latest === mode.id ? "latest" : undefined}>
+        <div><strong>{mode.label}</strong>{latest === mode.id && <small>New</small>}</div>
+        {clips[mode.id]
+          ? <><RecordingPlayback clip={clips[mode.id]!} label={mode.label} output={output} autoPlay={latest === mode.id} onDeviceError={() => setDeviceError(true)} />
+            {clips[mode.id]!.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
+          : <p>Record {mode.article} {mode.label.toLowerCase()} sample to compare.</p>}
+      </article>)}
+    </div>
+    <small className="mic-test-privacy">Samples stay in this tab and disappear when you end the test.</small>
   </section>;
 }
