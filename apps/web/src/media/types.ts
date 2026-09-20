@@ -60,6 +60,7 @@ export interface CallViewState {
   phase: CallPhase;
   muted: boolean;
   deafened: boolean;
+  stateSyncPending?: boolean;
   inputVolume: number;
   monitoring: boolean;
   monitorStream?: MediaStream;

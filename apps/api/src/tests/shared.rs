@@ -127,6 +127,30 @@ async fn cross_pod_media_events_shutdown_and_replacement() {
         "store only token hashes"
     );
     assert!(!raw.contains("v=0"), "never store SDP");
+    for muted in [true, false, true, false] {
+        assert_eq!(
+            call(
+                app(a.clone()),
+                "POST",
+                "/api/media/state",
+                Some(alice_token),
+                json!({"muted":muted,"deafened":false})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let snapshot = event(&mut events, "snapshot").await;
+        assert_eq!(
+            snapshot["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == alice["id"])
+                .unwrap()["muted"],
+            muted
+        );
+    }
     let expected_mapping = b
         .read(|r| {
             Ok(r.participants
@@ -175,28 +199,33 @@ async fn cross_pod_media_events_shutdown_and_replacement() {
             .is_none(),
         "replacement revokes the old pod's stream"
     );
-    assert_eq!(
-        call(
-            app(replacement.clone()),
-            "POST",
-            "/api/media/state",
-            Some(alice_token),
-            json!({"muted":true,"deafened":false})
-        )
-        .await
-        .0,
-        StatusCode::NO_CONTENT
-    );
-    let snapshot = event(&mut resumed, "snapshot").await;
-    assert_eq!(
-        snapshot["participants"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["name"] == "Alice")
-            .unwrap()["muted"],
-        true
-    );
+    for (index, muted) in [true, false, true, false].into_iter().enumerate() {
+        let writer = if index % 2 == 0 { &replacement } else { &other };
+        assert_eq!(
+            call(
+                app(writer.clone()),
+                "POST",
+                "/api/media/state",
+                Some(alice_token),
+                json!({"muted":muted,"deafened":false})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let snapshot = event(&mut resumed, "snapshot").await;
+        assert_eq!(
+            snapshot["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == alice["id"])
+                .unwrap()["muted"],
+            muted
+        );
+    }
+    assert!(provider.closes.lock().await.is_empty());
+    assert!(provider.revocations.lock().await.is_empty());
     assert_eq!(
         call(
             app(other.clone()),

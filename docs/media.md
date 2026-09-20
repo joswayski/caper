@@ -84,6 +84,27 @@ renewal, not the notification path. Speaking indicators remain browser-side audi
 analysis, with no per-frame Valkey traffic. The unauthenticated pre-join roster
 still uses its existing ten-second polling; it is not part of this SSE change.
 
+The browser keeps lease renewal, mute/deafen synchronization, and SDP negotiation
+independent. Rapid mute/deafen changes coalesce to the latest local intent rather
+than replaying queued toggles. State writes time out after five seconds and retry
+transient failures after 250 ms while connected; local controls remain usable and
+the UI announces pending synchronization. A newer self snapshot that disagrees
+with local intent triggers repair, including when an older timed-out write commits
+late. Pushed rosters render without waiting for state writes or SDP negotiation.
+
+Rollout regression tests reproduce two failures in the previous browser: obsolete
+queued mute values and lease renewal blocked behind a pending state write. Tests
+also cover 503/504 state responses during SSE draining, slow subscription setup,
+late commits, and cancellation across leave/rejoin. Disposable Redis tests check
+alternating mute updates across API instances before and after replacement with
+unchanged capabilities/provider sessions and no provider track closures. These use
+mocked Cloudflare, not real media. Desktop and narrow Chromium UI checks use labeled
+mock calls; they are not physical iOS or live rollout verification. The reported
+production 504's originating request/intermediary and iOS audio-output warning
+remain unconfirmed. Deploy the **web** image and refresh both clients before
+repeating the two-device rollout test; no state schema or infrastructure change is
+required for this browser fix.
+
 The hash is a bounded channel unit, not a global blob for every future channel.
 Adding spaces/channels will require routing and per-channel keys/subscriptions.
 Do not remove the 12-person limit and call this a thousand-speaker media system:

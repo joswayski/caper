@@ -62,6 +62,10 @@ export class PublicCallClient {
   private eventRetryAttempts = 0;
   private controlFailedSince?: number;
   private stateDirty = false;
+  private stateRevision = 0;
+  private statePromise?: Promise<void>;
+  private stateRetryTimer?: number;
+  private snapshotPromise?: Promise<boolean>;
   private generation = 0;
   private reconnects = 0;
   private muted = false;
@@ -75,9 +79,9 @@ export class PublicCallClient {
   private stateBeforeMonitoring?: { muted: boolean; deafened: boolean };
   private pollPromise?: Promise<void>;
   private pollAgain = false;
-  private heartbeatDue = false;
   private pendingSnapshot?: CallSnapshot & { revision?: number };
   private pushedSnapshotVersion = 0;
+  private snapshotInvalidation = 0;
   private latestRevision?: number;
   private events?: CallEvents;
   private microphoneDeviceId?: string;
@@ -114,6 +118,7 @@ export class PublicCallClient {
       phase: this.phase,
       muted: this.muted,
       deafened: this.deafened,
+      stateSyncPending: this.phase === "connected" && this.stateDirty,
       inputVolume: this.inputVolume,
       monitoring: this.monitoring,
       monitorStream: this.monitorStream,
@@ -240,13 +245,13 @@ export class PublicCallClient {
     // State updates touch only the Rust registry, not SDP or the media transport.
     await Promise.all([
       waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal),
-      this.setState(this.muted, this.deafened),
+      this.setState(),
     ]);
     const connected = performance.now();
     // Subscription negotiation still waits for transport. Never open audio early.
     // A pushed roster does not renew the lease consumed by signaling/transport setup.
     await this.poll(true);
-    if (this.stateDirty) await this.setState(this.muted, this.deafened);
+    if (this.stateDirty) await this.setState();
     if (this.pollAgain) await this.poll();
     signal.throwIfAborted();
     if (generation !== this.generation || !events.connected || pc.connectionState !== "connected" || microphone.readyState !== "live") {
@@ -270,6 +275,7 @@ export class PublicCallClient {
     this.events?.stop();
     const events = this.events = new CallEvents(() => {
       if (generation !== this.generation) return;
+      ++this.snapshotInvalidation;
       if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
       else this.pollAgain = true;
     }, (error) => {
@@ -313,6 +319,17 @@ export class PublicCallClient {
     this.pendingSnapshot = snapshot;
     this.pushedSnapshotVersion++;
     this.pollAgain = true;
+    // Roster presentation is independent of slow SDP work and our own writes.
+    this.participants = snapshot.participants;
+    if (this.phase === "connected") {
+      const self = snapshot.participants.find((participant) => participant.id === this.selfId);
+      // A timed-out write can still commit later. Reassert current intent if a
+      // newer server snapshot disagrees; never change the local microphone to it.
+      if (self && (self.muted !== this.muted || self.deafened !== this.deafened)) {
+        void this.setState().catch((error) => this.emit(message(error)));
+      }
+      this.emit();
+    }
   }
 
   private get readyToTalk() {
@@ -397,6 +414,7 @@ export class PublicCallClient {
 
   async setMuted(muted: boolean) {
     if (this.monitoring) return;
+    const generation = this.generation;
     this.muted = muted;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !muted;
@@ -406,12 +424,13 @@ export class PublicCallClient {
       if (!current) return;
       current.track.enabled = this.readyToTalk && !this.muted;
       await current.sender.replaceTrack(this.muted || !this.readyToTalk ? null : current.track);
-    });
-    if (this.token) await this.setState(muted, this.deafened);
+    }).catch((error) => { if (generation === this.generation) throw error; });
+    if (generation === this.generation && this.token) await this.setState();
   }
 
   async setDeafened(deafened: boolean) {
     if (this.monitoring) return;
+    const generation = this.generation;
     if (deafened) this.muted = true;
     this.deafened = deafened;
     const microphone = this.senders.get("microphone");
@@ -422,8 +441,8 @@ export class PublicCallClient {
       if (!current) return;
       current.track.enabled = this.readyToTalk && !this.muted;
       await current.sender.replaceTrack(this.muted || !this.readyToTalk ? null : current.track);
-    });
-    await this.setState(this.muted, deafened);
+    }).catch((error) => { if (generation === this.generation) throw error; });
+    if (generation === this.generation && this.token) await this.setState();
   }
 
   async setMonitoring(monitoring: boolean) {
@@ -454,7 +473,7 @@ export class PublicCallClient {
       await current.sender.replaceTrack(this.muted || this.monitoring ? null : current.track);
       current.track.enabled = this.monitoring || !this.muted;
     });
-    if (this.token) await this.setState(this.muted, this.deafened);
+    if (this.token) await this.setState();
     if (monitoring && this.monitoring) await this.startReceivedMonitor();
   }
 
@@ -495,13 +514,40 @@ export class PublicCallClient {
     this.monitorStatus = undefined;
   }
 
-  private setState(muted: boolean, deafened: boolean) {
+  private setState(): Promise<void> {
     this.stateDirty = true;
+    ++this.stateRevision;
+    if (this.phase === "connected") this.emit();
+    if (this.statePromise) return this.statePromise;
     const generation = this.generation;
-    return this.serialize(async () => {
-      await this.api("state", { muted, deafened });
-      if (generation === this.generation) this.stateDirty = this.muted !== muted || this.deafened !== deafened;
-    }, generation);
+    const token = this.token;
+    // State is idempotent and does not negotiate SDP. Coalesce rapid changes
+    // independently of the signaling queue, retrying current intent only.
+    const sync = async () => {
+      while (this.stateDirty && token && generation === this.generation) {
+        const revision = this.stateRevision;
+        try {
+          await this.api("state", { muted: this.muted, deafened: this.deafened }, token, SNAPSHOT_TIMEOUT_MS);
+        } catch (error) {
+          if (generation !== this.generation) return;
+          if (this.phase !== "connected" || !transientControlError(error)) throw error;
+          window.clearTimeout(this.stateRetryTimer);
+          this.stateRetryTimer = window.setTimeout(() => {
+            if (generation === this.generation) void this.setState().catch((error) => this.emit(message(error)));
+          }, 250);
+          return;
+        }
+        if (generation !== this.generation) return;
+        this.stateDirty = revision !== this.stateRevision;
+        window.clearTimeout(this.stateRetryTimer);
+      }
+    };
+    const pending = sync().finally(() => {
+      if (this.statePromise === pending) this.statePromise = undefined;
+      if (generation === this.generation && this.phase === "connected") this.emit();
+    });
+    this.statePromise = pending;
+    return pending;
   }
 
   private async openMicrophone(deviceId?: string) {
@@ -710,50 +756,65 @@ export class PublicCallClient {
     } catch { /* Stats support varies; diagnostics must never interrupt media. */ }
   }
 
+  private renewLease(): Promise<boolean> {
+    if (this.snapshotPromise) return this.snapshotPromise;
+    const generation = this.generation;
+    const started = performance.now();
+    const invalidation = this.snapshotInvalidation;
+    const pushedVersion = this.pushedSnapshotVersion;
+    const pending = this.api<CallSnapshot & { revision?: number }>("snapshot", {}, this.token, SNAPSHOT_TIMEOUT_MS).then((snapshot) => {
+      if (generation !== this.generation) return false;
+      window.clearTimeout(this.pollRetryTimer);
+      this.controlFailedSince = undefined;
+      if (invalidation !== this.snapshotInvalidation) this.pollAgain = true;
+      else if (pushedVersion === this.pushedSnapshotVersion || snapshot.revision !== undefined) this.queueSnapshot(snapshot);
+      return true;
+    }).catch((error) => {
+      if (generation !== this.generation) return false;
+      if (this.phase !== "connected") throw error;
+      this.controlFailedSince ??= started;
+      if (!transientControlError(error) || performance.now() - this.controlFailedSince >= CONTROL_RECOVERY_MS) {
+        this.scheduleReconnect();
+      } else {
+        window.clearTimeout(this.pollRetryTimer);
+        this.pollRetryTimer = window.setTimeout(() => {
+          if (generation === this.generation) void this.poll(true).catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+        }, 3_000);
+      }
+      return false;
+    }).finally(() => {
+      if (this.snapshotPromise === pending) this.snapshotPromise = undefined;
+    });
+    this.snapshotPromise = pending;
+    return pending;
+  }
+
   private poll(heartbeat = false): Promise<void> {
     if (this.phase !== "connected" && this.phase !== "joining") return Promise.resolve();
-    this.heartbeatDue ||= heartbeat;
+    // Renew even while reconciliation is waiting on a slow media operation.
+    if (heartbeat) {
+      const generation = this.generation;
+      const renewal = this.snapshotPromise
+        ? this.snapshotPromise.then((renewed) => renewed && generation === this.generation ? this.renewLease() : false)
+        : this.renewLease();
+      return renewal.then((renewed) => renewed && generation === this.generation ? this.poll() : undefined);
+    }
     this.pollAgain = true;
     if (this.pollPromise) return this.pollPromise;
     const generation = this.generation;
     const refresh = async () => {
       while (this.pollAgain && generation === this.generation) {
         this.pollAgain = false;
-        const started = performance.now();
-        let snapshot = this.pendingSnapshot;
+        const snapshot = this.pendingSnapshot;
         this.pendingSnapshot = undefined;
-        // Receiving pushed state is not a lease renewal. Even under continuous
-        // channel activity, send the scheduled authenticated heartbeat.
-        if (this.heartbeatDue) snapshot = undefined;
-        this.heartbeatDue = false;
-        const pushedVersion = this.pushedSnapshotVersion;
-        try {
-          if (!snapshot) snapshot = await this.api<CallSnapshot & { revision?: number }>("snapshot", {}, this.token, SNAPSHOT_TIMEOUT_MS);
-        } catch (error) {
-          if (generation !== this.generation) return;
-          if (this.phase !== "connected") throw error;
-          this.controlFailedSince ??= started;
-          if (!transientControlError(error) || performance.now() - this.controlFailedSince >= CONTROL_RECOVERY_MS) {
-            this.scheduleReconnect();
-          } else {
-            window.clearTimeout(this.pollRetryTimer);
-            this.pollRetryTimer = window.setTimeout(() => {
-              if (generation === this.generation) void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
-            }, 3_000);
-          }
-          return;
+        if (!snapshot) {
+          if (!await this.renewLease()) return;
+          continue;
         }
+        const pushedVersion = this.pushedSnapshotVersion;
         if (generation !== this.generation) return;
-        if (pushedVersion !== this.pushedSnapshotVersion) continue;
         if (snapshot.revision !== undefined && this.latestRevision !== undefined && snapshot.revision < this.latestRevision) continue;
         if (snapshot.revision !== undefined) this.latestRevision = snapshot.revision;
-        window.clearTimeout(this.pollRetryTimer);
-        this.controlFailedSince = undefined;
-        if (this.stateDirty && this.phase === "connected") {
-          try { await this.setState(this.muted, this.deafened); }
-          catch (error) { if (!transientControlError(error)) throw error; }
-          if (generation !== this.generation) return;
-        }
         if (pushedVersion !== this.pushedSnapshotVersion) continue;
         // ontrack uses the roster to associate arriving media with its owner.
         this.participants = snapshot.participants;
@@ -862,6 +923,9 @@ export class PublicCallClient {
     window.clearTimeout(this.pollRetryTimer);
     window.clearTimeout(this.eventRetryTimer);
     window.clearTimeout(this.eventRecoveryTimer);
+    window.clearTimeout(this.stateRetryTimer);
+    this.statePromise = undefined;
+    this.snapshotPromise = undefined;
     this.eventRecoveryTimer = undefined;
     this.eventRetryAttempts = 0;
     this.controlFailedSince = undefined;
@@ -884,7 +948,7 @@ export class PublicCallClient {
     this.pc?.close();
     this.pc = undefined; this.token = undefined;
     this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.localMedia = undefined; this.pollPromise = undefined; this.pollAgain = false;
-    this.pendingSnapshot = undefined; this.pushedSnapshotVersion = 0; this.latestRevision = undefined; this.heartbeatDue = false;
+    this.pendingSnapshot = undefined; this.pushedSnapshotVersion = 0; this.latestRevision = undefined;
   }
 
   private resetMonitoring() {

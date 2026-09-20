@@ -430,20 +430,24 @@ test("heartbeat timeout covers response bodies without closing healthy media", a
 });
 
 test("failed mute state synchronization retries the latest state after API recovery", async (t) => {
-  const { client, track, stateUpdates, install } = setup(t);
+  const { client, track, stateUpdates, states, install } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
   const originalFetch = fetch;
   let unavailable = true;
   install("fetch", (url: string, options: RequestInit) => unavailable && url.endsWith("/state")
     ? Promise.resolve(Response.json({}, { status: 503 })) : originalFetch(url, options));
-  await assert.rejects(client.setMuted(true));
+  await client.setMuted(true);
   assert.equal(track.enabled, false);
   assert.equal(Peer.latest.senders[0].track, null);
-  await assert.rejects(client.setDeafened(true));
+  await client.setDeafened(true);
+  assert.equal(states.at(-1)?.stateSyncPending, true);
   unavailable = false;
-  await (client as unknown as { poll(): Promise<void> }).poll();
+  t.mock.timers.tick(250);
+  await tick();
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
+  assert.equal(states.at(-1)?.stateSyncPending, false);
   assert.equal(Peer.all.length, 1);
 });
 
@@ -591,10 +595,9 @@ test("mute media changes are not queued behind roster synchronization", async (t
   assert.equal(finishStates.length, 1);
 
   finishStates.shift()!();
-  await deafening;
   await new Promise((resolve) => setImmediate(resolve));
   finishStates.shift()!();
-  await muting;
+  await Promise.all([deafening, muting]);
 });
 
 test("unmute during a pending microphone switch attaches the new track", async (t) => {
@@ -1219,6 +1222,205 @@ test("queued pushed snapshots never suppress a scheduled lease heartbeat", async
   await tick();
   assert.equal(requests, 2, "the queued push cannot replace the authenticated renewal");
   assert.equal(states.at(-1)?.participants[0]?.muted, true);
+});
+
+test("rapid mute changes coalesce to the latest intent behind an in-flight state write", async (t) => {
+  const { client, install, states } = setup(t);
+  await client.join();
+  const original = fetch;
+  const updates: boolean[] = [];
+  let finish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/state")) return original(url, init);
+    updates.push(JSON.parse(init.body as string).muted);
+    if (updates.length === 1) return new Promise<Response>((resolve) => { finish = () => resolve(new Response(null, { status: 204 })); });
+    return Promise.resolve(new Response(null, { status: 204 }));
+  });
+  const first = client.setMuted(true);
+  await tick();
+  const changes = [client.setMuted(false), client.setMuted(true), client.setMuted(false)];
+  await tick();
+  finish();
+  await Promise.all([first, ...changes]);
+  assert.deepEqual(updates, [true, false], "do not replay obsolete toggles after a slow request");
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(Peer.latest.senders[0].track?.enabled, true);
+});
+
+test("mute writes and pushed roster updates cannot block the scheduled lease renewal", async (t) => {
+  const { client, install, states, events, calls } = setup(t);
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  await client.join();
+  const original = fetch;
+  const participants = [{ id: "other", name: "Other", muted: true, deafened: false, tracks: [] }];
+  let renewals = 0;
+  let finish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/snapshot")) {
+      renewals++;
+      return Promise.resolve(Response.json({ participants, revision: 1 }));
+    }
+    if (url.endsWith("/state")) return new Promise<Response>((resolve, reject) => {
+      finish = () => resolve(new Response(null, { status: 204 }));
+      init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    });
+    return original(url, init);
+  });
+  const muting = client.setMuted(true).catch(() => undefined);
+  await tick();
+  events[0].enqueue(snapshotEvent(participants, 1));
+  await tick();
+  const pushedMuted = states.at(-1)?.participants[0]?.muted;
+  t.mock.timers.tick(15_000);
+  await tick();
+  assert.ok(renewals > 0, "lease renewal must not queue behind a state request");
+  assert.equal(pushedMuted, true, "show pushed state before heartbeat, without waiting for our own write");
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
+  assert.equal(calls.filter((call) => call === "join").length, 1);
+  finish();
+  await muting;
+});
+
+test("draining with failed state writes retries latest intent without replacing the voice session", async (t) => {
+  const { client, events, install, states, calls } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const peer = Peer.latest;
+  const original = fetch;
+  const updates: Array<{ muted: boolean; deafened: boolean }> = [];
+  const tokens: string[] = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    tokens.push((init.headers as Record<string, string>)["x-caper-media-token"]);
+    if (!url.endsWith("/state")) return original(url, init);
+    updates.push(JSON.parse(init.body as string));
+    return Promise.resolve(updates.length <= 2
+      ? Response.json({}, { status: updates.length === 1 ? 503 : 504 })
+      : new Response(null, { status: 204 }));
+  });
+  await client.setMuted(true);
+  assert.equal(peer.senders[0].track, null);
+  assert.equal(states.at(-1)?.stateSyncPending, true);
+  events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
+  events[0].close();
+  await tick();
+  t.mock.timers.tick(50);
+  await tick();
+  await client.setDeafened(true);
+  await Promise.all([client.setDeafened(false), client.setMuted(false)]);
+  t.mock.timers.tick(300);
+  await tick();
+  assert.deepEqual(updates.at(-1), { muted: false, deafened: false });
+  assert.equal(states.at(-1)?.stateSyncPending, false);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.some((state) => state.error !== undefined), false);
+  assert.equal(events.length, 2);
+  assert.equal(Peer.latest, peer);
+  assert.equal(peer.getSenders()[0].track?.enabled, true);
+  assert.equal(calls.filter((call) => call === "join").length, 1);
+  assert.equal(calls.includes("leave"), false);
+  assert.deepEqual([...new Set(tokens)], ["capability"]);
+});
+
+test("blocked subscription negotiation cannot delay roster, mute synchronization, or lease renewal", async (t) => {
+  const { client, events, install, states, stateUpdates } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const original = fetch;
+  let finish!: () => void;
+  let renewals = 0;
+  let muted = false;
+  const roster = () => [{ id: "other", name: "Other", muted, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/subscribe")) return new Promise<Response>((resolve) => {
+      finish = () => { void original(url, init).then(resolve); };
+    });
+    if (url.endsWith("/snapshot")) {
+      renewals++;
+      return Promise.resolve(Response.json({ participants: roster(), revision: muted ? 2 : 1 }));
+    }
+    return original(url, init);
+  });
+  events[0].enqueue(snapshotEvent(roster(), 1));
+  await tick();
+  assert.equal(typeof finish, "function", "subscription is waiting on its provider response");
+  muted = true;
+  events[0].enqueue(snapshotEvent(roster(), 2));
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
+  await client.setMuted(true);
+  assert.equal(stateUpdates.at(-1)?.muted, true);
+  for (let heartbeat = 0; heartbeat < 2; heartbeat++) {
+    t.mock.timers.tick(15_000);
+    await tick();
+  }
+  assert.equal(renewals, 2, "heartbeat must run while SDP work is still pending");
+  assert.equal(states.at(-1)?.phase, "connected");
+  finish();
+  await tick();
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
+});
+
+test("a late timed-out mute write is repaired from a newer pushed self snapshot", async (t) => {
+  const { client, events, install, states } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const original = fetch;
+  const updates: boolean[] = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/state")) return original(url, init);
+    updates.push(JSON.parse(init.body as string).muted);
+    if (updates.length === 1) return new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    });
+    return Promise.resolve(new Response(null, { status: 204 }));
+  });
+  const muting = client.setMuted(true);
+  await tick();
+  t.mock.timers.tick(5_000);
+  await muting;
+  await client.setMuted(false);
+  assert.deepEqual(updates, [true, false]);
+  // The first request committed after the unmute, even though its HTTP wait aborted.
+  events[0].enqueue(snapshotEvent([{ id: "self", name: "Self", muted: true, deafened: false, tracks: [] }], 8));
+  await tick();
+  assert.deepEqual(updates, [true, false, false]);
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(Peer.latest.senders[0].track?.enabled, true);
+  events[0].enqueue(snapshotEvent([{ id: "self", name: "Self", muted: false, deafened: false, tracks: [] }], 9));
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.muted, false);
+  assert.equal(states.at(-1)?.stateSyncPending, false);
+  assert.equal(updates.length, 3, "an agreeing snapshot must not trigger another write");
+});
+
+test("leaving cancels pending state retries and ignores an old mute action after rejoin", async (t) => {
+  const { client, install, states } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const original = fetch;
+  let writes = 0;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/state")) {
+      writes++;
+      return Promise.resolve(Response.json({}, { status: 503 }));
+    }
+    return original(url, init);
+  });
+  await client.setMuted(true);
+  assert.equal(states.at(-1)?.stateSyncPending, true);
+  const oldAction = client.setMuted(false);
+  await client.leave();
+  await oldAction;
+  install("fetch", original);
+  await client.join();
+  t.mock.timers.tick(1_000);
+  await tick();
+  assert.equal(writes, 1, "no old-generation write or retry");
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(states.at(-1)?.stateSyncPending, false);
+  assert.equal(states.some((state) => state.error !== undefined), false);
 });
 
 test("connection event wait ignores intermediate states", async (t) => {
