@@ -15,6 +15,7 @@ const SECRET_KEYS: &[&str] = &[
     "SES_FROM_ADDRESS",
     "SES_CONFIGURATION_SET",
     "MEDIA_ENABLED",
+    "VALKEY_URL",
     "CF_SFU_APP_ID",
     "CF_SFU_APP_SECRET",
     "CF_TURN_KEY_ID",

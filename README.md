@@ -57,7 +57,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The production web container exposes port `3000` and reports readiness at
 `/health`. The separate `apps/api/Dockerfile` API container (`caper-api`) exposes port
-`3001` with `/health`. In production, Traefik routes public `caper.chat/api/*`
+`3001` with `/health` for liveness and `/readyz` for dependency-aware readiness.
+Set server-only `VALKEY_URL` to share live calls across API replicas; leave it empty
+only for single-process development. The [shared-state rollout](docs/media.md#shared-call-state-and-rolling-deployments)
+requires a one-time empty-channel cutover before enabling multiple replicas.
+In production, Traefik routes public `caper.chat/api/*`
 requests directly to that Rust service. Run `cargo run -p caper-api` alongside
 `npm run dev:web`; Vite forwards development `/api` requests to port `3001`.
 The `/live` demo offers one public General voice channel: guests get a random name,

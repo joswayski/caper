@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::{get, post},
@@ -9,9 +9,10 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -39,6 +40,8 @@ mod auth;
 mod db;
 mod email;
 mod environment;
+mod media_store;
+use media_store::Timestamp;
 
 pub use db::{connect_database, migrate_database};
 pub use environment::RuntimeEnvironment;
@@ -570,6 +573,7 @@ pub struct AppState {
     config: Config,
     provider: Arc<dyn Provider>,
     registry: Arc<Mutex<Registry>>,
+    store: Option<Arc<media_store::ValkeyStore>>,
     database: Option<PgPool>,
     events: watch::Sender<()>,
     shutting_down: watch::Sender<bool>,
@@ -600,6 +604,7 @@ impl AppState {
             config,
             provider,
             registry: Arc::new(Mutex::new(Registry::default())),
+            store: None,
             database,
             events,
             shutting_down,
@@ -628,15 +633,21 @@ impl AppState {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Registry {
     participants: HashMap<Uuid, Participant>,
     tokens: HashMap<String, Uuid>,
-    joins: VecDeque<Instant>,
+    joins: VecDeque<Timestamp>,
     cleanup: VecDeque<CleanupJob>,
-    joining: usize,
-    monitor_reservations: HashSet<(Uuid, MonitorRole)>,
+    reservations: HashMap<Uuid, JoinReservation>,
+    revision: u64,
 }
+#[derive(Clone, Serialize, Deserialize)]
+struct JoinReservation {
+    started: Timestamp,
+    monitor: Option<Monitor>,
+}
+#[derive(Clone, Serialize, Deserialize)]
 struct Participant {
     id: Uuid,
     token: String,
@@ -646,28 +657,29 @@ struct Participant {
     turn_usernames: Vec<String>,
     muted: bool,
     deafened: bool,
-    lease: Instant,
-    joined: Instant,
+    lease: Timestamp,
+    joined: Timestamp,
     tracks: HashMap<String, Track>,
     subscriptions: HashMap<String, Uuid>,
     pending_offer: bool,
     operation: bool,
-    operations: VecDeque<Instant>,
+    operation_started: Option<Timestamp>,
+    operations: VecDeque<Timestamp>,
     monitor: Option<Monitor>,
-    events: Option<watch::Sender<()>>,
+    events: Option<Uuid>,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 struct Monitor {
     parent: Uuid,
     role: MonitorRole,
 }
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 enum MonitorRole {
     Sender,
     Receiver,
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum CleanupAction {
     Close { session: String, mid: String },
     Discover { session: String },
@@ -682,11 +694,14 @@ impl CleanupAction {
         }
     }
 }
+#[derive(Clone, Serialize, Deserialize)]
 struct CleanupJob {
     action: CleanupAction,
     attempts: u8,
-    not_before: Instant,
+    not_before: Timestamp,
+    claim: Option<Uuid>,
 }
+#[derive(Clone, Serialize, Deserialize)]
 struct Track {
     id: Uuid,
     kind: Kind,
@@ -787,6 +802,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/media/leave", post(leave));
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
+        .route("/readyz", get(ready))
         .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(account_login)
         .merge(protected)
@@ -1025,7 +1041,22 @@ async fn account_profile(
 async fn status(State(s): State<AppState>) -> Json<Value> {
     Json(json!({"enabled":s.config.enabled}))
 }
+async fn ready(State(s): State<AppState>) -> Result<StatusCode, ApiError> {
+    if *s.shutting_down.borrow() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "API is draining",
+        ));
+    }
+    s.read(|_| Ok(StatusCode::NO_CONTENT)).await
+}
 fn ensure_enabled(s: &AppState) -> Result<(), ApiError> {
+    if *s.shutting_down.borrow() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "API is draining",
+        ));
+    }
     s.config
         .enabled
         .then_some(())
@@ -1038,7 +1069,11 @@ fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))
 }
+fn token_hash(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
 fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
+    let token = token_hash(token);
     let id = r
         .tokens
         .iter()
@@ -1072,13 +1107,23 @@ struct EventStreamState {
     state: AppState,
     token: String,
     updates: watch::Receiver<()>,
-    cancellation: watch::Receiver<()>,
+    connection: Uuid,
     shutdown: watch::Receiver<bool>,
     first: bool,
+    snapshots: bool,
+    initial_snapshot: bool,
+    done: bool,
+    revision: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+struct EventQuery {
+    snapshots: Option<u8>,
 }
 
 async fn events(
     State(s): State<AppState>,
+    Query(query): Query<EventQuery>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_enabled(&s)?;
@@ -1090,64 +1135,108 @@ async fn events(
         ));
     }
     let token = bearer(&headers)?.to_owned();
-    let (updates, cancellation) = {
-        // Authentication, subscription and connection replacement are atomic with roster
-        // mutations, preventing a change between authentication and registration being lost.
-        let mut r = s.registry.lock().await;
-        let id = authenticate(&r, &token)?;
-        let participant = r.participants.get_mut(&id).unwrap();
-        if participant.monitor.is_some() {
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "monitor sessions cannot receive public events",
-            ));
-        }
-        let (tx, rx) = watch::channel(());
-        participant.events = Some(tx);
-        (s.events.subscribe(), rx)
+    let connection = Uuid::new_v4();
+    let updates = {
+        // Listen before registration; the initial snapshot reads current shared state.
+        let mut updates = s.events.subscribe();
+        s.update(|r| {
+            let id = authenticate(r, &token)?;
+            let participant = r.participants.get_mut(&id).unwrap();
+            if participant.monitor.is_some() {
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "monitor sessions cannot receive public events",
+                ));
+            }
+            participant.events = Some(connection);
+            Ok(())
+        })
+        .await?;
+        updates.borrow_and_update();
+        updates
     };
     let stream = stream::unfold(
         EventStreamState {
             state: s,
             token,
             updates,
-            cancellation,
+            connection,
             shutdown,
             first: true,
+            snapshots: query.snapshots == Some(1),
+            initial_snapshot: query.snapshots == Some(1),
+            done: false,
+            revision: None,
         },
         |mut stream| async move {
-            if *stream.shutdown.borrow() {
-                return None;
-            }
-            let event = if stream.first {
-                stream.first = false;
-                "ready"
-            } else {
-                tokio::select! {
-                    _ = stream.shutdown.changed() => return None,
-                    changed = stream.updates.changed() => {
-                        if changed.is_err() { return None; }
-                        "changed"
+            loop {
+                if stream.done {
+                    return None;
+                }
+                let event = if *stream.shutdown.borrow() {
+                    "draining"
+                } else if stream.first {
+                    stream.first = false;
+                    "ready"
+                } else if stream.initial_snapshot {
+                    stream.initial_snapshot = false;
+                    "snapshot"
+                } else {
+                    tokio::select! {
+                        _ = stream.shutdown.changed() => "draining",
+                        changed = stream.updates.changed() => {
+                            if changed.is_err() { return None; }
+                            "changed"
+                        }
+                        () = tokio::time::sleep(Duration::from_secs(10)) => "heartbeat",
                     }
-                    cancelled = stream.cancellation.changed() => {
-                        let _ = cancelled;
+                };
+                if event == "draining" {
+                    if !stream.snapshots || stream.first {
                         return None;
                     }
-                    () = tokio::time::sleep(Duration::from_secs(10)) => "heartbeat",
+                    stream.done = true;
+                    return Some((
+                        Ok::<_, std::convert::Infallible>(
+                            Event::default().event("draining").data("{}"),
+                        ),
+                        stream,
+                    ));
                 }
-            };
-            // Heartbeats do not renew the lease. They do bound expiry/revocation detection
-            // even when the cleanup sweep is not running.
-            let valid = {
-                let r = stream.state.registry.lock().await;
-                authenticate(&r, &stream.token).is_ok() && stream.cancellation.has_changed().is_ok()
-            };
-            valid.then(|| {
-                (
-                    Ok::<_, std::convert::Infallible>(Event::default().event(event).data("{}")),
+                // Heartbeats do not renew the lease. They do bound expiry/revocation detection
+                // even when the cleanup sweep is not running.
+                let snapshot = stream
+                    .state
+                    .read(|r| {
+                        let id = authenticate(r, &stream.token)?;
+                        if r.participants.get(&id).and_then(|p| p.events) != Some(stream.connection)
+                        {
+                            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"));
+                        }
+                        Ok((r.revision, public_snapshot(r)))
+                    })
+                    .await
+                    .ok()?;
+                let (revision, snapshot) = snapshot;
+                // Connection replacement also wakes streams. Do not expose it as
+                // a roster mutation to unrelated participants.
+                if event == "changed" && stream.revision == Some(revision) {
+                    continue;
+                }
+                stream.revision = Some(revision);
+                let (name, data) =
+                    if event == "snapshot" || (stream.snapshots && event == "changed") {
+                        ("snapshot", snapshot)
+                    } else {
+                        (event, json!({}))
+                    };
+                return Some((
+                    Ok::<_, std::convert::Infallible>(
+                        Event::default().event(name).data(data.to_string()),
+                    ),
                     stream,
-                )
-            })
+                ));
+            }
         },
     );
     let mut response = Sse::new(stream).into_response();
@@ -1159,7 +1248,7 @@ async fn events(
 }
 
 fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {
-    let now = Instant::now();
+    let now = Timestamp::now();
     while p
         .operations
         .front()
@@ -1178,6 +1267,7 @@ fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {
     }
     p.operations.push_back(now);
     p.operation = true;
+    p.operation_started = Some(now);
     Ok(())
 }
 
@@ -1216,53 +1306,64 @@ async fn join(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
     let country_code = country_code(&headers);
-    let monitor = {
-        let mut r = s.registry.lock().await;
-        let now = Instant::now();
-        while r
-            .joins
-            .front()
-            .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
-        {
-            r.joins.pop_front();
-        }
-        if r.joins.len() >= JOIN_LIMIT_PER_MINUTE {
-            return Err(ApiError::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "rate limit exceeded",
-            ));
-        }
-        if r.participants.len() + r.joining >= MAX_PARTICIPANTS {
-            return Err(ApiError::new(StatusCode::CONFLICT, "lobby full"));
-        }
-        let monitor = if let Some(role) = input.monitor {
-            let parent = authenticate(&r, bearer(&headers)?)?;
-            if r.participants.get(&parent).unwrap().monitor.is_some() {
+    let reservation = Uuid::new_v4();
+    let monitor = s
+        .update(|r| {
+            let now = Timestamp::now();
+            r.reservations
+                .retain(|_, reservation| reservation.started.elapsed() < Duration::from_secs(30));
+            while r
+                .joins
+                .front()
+                .is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(60))
+            {
+                r.joins.pop_front();
+            }
+            if r.joins.len() >= JOIN_LIMIT_PER_MINUTE {
                 return Err(ApiError::new(
-                    StatusCode::FORBIDDEN,
-                    "monitor sessions cannot create monitors",
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate limit exceeded",
                 ));
             }
-            if r.monitor_reservations.contains(&(parent, role))
-                || r.participants.values().any(|p| {
+            if r.participants.len() + r.reservations.len() >= MAX_PARTICIPANTS {
+                return Err(ApiError::new(StatusCode::CONFLICT, "lobby full"));
+            }
+            let monitor = if let Some(role) = input.monitor {
+                let parent = authenticate(r, bearer(&headers)?)?;
+                if r.participants.get(&parent).unwrap().monitor.is_some() {
+                    return Err(ApiError::new(
+                        StatusCode::FORBIDDEN,
+                        "monitor sessions cannot create monitors",
+                    ));
+                }
+                if r.reservations.values().any(|reservation| {
+                    reservation
+                        .monitor
+                        .is_some_and(|m| m.parent == parent && m.role == role)
+                }) || r.participants.values().any(|p| {
                     p.monitor
                         .is_some_and(|m| m.parent == parent && m.role == role)
-                })
-            {
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "monitor role already active",
-                ));
-            }
-            r.monitor_reservations.insert((parent, role));
-            Some(Monitor { parent, role })
-        } else {
-            None
-        };
-        r.joins.push_back(now);
-        r.joining += 1;
-        monitor
-    };
+                }) {
+                    return Err(ApiError::new(
+                        StatusCode::CONFLICT,
+                        "monitor role already active",
+                    ));
+                }
+                Some(Monitor { parent, role })
+            } else {
+                None
+            };
+            r.joins.push_back(now);
+            r.reservations.insert(
+                reservation,
+                JoinReservation {
+                    started: now,
+                    monitor,
+                },
+            );
+            Ok(monitor)
+        })
+        .await?;
     // These independent provider requests run together. Session creation is intentionally
     // never retried: an ambiguous create could orphan a session.
     let (session, ice) = tokio::join!(
@@ -1272,7 +1373,7 @@ async fn join(
     let session = match session {
         Ok(session) => session,
         Err(error) => {
-            release_join_reservation(&s, monitor).await;
+            release_join_reservation(&s, reservation).await;
             if let Ok(servers) = ice {
                 for username in servers
                     .iter()
@@ -1293,7 +1394,7 @@ async fn join(
     let ice = match ice {
         Ok(ice) => ice,
         Err(error) => {
-            release_join_reservation(&s, monitor).await;
+            release_join_reservation(&s, reservation).await;
             return Err(error.into());
         }
     };
@@ -1301,7 +1402,7 @@ async fn join(
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let p = Participant {
         id,
-        token: token.clone(),
+        token: token_hash(&token),
         name: name.into(),
         country_code,
         session,
@@ -1311,50 +1412,51 @@ async fn join(
             .collect(),
         muted: false,
         deafened: false,
-        lease: Instant::now(),
-        joined: Instant::now(),
+        lease: Timestamp::now(),
+        joined: Timestamp::now(),
         tracks: HashMap::new(),
         subscriptions: HashMap::new(),
         pending_offer: false,
         operation: false,
+        operation_started: None,
         operations: VecDeque::new(),
         monitor,
         events: None,
     };
-    let mut r = s.registry.lock().await;
-    r.joining -= 1;
-    if let Some(monitor) = monitor {
-        r.monitor_reservations
-            .remove(&(monitor.parent, monitor.role));
-        let parent_valid = r.participants.get(&monitor.parent).is_some_and(|parent| {
-            parent.monitor.is_none()
-                && parent.lease.elapsed() < LEASE
-                && parent.joined.elapsed() < MAX_CALL_DURATION
+    s.update(|r| {
+        let reserved = r
+            .reservations
+            .remove(&reservation)
+            .is_some_and(|r| r.started.elapsed() < Duration::from_secs(30));
+        let parent_valid = monitor.is_none_or(|monitor| {
+            r.participants.get(&monitor.parent).is_some_and(|parent| {
+                parent.monitor.is_none()
+                    && parent.lease.elapsed() < LEASE
+                    && parent.joined.elapsed() < MAX_CALL_DURATION
+            })
         });
-        if !parent_valid {
-            drop(r);
-            enqueue_turn_revocation(&s, &p).await;
-            return Err(ApiError::new(
+        if !reserved || !parent_valid {
+            cleanup_participant_locked(r, &p);
+            return Ok(Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
-                "parent session ended",
-            ));
+                "join reservation or parent expired",
+            )));
         }
-    }
-    r.tokens.insert(token.clone(), id);
-    r.participants.insert(id, p);
-    if monitor.is_none() {
-        s.events.send_replace(());
-    }
+        r.tokens.insert(p.token.clone(), id);
+        r.participants.insert(id, p.clone());
+        Ok(Ok(()))
+    })
+    .await??;
     Ok(Json(json!({"token":token,"id":id,"iceServers":ice})))
 }
 
-async fn release_join_reservation(s: &AppState, monitor: Option<Monitor>) {
-    let mut r = s.registry.lock().await;
-    r.joining -= 1;
-    if let Some(monitor) = monitor {
-        r.monitor_reservations
-            .remove(&(monitor.parent, monitor.role));
-    }
+async fn release_join_reservation(s: &AppState, reservation: Uuid) {
+    let _ = s
+        .update(|r| {
+            r.reservations.remove(&reservation);
+            Ok(())
+        })
+        .await;
 }
 
 #[derive(Serialize)]
@@ -1372,6 +1474,37 @@ struct TrackView {
     id: Uuid,
     kind: Kind,
 }
+fn public_snapshot(r: &Registry) -> Value {
+    let mut participants: Vec<_> = r
+        .participants
+        .values()
+        .filter(|p| p.monitor.is_none())
+        .collect();
+    participants.sort_by_key(|p| p.id);
+    let participants: Vec<_> = participants
+        .into_iter()
+        .map(|p| {
+            let mut tracks: Vec<_> = p
+                .tracks
+                .values()
+                .map(|t| TrackView {
+                    id: t.id,
+                    kind: t.kind,
+                })
+                .collect();
+            tracks.sort_by_key(|t| t.id);
+            View {
+                id: p.id,
+                name: &p.name,
+                country_code: p.country_code.as_deref(),
+                muted: p.muted,
+                deafened: p.deafened,
+                tracks,
+            }
+        })
+        .collect();
+    json!({"participants":participants,"revision":r.revision})
+}
 #[derive(Serialize)]
 struct PresenceView<'a> {
     id: Uuid,
@@ -1383,20 +1516,22 @@ struct PresenceView<'a> {
 }
 async fn presence(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
-    let r = s.registry.lock().await;
-    let participants: Vec<_> = r
-        .participants
-        .values()
-        .filter(|p| p.monitor.is_none())
-        .map(|p| PresenceView {
-            id: p.id,
-            name: &p.name,
-            country_code: p.country_code.as_deref(),
-            muted: p.muted,
-            deafened: p.deafened,
-        })
-        .collect();
-    Ok(Json(json!({"participants":participants})))
+    s.read(|r| {
+        let participants: Vec<_> = r
+            .participants
+            .values()
+            .filter(|p| p.monitor.is_none())
+            .map(|p| PresenceView {
+                id: p.id,
+                name: &p.name,
+                country_code: p.country_code.as_deref(),
+                muted: p.muted,
+                deafened: p.deafened,
+            })
+            .collect();
+        Ok(Json(json!({"participants":participants})))
+    })
+    .await
 }
 async fn snapshot(
     State(s): State<AppState>,
@@ -1405,33 +1540,15 @@ async fn snapshot(
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
     let token = bearer(&headers)?;
-    let mut r = s.registry.lock().await;
-    let id = authenticate(&r, token)?;
-    r.participants.get_mut(&id).unwrap().lease = Instant::now();
-    if r.participants.get(&id).unwrap().monitor.is_some() {
-        return Ok(Json(json!({"participants":[]})));
-    }
-    let participants: Vec<_> = r
-        .participants
-        .values()
-        .filter(|p| p.monitor.is_none())
-        .map(|p| View {
-            id: p.id,
-            name: &p.name,
-            country_code: p.country_code.as_deref(),
-            muted: p.muted,
-            deafened: p.deafened,
-            tracks: p
-                .tracks
-                .values()
-                .map(|t| TrackView {
-                    id: t.id,
-                    kind: t.kind,
-                })
-                .collect(),
-        })
-        .collect();
-    Ok(Json(json!({"participants":participants})))
+    s.update(|r| {
+        let id = authenticate(r, token)?;
+        r.participants.get_mut(&id).unwrap().lease = Timestamp::now();
+        if r.participants.get(&id).unwrap().monitor.is_some() {
+            return Ok(Json(json!({"participants":[]})));
+        }
+        Ok(Json(public_snapshot(r)))
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1473,31 +1590,32 @@ async fn publish(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
     }
     let token = bearer(&headers)?;
-    let (id, session) = {
-        let mut r = s.registry.lock().await;
-        let id = authenticate(&r, token)?;
-        let p = r.participants.get_mut(&id).unwrap();
-        begin_operation(p)?;
-        if p.monitor.is_some_and(|m| m.role != MonitorRole::Sender) {
-            p.operation = false;
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "monitor receiver cannot publish",
-            ));
-        }
-        if p.pending_offer {
-            p.operation = false;
-            return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
-        }
-        if p.tracks.len() >= MAX_TRACKS || p.tracks.contains_key(&i.mid) {
-            p.operation = false;
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "track limit or duplicate track",
-            ));
-        }
-        (id, p.session.clone())
-    };
+    let (id, session) = s
+        .update(|r| {
+            let id = authenticate(r, token)?;
+            let p = r.participants.get_mut(&id).unwrap();
+            begin_operation(p)?;
+            if p.monitor.is_some_and(|m| m.role != MonitorRole::Sender) {
+                p.operation = false;
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "monitor receiver cannot publish",
+                ));
+            }
+            if p.pending_offer {
+                p.operation = false;
+                return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
+            }
+            if p.tracks.len() >= MAX_TRACKS || p.tracks.contains_key(&i.mid) {
+                p.operation = false;
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "track limit or duplicate track",
+                ));
+            }
+            Ok((id, p.session.clone()))
+        })
+        .await?;
     let track_id = Uuid::new_v4();
     let provider_name = format!("caper-{track_id}");
     let body = json!({"sessionDescription":{"type":"offer","sdp":i.session_description.sdp},"tracks":[{"location":"local","mid":i.mid,"trackName":provider_name,"kind":"audio"}]});
@@ -1525,23 +1643,27 @@ async fn publish(
         ));
     }
     let result = result.unwrap();
-    let mut r = s.registry.lock().await;
-    let Some(p) = r.participants.get_mut(&id) else {
-        enqueue_cleanup_locked(&mut r, session, i.mid);
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "session expired"));
-    };
-    p.operation = false;
-    p.tracks.insert(
-        i.mid,
-        Track {
-            id: track_id,
-            kind: Kind::Microphone,
-            provider_name,
-        },
-    );
-    if p.monitor.is_none() {
-        s.events.send_replace(());
-    }
+    s.update(|r| {
+        let Some(p) = r.participants.get_mut(&id) else {
+            enqueue_cleanup_locked(r, session.clone(), i.mid.clone());
+            return Ok(Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "session expired",
+            )));
+        };
+        p.operation = false;
+        p.operation_started = None;
+        p.tracks.insert(
+            i.mid.clone(),
+            Track {
+                id: track_id,
+                kind: Kind::Microphone,
+                provider_name: provider_name.clone(),
+            },
+        );
+        Ok(Ok(()))
+    })
+    .await??;
     let mut result = result;
     if let Some(object) = result.as_object_mut() {
         object.insert("trackId".into(), json!(track_id));
@@ -1561,53 +1683,54 @@ async fn subscribe(
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
     let token = bearer(&headers)?;
-    let (me, session, source) = {
-        let mut r = s.registry.lock().await;
-        let me = authenticate(&r, token)?;
-        let source = r
-            .participants
-            .values()
-            .find_map(|p| {
-                p.tracks
-                    .values()
-                    .find(|t| t.id == i.track_id)
-                    .map(|t| (p.id, p.session.clone(), t.provider_name.clone(), t.kind))
-            })
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "track not found"))?;
-        if source.0 == me {
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "cannot subscribe to own track",
-            ));
-        }
-        let subscriber_monitor = r.participants.get(&me).unwrap().monitor;
-        let source_monitor = r.participants.get(&source.0).unwrap().monitor;
-        let authorized = match (subscriber_monitor, source_monitor) {
-            (None, None) => true,
-            (Some(subscriber), Some(owner)) => {
-                subscriber.role == MonitorRole::Receiver
-                    && owner.role == MonitorRole::Sender
-                    && subscriber.parent == owner.parent
+    let (me, session, source) = s
+        .update(|r| {
+            let me = authenticate(r, token)?;
+            let source = r
+                .participants
+                .values()
+                .find_map(|p| {
+                    p.tracks
+                        .values()
+                        .find(|t| t.id == i.track_id)
+                        .map(|t| (p.id, p.session.clone(), t.provider_name.clone(), t.kind))
+                })
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "track not found"))?;
+            if source.0 == me {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "cannot subscribe to own track",
+                ));
             }
-            _ => false,
-        };
-        if !authorized {
-            return Err(ApiError::new(StatusCode::FORBIDDEN, "track is private"));
-        }
-        let p = r.participants.get_mut(&me).unwrap();
-        begin_operation(p)?;
-        if p.pending_offer {
-            p.operation = false;
-            return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
-        }
-        if p.subscriptions.len() >= MAX_SUBSCRIPTIONS
-            || p.subscriptions.values().any(|id| *id == i.track_id)
-        {
-            p.operation = false;
-            return Err(ApiError::new(StatusCode::CONFLICT, "subscription limit"));
-        }
-        (me, p.session.clone(), source)
-    };
+            let subscriber_monitor = r.participants.get(&me).unwrap().monitor;
+            let source_monitor = r.participants.get(&source.0).unwrap().monitor;
+            let authorized = match (subscriber_monitor, source_monitor) {
+                (None, None) => true,
+                (Some(subscriber), Some(owner)) => {
+                    subscriber.role == MonitorRole::Receiver
+                        && owner.role == MonitorRole::Sender
+                        && subscriber.parent == owner.parent
+                }
+                _ => false,
+            };
+            if !authorized {
+                return Err(ApiError::new(StatusCode::FORBIDDEN, "track is private"));
+            }
+            let p = r.participants.get_mut(&me).unwrap();
+            begin_operation(p)?;
+            if p.pending_offer {
+                p.operation = false;
+                return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
+            }
+            if p.subscriptions.len() >= MAX_SUBSCRIPTIONS
+                || p.subscriptions.values().any(|id| *id == i.track_id)
+            {
+                p.operation = false;
+                return Err(ApiError::new(StatusCode::CONFLICT, "subscription limit"));
+            }
+            Ok((me, p.session.clone(), source))
+        })
+        .await?;
     let result = s
         .provider
         .tracks_new(
@@ -1655,27 +1778,33 @@ async fn subscribe(
         remove_participant(&s, me).await;
         return Err(ProviderError::invalid_response("subscribe").into());
     }
-    let mut r = s.registry.lock().await;
-    if !r
-        .participants
-        .values()
-        .any(|p| p.tracks.values().any(|track| track.id == i.track_id))
-    {
-        enqueue_cleanup_locked(&mut r, session, mid);
-        drop(r);
-        remove_participant(&s, me).await;
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "source left during subscription",
-        ));
-    }
-    let Some(p) = r.participants.get_mut(&me) else {
-        enqueue_cleanup_locked(&mut r, session, mid);
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "session expired"));
-    };
-    p.operation = false;
-    p.subscriptions.insert(mid, i.track_id);
-    p.pending_offer = pending;
+    s.update(|r| {
+        if !r
+            .participants
+            .values()
+            .any(|p| p.tracks.values().any(|track| track.id == i.track_id))
+        {
+            enqueue_cleanup_locked(r, session.clone(), mid.clone());
+            remove_participant_locked(r, me);
+            return Ok(Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "source left during subscription",
+            )));
+        }
+        let Some(p) = r.participants.get_mut(&me) else {
+            enqueue_cleanup_locked(r, session.clone(), mid.clone());
+            return Ok(Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "session expired",
+            )));
+        };
+        p.operation = false;
+        p.operation_started = None;
+        p.subscriptions.insert(mid.clone(), i.track_id);
+        p.pending_offer = pending;
+        Ok(Ok(()))
+    })
+    .await??;
     Ok(Json(result))
 }
 
@@ -1696,20 +1825,21 @@ async fn negotiate(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
     }
     let token = bearer(&headers)?;
-    let (id, session) = {
-        let mut r = s.registry.lock().await;
-        let id = authenticate(&r, token)?;
-        let p = r.participants.get_mut(&id).unwrap();
-        begin_operation(p)?;
-        if !p.pending_offer {
-            p.operation = false;
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "no negotiation pending",
-            ));
-        }
-        (id, p.session.clone())
-    };
+    let (id, session) = s
+        .update(|r| {
+            let id = authenticate(r, token)?;
+            let p = r.participants.get_mut(&id).unwrap();
+            begin_operation(p)?;
+            if !p.pending_offer {
+                p.operation = false;
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "no negotiation pending",
+                ));
+            }
+            Ok((id, p.session.clone()))
+        })
+        .await?;
     let result = s
         .provider
         .negotiate(
@@ -1726,13 +1856,17 @@ async fn negotiate(
             .into());
     }
     let result = result.unwrap();
-    let mut r = s.registry.lock().await;
-    let p = r
-        .participants
-        .get_mut(&id)
-        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "session expired"))?;
-    p.operation = false;
-    p.pending_offer = false;
+    s.update(|r| {
+        let p = r
+            .participants
+            .get_mut(&id)
+            .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "session expired"))?;
+        p.operation = false;
+        p.operation_started = None;
+        p.pending_offer = false;
+        Ok(())
+    })
+    .await?;
     Ok(Json(result))
 }
 
@@ -1751,18 +1885,19 @@ async fn close(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
     }
     let token = bearer(&headers)?;
-    let (id, session, source) = {
-        let mut r = s.registry.lock().await;
-        let id = authenticate(&r, token)?;
-        let p = r.participants.get(&id).unwrap();
-        if !p.tracks.contains_key(&i.mid) && !p.subscriptions.contains_key(&i.mid) {
-            return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found"));
-        }
-        let source = p.tracks.get(&i.mid).map(|t| t.id);
-        let p = r.participants.get_mut(&id).unwrap();
-        begin_operation(p)?;
-        (id, p.session.clone(), source)
-    };
+    let (id, session, source) = s
+        .update(|r| {
+            let id = authenticate(r, token)?;
+            let p = r.participants.get(&id).unwrap();
+            if !p.tracks.contains_key(&i.mid) && !p.subscriptions.contains_key(&i.mid) {
+                return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found"));
+            }
+            let source = p.tracks.get(&i.mid).map(|t| t.id);
+            let p = r.participants.get_mut(&id).unwrap();
+            begin_operation(p)?;
+            Ok((id, p.session.clone(), source))
+        })
+        .await?;
     let result = s.provider.close(&s.config, &session, &i.mid).await;
     if !matches!(result.as_ref(), Ok(v) if validate_provider_envelope(v).is_ok()) {
         enqueue_cleanup(&s, session, i.mid).await;
@@ -1773,20 +1908,20 @@ async fn close(
             .into());
     }
     let result = result.unwrap();
-    let mut r = s.registry.lock().await;
-    let Some(p) = r.participants.get_mut(&id) else {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found"));
-    };
-    p.operation = false;
-    p.tracks.remove(&i.mid);
-    p.subscriptions.remove(&i.mid);
-    if source.is_some() && p.monitor.is_none() {
-        s.events.send_replace(());
-    }
-    if let Some(source) = source {
-        drop(r);
-        close_dependents(&s, source).await;
-    }
+    s.update(|r| {
+        let Some(p) = r.participants.get_mut(&id) else {
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found"));
+        };
+        p.operation = false;
+        p.operation_started = None;
+        p.tracks.remove(&i.mid);
+        p.subscriptions.remove(&i.mid);
+        if let Some(source) = source {
+            close_dependents_locked(r, source);
+        }
+        Ok(())
+    })
+    .await?;
     Ok(Json(result))
 }
 #[derive(Deserialize)]
@@ -1802,16 +1937,14 @@ async fn update_state(
 ) -> Result<StatusCode, ApiError> {
     ensure_enabled(&s)?;
     let token = bearer(&headers)?;
-    let mut r = s.registry.lock().await;
-    let id = authenticate(&r, token)?;
-    let p = r.participants.get_mut(&id).unwrap();
-    let changed = p.muted != i.muted || p.deafened != i.deafened;
-    p.muted = i.muted;
-    p.deafened = i.deafened;
-    if changed && p.monitor.is_none() {
-        s.events.send_replace(());
-    }
-    Ok(StatusCode::NO_CONTENT)
+    s.update(|r| {
+        let id = authenticate(r, token)?;
+        let p = r.participants.get_mut(&id).unwrap();
+        p.muted = i.muted;
+        p.deafened = i.deafened;
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
 }
 async fn leave(
     State(s): State<AppState>,
@@ -1820,86 +1953,92 @@ async fn leave(
 ) -> Result<StatusCode, ApiError> {
     ensure_enabled(&s)?;
     let token = bearer(&headers)?;
-    let id = {
-        let r = s.registry.lock().await;
-        authenticate(&r, token)?
-    };
-    remove_participant(&s, id).await;
+    s.update(|r| {
+        let id = authenticate(r, token)?;
+        remove_participant_locked(r, id);
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn close_dependents(s: &AppState, source: Uuid) {
-    let jobs = {
-        let mut r = s.registry.lock().await;
-        r.participants
-            .values_mut()
-            .flat_map(|p| {
-                let mids: Vec<_> = p
-                    .subscriptions
-                    .iter()
-                    .filter(|(_, v)| **v == source)
-                    .map(|(m, _)| m.clone())
-                    .collect();
-                for m in &mids {
-                    p.subscriptions.remove(m);
-                }
-                mids.into_iter()
-                    .map(|m| (p.session.clone(), m))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>()
-    };
-    enqueue_track_cleanup(s, jobs).await;
+fn close_dependents_locked(r: &mut Registry, source: Uuid) {
+    let jobs = r
+        .participants
+        .values_mut()
+        .flat_map(|p| {
+            let mids: Vec<_> = p
+                .subscriptions
+                .iter()
+                .filter(|(_, v)| **v == source)
+                .map(|(m, _)| m.clone())
+                .collect();
+            for m in &mids {
+                p.subscriptions.remove(m);
+            }
+            mids.into_iter()
+                .map(|m| (p.session.clone(), m))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (session, mid) in jobs {
+        enqueue_cleanup_locked(r, session, mid);
+    }
 }
 async fn remove_participant(s: &AppState, id: Uuid) {
-    let removed = {
-        let mut r = s.registry.lock().await;
-        let public_removed = r.participants.get(&id).is_some_and(|p| p.monitor.is_none());
-        let mut ids = vec![id];
-        if r.participants.get(&id).is_some_and(|p| p.monitor.is_none()) {
-            ids.extend(r.participants.values().filter_map(|p| {
-                p.monitor
-                    .filter(|monitor| monitor.parent == id)
-                    .map(|_| p.id)
-            }));
-        }
-        let removed = ids
-            .into_iter()
-            .filter_map(|id| {
-                let p = r.participants.remove(&id)?;
-                r.tokens.remove(&p.token);
-                Some(p)
-            })
-            .collect::<Vec<_>>();
-        if public_removed && !removed.is_empty() {
-            s.events.send_replace(());
-        }
-        removed
-    };
+    if s.update(|r| {
+        remove_participant_locked(r, id);
+        Ok(())
+    })
+    .await
+    .is_err()
+    {
+        tracing::warn!("media removal deferred to shared lease expiry");
+    }
+}
+fn remove_participant_locked(r: &mut Registry, id: Uuid) {
+    let mut ids = vec![id];
+    if r.participants.get(&id).is_some_and(|p| p.monitor.is_none()) {
+        ids.extend(r.participants.values().filter_map(|p| {
+            p.monitor
+                .filter(|monitor| monitor.parent == id)
+                .map(|_| p.id)
+        }));
+    }
+    let removed = ids
+        .into_iter()
+        .filter_map(|id| {
+            let p = r.participants.remove(&id)?;
+            r.tokens.remove(&p.token);
+            Some(p)
+        })
+        .collect::<Vec<_>>();
     for p in removed {
-        enqueue_turn_revocation(s, &p).await;
-        let sources: Vec<_> = p.tracks.values().map(|t| t.id).collect();
-        let jobs = p
-            .tracks
-            .keys()
-            .chain(p.subscriptions.keys())
-            .map(|mid| (p.session.clone(), mid.clone()))
-            .collect();
-        enqueue_track_cleanup(s, jobs).await;
-        for source in sources {
-            close_dependents(s, source).await;
+        cleanup_participant_locked(r, &p);
+        for source in p.tracks.values().map(|t| t.id) {
+            close_dependents_locked(r, source);
         }
     }
 }
-async fn enqueue_turn_revocation(s: &AppState, p: &Participant) {
+fn cleanup_participant_locked(r: &mut Registry, p: &Participant) {
     for username in &p.turn_usernames {
-        enqueue_action(
-            s,
+        enqueue_action_locked(
+            r,
             CleanupAction::Revoke {
                 username: username.clone(),
             },
-        )
-        .await;
+        );
+    }
+    for mid in p.tracks.keys().chain(p.subscriptions.keys()) {
+        enqueue_cleanup_locked(r, p.session.clone(), mid.clone());
+    }
+    if p.operation {
+        enqueue_action_locked(
+            r,
+            CleanupAction::Discover {
+                session: p.session.clone(),
+            },
+        );
     }
 }
 fn enqueue_action_locked(r: &mut Registry, action: CleanupAction) {
@@ -1916,23 +2055,23 @@ fn enqueue_action_locked(r: &mut Registry, action: CleanupAction) {
     r.cleanup.push_back(CleanupJob {
         action,
         attempts: 0,
-        not_before: Instant::now(),
+        not_before: Timestamp::now(),
+        claim: None,
     });
 }
 async fn enqueue_action(s: &AppState, action: CleanupAction) {
-    enqueue_action_locked(&mut *s.registry.lock().await, action);
+    let _ = s
+        .update(|r| {
+            enqueue_action_locked(r, action.clone());
+            Ok(())
+        })
+        .await;
 }
 fn enqueue_cleanup_locked(r: &mut Registry, session: String, mid: String) {
     enqueue_action_locked(r, CleanupAction::Close { session, mid });
 }
 async fn enqueue_cleanup(s: &AppState, session: String, mid: String) {
     enqueue_action(s, CleanupAction::Close { session, mid }).await;
-}
-async fn enqueue_track_cleanup(s: &AppState, jobs: Vec<(String, String)>) {
-    let mut registry = s.registry.lock().await;
-    for (session, mid) in jobs {
-        enqueue_cleanup_locked(&mut registry, session, mid);
-    }
 }
 async fn execute_cleanup(s: &AppState, action: &CleanupAction) -> Result<(), ProviderError> {
     match action {
@@ -1950,12 +2089,16 @@ async fn execute_cleanup(s: &AppState, action: &CleanupAction) -> Result<(), Pro
                 .get("tracks")
                 .and_then(Value::as_array)
                 .ok_or(ProviderError::Rejected)?;
-            for track in tracks {
-                if let Some(mid) = track.get("mid").and_then(Value::as_str) {
-                    enqueue_cleanup(s, session.clone(), mid.into()).await;
+            s.update(|r| {
+                for track in tracks {
+                    if let Some(mid) = track.get("mid").and_then(Value::as_str) {
+                        enqueue_cleanup_locked(r, session.clone(), mid.into());
+                    }
                 }
-            }
-            Ok(())
+                Ok(())
+            })
+            .await
+            .map_err(|_| ProviderError::Unavailable)
         }
     }
 }
@@ -1963,26 +2106,38 @@ async fn retry_backlog(s: &AppState) {
     // One batch at a time, including during shutdown. At most four provider
     // requests in flight and 512 queued; an outage cannot spawn unbounded tasks.
     let _guard = s.cleanup_lock.lock().await;
-    let jobs = {
-        let mut r = s.registry.lock().await;
-        let mut jobs = vec![];
-        for _ in 0..r.cleanup.len() {
-            let job = r.cleanup.pop_front().unwrap();
-            if jobs.len() < 4 && job.not_before <= Instant::now() {
-                jobs.push(job);
-            } else {
-                r.cleanup.push_back(job);
+    let claim = Uuid::new_v4();
+    let jobs = s
+        .update(|r| {
+            let mut jobs = vec![];
+            for job in &mut r.cleanup {
+                if jobs.len() < 4 && job.not_before <= Timestamp::now() {
+                    job.claim = Some(claim);
+                    job.not_before = Timestamp::now() + Duration::from_secs(30);
+                    jobs.push(job.clone());
+                }
             }
-        }
-        jobs
-    };
+            Ok(jobs)
+        })
+        .await
+        .unwrap_or_default();
     stream::iter(jobs)
         .for_each_concurrent(4, |mut job| async move {
             let result =
                 tokio::time::timeout(Duration::from_secs(12), execute_cleanup(s, &job.action))
                     .await;
             let error = match result {
-                Ok(Ok(())) => return,
+                Ok(Ok(())) => {
+                    let _ = s
+                        .update(|r| {
+                            r.cleanup.retain(|queued| {
+                                queued.claim != Some(claim) || queued.action != job.action
+                            });
+                            Ok(())
+                        })
+                        .await;
+                    return;
+                }
                 Ok(Err(error)) => error,
                 Err(_) => ProviderError::Unavailable,
             };
@@ -1993,29 +2148,64 @@ async fn retry_backlog(s: &AppState) {
                     attempts = job.attempts,
                     "provider cleanup abandoned; resource may remain until provider expiry"
                 );
+                let _ = s
+                    .update(|r| {
+                        r.cleanup.retain(|queued| {
+                            queued.claim != Some(claim) || queued.action != job.action
+                        });
+                        Ok(())
+                    })
+                    .await;
                 return;
             }
             // Delayed, jittered retries only for reads, force-close and revocation.
             // Never repeat auth/validation failures or ambiguous creation/SDP mutations.
             let delay_ms =
                 1_000 * (1u64 << job.attempts) + u64::from(Uuid::new_v4().as_bytes()[0]) * 4;
-            job.not_before = Instant::now() + Duration::from_millis(delay_ms);
+            job.not_before = Timestamp::now() + Duration::from_millis(delay_ms);
+            job.claim = None;
             tracing::warn!(
                 operation = job.action.operation(),
                 attempts = job.attempts,
                 delay_ms,
                 "provider cleanup retry scheduled"
             );
-            let mut r = s.registry.lock().await;
-            if r.cleanup.len() < MAX_CLEANUP_BACKLOG {
-                // Preserve retry budget if the same action was queued while in flight.
-                r.cleanup.retain(|queued| queued.action != job.action);
-                r.cleanup.push_back(job);
-            } else {
-                tracing::error!("cleanup backlog full; dropping retry");
-            }
+            let _ = s
+                .update(|r| {
+                    if let Some(queued) = r
+                        .cleanup
+                        .iter_mut()
+                        .find(|queued| queued.claim == Some(claim) && queued.action == job.action)
+                    {
+                        *queued = job.clone();
+                    }
+                    Ok(())
+                })
+                .await;
         })
         .await;
+}
+async fn expire_sessions(s: &AppState) -> Result<(), ApiError> {
+    s.update(|r| {
+        r.reservations
+            .retain(|_, reservation| reservation.started.elapsed() < Duration::from_secs(30));
+        let expired: Vec<_> = r
+            .participants
+            .values()
+            .filter(|p| {
+                p.lease.elapsed() >= LEASE
+                    || p.joined.elapsed() >= MAX_CALL_DURATION
+                    || p.operation_started
+                        .is_some_and(|t| t.elapsed() >= Duration::from_secs(30))
+            })
+            .map(|p| p.id)
+            .collect();
+        for id in expired {
+            remove_participant_locked(r, id);
+        }
+        Ok(())
+    })
+    .await
 }
 pub fn spawn_cleanup(s: AppState) {
     let worker = s.clone();
@@ -2044,56 +2234,7 @@ pub fn spawn_cleanup(s: AppState) {
             if *shutdown.borrow() {
                 break;
             }
-            let expired = {
-                let mut r = s.registry.lock().await;
-                let mut expired = r
-                    .participants
-                    .values()
-                    .filter(|p| {
-                        p.lease.elapsed() >= LEASE || p.joined.elapsed() >= MAX_CALL_DURATION
-                    })
-                    .map(|p| p.id)
-                    .collect::<HashSet<_>>();
-                let expired_parents = expired.clone();
-                expired.extend(r.participants.values().filter_map(|p| {
-                    p.monitor
-                        .filter(|monitor| expired_parents.contains(&monitor.parent))
-                        .map(|_| p.id)
-                }));
-                let public_removed = expired
-                    .iter()
-                    .any(|id| r.participants.get(id).is_some_and(|p| p.monitor.is_none()));
-                // Remove under the same lock used for the expiry decision, so a concurrent
-                // heartbeat cannot refresh a participant between checking and removal.
-                let removed = expired
-                    .into_iter()
-                    .filter_map(|id| {
-                        let p = r.participants.remove(&id)?;
-                        r.tokens.remove(&p.token);
-                        Some(p)
-                    })
-                    .collect::<Vec<_>>();
-                if public_removed && !removed.is_empty() {
-                    s.events.send_replace(());
-                }
-                removed
-            };
-            for p in expired {
-                enqueue_turn_revocation(&s, &p).await;
-                let sources = p.tracks.values().map(|t| t.id).collect::<Vec<_>>();
-                enqueue_track_cleanup(
-                    &s,
-                    p.tracks
-                        .keys()
-                        .chain(p.subscriptions.keys())
-                        .map(|mid| (p.session.clone(), mid.clone()))
-                        .collect(),
-                )
-                .await;
-                for source in sources {
-                    close_dependents(&s, source).await;
-                }
-            }
+            let _ = expire_sessions(&s).await;
         }
     });
 }
@@ -2101,6 +2242,11 @@ pub fn spawn_cleanup(s: AppState) {
 /// Close every registered provider track before process termination.
 pub async fn shutdown_cleanup(s: &AppState) {
     s.begin_shutdown();
+    // Shared state and cleanup work belong to the service, not this pod. A
+    // rollout must not tear down healthy Cloudflare sessions.
+    if s.store.is_some() {
+        return;
+    }
     // Finish any local expiry/enqueue pass before deciding the queue is drained.
     let _expiry_guard = s.expiry_lock.lock().await;
     let ids = {

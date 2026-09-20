@@ -9,7 +9,7 @@ function setup(t: TestContext) {
   let changes = 0;
   const errors: Error[] = [];
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
-    assert.equal(url, "/api/media/events", "capability must never enter a URL");
+    assert.equal(url, "/api/media/events?snapshots=1", "only the snapshot mode, never the capability, enters the URL");
     assert.equal(new Headers(init.headers).get("x-caper-media-token"), "test-capability");
     signal = init.signal!;
     const abort = () => controller.error(signal.reason);
@@ -46,6 +46,21 @@ test("SSE waits for a complete ready event, supports chunk boundaries/CRLF, and 
   await tick();
   assert.equal(events.connected, true);
   assert.equal(changes(), 1);
+});
+
+test("snapshot mode delivers current state and planned draining separately from legacy invalidations", async (t) => {
+  let received: unknown;
+  let draining = 0;
+  const base = setup(t);
+  const events = new CallEvents(() => assert.fail("snapshot must not become a legacy invalidation"), () => undefined,
+    (snapshot) => { received = snapshot; }, () => draining++);
+  t.after(() => events.stop());
+  const opening = events.open("test-capability", base.owner.signal);
+  await tick();
+  base.send("event: ready\ndata: {}\n\nevent: snapshot\ndata: {\"participants\":[],\"revision\":7}\n\nevent: draining\ndata: {}\n\n");
+  await opening;
+  assert.deepEqual(received, { participants: [], revision: 7 });
+  assert.equal(draining, 1);
 });
 
 test("SSE startup timeout and silent stream timeout fail readiness", async (t) => {

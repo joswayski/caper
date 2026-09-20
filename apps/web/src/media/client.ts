@@ -59,6 +59,7 @@ export class PublicCallClient {
   private pollRetryTimer?: number;
   private eventRetryTimer?: number;
   private eventRecoveryTimer?: number;
+  private eventRetryAttempts = 0;
   private controlFailedSince?: number;
   private stateDirty = false;
   private generation = 0;
@@ -74,6 +75,10 @@ export class PublicCallClient {
   private stateBeforeMonitoring?: { muted: boolean; deafened: boolean };
   private pollPromise?: Promise<void>;
   private pollAgain = false;
+  private heartbeatDue = false;
+  private pendingSnapshot?: CallSnapshot & { revision?: number };
+  private pushedSnapshotVersion = 0;
+  private latestRevision?: number;
   private events?: CallEvents;
   private microphoneDeviceId?: string;
   private statsTimer?: number;
@@ -270,27 +275,43 @@ export class PublicCallClient {
       if (generation !== this.generation) return;
       if (this.phase === "connected") this.scheduleEventRecovery(generation);
       else this.captureController.abort(error); // Startup still fails closed.
+    }, (snapshot) => {
+      if (generation !== this.generation) return;
+      this.queueSnapshot(snapshot);
+      if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+    }, () => {
+      if (generation === this.generation && this.phase === "connected") this.scheduleEventRecovery(generation, true);
     });
     await events.open(this.token!, this.captureController.signal);
     if (generation === this.generation && events === this.events && events.connected) {
       window.clearTimeout(this.eventRecoveryTimer);
       this.eventRecoveryTimer = undefined;
+      this.eventRetryAttempts = 0;
     }
     return events;
   }
 
-  private scheduleEventRecovery(generation: number) {
+  private scheduleEventRecovery(generation: number, draining = false) {
     // Reconnect control updates with the same capability, not a new voice session.
     this.eventRecoveryTimer ??= window.setTimeout(() => {
       if (generation === this.generation) this.scheduleReconnect();
     }, CONTROL_RECOVERY_MS);
     window.clearTimeout(this.eventRetryTimer);
+    const delay = draining ? 50 : Math.min(250 * 2 ** this.eventRetryAttempts++, 3_000);
     this.eventRetryTimer = window.setTimeout(() => {
       if (generation !== this.generation || this.phase !== "connected") return;
       void this.openEvents(generation).then(() => {
         if (generation === this.generation) return this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
       }).catch(() => { /* Stream failures schedule their own retry; heartbeat validates the session. */ });
-    }, 3_000);
+    }, delay);
+  }
+
+  private queueSnapshot(snapshot: CallSnapshot & { revision?: number }) {
+    if (snapshot.revision !== undefined && this.latestRevision !== undefined && snapshot.revision < this.latestRevision) return;
+    if (snapshot.revision !== undefined) this.latestRevision = snapshot.revision;
+    this.pendingSnapshot = snapshot;
+    this.pushedSnapshotVersion++;
+    this.pollAgain = true;
   }
 
   private get readyToTalk() {
@@ -634,7 +655,7 @@ export class PublicCallClient {
     // SSE handles discovery; snapshots still renew the lease and repair missed state.
     const generation = this.generation;
     if (this.pollAgain) void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
-    this.pollTimer = window.setInterval(() => void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); }), 15_000);
+    this.pollTimer = window.setInterval(() => void this.poll(true).catch(() => { if (generation === this.generation) this.scheduleReconnect(); }), 15_000);
     void this.readStats();
     this.statsTimer = window.setInterval(() => void this.readStats(), 1_000);
   }
@@ -679,8 +700,9 @@ export class PublicCallClient {
     } catch { /* Stats support varies; diagnostics must never interrupt media. */ }
   }
 
-  private poll(): Promise<void> {
+  private poll(heartbeat = false): Promise<void> {
     if (this.phase !== "connected" && this.phase !== "joining") return Promise.resolve();
+    this.heartbeatDue ||= heartbeat;
     this.pollAgain = true;
     if (this.pollPromise) return this.pollPromise;
     const generation = this.generation;
@@ -688,9 +710,15 @@ export class PublicCallClient {
       while (this.pollAgain && generation === this.generation) {
         this.pollAgain = false;
         const started = performance.now();
-        let snapshot: CallSnapshot;
+        let snapshot = this.pendingSnapshot;
+        this.pendingSnapshot = undefined;
+        // Receiving pushed state is not a lease renewal. Even under continuous
+        // channel activity, send the scheduled authenticated heartbeat.
+        if (this.heartbeatDue) snapshot = undefined;
+        this.heartbeatDue = false;
+        const pushedVersion = this.pushedSnapshotVersion;
         try {
-          snapshot = await this.api<CallSnapshot>("snapshot", {}, this.token, SNAPSHOT_TIMEOUT_MS);
+          if (!snapshot) snapshot = await this.api<CallSnapshot & { revision?: number }>("snapshot", {}, this.token, SNAPSHOT_TIMEOUT_MS);
         } catch (error) {
           if (generation !== this.generation) return;
           if (this.phase !== "connected") throw error;
@@ -706,6 +734,9 @@ export class PublicCallClient {
           return;
         }
         if (generation !== this.generation) return;
+        if (pushedVersion !== this.pushedSnapshotVersion) continue;
+        if (snapshot.revision !== undefined && this.latestRevision !== undefined && snapshot.revision < this.latestRevision) continue;
+        if (snapshot.revision !== undefined) this.latestRevision = snapshot.revision;
         window.clearTimeout(this.pollRetryTimer);
         this.controlFailedSince = undefined;
         if (this.stateDirty && this.phase === "connected") {
@@ -713,20 +744,27 @@ export class PublicCallClient {
           catch (error) { if (!transientControlError(error)) throw error; }
           if (generation !== this.generation) return;
         }
+        if (pushedVersion !== this.pushedSnapshotVersion) continue;
+        // ontrack uses the roster to associate arriving media with its owner.
         this.participants = snapshot.participants;
         const available = new Set(snapshot.participants.flatMap((participant) => participant.tracks.map((track) => track.id)));
         for (const id of this.subscriptions.keys()) {
           if (generation !== this.generation) return;
+          if (pushedVersion !== this.pushedSnapshotVersion) break;
           if (!available.has(id)) await this.unsubscribe(id);
         }
         for (const participant of snapshot.participants) {
           if (participant.id === this.selfId) continue;
           for (const track of participant.tracks) {
             if (generation !== this.generation) return;
+            if (pushedVersion !== this.pushedSnapshotVersion) break;
             if (!this.subscriptions.has(track.id)) await this.subscribe(track.id);
           }
         }
-        if (generation === this.generation) this.emit();
+        if (pushedVersion !== this.pushedSnapshotVersion) continue;
+        if (generation === this.generation) {
+          this.emit();
+        }
       }
     };
     const pending = refresh().finally(() => {
@@ -815,6 +853,7 @@ export class PublicCallClient {
     window.clearTimeout(this.eventRetryTimer);
     window.clearTimeout(this.eventRecoveryTimer);
     this.eventRecoveryTimer = undefined;
+    this.eventRetryAttempts = 0;
     this.controlFailedSince = undefined;
     this.stateDirty = false;
     this.captureController.abort();
@@ -835,6 +874,7 @@ export class PublicCallClient {
     this.pc?.close();
     this.pc = undefined; this.token = undefined;
     this.senders.clear(); this.subscriptions.clear(); this.remoteMedia.clear(); this.localMedia = undefined; this.pollPromise = undefined; this.pollAgain = false;
+    this.pendingSnapshot = undefined; this.pushedSnapshotVersion = 0; this.latestRevision = undefined; this.heartbeatDue = false;
   }
 
   private resetMonitoring() {

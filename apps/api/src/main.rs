@@ -54,6 +54,7 @@ async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     let mut state =
         caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
     state.enable_accounts_from_env(environment).await?;
+    state.enable_shared_media(environment).await?;
     spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await
