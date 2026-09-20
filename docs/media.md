@@ -73,7 +73,8 @@ in Postgres; typing indicators would be transient events, not durable messages.
 - Explicit leave publishes immediately. A vanished browser is different: its
   existing 45-second lease expires, with a five-second sweep (up to about 50 seconds
   after the last renewal). SSE disconnect alone is not leave, because deployments
-  and brief network changes also disconnect SSE. A call still has a one-hour cap.
+  and brief network changes also disconnect SSE. Active calls have no API age cap;
+  see the separate TURN credential lifetime below.
   Provider cleanup is asynchronous, with shared 30-second claims and safe retries.
   Abandoned joins and uncertain in-flight operations expire after 30 seconds;
   uncertain operations invalidate only the affected call and discover its tracks.
@@ -121,11 +122,31 @@ secret, or infrastructure change is required.
 
 Remaining disconnect conditions are not solved by adding retries: unknown outcomes
 of provider SDP mutations, invalid/expired sessions, sustained network loss, and
-failed local capture/transport recovery. The existing **one-hour session limit**
-also forces replacement and is tied to one-hour TURN credentials; seamless longer
-calls need credential renewal/transport handling, not just deleting that limit.
+failed local capture/transport recovery.
 Initial SSE setup still fails Join if it cannot establish a valid handshake. The
 private mic test has separate failure handling; losing it does not leave General.
+
+**Call duration:** the API no longer expires public or private monitor sessions
+because of their age. Live sessions retain their IDs, tracks, and subscriptions
+while heartbeats renew the 45-second lease. TURN credentials for new joins use
+Cloudflare's maximum **48-hour lifetime**, not the previous one hour. Leave and
+lease expiry still enqueue credential revocation. If revocation cannot complete,
+credentials may now remain usable for up to 48 hours instead of one hour.
+
+This is **not unlimited uninterrupted relay support**. A connection using TURN
+will still need transport renewal before its credentials expire; direct SFU media
+is not subject to that TURN expiry. `setConfiguration()` alone only updates future
+ICE gathering, not the active allocation's credentials. Same-session ICE restart
+support is not established by Cloudflare's SFU examples, so this change does not
+add speculative restart signaling or a timed forced rejoin. References:
+[Cloudflare credential lifetime](https://developers.cloudflare.com/realtime/turn/generate-credentials/),
+[expiry behavior](https://developers.cloudflare.com/realtime/turn/faq/), and
+[WebRTC configuration semantics](https://w3c.github.io/webrtc-pc/#set-the-configuration).
+Regression tests simulate call ages around one hour and at 49 hours, including
+two API instances sharing disposable Valkey. These verify state retention and
+lease cleanup, **not** sustained live audio or TURN renewal. After deploying all
+API replicas, leave/rejoin existing calls once to obtain the longer credentials;
+already-issued one-hour credentials cannot be extended by this deployment.
 
 The hash is a bounded channel unit, not a global blob for every future channel.
 Adding spaces/channels will require routing and per-channel keys/subscriptions.
@@ -559,7 +580,7 @@ exhausted jobs are logged as abandoned, not reported as successful cleanup.
 Shutdown stops the background loops, waits for an active local expiry pass, and
 spends up to 20 seconds draining cleanup batches after HTTP requests drain.
 Crashes, exhausted retries, queue overflow, and shutdown deadlines can leave
-provider resources behind. TURN expiry remains the one-hour backstop; this is
+provider resources behind. TURN expiry remains the 48-hour backstop; this is
 not a durable cleanup system or automatic provider failover.
 
 After merging, deploy **both** merged images using the normal **Deploy Caper API**
@@ -1222,7 +1243,7 @@ prevent registration. Delivery is best effort: it is neither retried nor durable
 
 `MEDIA_ENABLED=true` and all four Cloudflare credentials remain required. Existing
 12-participant capacity, global join and per-participant operation limits,
-45-second leases, one-hour call lifetime, private monitor isolation, and
+45-second leases, private monitor isolation, and
 leave/expiry cleanup still apply.
 This is an anonymous public test channel, not an abuse-resistant public launch.
 Anyone can consume its limited capacity. Keep provider usage under observation

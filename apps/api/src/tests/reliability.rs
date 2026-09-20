@@ -1,6 +1,167 @@
 use super::*;
 
 #[tokio::test]
+async fn active_calls_have_no_absolute_age_limit() {
+    let (s, _) = state();
+    exercise_long_call(&s, &s).await;
+}
+
+// Also run against two independent API instances sharing disposable Valkey.
+pub(super) async fn exercise_long_call(writer: &AppState, reader: &AppState) {
+    let parent = joined(writer, "long-running caller").await;
+    let token = parent["token"].as_str().unwrap();
+    let id = Uuid::parse_str(parent["id"].as_str().unwrap()).unwrap();
+    let publication = call(
+        app(writer.clone()),
+        "POST",
+        "/api/media/publish",
+        Some(token),
+        json!({"kind":"microphone","mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+    )
+    .await;
+    assert_eq!(publication.0, StatusCode::OK);
+    let session = writer
+        .read(|r| Ok(r.participants[&id].session.clone()))
+        .await
+        .unwrap();
+    writer
+        .update(|r| {
+            r.participants.get_mut(&id).unwrap().joined =
+                Timestamp::now() - Duration::from_secs(49 * 60 * 60);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut monitors = vec![];
+    for role in ["sender", "receiver"] {
+        let (status, monitor) = call(
+            app(reader.clone()),
+            "POST",
+            "/api/media/join",
+            Some(token),
+            json!({"name":"private monitor", "monitor":role}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an old active parent can start a monitor"
+        );
+        monitors.push(monitor);
+    }
+    // Exercise both sides of the old one-hour boundary and beyond TURN's new
+    // lifetime. This proves API state policy, not live TURN/media longevity.
+    for age in [3599, 3600, 3601, 49 * 60 * 60] {
+        writer
+            .update(|r| {
+                for p in r.participants.values_mut() {
+                    p.joined = Timestamp::now() - Duration::from_secs(age);
+                    p.lease = Timestamp::now();
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        expire_sessions(reader).await.unwrap();
+        let (status, snapshot) = call(
+            app(reader.clone()),
+            "POST",
+            "/api/media/snapshot",
+            Some(token),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(snapshot["participants"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["participants"][0]["id"], parent["id"]);
+        assert_eq!(
+            snapshot["participants"][0]["tracks"][0]["id"],
+            publication.1["trackId"]
+        );
+        for monitor in &monitors {
+            let (status, snapshot) = call(
+                app(reader.clone()),
+                "POST",
+                "/api/media/snapshot",
+                monitor["token"].as_str(),
+                json!({}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(snapshot["participants"], json!([]));
+        }
+        assert_eq!(
+            call(
+                app(writer.clone()),
+                "POST",
+                "/api/media/state",
+                Some(token),
+                json!({"muted":age % 2 == 0,"deafened":false}),
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        reader
+            .read(|r| {
+                assert_eq!(r.participants.len(), 3);
+                assert_eq!(r.participants[&id].session, session);
+                assert_eq!(r.participants[&id].muted, age % 2 == 0);
+                assert!(
+                    r.cleanup.is_empty(),
+                    "no age-based track close or credential revocation"
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+    writer
+        .update(|r| {
+            r.participants.get_mut(&id).unwrap().lease = Timestamp::now() - LEASE;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for participant in std::iter::once(&parent).chain(&monitors) {
+        assert_eq!(
+            call(
+                app(reader.clone()),
+                "POST",
+                "/api/media/snapshot",
+                participant["token"].as_str(),
+                json!({}),
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED,
+            "lease expiry still revokes parent and monitors"
+        );
+    }
+    expire_sessions(reader).await.unwrap();
+    writer
+        .read(|r| {
+            assert!(r.participants.is_empty());
+            assert!(r.tokens.is_empty());
+            assert_eq!(
+                r.cleanup
+                    .iter()
+                    .filter(|job| matches!(job.action, CleanupAction::Revoke { .. }))
+                    .count(),
+                3
+            );
+            assert!(r.cleanup.iter().any(|job| job.action
+                == CleanupAction::Close {
+                    session: session.clone(),
+                    mid: "0".into()
+                }));
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn drain_rejections_are_marked_retryable_before_any_media_mutation() {
     let (s, provider) = state();
     let a = joined(&s, "listener").await;

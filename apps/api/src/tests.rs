@@ -1172,7 +1172,6 @@ fn provider_errors_and_unsupported_turn_are_rejected() {
     let mut single = json!("stun:stun.cloudflare.com:3478");
     filter_unsupported_ice_urls(&mut single);
     assert_eq!(single, json!("stun:stun.cloudflare.com:3478"));
-    assert_eq!(TURN_TTL, MAX_CALL_DURATION.as_secs());
     assert_eq!(MAX_TRACKS, 1);
     assert_eq!(MAX_SUBSCRIPTIONS, 11);
 }
@@ -1338,7 +1337,9 @@ async fn cloudflare_turn_filters_blocked_stun_without_losing_relay_credentials()
     config.provider_base = format!("http://{}", listener.local_addr().unwrap());
     let router = Router::new().route(
         "/turn/keys/turn/credentials/generate-ice-servers",
-        post(|| async {
+        post(|Json(body): Json<Value>| async move {
+            // Cloudflare's maximum lifetime, independent of call/lease age.
+            assert_eq!(body, json!({"ttl":172800}));
             (StatusCode::CREATED, Json(json!({"iceServers":[
                 {"urls":["stun:stun.cloudflare.com:3478","stun:stun.cloudflare.com:53"]},
                 {"urls":"stun:stun.cloudflare.com:53"},

@@ -24,9 +24,10 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use uuid::Uuid;
 
 const LEASE: Duration = Duration::from_secs(45);
-// Also revoke on leave. Expiry bounds exposure if revocation or process recovery fails.
-const MAX_CALL_DURATION: Duration = Duration::from_secs(60 * 60);
-const TURN_TTL: u64 = MAX_CALL_DURATION.as_secs();
+// Cloudflare's maximum credential lifetime, not an application call-age limit.
+// Revoke on leave/lease expiry. Relay-dependent calls still need transport
+// renewal beyond this lifetime; setConfiguration alone does not renew allocations.
+const TURN_TTL: u64 = 48 * 60 * 60;
 const MAX_PARTICIPANTS: usize = 12;
 const MAX_TRACKS: usize = 1;
 const MAX_SUBSCRIPTIONS: usize = MAX_PARTICIPANTS - 1;
@@ -1107,7 +1108,7 @@ fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
         .participants
         .get(&id)
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))?;
-    if p.lease.elapsed() >= LEASE || p.joined.elapsed() >= MAX_CALL_DURATION {
+    if p.lease.elapsed() >= LEASE {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "session expired"));
     }
     if let Some(monitor) = p.monitor {
@@ -1116,7 +1117,7 @@ fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
             .get(&monitor.parent)
             .filter(|parent| parent.monitor.is_none())
             .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "parent session ended"))?;
-        if parent.lease.elapsed() >= LEASE || parent.joined.elapsed() >= MAX_CALL_DURATION {
+        if parent.lease.elapsed() >= LEASE {
             return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "parent session ended",
@@ -1452,11 +1453,9 @@ async fn join(
             .remove(&reservation)
             .is_some_and(|r| r.started.elapsed() < Duration::from_secs(30));
         let parent_valid = monitor.is_none_or(|monitor| {
-            r.participants.get(&monitor.parent).is_some_and(|parent| {
-                parent.monitor.is_none()
-                    && parent.lease.elapsed() < LEASE
-                    && parent.joined.elapsed() < MAX_CALL_DURATION
-            })
+            r.participants
+                .get(&monitor.parent)
+                .is_some_and(|parent| parent.monitor.is_none() && parent.lease.elapsed() < LEASE)
         });
         if !reserved || !parent_valid {
             cleanup_participant_locked(r, &p);
@@ -2212,7 +2211,6 @@ async fn expire_sessions(s: &AppState) -> Result<(), ApiError> {
             .values()
             .filter(|p| {
                 p.lease.elapsed() >= LEASE
-                    || p.joined.elapsed() >= MAX_CALL_DURATION
                     || p.operation_started
                         .is_some_and(|t| t.elapsed() >= Duration::from_secs(30))
             })
