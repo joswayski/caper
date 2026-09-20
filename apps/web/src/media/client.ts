@@ -1,9 +1,10 @@
-import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression, type VoiceEnhancement } from "./microphone.ts";
+import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression } from "./microphone.ts";
 import { ReceivedMonitor } from "./monitor.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
 import { CallEvents } from "./events.ts";
 import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
+import { clampVoiceProcessingStrength, DEFAULT_VOICE_PROCESSING_STRENGTH } from "./voice-processing.ts";
 export { waitFor } from "./rtc.ts";
 import type {
   CallSnapshot,
@@ -80,7 +81,7 @@ export class PublicCallClient {
   private previousStats?: { received: number; sent: number; sampledAt: number };
   private noiseSuppression: NoiseSuppression = "dpdfnet8";
   private audioSetup: AudioSetup = "headphones";
-  private voiceEnhancement: VoiceEnhancement = "enhanced";
+  private voiceProcessingStrength = DEFAULT_VOICE_PROCESSING_STRENGTH;
   private microphoneStatus?: string;
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
@@ -120,7 +121,7 @@ export class PublicCallClient {
       diagnostics: this.diagnostics,
       noiseSuppression: this.noiseSuppression,
       audioSetup: this.audioSetup,
-      voiceEnhancement: this.voiceEnhancement,
+      voiceProcessingStrength: this.voiceProcessingStrength,
       noiseSuppressionStatus: this.captures.get(this.senders.get("microphone")?.track!)?.status ?? this.microphoneStatus,
       error,
     });
@@ -440,7 +441,7 @@ export class PublicCallClient {
     this.monitorStatus = "Connecting your microphone test…";
     this.emit();
     try {
-      const stream = await monitor.start(microphone.track);
+      const stream = await monitor.start(this.captures.get(microphone.track)?.naturalTrack ?? microphone.track);
       if (this.receivedMonitor !== monitor || !this.monitoring) return;
       this.monitorStream = stream;
       this.monitorConnecting = false;
@@ -477,7 +478,7 @@ export class PublicCallClient {
     microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => {
       this.microphoneStatus = microphone.status;
       this.emit();
-    }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceEnhancement);
+    }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceProcessingStrength);
     this.microphoneStatus = microphone.status;
     this.captures.set(microphone.track, microphone);
     return microphone.track;
@@ -495,9 +496,9 @@ export class PublicCallClient {
     this.emit();
   }
 
-  setVoiceEnhancement(mode: VoiceEnhancement) {
-    this.voiceEnhancement = mode;
-    this.captures.get(this.senders.get("microphone")?.track!)?.setVoiceEnhancement(mode);
+  setVoiceProcessingStrength(strength: number) {
+    this.voiceProcessingStrength = clampVoiceProcessingStrength(strength);
+    this.captures.get(this.senders.get("microphone")?.track!)?.setVoiceProcessingStrength(this.voiceProcessingStrength);
     this.emit();
   }
 
@@ -544,7 +545,7 @@ export class PublicCallClient {
         senderReplaced = true;
         if (generation !== this.generation) throw new Error("Call session changed.");
         track.enabled = this.monitoring || !this.muted;
-        if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(track);
+        if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(this.captures.get(track)?.naturalTrack ?? track);
         if (generation !== this.generation) throw new Error("Call session changed.");
         microphone.track = track;
         this.localMedia = new MediaStream([track]);
@@ -557,7 +558,7 @@ export class PublicCallClient {
         if (senderReplaced && generation === this.generation && this.senders.get("microphone") === microphone) {
           try {
             await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : old);
-            if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(old);
+            if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(oldCapture?.naturalTrack ?? old);
           } catch { rollbackFailed = true; }
         }
         if (track) this.stopMicrophone(track);

@@ -1,4 +1,4 @@
-import type { AudioSetup, NoiseSuppression, VoiceEnhancement } from "./microphone";
+import type { AudioSetup, NoiseSuppression } from "./microphone";
 
 export type CallPhase = "idle" | "joining" | "connected" | "reconnecting" | "leaving" | "failed";
 export type MediaKind = "microphone";
@@ -73,6 +73,6 @@ export interface CallViewState {
   diagnostics?: ConnectionDiagnostics;
   noiseSuppression?: NoiseSuppression;
   audioSetup?: AudioSetup;
-  voiceEnhancement?: VoiceEnhancement;
+  voiceProcessingStrength?: number;
   noiseSuppressionStatus?: string;
 }

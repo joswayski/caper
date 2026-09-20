@@ -7,7 +7,8 @@ enabled. Accounts are optional. Signed-in participants use their account display
 name; guests receive a random name. This is not a dial/invite/call flow.
 No text chat, camera, screen sharing, channel creation, or server-side recording.
 Mic test offers an explicit, tab-memory-only recording of up to ten seconds of
-received audio. The Rust API replaces a signed-in participant's submitted name
+received Natural audio and an on-device Enhanced comparison from the same take.
+The Rust API replaces a signed-in participant's submitted name
 with the account display name. Guest names can collide and are not verified or
 reserved; participant IDs, not names, distinguish people. Presence remains in memory.
 Up to 12 people can join with microphone permission,
@@ -664,14 +665,16 @@ The private receiver attaches a muted sink as soon as its track arrives so the
 browser drains the WebRTC jitter buffer continuously. Waiting until Record is
 pressed can make Chromium consume queued startup audio at catch-up speed.
 
-Pressing **Mic test** establishes the private return. **Record microphone** starts
-recording explicitly. A timer, received-audio meter and **Stop & play back**
-button make the active state visible. Stopping plays the recording automatically;
-recording also stops after ten seconds. The browser records the timestamped Opus
-return rather than rebuilding a WAV from manually counted PCM frames, preserving
-the received stream's real-time playback cadence. No recording is uploaded or
+Pressing **Mic test** establishes the private return from the denoised Natural tap.
+**Record one sample** starts recording explicitly. A timer, received-audio meter
+and **Stop & play back** button make the active state visible. Recording stops after
+ten seconds. The browser records one timestamped Opus return, preserving the
+received stream's real-time playback cadence, then renders a WAV comparison from
+that decoded take with the current voice-processing strength. Natural therefore
+exercises the real private SFU return; the Enhanced comparison uses the same Web
+Audio settings but does not make a second SFU trip. No recording is uploaded or
 persisted. Testing again, ending the test, leaving, reconnecting or unmounting
-discards the recording and cancels capture.
+discards both versions and cancels capture.
 Reconnects and device/filter changes return to the Record button, never start
 recording automatically. Status updates and output changes preserve playback.
 A decoded recording with no samples above 0.001 amplitude produces a no-signal
@@ -722,14 +725,17 @@ not enabled, and no selector remains to enable it. This preserves the preset Jos
 preferred rather than stacking automatic gain control. OS-level processing may still apply.
 It does not repair hardware-clipped input or guarantee clean speech.
 
-Voice enhancement is enabled by default after noise suppression. It uses Web Audio
-nodes on-device: a 75 Hz high-pass, restrained warmth and presence EQ, 3:1
-compression, 1.35× makeup gain and final peak limiting. This is fixed dynamics
-processing, not AGC: it does not continually raise gain during silence. The microphone
-test can switch the same outgoing track between **Natural** (noise cleanup only) and
-**Enhanced**, then retains one short returned recording from each mode for direct
-comparison. The selected mode remains active after leaving the test for the page
-lifetime. Neither mode can repair clipping that occurred before browser capture.
+Voice processing defaults to 25% after noise suppression and is adjustable from
+0–100%. At 100%, it uses Web Audio nodes on-device: a 75 Hz high-pass, restrained
+warmth and presence EQ, 3:1 compression, 1.35× makeup gain and final peak limiting.
+High-pass frequency, EQ gain, compression ratio and logarithmic makeup gain scale
+with the selected strength; peak limiting remains fixed protection. Zero bypasses
+the entire post-processing chain, while DPDFNet noise cleanup remains active at
+every setting. This is fixed dynamics processing, not AGC: it does not continually
+raise gain during silence. The microphone test records one returned Natural take
+and creates the selected Enhanced comparison from that same recording. The setting
+remains active after leaving the test for the page lifetime. Processing cannot repair
+clipping that occurred before browser capture.
 
 The voice-level control remains 0–200%; 100% is unity input gain. Device selectors
 show the browser's current default hardware by name, omit the synthetic “System
@@ -738,8 +744,8 @@ default” row, and collapse duplicate default/device labels.
 ## On-device noise suppression
 
 DPDFNet-8 48 kHz HR is the default microphone mode: capture (browser AEC, AGC and
-noise suppression off) → input gain → 48 kHz mono DPDFNet → optional voice
-enhancement → MediaStream output track → existing WebRTC Opus sender → Cloudflare
+noise suppression off) → input gain → 48 kHz mono DPDFNet → adjustable voice
+processing → MediaStream output track → existing WebRTC Opus sender → Cloudflare
 SFU. Runtime performance limitations remain.
 The new private test changes the control API as described above, not SFU configuration.
 No LiveKit dependency, external denoising API,

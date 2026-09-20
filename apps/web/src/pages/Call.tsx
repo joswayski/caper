@@ -3,14 +3,16 @@ import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { Headphones, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import { getAccount } from "../account/client";
+import Slider from "../components/Slider";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState, Participant } from "../media/types";
+import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback from "./MicPlayback";
 import VoiceActivity from "./VoiceActivity";
 import "./call.css";
 
-const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceEnhancement: "enhanced", monitoring: false, participants: [], remoteMedia: [] };
+const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
 type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
@@ -245,14 +247,11 @@ export default function Call() {
                 {!idle && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
                 {!idle && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
                   <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="200"
-                    step="1"
+                  <Slider
+                    label={`${participant.name} volume`}
                     value={participantVolumes[participant.id] ?? 100}
-                    aria-label={`${participant.name} volume`}
-                    onChange={(event) => setParticipantVolumes((current) => ({ ...current, [participant.id]: Number(event.target.value) }))}
+                    max={200}
+                    onChange={(value) => setParticipantVolumes((current) => ({ ...current, [participant.id]: value }))}
                   />
                   <label className="participant-mute">
                     <span>Mute</span>
@@ -284,7 +283,7 @@ export default function Call() {
             </form>}
             <p className="privacy-note">You’ll be asked for microphone access when you join.</p>
           </div> : state.monitorStream && !actionPending
-            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} enhancement={state.voiceEnhancement ?? "enhanced"} onEnhancementChange={(mode) => clientRef.current?.setVoiceEnhancement(mode)} />
+            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />
             : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Getting your private test ready." : connected ? "Say hello, or run a mic test to hear yourself first." : "Getting everything ready."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
@@ -300,7 +299,7 @@ export default function Call() {
             <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={state.deafened ? "Listen" : "Deafen"} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
             {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-select"><span className="sr-only">Audio output</span><select aria-label="Audio output" disabled={!deviceOptions(devices, "audiooutput").length} value={output} onChange={(event) => setOutput(event.target.value)}>{!deviceOptions(devices, "audiooutput").length && <option value="">Loading…</option>}{deviceOptions(devices, "audiooutput").map(({ device, label }) => <option value={device.deviceId} key={device.deviceId}>{label}</option>)}</select></label> : <p className="noise-status">Choose audio output in system settings.</p>}
           </div>
-          <label className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><input type="range" min="0" max="200" step="1" value={state.inputVolume} aria-label="My voice level" onChange={(event) => clientRef.current?.setInputVolume(Number(event.target.value))} /><small>Changes how loud you sound to others.</small></label>
+          <div className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><Slider label="My voice level" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /><small>Changes how loud you sound to others.</small></div>
           <div className="control-buttons">
             <button disabled={!connected || (!state.monitoring && actionPending)} type="button" className={state.monitoring ? "active" : ""} aria-pressed={state.monitoring} onClick={() => { setActionError(undefined); void clientRef.current!.setMonitoring(!state.monitoring).catch((error) => setActionError(error instanceof Error ? error.message : "Mic test could not start.")); }}><Volume2 aria-hidden="true" /> <span>{state.monitoring ? "End mic test" : "Mic test"}</span></button>
             <button type="button" className="leave-button" onClick={leave}>Leave voice</button>
