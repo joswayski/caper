@@ -7,15 +7,14 @@ Adapted from the conventions in `joswayski/captures`.
 - Caper is an early-stage space for conversations. Distinguish working features from roadmap ideas; do not describe mockups as shipped functionality.
 - `apps/web`: TanStack Start browser app and same-origin development API adapter.
 - `apps/api`: Rust media control service. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. MVP is one public General voice channel with join/leave, not outgoing calls. No text chat, database, camera or screen sharing.
-- `apps/desktop`: independent Tauri shell and React UI. Browser WebRTC success does not prove native webview support.
 - `shared/design.css`: shared visual tokens. `docs/brand` contains the owner's reference images and style guidance.
 - `docs/media.md`: configuration, deployment, privacy, validation matrix, and call runbook.
 
 ## Working conventions
 
 - Keep changes focused; reuse existing patterns before adding dependencies or abstractions.
-- Other agents may work concurrently, particularly on desktop. Use an isolated worktree for new concurrent work; never stash, overwrite, or publish another agent's changes.
-- Keep macOS, Windows, and Linux parity explicit. Document unsupported or untested capture/device behavior instead of assuming browser and Tauri APIs are interchangeable.
+- Other agents may work concurrently. Use an isolated worktree for new concurrent work; never stash, overwrite, or publish another agent's changes.
+- Treat future native clients as independent implementations. Browser WebRTC success does not prove native capture or playback support.
 - Never expose provider secrets or log SDP, credentials, or raw media. No unrestricted Cloudflare API proxy.
 - Keep one desired API replica until shared media coordination and recovery exist. A temporary second API pod during rolling updates is intentionally accepted for this work-in-progress app; split in-memory registries still interrupt calls. Web replicas are independent of this constraint.
 

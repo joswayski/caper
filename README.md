@@ -9,8 +9,7 @@ its earliest stage today (and an active work in progress)!
 
 - `apps/web` — TanStack Start website and health endpoint
 - `apps/api` — Rust voice-control and account service
-- `apps/desktop` — React UI inside a minimal Tauri 2 shell
-- `shared` — framework-neutral design tokens shared by both clients
+- `shared` — framework-neutral design tokens
 
 Brand references and the owner's style guide are in [docs/brand](docs/brand).
 
@@ -34,18 +33,7 @@ short-lived credentials. Keep it running in the foreground so restarting the
 stack refreshes expiring SSO credentials, and stop it with Ctrl-C. Populate `.env`
 from `.env.example` only when using the fallback; at minimum it needs `AUTH_SECRET`.
 
-Run the desktop shell with:
-
-```bash
-npm run dev:desktop
-```
-
 Use `npm run dev:web` only when running the web process independently.
-
-Desktop-affecting merges to `main` are batched into signed Preview releases for
-macOS Apple silicon, Windows x64, and Linux x64. An installed Preview checks for
-updates automatically. See [Desktop releases](docs/desktop-releases.md) for the
-one-time signing setup and release behavior.
 
 Run all checks with:
 
@@ -68,7 +56,7 @@ server-only Cloudflare variables in `.env.example` in the API environment to
 enable calls. No database is required; leave database URLs unset for local voice
 testing. The account API supports email sign-in codes when its database, SES, and
 `AUTH_SECRET` settings are configured. The website supports email-code sign-in and
-required username/display-name onboarding; desktop login is not wired up yet.
-Guest names remain unverified and are not reserved.
+required username/display-name onboarding. Guest names remain unverified and are
+not reserved.
 See the [media runbook](docs/media.md) for provider configuration, deployment,
 privacy guidance, and the validation matrix.

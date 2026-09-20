@@ -23,27 +23,10 @@ jobs:
       - run: npm test --workspace @caper/web
 
   rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-26, windows-2025, ubuntu-24.04]
+    name: Rust
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux Tauri dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            pkg-config
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.94.0

@@ -95,9 +95,7 @@ The web Deployment, Service, Ingress, PDB, container, and deployment target are
 named `caper-web`; it runs with two replicas.
 
 Web and API images publish independently. `api-image.yml` runs only when
-`apps/api`, workspace Cargo files, the unused desktop crate manifest, or that
-workflow change. The API Dockerfile stubs Tauri sources so a desktop-only
-refactor cannot skip API image CI and then break the next API build. `aws-image.yml`
+`apps/api`, workspace Cargo files, or that workflow change. `aws-image.yml`
 runs only when the website Docker context, `apps/web`, `shared`, npm workspace
 manifests, or that workflow change. An API-only merge does not publish a website image or
 send a **Deploy Caper web** notification, and a website-only merge does not
@@ -195,7 +193,7 @@ live ingestion into the user's dataset has not been verified.
 
 - Web-only deployments do not reload already-open tabs; production media control
   requests route straight to Rust. Keep API changes compatible with old tabs and
-  future desktop releases, which will not all update at deployment time.
+  future native clients, which will not all update at deployment time.
 - API rolling updates start a replacement and wait for its readiness probe before
   terminating the old pod. This removes the deliberate stop-before-start gap,
   **not** today's call interruptions from separate in-memory registries.
@@ -289,10 +287,10 @@ Before accepting audio quality, compare DTX on/off with real quiet speech,
 whispers, initial consonants after several seconds of silence, short pauses,
 word endings and laughter, with DPDFNet active and under device load. Verify live
 SFU forwarding, forced TURN, loss/jitter, joining another participant, and device
-replacement separately. Firefox, Safari and native desktop remain unverified.
+replacement separately. Firefox, Safari, and future native clients remain unverified.
 The current unavailable account boundary still prevents production voice access.
 This web-only change does not enable accounts/media, require API deployment,
-change provider configuration, or implement native Tauri audio.
+or change provider configuration.
 
 ## Leaving voice
 
@@ -884,13 +882,12 @@ Original DeepFilter integration validation, September 6, 2026:
   validated directly, not via a container run.
 - Desktop/mobile browser layouts inspected; physical microphones, headset and
   speakerphone echo, speech preservation, sustained CPU/gaming load, Firefox,
-  Safari, and all Tauri webviews/native capture remain unvalidated.
+  and Safari remain unvalidated.
 
-Desktop direction: the existing Tauri shell has no working voice implementation.
-This browser adapter is not a native desktop audio pipeline. The same model can
-be used with upstream Rust `libDF`; native capture, echo cancellation, and feeding
-processed PCM into the chosen native WebRTC sender still need implementation.
-Do not transport continuous PCM through ordinary Tauri command/event IPC.
+Future native clients are separate implementations, not wrappers around this
+browser adapter. Native capture, echo cancellation, and feeding processed PCM
+into a native WebRTC sender remain roadmap work; no native client currently ships
+from this repository.
 
 ## Cost and acceptance
 
@@ -945,7 +942,8 @@ Microphone-playback verification, September 7, 2026 (UTC):
 This is a web-only change; no API deployment or provider configuration is required.
 
 Physical microphone/speaker quality, multiple networks, prolonged sessions,
-mobile background behavior, Firefox/Safari, and Tauri remain separate checks.
+mobile background behavior, Firefox/Safari, and future native clients remain
+separate checks.
 
 Before wider testing, use physical browsers on two networks; verify audible
 speech, device unplug/change, denial, repeated join/leave, restart, mute/deafen,
@@ -1011,7 +1009,7 @@ curl --fail --silent --show-error https://caper.chat/api/media/status
 Guest restoration validation: Rust provider mocks cover unauthenticated joins,
 name validation, capability enforcement and revocation; browser client tests cover
 name retention on reconnect and media/SSE headers. These do not prove live SFU,
-multi-network/TURN, sustained voice, physical devices, or native Tauri support.
+multi-network/TURN, sustained voice, physical devices, or future native support.
 
 `apps/api/migrations/202609070001_accounts.sql` creates a provider-neutral `users`
 table: bigint identity PK, unique random public ID, nullable unique email, nullable
@@ -1038,7 +1036,7 @@ hooks, and browser forwarding remain removed. Server functions retain CSRF middl
 The production web service owns no `/api` routes; Traefik sends same-origin
 `/api/*` requests directly to Rust.
 
-### Public API: web, desktop and mobile
+### Public API: web and future native clients
 
 The public browser API is **`https://caper.chat/api/*`**, routed by Traefik
 directly to the existing Rust `caper-api` service. `https://caper.chat/*` serves
@@ -1064,9 +1062,9 @@ not URLs, cookies, or persistent storage. Possession authorizes that call sessio
 | POST | `/api/media/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Capability-protected operations; all paths under `/api/media` |
 
 Web verification defaults to an `HttpOnly`, `Secure`, `SameSite=Lax` cookie.
-Desktop and future mobile clients request `tokenTransport: "bearer"` and store the
-returned opaque token in the OS credential vault (Keychain/Keystore), never plain
-preferences or web storage. Protected routes accept either transport. Logout
+Future native desktop and mobile clients will request `tokenTransport: "bearer"`
+and store the returned opaque token in the OS credential vault (Keychain/Keystore),
+never plain preferences or web storage. Protected routes accept either transport. Logout
 revokes the same database session for every client type. Guest media capabilities
 are not account credentials.
 

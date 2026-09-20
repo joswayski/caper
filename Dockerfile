@@ -5,7 +5,6 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
-COPY apps/desktop/package.json apps/desktop/
 RUN npm ci
 
 COPY apps/web apps/web
