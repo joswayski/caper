@@ -17,21 +17,16 @@ Brand references and the owner's style guide are in [docs/brand](docs/brand).
 ## Development
 
 Node.js 24, npm 11, and Rust 1.94 are used across local development and CI.
-
-```bash
-npm ci
-npm run dev:web
-```
-
-Local staging runs the complete app through Docker Compose. It uses the regular
+Local development runs the complete app through Docker Compose. It uses the regular
 `staging` AWS profile and passes only its temporary credentials into the API
 container. The Rust API reads `staging/apps/caper` from Secrets Manager and falls
 back to the ignored repository `.env` when that record is unavailable. PostgreSQL
 URLs and roles are owned by Compose; no environment exports are needed.
 
 ```bash
+npm ci
 aws sso login --profile staging
-npm run staging
+npm run dev
 ```
 
 Open `http://localhost:3000/login`. The helper never prints or writes the
@@ -42,8 +37,10 @@ from `.env.example` only when using the fallback; at minimum it needs `AUTH_SECR
 Run the desktop shell with:
 
 ```bash
-npm run dev
+npm run dev:desktop
 ```
+
+Use `npm run dev:web` only when running the web process independently.
 
 Desktop-affecting merges to `main` are batched into signed Preview releases for
 macOS Apple silicon, Windows x64, and Linux x64. An installed Preview checks for
