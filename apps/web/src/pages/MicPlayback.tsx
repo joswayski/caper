@@ -44,11 +44,12 @@ interface Clip {
   silent: boolean;
 }
 
-function RecordingPlayback({ clip, label, output, autoPlay, onDeviceError }: {
+function RecordingPlayback({ clip, label, output, autoPlay, onEnded, onDeviceError }: {
   clip: Clip;
   label: string;
   output: string;
   autoPlay: boolean;
+  onEnded?(): void;
   onDeviceError(): void;
 }) {
   const ref = useRef<HTMLAudioElement>(null);
@@ -69,7 +70,7 @@ function RecordingPlayback({ clip, label, output, autoPlay, onDeviceError }: {
     void prepare();
     return () => { current = false; };
   }, [autoPlay, clip.url, output]);
-  return <audio ref={ref} aria-label={`${label} microphone sample`} controls src={clip.url} />;
+  return <audio ref={ref} aria-label={`${label} microphone sample`} controls src={clip.url} onEnded={onEnded} />;
 }
 
 function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
@@ -94,6 +95,7 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
   const [elapsed, setElapsed] = useState(0);
   const [recordedBlob, setRecordedBlob] = useState<Blob>();
   const [clips, setClips] = useState<{ natural?: Clip; processed?: Clip }>({});
+  const [naturalPlaybackEnded, setNaturalPlaybackEnded] = useState(false);
   const [error, setError] = useState<string>();
   const [deviceError, setDeviceError] = useState(false);
 
@@ -107,6 +109,7 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
     setProcessing(false);
     setRecordedBlob(undefined);
     setClips({});
+    setNaturalPlaybackEnded(false);
     setError(undefined);
     setDeviceError(false);
   };
@@ -119,6 +122,7 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
     urlsRef.current = {};
     setRecordedBlob(undefined);
     setClips({});
+    setNaturalPlaybackEnded(false);
     setError(undefined);
     setDeviceError(false);
     setElapsed(0);
@@ -211,14 +215,14 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
       <article>
         <div><strong>Natural</strong></div>
         {clips.natural
-          ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} autoPlay={false} onDeviceError={() => setDeviceError(true)} />
+          ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} autoPlay onEnded={() => setNaturalPlaybackEnded(true)} onDeviceError={() => setDeviceError(true)} />
             {clips.natural.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
           : <p>Your natural recording will appear here.</p>}
       </article>
       <article className={clips.processed ? "latest" : undefined}>
         <div><strong>Enhanced</strong></div>
         {clips.processed
-          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} autoPlay onDeviceError={() => setDeviceError(true)} />
+          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} autoPlay={naturalPlaybackEnded} onDeviceError={() => setDeviceError(true)} />
             {clips.processed.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
           : <p>{processing ? "Applying voice enhancement…" : "Your enhanced comparison will appear here."}</p>}
       </article>
