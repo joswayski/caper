@@ -23,6 +23,29 @@ npm ci
 npm run dev:web
 ```
 
+For local account login, run PostgreSQL and the Rust API too. This example uses
+the same local role for migrations and runtime; hosted environments retain
+separate roles. Account startup applies migrations and grants automatically.
+
+```bash
+docker run --rm --name caper-postgres \
+  -e POSTGRES_PASSWORD=caper -e POSTGRES_DB=caperchat \
+  -p 54320:5432 postgres:17
+
+export MIGRATION_DATABASE_URL='postgres://postgres:caper@127.0.0.1:54320/caperchat?sslmode=disable'
+export DATABASE_URL="$MIGRATION_DATABASE_URL"
+export AUTH_SECRET="$(openssl rand -base64 48)"
+export AWS_PROFILE=staging-caper AWS_REGION=us-east-1
+export SES_FROM_ADDRESS='Caper <noreply@staging.caper.chat>'
+export SES_CONFIGURATION_SET=staging-caper-transactional
+cargo run -p caper-api
+```
+
+In another terminal, run `npm run dev:web` and open `/login`. Authenticate the
+`staging-caper` AWS profile first as documented in the infrastructure repository's
+`docs/staging-sender-access.md`. Staging currently provides SES/IAM for local and
+orb development; it is not a separately deployed Caper app or database.
+
 Run the desktop shell with:
 
 ```bash

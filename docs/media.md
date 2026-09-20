@@ -61,8 +61,8 @@ Keep this temporary test separate from any future production app/key.
 | `AXIOM_TOKEN` | Optional server-only ingest API token; absent/empty disables export |
 | `AXIOM_DATASET` | Defaults to the existing `caper` dataset |
 | `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
-| `DATABASE_URL` | API-only runtime URL: pooled port `6432`, database `/caperchat`, restricted app role, verified TLS. Missing configuration fails account/media access closed. |
-| `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Neither DB secret belongs in WEB. |
+| `DATABASE_URL` | API-only runtime URL: pooled port `6432`, database `/caperchat`, restricted app role, verified TLS. Loopback development may explicitly use `sslmode=disable`. Missing configuration fails account access closed. |
+| `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Startup grants the parsed runtime role access to migrated application tables. Neither DB secret belongs in WEB. |
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
 | `AWS_REGION` | SES region; production and staging use `us-east-1` |
 | `SES_FROM_ADDRESS` | Verified Caper sender, including the friendly name |
@@ -1101,7 +1101,9 @@ the long-running API environment holds schema-changing credentials, an accepted
 early-stage tradeoff. SQLx advisory locks serialize concurrent startup migrations.
 Use direct port 5432: those locks require session affinity; pooled port 6432 is
 rejected for migrations with no runtime-URL fallback. Both URLs must target the same
-existing `/caperchat` database. Startup does not create the database or grant roles.
+existing `/caperchat` database. Startup does not create the database or roles. It
+connects with `DATABASE_URL` to identify the actual runtime role, then the migration
+connection grants that role only the application table and sequence access it needs.
 The direct migration connection explicitly sets `search_path=public`, so a schema
 named for the migration role or a database-level custom search path cannot redirect
 new tables or SQLx's ledger. This startup override is not applied to the runtime
@@ -1134,7 +1136,6 @@ From this checkout, securely export `DATABASE_URL` (runtime role) and
 `MIGRATION_DATABASE_URL` (schema owner, direct port 5432) for `caperchat`:
 
 ```bash
-CAPER_RUNTIME_ROLE="$(psql "$DATABASE_URL" -Atc 'SELECT current_user')"
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
 DO $$ BEGIN
   IF current_database() <> 'caperchat' THEN
@@ -1145,12 +1146,6 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 SQL
 cargo run --locked --release -p caper-api -- --migrate
-psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v runtime_role="$CAPER_RUNTIME_ROLE" <<'SQL'
-GRANT USAGE ON SCHEMA public TO :"runtime_role";
-GRANT SELECT, INSERT, UPDATE ON public.users TO :"runtime_role";
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.auth_email_challenges, public.account_sessions TO :"runtime_role";
-GRANT USAGE ON SEQUENCE public.users_id_seq TO :"runtime_role";
-SQL
 ```
 
 Do not recreate the database, other schemas, roles, or cluster. Verify the new
@@ -1169,8 +1164,9 @@ kubectl -n default exec deployment/caper-web -- node -e \
 The unauthenticated account request must return 401. These are operator instructions
 only; this change performs no production writes or SES sends.
 
-An optional operator command remains available to migrate without starting HTTP;
-it reads only the securely exported `MIGRATION_DATABASE_URL`:
+An optional operator command remains available to migrate and apply runtime grants
+without starting HTTP. With `DATABASE_URL` set it identifies and grants the runtime
+role; without that variable it applies only migrations:
 
 ```bash
 cargo run --locked --release -p caper-api -- --migrate
