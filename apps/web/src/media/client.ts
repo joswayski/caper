@@ -244,7 +244,8 @@ export class PublicCallClient {
     ]);
     const connected = performance.now();
     // Subscription negotiation still waits for transport. Never open audio early.
-    await this.poll();
+    // A pushed roster does not renew the lease consumed by signaling/transport setup.
+    await this.poll(true);
     if (this.stateDirty) await this.setState(this.muted, this.deafened);
     if (this.pollAgain) await this.poll();
     signal.throwIfAborted();

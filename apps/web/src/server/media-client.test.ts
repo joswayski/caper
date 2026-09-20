@@ -877,15 +877,37 @@ test("early state acknowledgement still waits for transport before roster negoti
   assert.equal(track.enabled, true);
 });
 
-test("a pushed initial snapshot provides strict roster readiness without an HTTP snapshot", async (t) => {
-  const { client, events, calls, states } = setup(t, { eventsReady: false });
+test("startup renews the lease despite a pushed roster and keeps newer pushed state", async (t) => {
+  const { client, events, track, states, install } = setup(t, { eventsReady: false });
+  const original = fetch;
+  let renewals = 0;
+  let renew!: () => void;
+  const initial = [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [] }];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/snapshot")) return original(url, init);
+    assert.equal(new Headers(init.headers).get("x-caper-media-token"), "capability");
+    renewals++;
+    return new Promise<Response>((resolve) => {
+      renew = () => resolve(Response.json({ participants: initial, revision: 1 }));
+    });
+  });
   const joining = client.join();
   await tick();
   events[0].enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
-  events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [] }], 1));
+  events[0].enqueue(snapshotEvent(initial, 1));
+  await tick();
+  assert.equal(renewals, 1, "SSE must not suppress the authenticated startup renewal");
+  assert.equal(track.enabled, false, "wait for renewal before opening audio");
+  assert.equal(states.at(-1)?.phase, "joining");
+  events[0].enqueue(snapshotEvent([{ ...initial[0], muted: true }], 2));
+  await tick();
+  renew();
   await joining;
-  assert.equal(calls.includes("snapshot"), false);
+  assert.equal(renewals, 1);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(track.enabled, true);
   assert.equal(states.at(-1)?.participants[0]?.id, "other");
+  assert.equal(states.at(-1)?.participants[0]?.muted, true, "older HTTP state must not overwrite the push");
 });
 
 test("publication failure cancels an unfinished SSE handshake without enabling audio", async (t) => {
