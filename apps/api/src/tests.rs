@@ -1294,6 +1294,14 @@ fn database_url_requires_postgres_and_tls() {
         options.get_ssl_mode(),
         sqlx::postgres::PgSslMode::VerifyFull
     ));
+    let local = crate::db::connect_options(
+        "postgres://caper:secret@127.0.0.1:54320/caperchat?sslmode=disable",
+    )
+    .unwrap();
+    assert!(matches!(
+        local.get_ssl_mode(),
+        sqlx::postgres::PgSslMode::Disable
+    ));
     assert_eq!(
         crate::db::connect_options("mysql://caper:secret@db/caper").unwrap_err(),
         "DATABASE_URL must be a PostgreSQL URL"
