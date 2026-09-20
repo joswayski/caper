@@ -390,8 +390,17 @@ export class PublicCallClient {
 
   async setDeafened(deafened: boolean) {
     if (this.monitoring) return;
+    if (deafened) this.muted = true;
     this.deafened = deafened;
+    const microphone = this.senders.get("microphone");
+    if (microphone) microphone.track.enabled = this.readyToTalk && !this.muted;
     this.emit();
+    await this.serializeMedia(async () => {
+      const current = this.senders.get("microphone");
+      if (!current) return;
+      current.track.enabled = this.readyToTalk && !this.muted;
+      await current.sender.replaceTrack(this.muted || !this.readyToTalk ? null : current.track);
+    });
     await this.setState(this.muted, deafened);
   }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { recordReceivedAudio } from "../media/recording.ts";
+import { MAX_RECORDING_SECONDS, recordReceivedAudio } from "../media/recording.ts";
 
 function install(t: TestContext, key: string, value: unknown) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
@@ -9,6 +9,10 @@ function install(t: TestContext, key: string, value: unknown) {
     ? Object.defineProperty(globalThis, key, descriptor)
     : Reflect.deleteProperty(globalThis, key));
 }
+
+test("received recordings have a 30-second maximum", () => {
+  assert.equal(MAX_RECORDING_SECONDS, 30);
+});
 
 test("received recording keeps browser timestamps and finishes without stopping borrowed audio", async (t) => {
   let instance!: FakeMediaRecorder;

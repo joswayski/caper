@@ -80,7 +80,8 @@
 .mic-test-button:disabled { opacity: .55; cursor: wait; }
 .mic-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .mic-comparison article { min-width: 0; min-height: 102px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
-.mic-comparison article.latest { border-color: #53633f; }
+.mic-comparison article.latest { border-color: #53633f; box-shadow: 0 0 18px rgb(99 122 67 / .24); animation: enhanced-glow 2.4s ease-in-out infinite alternate; }
+@keyframes enhanced-glow { to { box-shadow: 0 0 10px rgb(99 122 67 / .12); } }
 .mic-comparison article > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .mic-comparison article strong { font-size: .82rem; }
 .mic-comparison article p { margin: 16px 0 0; color: var(--text-muted); font-size: .75rem; line-height: 1.45; }
@@ -117,6 +118,7 @@
 .control-buttons .leave-button { border-color: var(--terracotta); color: #fff; background: var(--terracotta); }
 @media (prefers-reduced-motion: reduce) {
   .recording-clock i { animation: none; }
+  .mic-comparison article.latest { animation: none; }
 }
 @media (max-width: 760px) {
   .call-header, .call-room { width: calc(100% - 24px); }

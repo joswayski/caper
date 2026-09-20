@@ -1,6 +1,6 @@
 import { connectVoiceProcessing, createVoiceProcessingNodes } from "./voice-processing.ts";
 
-export const MAX_RECORDING_SECONDS = 10;
+export const MAX_RECORDING_SECONDS = 30;
 
 export interface ReceivedRecording {
   result: Promise<Blob>;
