@@ -5,12 +5,13 @@ import AccountNav from "../account/AccountNav";
 import { getAccount } from "../account/client";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
-import type { CallViewState } from "../media/types";
+import type { CallViewState, Participant } from "../media/types";
 import MicPlayback from "./MicPlayback";
 import VoiceActivity from "./VoiceActivity";
 import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceEnhancement: "enhanced", monitoring: false, participants: [], remoteMedia: [] };
+type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
 
@@ -136,11 +137,13 @@ export default function Call() {
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
+  const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const controlsDisabled = !connected || actionPending || state.monitorConnecting;
+  const roster = idle ? publicParticipants : state.participants;
 
   useEffect(() => {
     let current = true;
@@ -165,6 +168,22 @@ export default function Call() {
     window.addEventListener("pagehide", unload);
     return () => { current = false; window.removeEventListener("pagehide", unload); clientRef.current?.leaveImmediately(); };
   }, []);
+
+  useEffect(() => {
+    if (!idle) return;
+    let current = true;
+    const update = () => {
+      const controller = new AbortController();
+      void fetch("/api/media/presence", { signal: controller.signal })
+        .then((response) => response.ok ? response.json() as Promise<PublicPresence> : undefined)
+        .then((result) => { if (current && result) setPublicParticipants(result.participants); })
+        .catch(() => undefined);
+      return controller;
+    };
+    let controller = update();
+    const timer = window.setInterval(() => { controller.abort(); controller = update(); }, 10_000);
+    return () => { current = false; window.clearInterval(timer); controller.abort(); };
+  }, [idle]);
 
   useEffect(() => {
     if (!connected) return;
@@ -198,22 +217,22 @@ export default function Call() {
       <section className="call-room">
         <aside className="people-panel">
           <div className="panel-heading"><div><p className="eyebrow">Caper</p><h1>Voice channel</h1></div></div>
-          <div className="voice-channel"><span aria-hidden="true">◖))</span> General {connected && <small aria-label={`${state.participants.length} in voice`}>{state.participants.length}</small>}</div>
+          <div className="voice-channel"><span aria-hidden="true">◖))</span> General {roster.length > 0 && <small aria-label={`${roster.length} in voice`}>{roster.length}</small>}</div>
           <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label="People in voice">
-            {state.participants.map((participant) => {
+            {roster.map((participant) => {
               const self = participant.id === state.selfId;
               const speaking = activeParticipants.has(participant.id);
               const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
               const participantMuted = self ? state.muted : participant.muted;
               const participantDeafened = self ? state.deafened : participant.deafened;
               const activityMuted = participantMuted && !state.monitoring;
-              return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
+              return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={idle || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                 <span className="participant-avatar">
                   <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   <ParticipantCountry code={participant.countryCode} />
                 </span>
                 <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantDeafened ? <small>Deafened</small> : participantMuted ? <small>Muted</small> : null}</span>
-                <VoiceActivity
+                {!idle && <VoiceActivity
                   stream={stream}
                   muted={activityMuted}
                   onActivityChange={(active) => setActiveParticipants((current) => {
@@ -222,9 +241,9 @@ export default function Call() {
                     active ? next.add(participant.id) : next.delete(participant.id);
                     return next;
                   })}
-                />
-                {!self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
-                {volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
+                />}
+                {!idle && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
+                {!idle && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
                   <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
                   <input
                     type="range"
@@ -252,7 +271,6 @@ export default function Call() {
               </li>;
             })}
           </ul>
-          {idle && <p className="roster-note">Join to see who’s here.</p>}
         </aside>
         <div className="stage">
           <div className="stage-title"><div><p className="eyebrow">One channel, open to everyone</p><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>
