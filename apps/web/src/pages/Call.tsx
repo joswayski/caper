@@ -6,11 +6,12 @@ import { getAccount } from "../account/client";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState, Participant } from "../media/types";
+import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback from "./MicPlayback";
 import VoiceActivity from "./VoiceActivity";
 import "./call.css";
 
-const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceEnhancement: "enhanced", monitoring: false, participants: [], remoteMedia: [] };
+const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
 type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
@@ -284,7 +285,7 @@ export default function Call() {
             </form>}
             <p className="privacy-note">You’ll be asked for microphone access when you join.</p>
           </div> : state.monitorStream && !actionPending
-            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} enhancement={state.voiceEnhancement ?? "enhanced"} onEnhancementChange={(mode) => clientRef.current?.setVoiceEnhancement(mode)} />
+            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} status={state.monitorStatus} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />
             : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Getting your private test ready." : connected ? "Say hello, or run a mic test to hear yourself first." : "Getting everything ready."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}

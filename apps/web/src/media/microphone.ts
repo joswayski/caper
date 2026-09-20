@@ -1,14 +1,23 @@
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
+import {
+  clampVoiceProcessingStrength,
+  connectVoiceProcessing,
+  createVoiceProcessingNodes,
+  DEFAULT_VOICE_PROCESSING_STRENGTH,
+  disconnectVoiceProcessing,
+  setVoiceProcessingStrength,
+  type VoiceProcessingNodes,
+} from "./voice-processing.ts";
 
 export type NoiseSuppression = "deepfilter" | "deepfilter-gentle" | "deepfilter-strong" | "rnnoise" | "dpdfnet8" | "browser" | "off";
 export type AudioSetup = "speakers" | "headphones";
-export type VoiceEnhancement = "natural" | "enhanced";
 export interface Microphone {
   track: MediaStreamTrack;
+  naturalTrack: MediaStreamTrack;
   status: string;
   setInputVolume(volume: number): void;
-  setVoiceEnhancement(mode: VoiceEnhancement): void;
+  setVoiceProcessingStrength(strength: number): void;
   pause(): Promise<void>;
   resume(): Promise<void>;
   stop(): void;
@@ -24,7 +33,7 @@ export async function captureMicrophone(
   assets = new NoiseAssets(),
   dpdfnet = new DpdfnetPreparation(),
   inputVolume = 100,
-  voiceEnhancement: VoiceEnhancement = "enhanced",
+  voiceProcessingStrength = DEFAULT_VOICE_PROCESSING_STRENGTH,
 ): Promise<Microphone> {
   signal.throwIfAborted();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: {
@@ -38,42 +47,40 @@ export async function captureMicrophone(
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
   let gain: GainNode | undefined;
+  let voiceInput: GainNode | undefined;
   let destination: MediaStreamAudioDestinationNode | undefined;
+  let naturalDestination: MediaStreamAudioDestinationNode | undefined;
   let node: AudioWorkletNode | undefined;
-  let highpass: BiquadFilterNode | undefined;
-  let warmth: BiquadFilterNode | undefined;
-  let presence: BiquadFilterNode | undefined;
-  let compressor: DynamicsCompressorNode | undefined;
-  let makeup: GainNode | undefined;
-  let limiter: DynamicsCompressorNode | undefined;
+  let voiceProcessing: VoiceProcessingNodes | undefined;
   let prepared: ReturnType<DpdfnetPreparation["take"]> | undefined;
   let stopped = false;
   let bypassing = false;
-  const connectVoicePath = (mode: VoiceEnhancement) => {
-    if (!node || !destination) return;
-    node.disconnect();
-    highpass?.disconnect();
-    warmth?.disconnect();
-    presence?.disconnect();
-    compressor?.disconnect();
-    makeup?.disconnect();
-    limiter?.disconnect();
-    if (mode === "natural" || !highpass || !warmth || !presence || !compressor || !makeup || !limiter) {
-      node.connect(destination);
+  let processingConnected: boolean | undefined;
+  const connectVoicePath = (strength: number) => {
+    if (!context || !voiceInput || !destination || !voiceProcessing) return;
+    const nextStrength = clampVoiceProcessingStrength(strength);
+    setVoiceProcessingStrength(voiceProcessing, nextStrength, context.currentTime, true);
+    if (processingConnected === (nextStrength > 0)) return;
+    voiceInput.disconnect();
+    disconnectVoiceProcessing(voiceProcessing);
+    processingConnected = nextStrength > 0;
+    if (!processingConnected) {
+      voiceInput.connect(destination);
       return;
     }
-    node.connect(highpass).connect(warmth).connect(presence).connect(compressor).connect(makeup).connect(limiter).connect(destination);
+    connectVoiceProcessing(voiceInput, destination, voiceProcessing);
   };
   const microphone: Microphone = {
     track: raw,
+    naturalTrack: raw,
     status: "Noise suppression off",
     setInputVolume(volume) {
       const value = Math.max(0, Math.min(volume, 200)) / 100;
       if (gain) gain.gain.setValueAtTime(value, gain.context.currentTime);
     },
-    setVoiceEnhancement(mode) {
-      voiceEnhancement = mode;
-      connectVoicePath(mode);
+    setVoiceProcessingStrength(strength) {
+      voiceProcessingStrength = clampVoiceProcessingStrength(strength);
+      connectVoicePath(voiceProcessingStrength);
     },
     async pause() {
       if (!stopped && context?.state === "running") await context.suspend();
@@ -87,17 +94,14 @@ export async function captureMicrophone(
       signal.removeEventListener("abort", microphone.stop);
       stream.getTracks().forEach((track) => track.stop());
       destination?.stream.getTracks().forEach((track) => track.stop());
+      naturalDestination?.stream.getTracks().forEach((track) => track.stop());
       source?.disconnect();
       gain?.disconnect();
+      voiceInput?.disconnect();
       node?.port.postMessage("stop");
       node?.disconnect();
       node?.port.close();
-      highpass?.disconnect();
-      warmth?.disconnect();
-      presence?.disconnect();
-      compressor?.disconnect();
-      makeup?.disconnect();
-      limiter?.disconnect();
+      if (voiceProcessing) disconnectVoiceProcessing(voiceProcessing);
       prepared?.stop();
       if (context && context.state !== "closed") void context.close().catch(() => undefined);
     },
@@ -150,37 +154,15 @@ export async function captureMicrophone(
     void context.resume().catch(() => undefined);
     source = context.createMediaStreamSource(stream);
     gain = context.createGain();
+    voiceInput = context.createGain();
     destination = context.createMediaStreamDestination();
     destination.channelCount = 1;
+    naturalDestination = context.createMediaStreamDestination();
+    naturalDestination.channelCount = 1;
     microphone.track = destination.stream.getAudioTracks()[0];
+    microphone.naturalTrack = naturalDestination.stream.getAudioTracks()[0];
     microphone.setInputVolume(inputVolume);
-    highpass = context.createBiquadFilter();
-    highpass.type = "highpass";
-    highpass.frequency.value = 75;
-    highpass.Q.value = 0.7;
-    warmth = context.createBiquadFilter();
-    warmth.type = "lowshelf";
-    warmth.frequency.value = 180;
-    warmth.gain.value = 2;
-    presence = context.createBiquadFilter();
-    presence.type = "peaking";
-    presence.frequency.value = 3_000;
-    presence.Q.value = 0.8;
-    presence.gain.value = 1.5;
-    compressor = context.createDynamicsCompressor();
-    compressor.threshold.value = -24;
-    compressor.knee.value = 12;
-    compressor.ratio.value = 3;
-    compressor.attack.value = 0.008;
-    compressor.release.value = 0.18;
-    makeup = context.createGain();
-    makeup.gain.value = 1.35;
-    limiter = context.createDynamicsCompressor();
-    limiter.threshold.value = -2;
-    limiter.knee.value = 0;
-    limiter.ratio.value = 20;
-    limiter.attack.value = 0.002;
-    limiter.release.value = 0.08;
+    voiceProcessing = createVoiceProcessingNodes(context, voiceProcessingStrength);
     const { module, model } = engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
     await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet.js" : "/audio/noise-v1/worklet.js");
     signal.throwIfAborted();
@@ -225,7 +207,9 @@ export async function captureMicrophone(
       node.port.start();
     }
     source.connect(gain).connect(node);
-    connectVoicePath(voiceEnhancement);
+    node.connect(naturalDestination);
+    node.connect(voiceInput);
+    connectVoicePath(voiceProcessingStrength);
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = fail;
     node.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") fail(); };

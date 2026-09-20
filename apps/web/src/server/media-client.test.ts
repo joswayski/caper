@@ -262,6 +262,9 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
 test("mic test detaches channel audio, plays a separately received track, and restores prior state", async (t) => {
   const { client, track, states, stateUpdates, audioSinks } = setup(t);
   await client.join("Guest");
+  const naturalTrack = new Track();
+  const capture = (client as unknown as { captures: Map<Track, { naturalTrack: Track }> }).captures.get(track)!;
+  capture.naturalTrack = naturalTrack;
   const channelPeer = Peer.latest;
   await client.setMuted(true);
   await client.setDeafened(false);
@@ -277,6 +280,7 @@ test("mic test detaches channel audio, plays a separately received track, and re
   assert.equal(monitorTrack.enabled, true, "the local loopback track must remain audible");
   assert.equal(track.enabled, true, "sender detachment, not track disabling, isolates the channel");
   assert.equal(channelPeer.senders[0].track, null, "the microphone must not reach the channel");
+  assert.equal(Peer.all[1].senders[0].track, naturalTrack, "the comparison records the denoised tap before voice processing");
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
   assert.equal(audioSinks.length, 1);
   assert.equal(audioSinks[0].muted, true);
@@ -291,10 +295,22 @@ test("mic test detaches channel audio, plays a separately received track, and re
   assert.equal(track.enabled, false);
   assert.equal(monitorTrack.readyState, "ended", "stopping releases the received track");
   assert.equal(track.readyState, "live", "stopping must not stop microphone capture");
+  assert.equal(naturalTrack.readyState, "live", "the monitor borrows the denoised tap without owning it");
   assert.equal(channelPeer.senders[0].track, null);
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: false });
   assert.equal(audioSinks[0].playing, false);
   assert.equal(audioSinks[0].srcObject, null);
+});
+
+test("voice processing defaults to 25%, clamps updates, and changes the live capture", async (t) => {
+  const { client, track, states } = setup(t);
+  await client.join();
+  assert.equal(states.at(-1)?.voiceProcessingStrength, 25);
+  const capture = (client as unknown as { captures: Map<Track, { setVoiceProcessingStrength(strength: number): void }> }).captures.get(track)!;
+  const update = t.mock.method(capture, "setVoiceProcessingStrength");
+  client.setVoiceProcessingStrength(125);
+  assert.equal(states.at(-1)?.voiceProcessingStrength, 100);
+  assert.deepEqual(update.mock.calls.map((call) => call.arguments), [[100]]);
 });
 
 test("monitor capture replacement stays private and retains the same received stream", async (t) => {
