@@ -7,9 +7,9 @@ its earliest stage today (and an active work in progress)!
 
 ## Repository layout
 
-- `apps/web` — TanStack Start website and health endpoint
-- `apps/api` — Rust voice-control and account service
-- `shared` — framework-neutral design tokens
+- `apps/web` - TanStack Start website and health endpoint
+- `apps/api` - Rust voice-control and account service
+- `shared` - framework-neutral design tokens
 
 Brand references and the owner's style guide are in [docs/brand](docs/brand).
 

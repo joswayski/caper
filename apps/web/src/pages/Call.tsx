@@ -25,7 +25,7 @@ function formatBitrate(bitsPerSecond: number) {
 function deviceOptions(devices: MediaDeviceInfo[], kind: MediaDeviceKind) {
   const labels = new Set<string>();
   return devices.filter((device) => device.kind === kind).sort((left, right) => Number(right.deviceId === "default") - Number(left.deviceId === "default")).flatMap((device) => {
-    const label = device.label.replace(/^Default\s*[-–—]\s*/i, "") || (kind === "audioinput" ? "Microphone" : "Audio output");
+    const label = device.label.replace(/^Default\s*[-–]\s*/i, "") || (kind === "audioinput" ? "Microphone" : "Audio output");
     const key = label.toLocaleLowerCase();
     if (labels.has(key)) return [];
     labels.add(key);

@@ -146,7 +146,7 @@ Only Caper events and Tower's HTTP failure events are exported; span attributes
 are limited to method, matched route, and request ID. No headers, query strings,
 SDP, credentials, raw media, provider session IDs/MIDs, arbitrary unmatched URLs,
 or dependency debug output are exported. Future log statements must follow the
-same privacy rules—this is not an arbitrary-string redaction engine. The richer
+same privacy rules - this is not an arbitrary-string redaction engine. The richer
 provider error references from reliability PR #66 are exported when that work is
 also deployed; enabling Axiom alone does not add those diagnostic fields. Legacy
 cleanup events with session/MID fields remain stdout-only; PR #66 replaces those

@@ -112,7 +112,7 @@ export async function captureMicrophone(
   if (mode === "browser") {
     microphone.status = raw.getSettings().noiseSuppression
       ? "Browser suppression active"
-      : "Browser suppression unavailable — noise suppression off";
+      : "Browser suppression unavailable - noise suppression off";
     return microphone;
   }
   const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet8" ? "dpdfnet8" : "deepfilter";
@@ -122,7 +122,7 @@ export async function captureMicrophone(
 
   const fail = () => {
     if (stopped) return;
-    microphone.status = `${engineName} failed — microphone stopped`;
+    microphone.status = `${engineName} failed - microphone stopped`;
     microphone.stop();
     changed();
   };
@@ -131,13 +131,13 @@ export async function captureMicrophone(
     bypassing = true;
     prepared?.stop();
     prepared = undefined;
-    microphone.status = `${engineName} unavailable — switching to browser suppression`;
+    microphone.status = `${engineName} unavailable - switching to browser suppression`;
     changed();
     void raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined).then(() => {
       if (stopped) return;
       microphone.status = raw.getSettings().noiseSuppression
         ? `${engineName} unavailable · browser suppression active`
-        : `${engineName} unavailable — noise suppression bypassed`;
+        : `${engineName} unavailable - noise suppression bypassed`;
       changed();
     });
   };

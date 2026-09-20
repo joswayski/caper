@@ -17,7 +17,7 @@ export const Route = createRootRoute({
         content: "Chat with anyone, about anything.",
       },
       { name: "theme-color", content: "#0c0d0f" },
-      { title: "Caper — A place for your people" },
+      { title: "Caper - A place for your people" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },

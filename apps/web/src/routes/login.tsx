@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
 import "../pages/account.css";
@@ -16,6 +16,7 @@ function loginError(error: unknown) {
 }
 
 function Login() {
+  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [challengeId, setChallengeId] = useState<string>();
   const [code, setCode] = useState("");
@@ -25,9 +26,9 @@ function Login() {
 
   useEffect(() => {
     void getAccount().then((account) => {
-      if (account) window.location.replace(account.username ? "/live" : "/profile");
+      if (account) void navigate({ to: account.username ? "/live" : "/profile", replace: true });
     }).catch(() => undefined);
-  }, []);
+  }, [navigate]);
 
   async function sendCode() {
     setPending(true);
@@ -56,7 +57,7 @@ function Login() {
     setError(undefined);
     try {
       const account = await verifyEmailCode(challengeId, code);
-      window.location.assign(account.username ? "/live" : "/profile");
+      await navigate({ to: account.username ? "/live" : "/profile" });
     } catch (verifyError) {
       if (verifyError instanceof AccountApiError) {
         setAttemptsRemaining(verifyError.attemptsRemaining);

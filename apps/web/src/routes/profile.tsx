@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
 import { AccountApiError, getAccount, logout, updateProfile, type Account } from "../account/client";
 import "../pages/account.css";
@@ -6,6 +6,7 @@ import "../pages/account.css";
 export const Route = createFileRoute("/profile")({ component: Profile });
 
 function Profile() {
+  const navigate = useNavigate();
   const [account, setAccount] = useState<Account>();
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -14,12 +15,12 @@ function Profile() {
 
   useEffect(() => {
     void getAccount().then((result) => {
-      if (!result) return window.location.replace("/login");
+      if (!result) return void navigate({ to: "/login", replace: true });
       setAccount(result);
       setUsername(result.username ?? "");
       setDisplayName(result.displayName ?? "");
     }).catch(() => setError("Your account could not be loaded. Please try again."));
-  }, []);
+  }, [navigate]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -28,7 +29,7 @@ function Profile() {
     try {
       const updated = await updateProfile(username, displayName);
       setAccount(updated);
-      window.location.assign("/live");
+      await navigate({ to: "/live" });
     } catch (saveError) {
       if (saveError instanceof AccountApiError && saveError.status === 409) setError("That username is already taken.");
       else if (saveError instanceof AccountApiError && saveError.status === 400) setError("Check the username and display name requirements.");
@@ -38,7 +39,14 @@ function Profile() {
     }
   }
 
-  if (!account) return <main className="account-page"><p role="status">{error ?? "Loading your account…"}</p></main>;
+  if (!account) return <main className="account-page">
+    <section className="account-card" aria-busy="true">
+      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="account-dot">.</span></a>
+      <p className="account-eyebrow">ONE LAST THING</p>
+      <h1>Setting up your account…</h1>
+      <p role="status">{error ?? "Loading your account…"}</p>
+    </section>
+  </main>;
 
   return <main className="account-page">
     <section className="account-card">
