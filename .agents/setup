@@ -17,10 +17,7 @@ packages=(
   build-essential
   curl
   file
-  libayatana-appindicator3-dev
-  librsvg2-dev
   libssl-dev
-  libwebkit2gtk-4.1-dev
   pkg-config
   postgresql
 )

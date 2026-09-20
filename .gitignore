@@ -6,8 +6,6 @@ node_modules/
 dist/
 **/dist/
 target/
-**/src-tauri/gen/
-**/src-tauri/tauri.release.conf.json
 *.tsbuildinfo
 **/.dev.vars
 **/.dev.vars.*

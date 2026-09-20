@@ -8,8 +8,6 @@ node_modules
 **/dist
 target
 apps/web
-apps/desktop/ui
-apps/desktop/src-tauri/gen
 docs
 .env
 .env.*

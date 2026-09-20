@@ -7,8 +7,6 @@ node_modules
 **/.output
 **/dist
 target
-apps/desktop/ui
-apps/desktop/src-tauri
 .env
 .env.*
 README.md
