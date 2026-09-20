@@ -12,6 +12,7 @@ const SECRET_KEYS: &[&str] = &[
     "AUTH_EMAIL_DAILY_LIMIT",
     "AUTH_IP_HOURLY_LIMIT",
     "AUTH_GLOBAL_HOURLY_LIMIT",
+    "USER_CREATED_WEBHOOK_URL",
     "SES_FROM_ADDRESS",
     "SES_CONFIGURATION_SET",
     "MEDIA_ENABLED",
@@ -113,6 +114,7 @@ mod tests {
                 "DATABASE_URL":"postgres://runtime",
                 "MIGRATION_DATABASE_URL":"postgres://migration",
                 "AUTH_CODE_ATTEMPTS":"3",
+                "USER_CREATED_WEBHOOK_URL":"https://example.com/user-created",
                 "SES_FROM_ADDRESS":"Caper <noreply@example.com>",
                 "AWS_ACCESS_KEY_ID":"attacker",
                 "CF_SFU_APP_SECRET":42
@@ -134,6 +136,10 @@ mod tests {
             Some("postgres://migration")
         );
         assert_eq!(environment.get("AUTH_CODE_ATTEMPTS").as_deref(), Some("3"));
+        assert_eq!(
+            environment.get("USER_CREATED_WEBHOOK_URL").as_deref(),
+            Some("https://example.com/user-created")
+        );
         assert!(!environment.secret_values.contains_key("AWS_ACCESS_KEY_ID"));
         assert!(!environment.secret_values.contains_key("CF_SFU_APP_SECRET"));
     }
