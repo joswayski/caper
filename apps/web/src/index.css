@@ -13,6 +13,7 @@ body {
 .login-button:hover { border-color: var(--terracotta); }
 .login-button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
 .wordmark { color: var(--text); font-size: 1.9rem; font-weight: 900; letter-spacing: -.075em; text-decoration: none; }
+.wordmark-dot { color: var(--terracotta); }
 .hero { min-height: calc(100vh - 104px); display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; column-gap: clamp(20px, 3.2vw, 52px); padding-block: 48px 96px; }
 .hero-copy { position: relative; z-index: 2; padding-left: clamp(20px, 4.2vw, 72px); }
 .hero h1 { margin: 0; font-size: clamp(2.8rem, 4.8vw, 4.6rem); font-weight: 900; line-height: 1.18; letter-spacing: -.06em; }

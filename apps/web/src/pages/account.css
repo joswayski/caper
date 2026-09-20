@@ -1,6 +1,5 @@
 .account-page { min-height: 100dvh; display: grid; place-items: start center; padding: clamp(48px, 10vh, 96px) 24px 48px; }
 .account-card { width: min(100%, 440px); }
-.account-dot { color: var(--terracotta); }
 .account-eyebrow { margin-top: 56px; font-size: .7rem; font-weight: 700; letter-spacing: .14em; color: var(--text-muted); }
 .account-card h1 { font-size: clamp(2.2rem, 7vw, 3.1rem); letter-spacing: -.055em; line-height: 1.08; margin: 20px 0; }
 .account-card p:not(.account-eyebrow):not(.account-error):not(.account-warning) { color: var(--text-muted); line-height: 1.65; }
