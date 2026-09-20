@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import AccountNav from "../account/AccountNav";
 import LowPolyChat from "../components/LowPolyChat";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
@@ -26,7 +27,7 @@ export default function Home({ initialNow, latestChanges }: HomeProps) {
     <main className="page">
       <header className="site-header shell">
         <a className="wordmark" href="/" aria-label="Caper home">caper</a>
-        <a className="login-button" href="/live">Try voice</a>
+        <div className="site-header-actions"><AccountNav /><a className="login-button" href="/live">Try voice</a></div>
       </header>
 
       <section className="hero shell">

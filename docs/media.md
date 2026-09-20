@@ -2,13 +2,14 @@
 
 ## Scope and architecture
 
-One shared **General voice channel**, available to signed-in users with completed
-profiles while the service is enabled. This is not a dial/invite/call flow.
+One shared **General voice channel**, available to guests while the service is
+enabled. Accounts are optional and are not yet connected to voice identity. This
+is not a dial/invite/call flow.
 No text chat, camera, screen sharing, channel creation, or server-side recording.
 Mic test offers an explicit, tab-memory-only recording of up to ten seconds of
-received audio. The Rust registry uses the authenticated account's global display
-name, never a caller-supplied nickname. Display names can collide; participant
-IDs, not names, distinguish people. Presence remains in memory.
+received audio. The Rust registry uses a caller-supplied guest name. Guest names
+can collide and are not verified or reserved; participant IDs, not names,
+distinguish people. Presence remains in memory.
 Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
@@ -28,9 +29,10 @@ rolling updates. Overlap is intentionally accepted during development, but the
 two registries do not share sessions: requests can hit a pod that does not know
 the caller, and shutdown still ends the old pod's calls. Do not increase steady-state
 replicas or use sticky sessions as a substitute for shared coordination.
-Restarting the service clears presence and clients rejoin. Each tab receives an unguessable short-lived device
-capability bound to its authenticated account, in addition to login. Clients use Caper track IDs, not arbitrary SFU
-session IDs. Cloudflare terminates transport encryption; this is **not E2EE**.
+Restarting the service clears presence and clients rejoin. Each tab receives an
+unguessable short-lived call capability. Clients use Caper track IDs, not
+arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
+**not E2EE**.
 
 ## Provisioned resources and configuration
 
@@ -972,16 +974,16 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts
 
-The temporary `/live` demo is public again. The browser uses `unique-names-generator`
+The `/live` demo remains public. The browser uses `unique-names-generator`
 to assign a readable color-and-animal name for each visit and keeps it through reconnects. No account,
 profile, or database is needed for voice. The API accepts names of 1–40 Unicode
 characters after trimming, with no control characters. Names are unverified,
 nonunique, and not reserved. Country flags use the API-provided Cloudflare country
-code; no flag is invented when location is unavailable. Account
-sign-up and sign-in UI remains unavailable; login/profile pages still point to the
-guest demo. The Rust account API is implemented but remains disabled until
-`AUTH_SECRET`, the database URLs, and SES settings are configured. Account
-authentication is not yet applied to media routes.
+code; no flag is invented when location is unavailable. The web login page sends
+email codes and then requires a unique username and display name. Account login is
+enabled when `AUTH_SECRET`, the database URLs, and SES settings are configured.
+Account authentication is not yet applied to media routes, and desktop/native
+account screens remain future work.
 
 `MEDIA_ENABLED=true` and all four Cloudflare credentials remain required. Existing
 12-participant capacity, global join and per-participant operation limits,
@@ -1067,7 +1069,8 @@ preferences or web storage. Protected routes accept either transport. Logout
 revokes the same database session for every client type. Guest media capabilities
 are not account credentials.
 
-Native account screens and secure-vault integration are not implemented yet.
+Native account screens and secure-vault integration are not implemented yet. The
+web account flow uses the secure same-origin cookie transport.
 Arbitrary third-party browser CORS access, API keys and developer OAuth consent
 are not implemented; native/server HTTP clients do not require CORS. Browser WebRTC
 does not prove native audio support.
