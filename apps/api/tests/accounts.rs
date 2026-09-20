@@ -27,15 +27,13 @@ async fn provider_neutral_users_and_profiles(pool: PgPool) {
     assert_eq!(verified.1, "YES");
     assert_eq!(verified.2, None);
     assert_eq!(deleted.1, "YES");
-    assert!(
-        columns.iter().all(|column| column.0 != "external_id"),
-        "users should have no second account identifier"
-    );
 
-    let user_id: i64 = sqlx::query_scalar("INSERT INTO users DEFAULT VALUES RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO users (external_id) VALUES ('V1StGXR8_Z5jdHi6B-myT') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let profile = set_profile(&pool, user_id, " Caper_Test ", " Caper Friend ")
         .await
         .unwrap()

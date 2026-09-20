@@ -5,6 +5,7 @@ use sqlx::{FromRow, PgPool};
 #[derive(Clone, Debug, FromRow)]
 pub struct User {
     pub id: i64,
+    pub external_id: String,
     pub email: Option<String>,
     pub username: Option<String>,
     pub display_name: Option<String>,
@@ -13,8 +14,7 @@ pub struct User {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicAccount<'a> {
-    // JSON numbers cannot safely represent every bigint account ID.
-    pub id: String,
+    pub id: &'a str,
     pub username: Option<&'a str>,
     pub display_name: Option<&'a str>,
 }
@@ -22,7 +22,7 @@ pub struct PublicAccount<'a> {
 impl User {
     pub fn public(&self) -> PublicAccount<'_> {
         PublicAccount {
-            id: self.id.to_string(),
+            id: &self.external_id,
             username: self.username.as_deref(),
             display_name: self.display_name.as_deref(),
         }

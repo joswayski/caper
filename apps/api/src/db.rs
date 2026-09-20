@@ -156,11 +156,12 @@ mod tests {
                 ("public".into(), "users".into()),
             ]
         );
-        let user_id: i64 =
-            sqlx::query_scalar("INSERT INTO public.users DEFAULT VALUES RETURNING id")
-                .fetch_one(&verify)
-                .await
-                .unwrap();
+        let user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO public.users (external_id) VALUES ('migration-rerun-data') RETURNING id",
+        )
+        .fetch_one(&verify)
+        .await
+        .unwrap();
         // Exclude public entirely for the second connection and shadow users.
         // Migration must still reuse the public ledger; runtime must target public.users.
         sqlx::query("CREATE TABLE custom.users (id bigint)")
@@ -213,11 +214,12 @@ mod tests {
             ledger_entries
         );
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.users WHERE id = $1")
-                .bind(user_id)
-                .fetch_one(&verify)
-                .await
-                .unwrap(),
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM public.users WHERE external_id = 'migration-rerun-data'",
+            )
+            .fetch_one(&verify)
+            .await
+            .unwrap(),
             1
         );
         verify.close().await;

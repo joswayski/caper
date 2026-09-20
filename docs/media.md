@@ -1010,9 +1010,8 @@ name validation, capability enforcement and revocation; browser client tests cov
 name retention on reconnect and media/SSE headers. These do not prove live SFU,
 multi-network/TURN, sustained voice, physical devices, or native Tauri support.
 
-`apps/api/migrations/202609070001_accounts.sql` created the provider-neutral `users`
-scaffold. The email-auth migration removes its unused `external_id`, leaving a
-bigint identity PK, nullable unique email, nullable
+`apps/api/migrations/202609070001_accounts.sql` creates a provider-neutral `users`
+table: bigint identity PK, unique random public ID, nullable unique email, nullable
 verification/deletion timestamps, and profile fields. Verification has no default.
 Usernames are lowercase
 ASCII letters/digits/underscore, 3–32 characters and globally unique. Display names
@@ -1073,10 +1072,12 @@ Arbitrary third-party browser CORS access, API keys and developer OAuth consent
 are not implemented; native/server HTTP clients do not require CORS. Browser WebRTC
 does not prove native audio support.
 
-The bigint primary key is the account's only ID. JSON responses encode it as a
-string to preserve all 64 bits in JavaScript, alongside `username` and
-`displayName`. Usernames are globally unique, changeable handles; changing a
-username or email does not change the account ID.
+Bigint account IDs stay internal and are never exposed in profile responses.
+Random 128-bit IDs provide permanent public references without revealing signup order
+or the internal sequence. Stored as `external_id` for integrations and external
+references, the API returns this value as `id`, alongside
+`username` and `displayName`. Usernames are globally unique, changeable handles;
+changing a username or email does not change either account ID.
 
 ### Removed account lifecycle integration
 
