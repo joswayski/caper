@@ -10,7 +10,8 @@ Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 The Rust API replaces a signed-in participant's submitted name
 with the account display name. Guest names can collide and are not verified or
-reserved; participant IDs, not names, distinguish people. Presence remains in memory.
+reserved; participant IDs, not names, distinguish people. With `VALKEY_URL` configured,
+live call state is shared in Valkey; without it, development uses process memory.
 Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
@@ -21,23 +22,108 @@ unauthenticated `/api/media/presence` endpoint every ten seconds. That projectio
 includes each participant's session ID, name, country code when available, mute,
 and deafen state, but never media track IDs, session tokens, or audio.
 
-Browser → same-origin `/api/media/*` → single Rust Axum service → Cloudflare
+Browser → same-origin `/api/media/*` → Rust Axum API pods → Cloudflare
 control API. Browser ↔ Cloudflare Realtime SFU/TURN for WebRTC audio. No media
 relays through AWS, Workers, Durable Objects, RealtimeKit or PlanetScale.
-Authenticated SSE invalidations provide immediate public roster/track discovery.
+Authenticated SSE snapshots provide immediate in-call roster/track discovery.
 Fifteen-second HTTP snapshots renew presence leases and repair missed state; HTTP
 also carries commands. Audio still uses WebRTC, not SSE or WebSockets.
 
-The website has two AWS k3s replicas. A separate **single-replica** Rust service
-owns the in-memory participant registry, with one temporary extra pod during
-rolling updates. Overlap is intentionally accepted during development, but the
-two registries do not share sessions: requests can hit a pod that does not know
-the caller, and shutdown still ends the old pod's calls. Do not increase steady-state
-replicas or use sticky sessions as a substitute for shared coordination.
-Restarting the service clears presence and clients rejoin. Each tab receives an
+Production activation is staged: keep the API at one replica until every pod uses
+the same Valkey endpoint and schema. The first switch from process memory requires
+an empty-channel maintenance window; the old binary cannot hand off its state.
+After activation, API pods can be replaced without closing healthy Cloudflare
+media sessions. Their HTTP/SSE connections still reconnect; TCP connections cannot
+move between pods. See [shared call state](#shared-call-state-and-rolling-deployments)
+for the rollout and remaining validation. Each tab receives an
 unguessable short-lived call capability. Clients use Caper track IDs, not
 arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 **not E2EE**.
+
+## Shared call state and rolling deployments
+
+This implements shared state for **General only**, still capped at 12 participants.
+It adds no Postgres tables. Future space/channel definitions and chat history belong
+in Postgres; typing indicators would be transient events, not durable messages.
+
+- Valkey stores the call capability hash, Caper-to-Cloudflare session mapping,
+  track/subscription metadata, mute/deafen state, leases, operation ownership,
+  temporary join reservations, and cleanup jobs. It never stores audio or SDP.
+  A successful join is not returned until its mapping is committed.
+- `caper:{general}:v1:state` is a hash with one field per participant plus bounded
+  channel metadata. Short WATCH/MULTI/EXEC transactions arbitrate concurrent pods;
+  only changed fields are written. Cloudflare calls never run inside a retried
+  transaction. An uncertain EXEC or provider mutation is not blindly replayed.
+  [ElastiCache Serverless supports WATCH within one hash slot](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ServerlessWatch.html);
+  the state key and notification topic share the `{general}` hash tag.
+- The same transaction publishes a change notification. Each API has **one**
+  Pub/Sub connection and one Tokio listener; `tokio::sync::watch` coalesces local
+  notifications and wakes its SSE clients. There is no fanout worker, Stream
+  consumer group, or blocked Valkey connection per channel or browser. Each SSE
+  client reads current shared state before sending its projection.
+- Pub/Sub is deliberately not a history. A reconnect sends the latest snapshot,
+  not a playback of missed mute/unmute events. Subscription loss makes the API
+  unready; reconnection wakes streams to resynchronize. Read/write failure returns
+  503, never an independent in-memory fallback. `/health` remains liveness;
+  configure Kubernetes readiness to `/readyz` after the compatible API is deployed.
+- SIGTERM emits `draining`, rejects new media commands, and allows in-flight HTTP
+  requests to finish. Shared-mode shutdown does **not** remove participants or
+  close provider tracks. Healthy media stays browser ↔ Cloudflare while SSE
+  reconnects to another pod with the same capability. No sticky sessions are needed.
+- Explicit leave publishes immediately. A vanished browser is different: its
+  existing 45-second lease expires, with a five-second sweep (up to about 50 seconds
+  after the last renewal). SSE disconnect alone is not leave, because deployments
+  and brief network changes also disconnect SSE. A call still has a one-hour cap.
+  Provider cleanup is asynchronous, with shared 30-second claims and safe retries.
+  Abandoned joins and uncertain in-flight operations expire after 30 seconds;
+  uncertain operations invalidate only the affected call and discover its tracks.
+
+Normal in-call updates have no polling interval: commit → Pub/Sub → API → SSE.
+Production end-to-end latency is **not measured**. The 15-second request is a lease
+renewal, not the notification path. Speaking indicators remain browser-side audio
+analysis, with no per-frame Valkey traffic. The unauthenticated pre-join roster
+still uses its existing ten-second polling; it is not part of this SSE change.
+
+The hash is a bounded channel unit, not a global blob for every future channel.
+Adding spaces/channels will require routing and per-channel keys/subscriptions.
+Do not remove the 12-person limit and call this a thousand-speaker media system:
+all-to-all audio needs separate active-speaker/subscription limits and load tests.
+Changing Valkey endpoints or losing its data loses live calls; API replacement
+does not. A crash after Cloudflare creates a resource but before its response is
+recorded can still leave a resource until provider expiry. There is no distributed
+transaction with Cloudflare.
+
+### Activation and verification
+
+The infrastructure companion provisions an inactive private ElastiCache Serverless
+Valkey endpoint (100 MB automatic billing minimum, not a storage cap). No AWS apply,
+production secret projection, replica increase, or deployment is performed by this
+application change. Follow the infrastructure `docs/shared-valkey-runbook.md`:
+provision first, deploy compatible API/web images while still in single-process
+mode, then perform the **one-time empty-channel cutover** before enabling two pods.
+Never overlap local-mode and shared-mode callers or roll back to a local-only image.
+Subsequent same-schema deployments use RollingUpdate with `maxUnavailable: 0`,
+`maxSurge: 1`, `/readyz`, and the existing 60-second termination grace.
+
+Real disposable Redis integration tests (Redis-compatible protocol) cover independent
+API instances, cross-pod notifications and capability replacement, full replacement
+with unchanged Cloudflare mappings, capacity/operation races, lease/claim recovery,
+and connection loss/recovery without replay. Cloudflare is mocked in these tests.
+CI runs them against Valkey 8.1. Run locally using a disposable loopback server:
+
+```bash
+# In an orb; do not point TEST_VALKEY_URL at a shared/production service.
+amp orb service start caper-test-redis --command 'redis-server --bind 127.0.0.1 --port 6389 --save "" --appendonly no'
+TEST_VALKEY_URL=redis://127.0.0.1:6389 cargo test --locked -p caper-api tests::shared -- --ignored
+```
+
+Before claiming production zero-audio-interruption: run two real browsers against
+different pods, confirm shared join/mute/leave, replace one API then all old API
+pods, and verify unchanged browser peer/session IDs and continuous bidirectional
+audio. Repeat with private mic test, a killed pod, and a short Valkey interruption.
+Record actual notification/reconnect latency, multi-network/TURN, sustained voice,
+and physical-device results separately. None of those live-media checks is proven
+by the shared-store tests or by HTTP readiness.
 
 ## Provisioned resources and configuration
 
@@ -56,6 +142,7 @@ Keep this temporary test separate from any future production app/key.
 | --- | --- |
 | `APP_SECRET_ID` | Optional AWS Secrets Manager JSON record loaded by the API before other configuration. Application settings in this record take precedence over process environment fallback. AWS credentials, region, and this secret ID remain bootstrap settings outside the record. |
 | `MEDIA_ENABLED` | `true` enables voice; absent/false disables it |
+| `VALKEY_URL` | API-only shared live call state. Empty uses single-process development mode. Hosted endpoints require `rediss://username:password@host:6379` with certificate verification. Plain `redis://` is allowed only on loopback for disposable tests. Never project this into the web container. |
 | `CF_SFU_APP_ID` | SFU app ID, not account ID |
 | `CF_SFU_APP_SECRET` | SFU secret, server-only |
 | `CF_TURN_KEY_ID` | TURN key ID |
@@ -576,13 +663,13 @@ image from this fix's merge commit. A web-only merge does not publish an API ima
 
 ### Required live-update and audio readiness
 
-`GET /api/media/events` uses the existing Bearer capability in an Authorization
-header, not a query string or cookie. The browser consumes SSE with streaming
-Fetch so the capability never enters the URL. The server emits `ready` immediately,
-coalesced `changed` invalidations after public roster mutations, and `heartbeat`
-after ten seconds without another event; each event has `{}` data. Clients fetch
-the authoritative snapshot on a change and retain a dirty flag for changes during
-an in-flight reconciliation. No private monitor session is exposed or authorized
+`GET /api/media/events?snapshots=1` uses `x-caper-media-token`, not a capability
+in a query string or cookie. The browser consumes SSE with streaming Fetch.
+The server emits `ready`, an initial `snapshot`, coalesced current snapshots on
+public roster mutations, and `heartbeat` after ten seconds without another event.
+Snapshots contain `participants` and a monotonic channel `revision`; other events
+contain `{}`. Older clients without `snapshots=1` still receive `changed` and fetch
+the roster. No private monitor session is exposed or authorized
 to receive the public stream. One stream per participant is retained; a new one
 replaces the previous stream. Auth/expiry is rechecked for every event, and SSE
 alone never renews the lease. There is no durable event log or second registry.
@@ -627,11 +714,12 @@ expiry and idle-resource policy; they are not implemented here.
 
 No handshake within ten seconds or no valid event within 25 seconds fails the
 stream. An SSE failure during startup fails Join; during an established call it
-reopens only the event stream with the same capability, retrying after three
-seconds while keeping healthy audio. A 30-second recovery deadline after loss
+reopens only the event stream with the same capability, backing off from 250 ms
+to three seconds while keeping healthy audio. Planned `draining` reconnects start
+after 50 ms. A 30-second recovery deadline after loss
 triggers the bounded full-session reconnect if live updates cannot be restored.
-Each restored stream triggers a snapshot to reconcile missed invalidations;
-there is no event replay requirement. Initial Join readiness remains strict.
+Each restored stream receives current state, not a replay of missed mute/unmute
+transitions. Initial Join readiness remains strict.
 Cancel/leave aborts the stream, startup event waits, and delayed retries. Fifteen-second snapshots
 remain a lease heartbeat/recovery mechanism, not the normal track-discovery delay.
 
@@ -643,7 +731,8 @@ through Traefik with no path/method restriction or explicit buffering middleware
 Dashboard-managed Cloudflare Tunnel settings and running cluster settings were
 not verified; test the public stream through the deployed hostname after rollout.
 Deploy the new API before the new web image: new clients require the endpoint,
-while older clients remain compatible with the additive API. Keep one API replica.
+while older clients remain compatible with the additive API. Keep one API replica
+until the shared-state activation described above is complete.
 
 Readiness validation uses provider/router mocks, real streaming response bodies,
 client-controlled handshake/transport/negotiation/state delays, cancellation,

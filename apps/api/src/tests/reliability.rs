@@ -225,7 +225,7 @@ async fn transient_cleanup_recovers_without_recreating_media() {
     .await;
     retry_backlog(&s).await;
     assert_eq!(s.registry.lock().await.cleanup[0].attempts, 1);
-    s.registry.lock().await.cleanup[0].not_before = Instant::now();
+    s.registry.lock().await.cleanup[0].not_before = Timestamp::now();
     faults.cleanup_failure.store(0, Ordering::SeqCst);
     retry_backlog(&s).await;
     retry_backlog(&s).await;
@@ -346,7 +346,7 @@ async fn failed_session_creation_releases_reservation_without_waiting_for_turn_c
     .unwrap();
     assert_eq!(response.0, StatusCode::BAD_GATEWAY);
     let r = s.registry.lock().await;
-    assert_eq!(r.joining, 0);
+    assert!(r.reservations.is_empty());
     assert!(r.participants.is_empty());
     assert_eq!(r.cleanup.len(), 1);
     assert_eq!(r.cleanup[0].action.operation(), "turn_revoke");
@@ -452,8 +452,8 @@ async fn cleanup_retries_only_transient_errors_with_delay_and_attempt_cap() {
         let mut r = s.registry.lock().await;
         assert_eq!(r.cleanup.len(), 1);
         assert_eq!(r.cleanup[0].attempts, attempt);
-        assert!(r.cleanup[0].not_before > Instant::now());
-        r.cleanup[0].not_before = Instant::now();
+        assert!(r.cleanup[0].not_before > Timestamp::now());
+        r.cleanup[0].not_before = Timestamp::now();
         drop(r);
         retry_backlog(&s).await;
     }
@@ -515,7 +515,7 @@ async fn cleanup_queue_is_bounded_deduplicated_and_does_not_block_leave_or_expir
         .values_mut()
         .next()
         .unwrap()
-        .lease = Instant::now() - LEASE;
+        .lease = Timestamp::now() - LEASE;
     spawn_cleanup(s.clone());
     tokio::time::timeout(Duration::from_secs(1), async {
         while !s.registry.lock().await.participants.is_empty() {

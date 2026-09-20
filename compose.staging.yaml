@@ -48,6 +48,7 @@ services:
       SES_CONFIGURATION_SET: ${SES_CONFIGURATION_SET:-staging-caper-transactional}
       MEDIA_ENABLED: ${MEDIA_ENABLED:-false}
       MEDIA_BIND: 0.0.0.0:3001
+      VALKEY_URL: ${VALKEY_URL:-}
       CF_SFU_APP_ID: ${CF_SFU_APP_ID:-}
       CF_SFU_APP_SECRET: ${CF_SFU_APP_SECRET:-}
       CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}

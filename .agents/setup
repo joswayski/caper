@@ -20,6 +20,7 @@ packages=(
   libssl-dev
   pkg-config
   postgresql
+  redis-server
 )
 missing_packages=()
 for package in "${packages[@]}"; do

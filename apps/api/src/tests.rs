@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tower::ServiceExt;
 
 mod reliability;
+mod shared;
 
 struct Mock {
     next: AtomicUsize,
@@ -846,7 +847,7 @@ async fn parent_leave_rejects_in_flight_monitor_and_cascades_children() {
         tokio::spawn(
             async move { monitor_joined(&join_state, &join_parent_token, "receiver").await },
         );
-    while s.registry.lock().await.joining == 0 {
+    while s.registry.lock().await.reservations.is_empty() {
         tokio::task::yield_now().await;
     }
     assert_eq!(
@@ -914,7 +915,7 @@ async fn parent_expiry_cascades_monitor_cleanup() {
             .participants
             .get_mut(&parent_id)
             .unwrap()
-            .lease = Instant::now() - LEASE;
+            .lease = Timestamp::now() - LEASE;
     }
     assert_eq!(
         call(
@@ -1108,7 +1109,7 @@ async fn expiry_removes_and_cleans() {
     .await;
     {
         let mut r = s.registry.lock().await;
-        r.participants.values_mut().next().unwrap().lease = Instant::now() - LEASE;
+        r.participants.values_mut().next().unwrap().lease = Timestamp::now() - LEASE;
     }
     let id = {
         s.registry
@@ -1214,7 +1215,7 @@ async fn expired_tokens_nonmicrophone_kinds_and_extra_publications_are_rejected(
         .values_mut()
         .next()
         .unwrap()
-        .lease = Instant::now() - LEASE;
+        .lease = Timestamp::now() - LEASE;
     assert_eq!(
         call(
             app(s),

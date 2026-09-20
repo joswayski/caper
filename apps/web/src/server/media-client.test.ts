@@ -82,7 +82,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   install("RTCPeerConnection", Peer);
   install("Audio", FakeAudio);
   install("fetch", async (url: string, options: RequestInit) => {
-    const op = url.split("/").at(-1)!;
+    const op = url.split("?")[0].split("/").at(-1)!;
     calls.push(op);
     if (op === "join") {
       joinedNames.push(JSON.parse(options.body as string).name);
@@ -825,6 +825,9 @@ test("leave during join closes the late capability and never creates a PeerConne
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const changedEvent = () => new TextEncoder().encode("event: changed\ndata: {}\n\n");
+const snapshotEvent = (participants: object[], revision?: number) => new TextEncoder().encode(
+  `event: snapshot\ndata: ${JSON.stringify({ participants, ...(revision === undefined ? {} : { revision }) })}\n\n`,
+);
 
 test("Join overlaps silent publication with SSE and state with transport, but gates audio on all readiness", async (t) => {
   const { client, track, calls, states, events, install } = setup(t, { eventsReady: false });
@@ -883,6 +886,39 @@ test("early state acknowledgement still waits for transport before roster negoti
   await joining;
   assert.equal(calls.includes("snapshot"), true);
   assert.equal(track.enabled, true);
+});
+
+test("startup renews the lease despite a pushed roster and keeps newer pushed state", async (t) => {
+  const { client, events, track, states, install } = setup(t, { eventsReady: false });
+  const original = fetch;
+  let renewals = 0;
+  let renew!: () => void;
+  const initial = [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [] }];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/snapshot")) return original(url, init);
+    assert.equal(new Headers(init.headers).get("x-caper-media-token"), "capability");
+    renewals++;
+    return new Promise<Response>((resolve) => {
+      renew = () => resolve(Response.json({ participants: initial, revision: 1 }));
+    });
+  });
+  const joining = client.join();
+  await tick();
+  events[0].enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
+  events[0].enqueue(snapshotEvent(initial, 1));
+  await tick();
+  assert.equal(renewals, 1, "SSE must not suppress the authenticated startup renewal");
+  assert.equal(track.enabled, false, "wait for renewal before opening audio");
+  assert.equal(states.at(-1)?.phase, "joining");
+  events[0].enqueue(snapshotEvent([{ ...initial[0], muted: true }], 2));
+  await tick();
+  renew();
+  await joining;
+  assert.equal(renewals, 1);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(track.enabled, true);
+  assert.equal(states.at(-1)?.participants[0]?.id, "other");
+  assert.equal(states.at(-1)?.participants[0]?.muted, true, "older HTTP state must not overwrite the push");
 });
 
 test("publication failure cancels an unfinished SSE handshake without enabling audio", async (t) => {
@@ -1042,7 +1078,7 @@ test("persistent SSE outage is bounded even while snapshots succeed", async (t) 
   const { client, events, states, install } = setup(t);
   await client.join();
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/events")
+  install("fetch", (url: string, init: RequestInit) => url.includes("/events?")
     ? Promise.resolve(Response.json({}, { status: 503 })) : original(url, init));
   t.mock.timers.enable({ apis: ["setTimeout"] });
   events[0].close();
@@ -1123,6 +1159,66 @@ test("SSE invalidations reconcile immediately and retain changes arriving during
   assert.equal(snapshots.length, 2, "do not lose invalidation during an in-flight snapshot");
   snapshots[1]();
   await tick();
+});
+
+test("a pushed newer revision supersedes an older HTTP snapshot already in flight", async (t) => {
+  const { client, events, states, install } = setup(t);
+  await client.join();
+  const original = fetch;
+  let finish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? new Promise<Response>((resolve) => { finish = () => resolve(Response.json({ participants: [], revision: 1 })); })
+    : original(url, init));
+  events[0].enqueue(changedEvent());
+  await tick();
+  events[0].enqueue(snapshotEvent([{ id: "new", name: "New", muted: false, deafened: false, tracks: [] }], 2));
+  finish();
+  await tick();
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.id, "new");
+});
+
+test("draining reopens control with the same call and does not rejoin or replace the peer", async (t) => {
+  const { client, events, calls, states } = setup(t);
+  await client.join();
+  const peer = Peer.latest;
+  const joins = calls.filter((call) => call === "join").length;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
+  events[0].close();
+  await tick();
+  t.mock.timers.tick(50);
+  await tick();
+  assert.equal(events.length, 2);
+  assert.equal(Peer.latest, peer);
+  assert.equal(calls.filter((call) => call === "join").length, joins);
+  assert.equal(states.at(-1)?.phase, "connected");
+});
+
+test("queued pushed snapshots never suppress a scheduled lease heartbeat", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { client, events, install, states } = setup(t);
+  await client.join();
+  const original = fetch;
+  let requests = 0;
+  let finish!: () => void;
+  const latest = { participants: [{ id: "other", name: "Other", muted: true, deafened: false, tracks: [] }], revision: 2 };
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/snapshot")) return original(url, init);
+    requests++;
+    if (requests === 1) return new Promise<Response>((resolve) => { finish = () => resolve(Response.json({ participants: [], revision: 1 })); });
+    return Promise.resolve(Response.json(latest));
+  });
+  events[0].enqueue(changedEvent());
+  await tick();
+  events[0].enqueue(snapshotEvent(latest.participants, 2));
+  await tick();
+  t.mock.timers.tick(15_000);
+  finish();
+  await tick();
+  await tick();
+  assert.equal(requests, 2, "the queued push cannot replace the authenticated renewal");
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
 });
 
 test("connection event wait ignores intermediate states", async (t) => {

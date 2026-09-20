@@ -16,7 +16,7 @@ Adapted from the conventions in `joswayski/captures`.
 - Other agents may work concurrently. Use an isolated worktree for new concurrent work; never stash, overwrite, or publish another agent's changes.
 - Treat future native clients as independent implementations. Browser WebRTC success does not prove native capture or playback support.
 - Never expose provider secrets or log SDP, credentials, or raw media. No unrestricted Cloudflare API proxy.
-- Keep one desired API replica until shared media coordination and recovery exist. A temporary second API pod during rolling updates is intentionally accepted for this work-in-progress app; split in-memory registries still interrupt calls. Web replicas are independent of this constraint.
+- Keep one desired API replica until every API pod uses the same `VALKEY_URL` and compatible state schema. Never mix in-memory and shared-mode pods. Follow the staged cutover in `docs/media.md`; shared-mode shutdown must not close healthy Cloudflare tracks. Web replicas are independent.
 
 ## Visual design
 

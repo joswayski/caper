@@ -1,3 +1,5 @@
+import type { CallSnapshot } from "./types.ts";
+
 const START_TIMEOUT_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 25_000;
 const MAX_BUFFER = 64 * 1024;
@@ -11,9 +13,13 @@ export class CallEvents {
 
   private readonly changed: () => void;
   private readonly lost: (error: Error) => void;
-  constructor(changed: () => void, lost: (error: Error) => void) {
+  private readonly snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void;
+  private readonly draining?: () => void;
+  constructor(changed: () => void, lost: (error: Error) => void, snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void, draining?: () => void) {
     this.changed = changed;
     this.lost = lost;
+    this.snapshot = snapshot;
+    this.draining = draining;
   }
 
   open(token: string, signal: AbortSignal): Promise<void> {
@@ -28,7 +34,7 @@ export class CallEvents {
       };
       watchdog(START_TIMEOUT_MS);
       const run = async () => {
-        const response = await fetch("/api/media/events", {
+        const response = await fetch("/api/media/events?snapshots=1", {
           headers: { accept: "text/event-stream", "x-caper-media-token": token },
           signal: this.controller.signal,
           cache: "no-store",
@@ -52,13 +58,35 @@ export class CallEvents {
               buffer = buffer.slice(boundary.index + boundary[0].length);
               const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
               const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
-              if (!["ready", "changed", "heartbeat"].includes(event ?? "")) continue;
-              if (data !== "{}" || (!this.connected && event !== "ready")) throw new Error("Invalid live update handshake.");
+              if (!["ready", "changed", "heartbeat", "snapshot", "draining"].includes(event ?? "")) continue;
+              if (!this.connected && event !== "ready") throw new Error("Invalid live update handshake.");
+              if (event !== "snapshot" && data !== "{}") throw new Error("Invalid live update handshake.");
               watchdog(HEARTBEAT_TIMEOUT_MS);
               if (event === "ready") {
                 this.connected = true;
                 resolve();
               } else if (event === "changed") this.changed();
+              else if (event === "snapshot") {
+                let value: unknown;
+                try { value = JSON.parse(data); } catch { throw new Error("Invalid live update snapshot."); }
+                if (!value || typeof value !== "object" || !Array.isArray((value as CallSnapshot).participants)
+                  || !(value as CallSnapshot).participants.every((p) => p && typeof p.id === "string" && typeof p.name === "string"
+                    && typeof p.muted === "boolean" && typeof p.deafened === "boolean"
+                    && Array.isArray(p.tracks) && p.tracks.every((t) => t && typeof t.id === "string" && t.kind === "microphone"))) {
+                  throw new Error("Invalid live update snapshot.");
+                }
+                const revision = (value as { revision?: unknown }).revision;
+                if (revision !== undefined && (!Number.isSafeInteger(revision) || (revision as number) < 0)) {
+                  throw new Error("Invalid live update snapshot.");
+                }
+                this.snapshot?.(value as CallSnapshot & { revision?: number });
+              } else if (event === "draining") {
+                // Stop here: the following EOF must not replace the fast planned
+                // reconnect with the ordinary connection-failure backoff.
+                this.stop();
+                this.draining?.();
+                return;
+              }
             }
           }
         } finally {
