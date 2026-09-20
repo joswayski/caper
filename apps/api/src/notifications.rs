@@ -6,34 +6,46 @@ use std::time::Duration;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
-pub(crate) struct UserCreatedWebhook {
+pub(crate) struct NotificationsWebhook {
     client: Client,
     url: Option<Url>,
 }
 
 #[derive(Serialize)]
-struct UserCreatedEvent<'a> {
-    event: &'static str,
-    user: UserCreatedUser<'a>,
+#[serde(tag = "event")]
+pub(crate) enum NotificationEvent {
+    #[serde(rename = "user.created")]
+    UserCreated { user: UserCreatedUser },
 }
 
 #[derive(Serialize)]
-struct UserCreatedUser<'a> {
-    id: &'a str,
-    email: Option<&'a str>,
+pub(crate) struct UserCreatedUser {
+    id: String,
+    email: Option<String>,
 }
 
-impl UserCreatedWebhook {
+impl NotificationEvent {
+    pub(crate) fn user_created(user: &User) -> Self {
+        Self::UserCreated {
+            user: UserCreatedUser {
+                id: user.external_id.clone(),
+                email: user.email.clone(),
+            },
+        }
+    }
+}
+
+impl NotificationsWebhook {
     pub(crate) fn from_env(environment: &RuntimeEnvironment) -> Self {
         let url = environment
-            .get("USER_CREATED_WEBHOOK_URL")
+            .get("NOTIFICATIONS_WEBHOOK_URL")
             .filter(|value| !value.trim().is_empty())
             .and_then(|value| match valid_url(&value) {
                 Some(url) => Some(url),
                 None => {
                     tracing::error!(
-                        event_name = "user_created_webhook_disabled",
-                        "user-created webhook configuration is invalid"
+                        event_name = "notifications_webhook_disabled",
+                        "notifications webhook configuration is invalid"
                     );
                     None
                 }
@@ -47,25 +59,23 @@ impl UserCreatedWebhook {
         }
     }
 
-    pub(crate) fn notify(&self, user: &User) {
+    pub(crate) fn notify(&self, event: NotificationEvent) {
         let Some(url) = self.url.clone() else {
             return;
         };
         let client = self.client.clone();
-        let id = user.external_id.clone();
-        let email = user.email.clone();
         tokio::spawn(async move {
-            let result = deliver(client, url, id, email).await;
+            let result = deliver(client, url, event).await;
             match result {
                 Ok(response) if response.status().is_success() => {}
                 Ok(response) => tracing::warn!(
-                    event_name = "user_created_webhook_delivery_failed",
+                    event_name = "notifications_webhook_delivery_failed",
                     status = response.status().as_u16(),
-                    "user-created webhook delivery failed"
+                    "notifications webhook delivery failed"
                 ),
                 Err(_) => tracing::warn!(
-                    event_name = "user_created_webhook_delivery_failed",
-                    "user-created webhook delivery failed"
+                    event_name = "notifications_webhook_delivery_failed",
+                    "notifications webhook delivery failed"
                 ),
             }
         });
@@ -75,20 +85,9 @@ impl UserCreatedWebhook {
 async fn deliver(
     client: Client,
     url: Url,
-    id: String,
-    email: Option<String>,
+    event: NotificationEvent,
 ) -> Result<reqwest::Response, reqwest::Error> {
-    client
-        .post(url)
-        .json(&UserCreatedEvent {
-            event: "user.created",
-            user: UserCreatedUser {
-                id: &id,
-                email: email.as_deref(),
-            },
-        })
-        .send()
-        .await
+    client.post(url).json(&event).send().await
 }
 
 fn valid_url(value: &str) -> Option<Url> {
@@ -151,8 +150,12 @@ mod tests {
         let response = deliver(
             Client::new(),
             Url::parse(&format!("http://{address}/")).unwrap(),
-            "public-user-id".into(),
-            Some("person@example.com".into()),
+            NotificationEvent::UserCreated {
+                user: UserCreatedUser {
+                    id: "public-user-id".into(),
+                    email: Some("person@example.com".into()),
+                },
+            },
         )
         .await
         .unwrap();

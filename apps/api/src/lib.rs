@@ -577,7 +577,7 @@ pub struct AppState {
     cleanup_lock: Arc<Mutex<()>>,
     expiry_lock: Arc<Mutex<()>>,
     auth: auth::AuthVerifier,
-    user_created_webhook: notifications::UserCreatedWebhook,
+    notifications_webhook: notifications::NotificationsWebhook,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -608,7 +608,7 @@ impl AppState {
             cleanup_lock: Arc::new(Mutex::new(())),
             expiry_lock: Arc::new(Mutex::new(())),
             auth,
-            user_created_webhook: notifications::UserCreatedWebhook::from_env(
+            notifications_webhook: notifications::NotificationsWebhook::from_env(
                 &RuntimeEnvironment::default(),
             ),
         }
@@ -629,7 +629,7 @@ impl AppState {
         environment: &RuntimeEnvironment,
     ) -> Result<(), String> {
         self.auth = auth::AuthVerifier::from_env(environment).await?;
-        self.user_created_webhook = notifications::UserCreatedWebhook::from_env(environment);
+        self.notifications_webhook = notifications::NotificationsWebhook::from_env(environment);
         Ok(())
     }
 }
@@ -941,7 +941,11 @@ async fn auth_email_verify(
         .verify_code(state.database.as_ref(), input.challenge_id, &input.code)
         .await?;
     if session.user_created {
-        state.user_created_webhook.notify(&session.user);
+        state
+            .notifications_webhook
+            .notify(notifications::NotificationEvent::user_created(
+                &session.user,
+            ));
     }
     let mut response = match input.token_transport {
         TokenTransport::Cookie => Json(json!({"account": session.user.public()})).into_response(),
