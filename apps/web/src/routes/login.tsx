@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
 import "../pages/account.css";
@@ -16,6 +16,7 @@ function loginError(error: unknown) {
 }
 
 function Login() {
+  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [challengeId, setChallengeId] = useState<string>();
   const [code, setCode] = useState("");
@@ -25,9 +26,9 @@ function Login() {
 
   useEffect(() => {
     void getAccount().then((account) => {
-      if (account) window.location.replace(account.username ? "/live" : "/profile");
+      if (account) void navigate({ to: account.username ? "/live" : "/profile", replace: true });
     }).catch(() => undefined);
-  }, []);
+  }, [navigate]);
 
   async function sendCode() {
     setPending(true);
@@ -56,7 +57,7 @@ function Login() {
     setError(undefined);
     try {
       const account = await verifyEmailCode(challengeId, code);
-      window.location.assign(account.username ? "/live" : "/profile");
+      await navigate({ to: account.username ? "/live" : "/profile" });
     } catch (verifyError) {
       if (verifyError instanceof AccountApiError) {
         setAttemptsRemaining(verifyError.attemptsRemaining);
@@ -82,7 +83,7 @@ function Login() {
           {attemptsRemaining === 1 && <p className="account-warning" role="status">One attempt left. Check the code carefully.</p>}
           {attemptsRemaining === 0
             ? <button className="account-primary" type="button" disabled={pending} onClick={() => void sendCode()}>{pending ? "Sending…" : <>Email me a new code <span aria-hidden="true">→</span></>}</button>
-            : <button className="account-primary" type="submit" disabled={pending || code.length !== 6}>{pending ? "Checking…" : <>Continue <span aria-hidden="true">→</span></>}</button>}
+            : <button className={`account-primary${pending ? " account-primary-loading" : ""}`} type="submit" disabled={pending || code.length !== 6}>{pending ? <><span className="account-spinner" aria-hidden="true" />Checking…</> : <>Continue <span aria-hidden="true">→</span></>}</button>}
           <button className="account-secondary" type="button" disabled={pending} onClick={() => { setChallengeId(undefined); setError(undefined); setAttemptsRemaining(undefined); }}>Use a different email</button>
         </form>
       </> : <>

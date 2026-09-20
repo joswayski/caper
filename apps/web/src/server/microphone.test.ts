@@ -162,7 +162,7 @@ for (const browserSuppression of [true, false]) test(`DPDFNet runtime overload k
   await tick();
   assert.equal(microphone.track, Context.latest!.processed);
   assert.equal(microphone.track.enabled, false);
-  assert.match(microphone.status, browserSuppression ? /unavailable · browser suppression active/ : /unavailable — noise suppression bypassed/);
+  assert.match(microphone.status, browserSuppression ? /unavailable · browser suppression active/ : /unavailable - noise suppression bypassed/);
   assert.equal(raw.getSettings().noiseSuppression, browserSuppression);
   assert.equal(microphone.track.readyState, "live");
   assert.equal(worker.terminated, true);
@@ -438,7 +438,7 @@ test("runtime processor failure stops output without replacing or unmuting the o
   assert.equal(outgoing.enabled, false);
   assert.deepEqual(Context.latest!.source.connections, []);
   assert.equal(outgoing.readyState, "ended");
-  assert.equal(microphone.status, "DeepFilterNet failed — microphone stopped");
+  assert.equal(microphone.status, "DeepFilterNet failed - microphone stopped");
   assert.equal(changes, 1);
   microphone.stop();
 });

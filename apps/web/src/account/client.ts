@@ -15,6 +15,17 @@ export class AccountApiError extends Error {
   }
 }
 
+let currentAccount: Account | undefined;
+
+function rememberAccount<T extends Account | null>(account: T): T {
+  currentAccount = account ?? undefined;
+  return account;
+}
+
+export function getRememberedAccount() {
+  return currentAccount;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -30,9 +41,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function getAccount(): Promise<Account | null> {
   try {
-    return await request<Account>("/api/account/me");
+    return rememberAccount(await request<Account>("/api/account/me"));
   } catch (error) {
-    if (error instanceof AccountApiError && error.status === 401) return null;
+    if (error instanceof AccountApiError && error.status === 401) return rememberAccount(null);
     throw error;
   }
 }
@@ -49,16 +60,17 @@ export async function verifyEmailCode(challengeId: string, code: string) {
     method: "POST",
     body: JSON.stringify({ challengeId, code, tokenTransport: "cookie" }),
   });
-  return result.account;
+  return rememberAccount(result.account);
 }
 
-export function updateProfile(username: string, displayName: string) {
-  return request<Account>("/api/account/profile", {
+export async function updateProfile(username: string, displayName: string) {
+  return rememberAccount(await request<Account>("/api/account/profile", {
     method: "POST",
     body: JSON.stringify({ username, displayName }),
-  });
+  }));
 }
 
-export function logout() {
-  return request<void>("/api/auth/logout", { method: "POST" });
+export async function logout() {
+  await request<void>("/api/auth/logout", { method: "POST" });
+  rememberAccount(null);
 }

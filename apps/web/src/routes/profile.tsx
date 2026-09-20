@@ -1,25 +1,27 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
-import { AccountApiError, getAccount, logout, updateProfile, type Account } from "../account/client";
+import { AccountApiError, getAccount, getRememberedAccount, logout, updateProfile, type Account } from "../account/client";
 import "../pages/account.css";
 
 export const Route = createFileRoute("/profile")({ component: Profile });
 
 function Profile() {
-  const [account, setAccount] = useState<Account>();
-  const [username, setUsername] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const navigate = useNavigate();
+  const [account, setAccount] = useState<Account | undefined>(() => getRememberedAccount());
+  const [username, setUsername] = useState(() => getRememberedAccount()?.username ?? "");
+  const [displayName, setDisplayName] = useState(() => getRememberedAccount()?.displayName ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    if (account) return;
     void getAccount().then((result) => {
-      if (!result) return window.location.replace("/login");
+      if (!result) return void navigate({ to: "/login", replace: true });
       setAccount(result);
       setUsername(result.username ?? "");
       setDisplayName(result.displayName ?? "");
-    }).catch(() => setError("Your account could not be loaded. Please try again."));
-  }, []);
+    }).catch(() => void navigate({ to: "/login", replace: true }));
+  }, [account, navigate]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -28,7 +30,7 @@ function Profile() {
     try {
       const updated = await updateProfile(username, displayName);
       setAccount(updated);
-      window.location.assign("/live");
+      await navigate({ to: "/live" });
     } catch (saveError) {
       if (saveError instanceof AccountApiError && saveError.status === 409) setError("That username is already taken.");
       else if (saveError instanceof AccountApiError && saveError.status === 400) setError("Check the username and display name requirements.");
@@ -38,7 +40,7 @@ function Profile() {
     }
   }
 
-  if (!account) return <main className="account-page"><p role="status">{error ?? "Loading your account…"}</p></main>;
+  if (!account) return null;
 
   return <main className="account-page">
     <section className="account-card">

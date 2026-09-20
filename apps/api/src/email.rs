@@ -26,7 +26,7 @@ fn login_email(code: &str) -> LoginEmail {
     LoginEmail {
         subject: format!("{code} is your Caper sign-in code"),
         text: format!(
-            "Your Caper sign-in code is {code}. It expires in 10 minutes.\n\nIf you did not request this code, you can ignore this email."
+            "Your Caper sign-in code is {code}. It expires in 10 minutes.\n\nIf you did not request this code, you can safely ignore this email.\n\nCurious about Caper? Follow the project on GitHub: https://github.com/joswayski/caper"
         ),
         html: format!(
             r#"<!doctype html>
@@ -39,7 +39,8 @@ fn login_email(code: &str) -> LoginEmail {
         <strong style="font-size:36px;line-height:1;letter-spacing:6px;">{code}</strong>
       </p>
       <p style="margin:0;font-size:16px;line-height:1.5;">It expires in 10 minutes.</p>
-      <p style="margin:24px 0 0;color:#5f6368;font-size:14px;line-height:1.5;">If you did not request this code, you can ignore this email.</p>
+      <p style="margin:24px 0 0;color:#5f6368;font-size:14px;line-height:1.5;">If you did not request this code, you can safely ignore this email.</p>
+      <p style="margin:16px 0 0;color:#5f6368;font-size:14px;line-height:1.5;">Curious about Caper? <a href="https://github.com/joswayski/caper" style="color:#b64d32;">Follow the project on GitHub.</a></p>
     </div>
   </body>
 </html>"#
@@ -128,5 +129,13 @@ mod tests {
         assert!(email.text.contains("sign-in code is A7K29Z"));
         assert!(email.html.contains(">A7K29Z</strong>"));
         assert!(email.html.contains("font-size:36px"));
+        assert!(email.text.contains("you can safely ignore this email"));
+        assert!(email.html.contains("you can safely ignore this email"));
+        assert!(email.text.contains("https://github.com/joswayski/caper"));
+        assert!(
+            email
+                .html
+                .contains("href=\"https://github.com/joswayski/caper\"")
+        );
     }
 }

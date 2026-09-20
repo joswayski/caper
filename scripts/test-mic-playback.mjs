@@ -33,7 +33,7 @@ try {
     };
     document.querySelector('main').hidden = true;
     const label = document.createElement('p');
-    label.textContent = 'Synthetic component regression test — not Cloudflare';
+    label.textContent = 'Synthetic component regression test - not Cloudflare';
     document.body.append(label);
     const mount = document.createElement('div'); document.body.append(mount);
     const root = createRoot(mount);
