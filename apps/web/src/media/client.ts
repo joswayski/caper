@@ -1,4 +1,4 @@
-import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression } from "./microphone.ts";
+import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression, type VoiceEnhancement } from "./microphone.ts";
 import { ReceivedMonitor } from "./monitor.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
@@ -80,6 +80,7 @@ export class PublicCallClient {
   private previousStats?: { received: number; sent: number; sampledAt: number };
   private noiseSuppression: NoiseSuppression = "dpdfnet8";
   private audioSetup: AudioSetup = "headphones";
+  private voiceEnhancement: VoiceEnhancement = "enhanced";
   private microphoneStatus?: string;
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
@@ -119,6 +120,7 @@ export class PublicCallClient {
       diagnostics: this.diagnostics,
       noiseSuppression: this.noiseSuppression,
       audioSetup: this.audioSetup,
+      voiceEnhancement: this.voiceEnhancement,
       noiseSuppressionStatus: this.captures.get(this.senders.get("microphone")?.track!)?.status ?? this.microphoneStatus,
       error,
     });
@@ -399,7 +401,7 @@ export class PublicCallClient {
       this.stateBeforeMonitoring = { muted: this.muted, deafened: this.deafened };
       this.monitoring = true;
       this.monitorConnecting = true;
-      this.monitorStatus = "Preparing private microphone test…";
+      this.monitorStatus = "Preparing your microphone test…";
       this.muted = true;
       this.deafened = true;
     } else {
@@ -435,14 +437,14 @@ export class PublicCallClient {
     });
     this.receivedMonitor = monitor;
     this.monitorConnecting = true;
-    this.monitorStatus = "Connecting private microphone return through Cloudflare…";
+    this.monitorStatus = "Connecting your microphone test…";
     this.emit();
     try {
       const stream = await monitor.start(microphone.track);
       if (this.receivedMonitor !== monitor || !this.monitoring) return;
       this.monitorStream = stream;
       this.monitorConnecting = false;
-      this.monitorStatus = "Private Cloudflare return connected · Record to check the received audio.";
+      this.monitorStatus = "Ready to record.";
       this.emit();
     } catch (error) {
       if (this.receivedMonitor !== monitor) return;
@@ -475,7 +477,7 @@ export class PublicCallClient {
     microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => {
       this.microphoneStatus = microphone.status;
       this.emit();
-    }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume);
+    }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceEnhancement);
     this.microphoneStatus = microphone.status;
     this.captures.set(microphone.track, microphone);
     return microphone.track;
@@ -490,6 +492,12 @@ export class PublicCallClient {
   setInputVolume(volume: number) {
     this.inputVolume = Math.max(0, Math.min(volume, 200));
     this.captures.get(this.senders.get("microphone")?.track!)?.setInputVolume(this.inputVolume);
+    this.emit();
+  }
+
+  setVoiceEnhancement(mode: VoiceEnhancement) {
+    this.voiceEnhancement = mode;
+    this.captures.get(this.senders.get("microphone")?.track!)?.setVoiceEnhancement(mode);
     this.emit();
   }
 

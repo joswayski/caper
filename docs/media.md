@@ -704,14 +704,28 @@ build, use only the `deploy-caper-web.yml` command above with that merge SHA.
 Headphones natural input is now the default, with browser echo cancellation and
 automatic gain control **off**. Use headphones: speakerphone echo protection is
 not enabled, and no selector remains to enable it. This preserves the preset Jose
-preferred rather than stacking processing. OS-level processing may still apply.
+preferred rather than stacking automatic gain control. OS-level processing may still apply.
 It does not repair hardware-clipped input or guarantee clean speech.
+
+Voice enhancement is enabled by default after noise suppression. It uses Web Audio
+nodes on-device: a 75 Hz high-pass, restrained warmth and presence EQ, 3:1
+compression, 1.35× makeup gain and final peak limiting. This is fixed dynamics
+processing, not AGC: it does not continually raise gain during silence. The microphone
+test can switch the same outgoing track between **Natural** (noise cleanup only) and
+**Enhanced**, then retains one short returned recording from each mode for direct
+comparison. The selected mode remains active after leaving the test for the page
+lifetime. Neither mode can repair clipping that occurred before browser capture.
+
+The voice-level control remains 0–200%; 100% is unity input gain. Device selectors
+show the browser's current default hardware by name, omit the synthetic “System
+default” row, and collapse duplicate default/device labels.
 
 ## On-device noise suppression
 
 DPDFNet-8 48 kHz HR is the default microphone mode: capture (browser AEC, AGC and
-noise suppression off) → 48 kHz mono DPDFNet → MediaStream output track → existing
-WebRTC Opus sender → Cloudflare SFU. Runtime performance limitations remain.
+noise suppression off) → input gain → 48 kHz mono DPDFNet → optional voice
+enhancement → MediaStream output track → existing WebRTC Opus sender → Cloudflare
+SFU. Runtime performance limitations remain.
 The new private test changes the control API as described above, not SFU configuration.
 No LiveKit dependency, external denoising API,
 license server, per-minute inference fee, or raw-audio upload is introduced.
