@@ -76,6 +76,7 @@ Keep this temporary test separate from any future production app/key.
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
 | `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source-IP hash in one hour; default `10` |
 | `AUTH_GLOBAL_HOURLY_LIMIT` | Code requests accepted across the service in one hour; default `500` |
+| `NOTIFICATIONS_WEBHOOK_URL` | Optional server-only HTTPS URL for best-effort application notifications. The current event is `user.created`; URLs with credentials, query strings, or fragments are rejected and leave notifications disabled. |
 | `AWS_REGION` | SES region; production and staging use `us-east-1` |
 | `SES_FROM_ADDRESS` | Verified Caper sender, including the friendly name |
 | `SES_CONFIGURATION_SET` | Required SES transactional configuration set |
@@ -1024,6 +1025,27 @@ Each code is six uppercase `A-Z0-9` characters, expires after 10 minutes, and ha
 three attempts by default. A replacement code consumes the prior active code for
 that email. Request limits default to 3/email/15 minutes, 5/email/day, 10/IP/hour,
 and 500 globally/hour; all are configurable through the application secret.
+
+### Notifications webhook
+
+Set the server-only `NOTIFICATIONS_WEBHOOK_URL` property in the existing AWS
+Secrets Manager JSON record (`production/apps/caper`; staging uses
+`staging/apps/caper`). The existing `caper-api-account` ExternalSecret extracts
+that record into the API Pod, so no new Kubernetes Secret or manifest is needed.
+Preserve every existing JSON property when updating the record, wait for
+`caper-api-account` to become Ready, then deploy the API image (or restart the
+API after its normal five-minute ExternalSecret refresh). Never put this URL in
+web configuration or a `VITE_` variable.
+
+The notification API accepts typed events so future application notifications can
+use the same endpoint and delivery policy. After the database transaction creates
+a user, Caper asynchronously POSTs this JSON body once:
+`{"event":"user.created","user":{"id":"<external id>","email":"<verified email>"}}`.
+Existing users who sign in again do not emit another event. The request has a
+three-second deadline; invalid URLs, connection errors, timeouts, and non-2xx
+responses are recorded only as bounded event/status diagnostics. No webhook URL
+or payload is logged, and delivery failure cannot delay, roll back, or otherwise
+prevent registration. Delivery is best effort: it is neither retried nor durable.
 
 `MEDIA_ENABLED=true` and all four Cloudflare credentials remain required. Existing
 12-participant capacity, global join and per-participant operation limits,

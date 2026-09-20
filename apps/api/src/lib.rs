@@ -39,6 +39,7 @@ mod auth;
 mod db;
 mod email;
 mod environment;
+mod notifications;
 
 pub use db::{connect_database, migrate_database};
 pub use environment::RuntimeEnvironment;
@@ -576,6 +577,7 @@ pub struct AppState {
     cleanup_lock: Arc<Mutex<()>>,
     expiry_lock: Arc<Mutex<()>>,
     auth: auth::AuthVerifier,
+    notifications_webhook: notifications::NotificationsWebhook,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -606,6 +608,9 @@ impl AppState {
             cleanup_lock: Arc::new(Mutex::new(())),
             expiry_lock: Arc::new(Mutex::new(())),
             auth,
+            notifications_webhook: notifications::NotificationsWebhook::from_env(
+                &RuntimeEnvironment::default(),
+            ),
         }
     }
 
@@ -624,6 +629,7 @@ impl AppState {
         environment: &RuntimeEnvironment,
     ) -> Result<(), String> {
         self.auth = auth::AuthVerifier::from_env(environment).await?;
+        self.notifications_webhook = notifications::NotificationsWebhook::from_env(environment);
         Ok(())
     }
 }
@@ -934,6 +940,13 @@ async fn auth_email_verify(
         .auth
         .verify_code(state.database.as_ref(), input.challenge_id, &input.code)
         .await?;
+    if session.user_created {
+        state
+            .notifications_webhook
+            .notify(notifications::NotificationEvent::user_created(
+                &session.user,
+            ));
+    }
     let mut response = match input.token_transport {
         TokenTransport::Cookie => Json(json!({"account": session.user.public()})).into_response(),
         TokenTransport::Bearer => {
