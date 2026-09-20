@@ -92,7 +92,7 @@ body {
 .copy-email span { font-size: .75rem; }
 .copy-email small { color: var(--text-muted); font-size: .625rem; transition: color .2s ease-out; }
 .copy-email:hover small { color: #d1d3d4; }
-.low-poly-chat { position: relative; width: min(100%, 860px); justify-self: center; aspect-ratio: 1.42; cursor: grab; touch-action: pan-y pinch-zoom; user-select: none; outline: none; }
+.low-poly-chat { position: relative; width: min(100%, 860px); justify-self: center; aspect-ratio: 1.42; overflow: hidden; cursor: grab; touch-action: pan-y pinch-zoom; user-select: none; outline: none; }
 /* Keep 1.42 at every breakpoint so the rest-pose poster is 1:1 with the live
    camera. A shorter phone ratio stretches the stacked poster, then the canvas
    pops to the correct framing. */
@@ -101,7 +101,7 @@ body {
    touch-action: none here, it would trap page scroll on touch screens. */
 .low-poly-chat.is-dragging { cursor: grabbing; }
 .low-poly-chat::before { position: absolute; inset: 16% 12%; content: ""; border-radius: 50%; background: rgba(99,122,67,.18); filter: blur(75px); }
-.low-poly-chat picture { position: absolute; inset: 0; z-index: 1; }
+.low-poly-chat picture { position: absolute; inset: 0; z-index: 1; transform: scale(1.3); }
 .low-poly-chat-poster { width: 100%; height: 100%; display: block; object-fit: fill; pointer-events: none; }
 .low-poly-chat canvas { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; display: block; }
 .low-poly-chat.is-live picture { visibility: hidden; }
