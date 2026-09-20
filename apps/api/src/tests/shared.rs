@@ -261,12 +261,22 @@ async fn shared_capacity_operations_and_abandoned_work() {
             .iter()
             .filter(|(status, _)| *status == StatusCode::OK)
             .count(),
-        MAX_PARTICIPANTS
+        MAX_PARTICIPANTS,
+        "join statuses/errors: {:?}",
+        results
+            .iter()
+            .map(|(status, body)| (*status, body.get("error")))
+            .collect::<Vec<_>>()
     );
     assert!(
         results
             .iter()
-            .all(|(status, _)| matches!(*status, StatusCode::OK | StatusCode::CONFLICT))
+            .all(|(status, _)| matches!(*status, StatusCode::OK | StatusCode::CONFLICT)),
+        "join statuses/errors: {:?}",
+        results
+            .iter()
+            .map(|(status, body)| (*status, body.get("error")))
+            .collect::<Vec<_>>()
     );
     let joined = &results
         .iter()
@@ -346,6 +356,63 @@ async fn shared_capacity_operations_and_abandoned_work() {
     assert_eq!(provider.revocations.lock().await.len(), 1);
     assert!(b.read(|r| Ok(r.cleanup.is_empty())).await.unwrap());
     drop(b);
+    delete(&url, &key).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable TEST_VALKEY_URL"]
+async fn transaction_conflicts_retry_until_deadline_without_replaying_mutations() {
+    let (a, b, _, url, key) = shared().await;
+    a.update(|r| {
+        r.joins.push_back(Timestamp::now());
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let competing = std::sync::Mutex::new(
+        redis::Client::open(url.as_str())
+            .unwrap()
+            .get_connection()
+            .unwrap(),
+    );
+    // This test-only competing client changes the TTL after WATCH/read and before
+    // EXEC. No production callback performs I/O. Each expiry change invalidates
+    // WATCH without changing the stored registry's fields.
+    let conflict = || {
+        let changed: i64 = redis::cmd("PEXPIRE")
+            .arg(&key)
+            .arg(60_000)
+            .query(&mut *competing.lock().unwrap())
+            .unwrap();
+        assert_eq!(changed, 1);
+    };
+    let attempts = std::cell::Cell::new(0);
+    a.update(|r| {
+        attempts.set(attempts.get() + 1);
+        if attempts.get() <= 20 {
+            conflict();
+        }
+        r.joins.push_back(Timestamp::now());
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(attempts.get(), 21);
+    assert_eq!(b.read(|r| Ok(r.joins.len())).await.unwrap(), 2);
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        a.update(|r| {
+            conflict();
+            r.joins.clear();
+            Ok(())
+        }),
+    )
+    .await
+    .expect("persistent contention must still respect the store I/O deadline")
+    .unwrap_err();
+    assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(b.read(|r| Ok(r.joins.len())).await.unwrap(), 2);
     delete(&url, &key).await;
 }
 

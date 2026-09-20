@@ -101,7 +101,9 @@ impl ValkeyStore {
             client,
             reads: Mutex::new(reads),
             transactions: Mutex::new(Vec::new()),
-            slots: Semaphore::new(8),
+            // Every write targets this store's one channel key. Queue local
+            // writers instead of making them invalidate each other's WATCH.
+            slots: Semaphore::new(1),
             key: key.into(),
             topic,
             subscribed: Arc::new(AtomicBool::new(true)),
@@ -181,7 +183,10 @@ impl ValkeyStore {
                 .await
                 .map_err(|_| unavailable())?,
         };
-        for _ in 0..16 {
+        // AppState::update bounds this entire operation with IO_TIMEOUT. A burst
+        // can legitimately lose more than 16 races before its deadline; only a
+        // confirmed EXEC conflict is safe to retry, never an ambiguous I/O error.
+        loop {
             if redis::cmd("WATCH")
                 .arg(&self.key)
                 .query_async::<()>(&mut connection)
@@ -246,7 +251,6 @@ impl ValkeyStore {
             }
             tokio::task::yield_now().await;
         }
-        Err(unavailable())
     }
 
     fn listen(&self, mut pubsub: PubSub, events: watch::Sender<()>) {

@@ -10,6 +10,11 @@ mod telemetry;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    // AWS SDK and HTTP/SQL clients enable both Rustls crypto backends. Redis
+    // uses the process default, so select it before constructing any TLS client.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("Rustls crypto provider must be installed once at startup");
     let environment = match RuntimeEnvironment::load().await {
         Ok(environment) => environment,
         Err(error) => {
