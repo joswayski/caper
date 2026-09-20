@@ -15,6 +15,10 @@ mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
 the registry keeps that code for the call and shares it in roster snapshots. Caper
 does not retain the visitor IP itself. Unknown and Tor locations are omitted.
+Visitors can see the current public roster before joining; the browser polls the
+unauthenticated `/api/media/presence` endpoint every ten seconds. That projection
+includes each participant's session ID, name, country code when available, mute,
+and deafen state, but never media track IDs, session tokens, or audio.
 
 Browser → same-origin `/api/media/*` → single Rust Axum service → Cloudflare
 control API. Browser ↔ Cloudflare Realtime SFU/TURN for WebRTC audio. No media

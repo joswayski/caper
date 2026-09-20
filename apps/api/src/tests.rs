@@ -415,6 +415,31 @@ async fn snapshot_includes_only_valid_cloudflare_country_codes() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn public_presence_shows_voice_participants_without_tracks_or_authentication() {
+    let (s, _) = state();
+    let participant = joined(&s, "visible").await;
+    let token = participant["token"].as_str().unwrap();
+    assert_eq!(monitor_joined(&s, token, "sender").await.0, StatusCode::OK);
+    let response = app(s)
+        .oneshot(
+            Request::builder()
+                .uri("/api/media/presence")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let presence: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), BODY_LIMIT).await.unwrap()).unwrap();
+    let visible = &presence["participants"][0];
+    assert_eq!(visible["id"], participant["id"]);
+    assert_eq!(visible["name"], "visible");
+    assert!(visible.get("tracks").is_none());
+    assert_eq!(presence["participants"].as_array().unwrap().len(), 1);
+}
 async fn monitor_joined(s: &AppState, token: &str, role: &str) -> (StatusCode, Value) {
     call(
         app(s.clone()),

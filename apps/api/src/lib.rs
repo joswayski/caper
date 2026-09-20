@@ -775,6 +775,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/auth/email/verify", post(auth_email_verify));
     let media = Router::new()
         .route("/api/media/status", get(status))
+        .route("/api/media/presence", get(presence))
         .route("/api/media/join", post(join))
         .route("/api/media/snapshot", post(snapshot))
         .route("/api/media/events", get(events))
@@ -1370,6 +1371,32 @@ struct View<'a> {
 struct TrackView {
     id: Uuid,
     kind: Kind,
+}
+#[derive(Serialize)]
+struct PresenceView<'a> {
+    id: Uuid,
+    name: &'a str,
+    #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
+    country_code: Option<&'a str>,
+    muted: bool,
+    deafened: bool,
+}
+async fn presence(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+    ensure_enabled(&s)?;
+    let r = s.registry.lock().await;
+    let participants: Vec<_> = r
+        .participants
+        .values()
+        .filter(|p| p.monitor.is_none())
+        .map(|p| PresenceView {
+            id: p.id,
+            name: &p.name,
+            country_code: p.country_code.as_deref(),
+            muted: p.muted,
+            deafened: p.deafened,
+        })
+        .collect();
+    Ok(Json(json!({"participants":participants})))
 }
 async fn snapshot(
     State(s): State<AppState>,
