@@ -288,6 +288,7 @@ export default function Call() {
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {connected && state.stateSyncPending && <p className="noise-status" role="status">Syncing mute and deafen status… Your local audio controls are already applied.</p>}
+          {connected && state.liveUpdatesPending && <p className="noise-status" role="status">Reconnecting live updates… Participant status may be delayed; your voice connection is being kept open.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
         </div>

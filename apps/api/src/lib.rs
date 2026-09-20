@@ -724,6 +724,7 @@ enum Kind {
 struct ApiError {
     status: StatusCode,
     message: &'static str,
+    code: Option<&'static str>,
     error_id: Option<Uuid>,
     attempts_remaining: Option<u8>,
 }
@@ -732,6 +733,7 @@ impl ApiError {
         Self {
             status,
             message,
+            code: None,
             error_id: None,
             attempts_remaining: None,
         }
@@ -741,15 +743,23 @@ impl ApiError {
         self.attempts_remaining = Some(attempts_remaining);
         self
     }
+
+    fn with_code(mut self, code: &'static str) -> Self {
+        self.code = Some(code);
+        self
+    }
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = match self.attempts_remaining {
+        let mut body = match self.attempts_remaining {
             Some(attempts_remaining) => {
                 json!({"error": self.message, "attemptsRemaining": attempts_remaining})
             }
             None => json!({"error": self.message}),
         };
+        if let Some(code) = self.code {
+            body["code"] = json!(code);
+        }
         let mut response = (self.status, Json(body)).into_response();
         if let Some(id) = self.error_id {
             response
@@ -1065,10 +1075,10 @@ async fn ready(State(s): State<AppState>) -> Result<StatusCode, ApiError> {
 }
 fn ensure_enabled(s: &AppState) -> Result<(), ApiError> {
     if *s.shutting_down.borrow() {
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "API is draining",
-        ));
+        return Err(
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "API is draining")
+                .with_code("api_draining"),
+        );
     }
     s.config
         .enabled
@@ -1708,7 +1718,9 @@ async fn subscribe(
                         .find(|t| t.id == i.track_id)
                         .map(|t| (p.id, p.session.clone(), t.provider_name.clone(), t.kind))
                 })
-                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "track not found"))?;
+                .ok_or_else(|| {
+                    ApiError::new(StatusCode::NOT_FOUND, "track not found").with_code("track_gone")
+                })?;
             if source.0 == me {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
@@ -1792,18 +1804,11 @@ async fn subscribe(
         return Err(ProviderError::invalid_response("subscribe").into());
     }
     s.update(|r| {
-        if !r
-            .participants
-            .values()
-            .any(|p| p.tracks.values().any(|track| track.id == i.track_id))
-        {
-            enqueue_cleanup_locked(r, session.clone(), mid.clone());
-            remove_participant_locked(r, me);
-            return Ok(Err(ApiError::new(
-                StatusCode::NOT_FOUND,
-                "source left during subscription",
-            )));
-        }
+        // The provider already created this MID and possibly an SDP offer.
+        // Even if the source left meanwhile, finish that negotiation rather
+        // than invalidating the listener's entire call. Its next roster omits
+        // the source, so the browser closes this MID; lease cleanup covers a
+        // browser that disappears before doing so.
         let Some(p) = r.participants.get_mut(&me) else {
             enqueue_cleanup_locked(r, session.clone(), mid.clone());
             return Ok(Err(ApiError::new(

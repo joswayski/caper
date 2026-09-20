@@ -1,5 +1,200 @@
 use super::*;
 
+#[tokio::test]
+async fn drain_rejections_are_marked_retryable_before_any_media_mutation() {
+    let (s, provider) = state();
+    let a = joined(&s, "listener").await;
+    let before = serde_json::to_value(&*s.registry.lock().await).unwrap();
+    s.begin_shutdown();
+    for (operation, body) in [
+        ("join", json!({"name":"new"})),
+        (
+            "publish",
+            json!({"kind":"microphone","mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+        ),
+        ("subscribe", json!({"trackId":Uuid::new_v4()})),
+        (
+            "negotiate",
+            json!({"sessionDescription":{"type":"answer","sdp":"v=0"}}),
+        ),
+        ("close", json!({"mid":"0"})),
+        ("state", json!({"muted":true,"deafened":false})),
+        ("snapshot", json!({})),
+        ("leave", json!({})),
+    ] {
+        let (status, body) = call(
+            app(s.clone()),
+            "POST",
+            &format!("/api/media/{operation}"),
+            a["token"].as_str(),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{operation}");
+        assert_eq!(body["code"], "api_draining", "{operation}");
+    }
+    assert_eq!(
+        serde_json::to_value(&*s.registry.lock().await).unwrap(),
+        before
+    );
+    assert_eq!(
+        provider.next.load(Ordering::SeqCst),
+        2,
+        "no additional provider sessions"
+    );
+    assert!(provider.closes.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn source_departure_during_subscription_preserves_listener_and_finishes_sdp() {
+    for has_offer in [true, false] {
+        let (s, provider) = state();
+        provider.remote_offer.store(has_offer, Ordering::SeqCst);
+        let speaker = joined(&s, "speaker").await;
+        let listener = joined(&s, "listener").await;
+        let listener_id = Uuid::parse_str(listener["id"].as_str().unwrap()).unwrap();
+        let mut source_track = Value::Null;
+        for (person, mid) in [(&speaker, "speaker-mic"), (&listener, "listener-mic")] {
+            let published = call(app(s.clone()), "POST", "/api/media/publish", person["token"].as_str(),
+                json!({"kind":"microphone","mid":mid,"sessionDescription":{"type":"offer","sdp":"v=0"}})).await;
+            assert_eq!(published.0, StatusCode::OK);
+            if mid == "speaker-mic" {
+                source_track = published.1["trackId"].clone();
+            }
+        }
+        let session = s.registry.lock().await.participants[&listener_id]
+            .session
+            .clone();
+        provider.block_subscription.store(true, Ordering::SeqCst);
+        let ((status, response), ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                call(
+                    app(s.clone()),
+                    "POST",
+                    "/api/media/subscribe",
+                    listener["token"].as_str(),
+                    json!({"trackId":source_track})
+                ),
+                async {
+                    provider.subscription_started.notified().await;
+                    assert_eq!(
+                        call(
+                            app(s.clone()),
+                            "POST",
+                            "/api/media/leave",
+                            speaker["token"].as_str(),
+                            json!({})
+                        )
+                        .await
+                        .0,
+                        StatusCode::NO_CONTENT
+                    );
+                    provider.subscription_resume.notify_one();
+                }
+            )
+        })
+        .await
+        .expect("subscription/departure interleaving must complete");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a departed source must not invalidate the listener"
+        );
+        assert_eq!(response["requiresImmediateRenegotiation"], has_offer);
+        if has_offer {
+            assert_eq!(
+                call(
+                    app(s.clone()),
+                    "POST",
+                    "/api/media/negotiate",
+                    listener["token"].as_str(),
+                    json!({"sessionDescription":{"type":"answer","sdp":"v=0"}})
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+        }
+        // Fresh snapshots omit the departed speaker; the browser closes only its
+        // now-unwanted subscription after completing the offer/answer exchange.
+        let (status, snapshot) = call(
+            app(s.clone()),
+            "POST",
+            "/api/media/snapshot",
+            listener["token"].as_str(),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(snapshot["participants"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            call(
+                app(s.clone()),
+                "POST",
+                "/api/media/close",
+                listener["token"].as_str(),
+                json!({"mid":"remote-mid"})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        retry_backlog(&s).await;
+        let r = s.registry.lock().await;
+        let remaining = &r.participants[&listener_id];
+        assert_eq!(remaining.session, session);
+        assert!(remaining.tracks.contains_key("listener-mic"));
+        assert!(remaining.subscriptions.is_empty());
+        assert!(!remaining.pending_offer && !remaining.operation);
+        assert!(
+            !provider
+                .closes
+                .lock()
+                .await
+                .contains(&(session, "listener-mic".into()))
+        );
+    }
+}
+
+#[tokio::test]
+async fn already_departed_track_is_distinguished_from_an_invalid_listener_session() {
+    let (s, _) = state();
+    let listener = joined(&s, "listener").await;
+    let body = json!({"trackId":Uuid::new_v4()});
+    let missing = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/subscribe",
+        listener["token"].as_str(),
+        body.clone(),
+    )
+    .await;
+    assert_eq!(missing.0, StatusCode::NOT_FOUND);
+    assert_eq!(missing.1["code"], "track_gone");
+    let invalid = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/subscribe",
+        Some("invalid"),
+        body,
+    )
+    .await;
+    assert_eq!(invalid.0, StatusCode::UNAUTHORIZED);
+    assert!(invalid.1.get("code").is_none());
+    assert_eq!(
+        call(
+            app(s),
+            "POST",
+            "/api/media/snapshot",
+            listener["token"].as_str(),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
 async fn upstream(router: Router) -> (Config, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut config = Config::test(true);

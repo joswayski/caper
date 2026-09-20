@@ -101,9 +101,31 @@ unchanged capabilities/provider sessions and no provider track closures. These u
 mocked Cloudflare, not real media. Desktop and narrow Chromium UI checks use labeled
 mock calls; they are not physical iOS or live rollout verification. The reported
 production 504's originating request/intermediary and iOS audio-output warning
-remain unconfirmed. Deploy the **web** image and refresh both clients before
-repeating the two-device rollout test; no state schema or infrastructure change is
-required for this browser fix.
+remain unconfirmed.
+
+The follow-up disconnect audit also covers these interactions:
+
+| Trigger | Recovery behavior |
+| --- | --- |
+| Join/publish/subscribe/negotiate/close reaches a draining API | Explicit `503` + `code: api_draining` proves admission rejection before mutation. Retry up to three times after 250/500/1000 ms within the original request deadline. Generic 5xx/timeouts do not authorize replay. |
+| A speaker leaves before subscription starts | `404` + `code: track_gone` skips only that track; continue subscribing to other participants. Authentication errors still invalidate the session. |
+| A speaker leaves while a successful subscription is being created | Preserve the listener, finish any returned SDP offer, then close the unwanted MID from the latest roster. Do not discard the listener's own microphone/session. |
+| SSE fails while authenticated lease renewals work | Retry SSE independently; keep voice open and display a live-update recovery notice. Snapshots still repair state, but normal real-time delivery requires SSE recovery. |
+| A previous call still has a pending device request | New signaling/media queues do not wait on old work. Old rollback cannot restart the new call. |
+| Several separate successful recoveries over time | Reset the consecutive retry budget after each successful rejoin; no lifetime three-recovery quota. |
+
+Failure-injection coverage includes these cases and cancellation during retry
+backoff. Deploy the **API first, then web**, and refresh both clients before
+repeating the two-device rollout test. Error codes are additive; no Valkey schema,
+secret, or infrastructure change is required.
+
+Remaining disconnect conditions are not solved by adding retries: unknown outcomes
+of provider SDP mutations, invalid/expired sessions, sustained network loss, and
+failed local capture/transport recovery. The existing **one-hour session limit**
+also forces replacement and is tied to one-hour TURN credentials; seamless longer
+calls need credential renewal/transport handling, not just deleting that limit.
+Initial SSE setup still fails Join if it cannot establish a valid handshake. The
+private mic test has separate failure handling; losing it does not leave General.
 
 The hash is a bounded channel unit, not a global blob for every future channel.
 Adding spaces/channels will require routing and per-channel keys/subscriptions.
@@ -394,11 +416,12 @@ live ingestion into the user's dataset has not been verified.
   a five-second deadline including response-body reads; failures lasting at least
   30 seconds trigger recovery on the next failed poll. Successful snapshots reset
   that window. Invalid sessions trigger recovery immediately. Failed mute/deafen
-  state sync is retried with the latest local state after a successful heartbeat;
+  state sync retries the latest local state independently of heartbeats;
   ambiguous SFU mutations are not blindly replayed.
 - A transient WebRTC `disconnected` state gets ten seconds to recover in place;
-  `failed` or a sustained disconnect triggers up to three rejoins retaining mute/deafen and device
-  choice. Permission/device failures are visible. All microphone subscriptions
+  `failed` or a sustained disconnect triggers up to three consecutive failed rejoin
+  attempts retaining mute/deafen and device choice; success resets that budget.
+  Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
   browser echo cancellation and gain control are off for headphones. Codec-managed
@@ -774,8 +797,9 @@ No handshake within ten seconds or no valid event within 25 seconds fails the
 stream. An SSE failure during startup fails Join; during an established call it
 reopens only the event stream with the same capability, backing off from 250 ms
 to three seconds while keeping healthy audio. Planned `draining` reconnects start
-after 50 ms. A 30-second recovery deadline after loss
-triggers the bounded full-session reconnect if live updates cannot be restored.
+after 50 ms. An SSE-only outage does not force a new voice session while
+authenticated snapshot renewals succeed. The UI announces delayed live updates;
+invalid sessions or sustained heartbeat failure still trigger session recovery.
 Each restored stream receives current state, not a replay of missed mute/unmute
 transitions. Initial Join readiness remains strict.
 Cancel/leave aborts the stream, startup event waits, and delayed retries. Fifteen-second snapshots

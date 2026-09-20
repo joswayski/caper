@@ -27,7 +27,8 @@ const DISCONNECT_GRACE_MS = 10_000;
 
 class CallApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) { super(message); this.status = status; }
+  readonly code?: string;
+  constructor(message: string, status: number, code?: string) { super(message); this.status = status; this.code = code; }
 }
 
 function message(error: unknown) {
@@ -58,7 +59,6 @@ export class PublicCallClient {
   private disconnectTimer?: number;
   private pollRetryTimer?: number;
   private eventRetryTimer?: number;
-  private eventRecoveryTimer?: number;
   private eventRetryAttempts = 0;
   private controlFailedSince?: number;
   private stateDirty = false;
@@ -119,6 +119,7 @@ export class PublicCallClient {
       muted: this.muted,
       deafened: this.deafened,
       stateSyncPending: this.phase === "connected" && this.stateDirty,
+      liveUpdatesPending: this.phase === "connected" && !this.events?.connected,
       inputVolume: this.inputVolume,
       monitoring: this.monitoring,
       monitorStream: this.monitorStream,
@@ -164,24 +165,44 @@ export class PublicCallClient {
   private async api<T = void>(operation: string, body: object = {}, token = this.token, timeout = FETCH_TIMEOUT_MS): Promise<T> {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeout);
+    const signal = operation === "join" || operation === "leave" ? controller.signal : AbortSignal.any([controller.signal, this.captureController.signal]);
     try {
-      const response = await fetch(`${API_ROOT}/${operation}`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(token ? { "x-caper-media-token": token } : {}),
-        },
-        body: JSON.stringify(body),
-        keepalive: operation === "leave",
-        signal: operation === "join" || operation === "leave" ? controller.signal : AbortSignal.any([controller.signal, this.captureController.signal]),
-      });
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({})) as { error?: string };
-        throw new CallApiError(detail.error || `Call service returned ${response.status}.`, response.status);
+      for (let attempt = 0; ; attempt++) {
+        signal.throwIfAborted();
+        const response = await fetch(`${API_ROOT}/${operation}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token ? { "x-caper-media-token": token } : {}),
+          },
+          body: JSON.stringify(body),
+          keepalive: operation === "leave",
+          signal,
+        });
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({})) as { error?: string; code?: string };
+          // Only this admission rejection guarantees the operation never started.
+          // Never replay an ambiguous provider mutation after a generic 5xx/timeout.
+          if (response.status === 503 && detail.code === "api_draining" && attempt < 3) {
+            let retryTimer: number | undefined;
+            let abort!: () => void;
+            await new Promise<void>((resolve, reject) => {
+              abort = () => reject(signal.reason);
+              retryTimer = window.setTimeout(resolve, 250 * 2 ** attempt);
+              signal.addEventListener("abort", abort, { once: true });
+              if (signal.aborted) abort();
+            }).finally(() => {
+              window.clearTimeout(retryTimer);
+              signal.removeEventListener("abort", abort);
+            });
+            continue;
+          }
+          throw new CallApiError(detail.error || `Call service returned ${response.status}.`, response.status, detail.code);
+        }
+        if (response.status === 204 || response.headers.get("content-length") === "0") return undefined as T;
+        const text = await response.text();
+        return (text ? JSON.parse(text) : undefined) as T;
       }
-      if (response.status === 204 || response.headers.get("content-length") === "0") return undefined as T;
-      const text = await response.text();
-      return (text ? JSON.parse(text) : undefined) as T;
     } finally { window.clearTimeout(timer); }
   }
 
@@ -291,18 +312,17 @@ export class PublicCallClient {
     });
     await events.open(this.token!, this.captureController.signal);
     if (generation === this.generation && events === this.events && events.connected) {
-      window.clearTimeout(this.eventRecoveryTimer);
-      this.eventRecoveryTimer = undefined;
       this.eventRetryAttempts = 0;
+      if (this.phase === "connected") this.emit();
     }
     return events;
   }
 
   private scheduleEventRecovery(generation: number, draining = false) {
     // Reconnect control updates with the same capability, not a new voice session.
-    this.eventRecoveryTimer ??= window.setTimeout(() => {
-      if (generation === this.generation) this.scheduleReconnect();
-    }, CONTROL_RECOVERY_MS);
+    // The authenticated heartbeat owns session validity. Losing SSE alone must
+    // not tear down healthy audio while those renewals still succeed.
+    this.emit();
     window.clearTimeout(this.eventRetryTimer);
     const delay = draining ? 50 : Math.min(250 * 2 ** this.eventRetryAttempts++, 3_000);
     this.eventRetryTimer = window.setTimeout(() => {
@@ -398,7 +418,7 @@ export class PublicCallClient {
       if (kind === "microphone") this.localMedia = new MediaStream([track]);
       track.addEventListener("ended", () => {
         if (generation === this.generation && this.senders.get(kind)?.track === track) {
-          void this.unpublish(kind).catch(() => this.scheduleReconnect());
+          void this.unpublish(kind).catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
         }
       }, { once: true });
       if (kind === "microphone" && (this.muted || this.monitoring)) {
@@ -630,6 +650,10 @@ export class PublicCallClient {
         this.stopMicrophone(old);
         this.emit();
       } catch (error) {
+        if (generation !== this.generation) {
+          if (track) this.stopMicrophone(track);
+          throw error;
+        }
         let rollbackFailed = false;
         try { await oldCapture?.resume(); } catch { rollbackFailed = true; }
         if (senderReplaced && generation === this.generation && this.senders.get("microphone") === microphone) {
@@ -639,7 +663,7 @@ export class PublicCallClient {
           } catch { rollbackFailed = true; }
         }
         if (track) this.stopMicrophone(track);
-        if (rollbackFailed) this.scheduleReconnect();
+        if (rollbackFailed && generation === this.generation) this.scheduleReconnect();
         throw error;
       }
     }, generation);
@@ -651,7 +675,14 @@ export class PublicCallClient {
       if (this.subscriptions.has(trackId)) return;
       const pc = this.requirePc();
       const token = this.token;
-      const response = await this.api<SessionDescriptionResponse>("subscribe", { trackId }, token);
+      let response: SessionDescriptionResponse;
+      try { response = await this.api<SessionDescriptionResponse>("subscribe", { trackId }, token); }
+      catch (error) {
+        // Ordinary departure between roster delivery and subscription. The API
+        // authenticated us and rejected before touching the provider/SDP.
+        if (error instanceof CallApiError && error.status === 404 && error.code === "track_gone") return;
+        throw error;
+      }
       if (generation !== this.generation || pc !== this.pc) return;
       const mid = response.tracks?.[0]?.mid;
       if (!mid) throw new Error("The media service did not return a subscription identifier.");
@@ -878,6 +909,7 @@ export class PublicCallClient {
       captured = track;
       if (generation !== this.generation) { this.stopMicrophone(track); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
       await this.connectPrepared(track, joined, generation, started, "Rejoined");
+      this.reconnects = 0;
       if (this.monitoring) await this.startReceivedMonitor().catch(() => undefined);
     } catch {
       if (captured) this.stopMicrophone(captured);
@@ -922,11 +954,11 @@ export class PublicCallClient {
     this.disconnectTimer = undefined;
     window.clearTimeout(this.pollRetryTimer);
     window.clearTimeout(this.eventRetryTimer);
-    window.clearTimeout(this.eventRecoveryTimer);
     window.clearTimeout(this.stateRetryTimer);
     this.statePromise = undefined;
     this.snapshotPromise = undefined;
-    this.eventRecoveryTimer = undefined;
+    this.queue = Promise.resolve();
+    this.mediaQueue = Promise.resolve();
     this.eventRetryAttempts = 0;
     this.controlFailedSince = undefined;
     this.stateDirty = false;

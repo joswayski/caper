@@ -18,6 +18,9 @@ struct Mock {
     revocations: Mutex<Vec<String>>,
     remote_offer: AtomicBool,
     block_provision: AtomicBool,
+    block_subscription: AtomicBool,
+    subscription_started: tokio::sync::Notify,
+    subscription_resume: tokio::sync::Notify,
 }
 impl Mock {
     fn new() -> Self {
@@ -29,6 +32,9 @@ impl Mock {
             revocations: Mutex::new(vec![]),
             remote_offer: AtomicBool::new(true),
             block_provision: AtomicBool::new(false),
+            block_subscription: AtomicBool::new(false),
+            subscription_started: tokio::sync::Notify::new(),
+            subscription_resume: tokio::sync::Notify::new(),
         }
     }
 }
@@ -70,6 +76,10 @@ impl Provider for Mock {
     }
     async fn tracks_new(&self, _: &Config, _: &str, body: Value) -> Result<Value, ProviderError> {
         if body["tracks"][0]["location"] == "remote" {
+            if self.block_subscription.load(Ordering::SeqCst) {
+                self.subscription_started.notify_one();
+                self.subscription_resume.notified().await;
+            }
             if self.remote_offer.load(Ordering::SeqCst) {
                 Ok(
                     json!({"requiresImmediateRenegotiation":true,"tracks":[{"mid":"remote-mid"}],"sessionDescription":{"type":"offer","sdp":"offer"}}),

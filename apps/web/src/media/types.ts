@@ -61,6 +61,7 @@ export interface CallViewState {
   muted: boolean;
   deafened: boolean;
   stateSyncPending?: boolean;
+  liveUpdatesPending?: boolean;
   inputVolume: number;
   monitoring: boolean;
   monitorStream?: MediaStream;
