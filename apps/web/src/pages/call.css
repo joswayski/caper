@@ -63,7 +63,6 @@
 .voice-processing-control input { width: 100%; margin: 0; accent-color: var(--terracotta); }
 .voice-processing-control input:disabled { opacity: .55; cursor: not-allowed; }
 .voice-processing-control small { color: var(--text-muted); font-size: .68rem; }
-.voice-processing-control p { margin: 0; color: var(--text-muted); font-size: .72rem; line-height: 1.4; }
 .recording-clock { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin: 0; font-variant-numeric: tabular-nums; font-weight: 800; }
 .recording-clock i { width: 10px; height: 10px; border-radius: 50%; background: var(--terracotta-bright); box-shadow: 0 0 0 5px rgb(219 104 73 / .14); animation: recording-pulse 1.2s ease-in-out infinite; }
 @keyframes recording-pulse { 50% { opacity: .45; transform: scale(.8); } }
@@ -72,8 +71,6 @@
 .mic-meter { height: 58px; display: flex; align-items: center; gap: 5px; margin: 7px 0 10px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
 .mic-meter i { height: 8px; min-width: 3px; flex: 1; border-radius: 999px; background: var(--border); transition: height 80ms linear, background-color 80ms linear; }
 .mic-meter i.lit { height: 32px; background: var(--caper); }
-.mic-test-status { display: flex; align-items: center; gap: 7px; margin: 0 0 14px; color: var(--text-muted); font-size: .75rem; }
-.mic-test-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--caper); box-shadow: 0 0 0 3px rgb(99 122 67 / .15); }
 .stop-recording-button { width: 100%; min-height: 48px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .stop-recording-button:disabled { opacity: .55; cursor: wait; }
 .mic-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
@@ -81,11 +78,15 @@
 .mic-comparison article.latest { border-color: #53633f; }
 .mic-comparison article > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .mic-comparison article strong { font-size: .82rem; }
-.mic-comparison article small { color: #aabd8c; font-size: .62rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
 .mic-comparison article p { margin: 16px 0 0; color: var(--text-muted); font-size: .75rem; line-height: 1.45; }
 .mic-comparison article p[role="alert"] { color: #ff9b82; }
 .mic-comparison audio { width: 100%; height: 44px; }
-.mic-test-privacy { display: block; margin-top: 20px; color: var(--text-muted); line-height: 1.5; }
+.processing-details { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 16px; color: var(--text-muted); font-size: .68rem; }
+.processing-detail { position: relative; display: inline-flex; align-items: center; gap: 5px; }
+.processing-detail > button { width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-muted); background: transparent; font-size: .6rem; font-weight: 800; cursor: help; }
+.processing-detail > [role="tooltip"] { position: absolute; z-index: 3; left: 0; bottom: calc(100% + 8px); width: min(280px, 75vw); padding: 9px 10px; visibility: hidden; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); box-shadow: 0 8px 24px rgb(0 0 0 / .35); font-size: .7rem; line-height: 1.45; opacity: 0; transform: translateY(3px); transition: opacity 120ms ease, transform 120ms ease, visibility 120ms; }
+.processing-detail:last-child > [role="tooltip"] { right: 0; left: auto; }
+.processing-detail:hover > [role="tooltip"], .processing-detail:focus-within > [role="tooltip"] { visibility: visible; opacity: 1; transform: translateY(0); }
 .call-diagnostics { width: min(620px, 100%); margin-top: 24px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); background: var(--surface); }
 .call-diagnostics summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text); font-size: .82rem; font-weight: 750; cursor: pointer; }
 .call-diagnostics summary small { color: var(--text-muted); font-size: .7rem; font-weight: 500; }

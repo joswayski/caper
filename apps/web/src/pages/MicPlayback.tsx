@@ -71,10 +71,17 @@ function RecordingPlayback({ clip, label, output, autoPlay, onDeviceError }: {
   return <audio ref={ref} aria-label={`${label} microphone sample`} controls src={clip.url} />;
 }
 
-export default function MicPlayback({ stream, output, status, processingStrength, onProcessingStrengthChange }: {
+function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
+  return <span className="processing-detail">
+    {label}
+    <button type="button" aria-label={`About ${label}`} aria-describedby={id}>?</button>
+    <span id={id} role="tooltip">{children}</span>
+  </span>;
+}
+
+export default function MicPlayback({ stream, output, processingStrength, onProcessingStrengthChange }: {
   stream: MediaStream;
   output: string;
-  status?: string;
   processingStrength: number;
   onProcessingStrengthChange(strength: number): void;
 }) {
@@ -183,36 +190,37 @@ export default function MicPlayback({ stream, output, status, processingStrength
       </div>
       {recording && <p className="recording-clock"><i aria-hidden="true" />{elapsed.toFixed(1)}s</p>}
     </div>
-    <p className="mic-test-copy">Record once to compare the same denoised sample before and after voice processing.</p>
+    <p className="mic-test-copy">Record once to compare the same sample with and without voice enhancement.</p>
     <div className="voice-processing-control">
       <label htmlFor="voice-processing"><span>Voice processing</span><output>{processingStrength}%</output></label>
       <input id="voice-processing" type="range" min="0" max="100" step="1" value={processingStrength} disabled={recording} onChange={(event) => onProcessingStrengthChange(Number(event.target.value))} />
       <div><small>Natural</small><small>Enhanced</small></div>
-      <p>Noise cleanup stays on at every setting.</p>
     </div>
     <div className="mic-meter-label"><span>Input level</span><small>Lights up while recording</small></div>
     <InputMeter active={recording} stream={stream} />
-    {status && <p className="mic-test-status"><i aria-hidden="true" />{status}</p>}
     {!recording && <button type="button" className="stop-recording-button" disabled={processing} onClick={startRecording}>{processing ? "Preparing comparison…" : clips.natural ? "Record another sample" : "Record one sample"}</button>}
     {recording && <button type="button" className="stop-recording-button" onClick={() => sessionRef.current?.finish()}>Stop &amp; play back</button>}
     {error && <p className="call-error" role="alert">{error}</p>}
     {deviceError && <p className="call-error" role="alert">Audio output unavailable; choose another device.</p>}
     <div className="mic-comparison" aria-label="Recorded samples">
       <article>
-        <div><strong>Natural</strong><small>Denoised</small></div>
+        <div><strong>Natural</strong></div>
         {clips.natural
           ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} autoPlay={false} onDeviceError={() => setDeviceError(true)} />
             {clips.natural.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
-          : <p>Your denoised recording will appear here.</p>}
+          : <p>Your natural recording will appear here.</p>}
       </article>
       <article className={clips.processed ? "latest" : undefined}>
-        <div><strong>Processed</strong><small>{processingStrength}%</small></div>
+        <div><strong>Enhanced</strong></div>
         {clips.processed
-          ? <><RecordingPlayback clip={clips.processed} label={`${processingStrength}% processed`} output={output} autoPlay onDeviceError={() => setDeviceError(true)} />
+          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} autoPlay onDeviceError={() => setDeviceError(true)} />
             {clips.processed.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
-          : <p>{processing ? `Applying ${processingStrength}% voice processing…` : "Your processed comparison will appear here."}</p>}
+          : <p>{processing ? "Applying voice enhancement…" : "Your enhanced comparison will appear here."}</p>}
       </article>
     </div>
-    <small className="mic-test-privacy">The recording and comparison stay in this tab and disappear when you end the test.</small>
+    <div className="processing-details" aria-label="Audio processing details">
+      <ProcessingDetail label="On-device noise cancellation" id="noise-cancellation-detail">DPDFNet-8 HR removes background noise locally before your voice is sent.</ProcessingDetail>
+      <ProcessingDetail label="Voice enhancement" id="voice-enhancement-detail">Adds high-pass filtering, warmth and presence EQ, compression, makeup gain, and peak limiting. The slider controls the strength.</ProcessingDetail>
+    </div>
   </section>;
 }

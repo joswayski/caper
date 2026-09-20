@@ -7,7 +7,7 @@ enabled. Accounts are optional. Signed-in participants use their account display
 name; guests receive a random name. This is not a dial/invite/call flow.
 No text chat, camera, screen sharing, channel creation, or server-side recording.
 Mic test offers an explicit, tab-memory-only recording of up to ten seconds of
-received denoised audio and an on-device processed comparison from the same take.
+received Natural audio and an on-device Enhanced comparison from the same take.
 The Rust API replaces a signed-in participant's submitted name
 with the account display name. Guest names can collide and are not verified or
 reserved; participant IDs, not names, distinguish people. Presence remains in memory.
@@ -671,7 +671,7 @@ and **Stop & play back** button make the active state visible. Recording stops a
 ten seconds. The browser records one timestamped Opus return, preserving the
 received stream's real-time playback cadence, then renders a WAV comparison from
 that decoded take with the current voice-processing strength. Natural therefore
-exercises the real private SFU return; the processed comparison uses the same Web
+exercises the real private SFU return; the Enhanced comparison uses the same Web
 Audio settings but does not make a second SFU trip. No recording is uploaded or
 persisted. Testing again, ending the test, leaving, reconnecting or unmounting
 discards both versions and cancels capture.
@@ -733,7 +733,7 @@ with the selected strength; peak limiting remains fixed protection. Zero bypasse
 the entire post-processing chain, while DPDFNet noise cleanup remains active at
 every setting. This is fixed dynamics processing, not AGC: it does not continually
 raise gain during silence. The microphone test records one returned Natural take
-and creates the selected processed comparison from that same recording. The setting
+and creates the selected Enhanced comparison from that same recording. The setting
 remains active after leaving the test for the page lifetime. Processing cannot repair
 clipping that occurred before browser capture.
 
