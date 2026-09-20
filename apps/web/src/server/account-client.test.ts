@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
+import { AccountApiError, getAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
 
 function mockFetch(t: test.TestContext, handler: (path: string, init?: RequestInit) => Response) {
   const original = globalThis.fetch;
@@ -43,4 +43,15 @@ test("web account client uses cookie sessions across the complete onboarding flo
 test("missing session is an ordinary signed-out state", async (t) => {
   mockFetch(t, () => Response.json({ error: "unauthorized" }, { status: 401 }));
   assert.equal(await getAccount(), null);
+});
+
+test("verification errors preserve the server's remaining-attempt count", async (t) => {
+  mockFetch(t, () => Response.json({ error: "invalid or expired code", attemptsRemaining: 1 }, { status: 401 }));
+
+  await assert.rejects(
+    verifyEmailCode("challenge-1", "WRONG1"),
+    (error: unknown) => error instanceof AccountApiError
+      && error.status === 401
+      && error.attemptsRemaining === 1,
+  );
 });

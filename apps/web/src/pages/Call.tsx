@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { Headphones, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import AccountNav from "../account/AccountNav";
+import { getAccount } from "../account/client";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
@@ -123,6 +124,8 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
 export default function Call() {
   const [state, setState] = useState(initialState);
   const [name, setName] = useState("");
+  const [accountDisplayName, setAccountDisplayName] = useState<string>();
+  const [identityReady, setIdentityReady] = useState(false);
   const [available, setAvailable] = useState<boolean>();
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
@@ -142,6 +145,14 @@ export default function Call() {
   useEffect(() => {
     let current = true;
     setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
+    void getAccount()
+      .then((account) => {
+        if (!current || !account?.displayName) return;
+        setName(account.displayName);
+        setAccountDisplayName(account.displayName);
+      })
+      .catch(() => undefined)
+      .finally(() => { if (current) setIdentityReady(true); });
     fetch("/api/media/status", { signal: AbortSignal.timeout(10_000) })
       .then(async (response) => response.ok ? response.json() as Promise<{ enabled: boolean }> : { enabled: false })
       .then((result) => {
@@ -248,10 +259,10 @@ export default function Call() {
           {idle ? <div className="join-card">
             <span className="voice-symbol" aria-hidden="true">◖))</span>
             <h1>Drop in. Talk. Head out.</h1>
-            <p>Join the shared General channel as a guest. No account or invite needed.</p>
+            <p>{accountDisplayName ? "Join the shared General channel using your Caper display name." : "Join the shared General channel as a guest. No account or invite needed."}</p>
             {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join(name.trim(), deviceId || undefined); }}>
-              <p>Joining as <strong>{name || "…"}</strong></p>
-              <button className="primary-button" disabled={available !== true || !name.trim() || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : "Join voice"}</button>
+              <p>Joining as <strong>{identityReady ? name : "…"}</strong></p>
+              <button className="primary-button" disabled={available !== true || !identityReady || !name.trim() || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : !identityReady ? "Checking profile…" : "Join voice"}</button>
             </form>}
             <p className="privacy-note">You’ll be asked for microphone access when you join.</p>
           </div> : state.monitorStream && !actionPending

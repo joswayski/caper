@@ -44,13 +44,13 @@ async fn main() -> std::process::ExitCode {
 async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     match (args.next().as_deref(), args.next()) {
-        (Some("--migrate"), None) => return caper_api::migrate_database().await,
+        (Some("--migrate"), None) => return caper_api::migrate_database(environment).await,
         (None, None) => {}
         _ => return Err("usage: caper-api [--migrate]".into()),
     }
     let config = Config::from_env(environment)?;
     let bind = config.bind;
-    let database = connect_database().await?;
+    let database = connect_database(environment).await?;
     let mut state =
         caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
     state.enable_accounts_from_env(environment).await?;

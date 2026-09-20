@@ -4,7 +4,16 @@ use std::{collections::HashMap, time::Duration};
 
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 const SECRET_KEYS: &[&str] = &[
+    "DATABASE_URL",
+    "MIGRATION_DATABASE_URL",
     "AUTH_SECRET",
+    "AUTH_CODE_ATTEMPTS",
+    "AUTH_EMAIL_15M_LIMIT",
+    "AUTH_EMAIL_DAILY_LIMIT",
+    "AUTH_IP_HOURLY_LIMIT",
+    "AUTH_GLOBAL_HOURLY_LIMIT",
+    "SES_FROM_ADDRESS",
+    "SES_CONFIGURATION_SET",
     "MEDIA_ENABLED",
     "CF_SFU_APP_ID",
     "CF_SFU_APP_SECRET",
@@ -17,9 +26,9 @@ const SECRET_KEYS: &[&str] = &[
 
 /// Application settings loaded from Secrets Manager with process-environment fallback.
 ///
-/// Database and AWS credential variables deliberately remain process-only. A remote
-/// application record cannot redirect the database or replace the workload identity
-/// used to read it.
+/// AWS bootstrap credentials deliberately remain process-only: the record cannot
+/// replace the workload identity used to read itself. Application secrets, including
+/// database URLs, prefer Secrets Manager and fall back to the process environment.
 #[derive(Default)]
 pub struct RuntimeEnvironment {
     secret_values: HashMap<&'static str, String>,
@@ -101,7 +110,10 @@ mod tests {
             r#"{
                 "AUTH_SECRET":"remote-secret",
                 "MEDIA_ENABLED":"true",
-                "DATABASE_URL":"postgres://attacker",
+                "DATABASE_URL":"postgres://runtime",
+                "MIGRATION_DATABASE_URL":"postgres://migration",
+                "AUTH_CODE_ATTEMPTS":"3",
+                "SES_FROM_ADDRESS":"Caper <noreply@example.com>",
                 "AWS_ACCESS_KEY_ID":"attacker",
                 "CF_SFU_APP_SECRET":42
             }"#,
@@ -113,7 +125,15 @@ mod tests {
             Some("remote-secret")
         );
         assert_eq!(environment.get("MEDIA_ENABLED").as_deref(), Some("true"));
-        assert!(!environment.secret_values.contains_key("DATABASE_URL"));
+        assert_eq!(
+            environment.get("DATABASE_URL").as_deref(),
+            Some("postgres://runtime")
+        );
+        assert_eq!(
+            environment.get("MIGRATION_DATABASE_URL").as_deref(),
+            Some("postgres://migration")
+        );
+        assert_eq!(environment.get("AUTH_CODE_ATTEMPTS").as_deref(), Some("3"));
         assert!(!environment.secret_values.contains_key("AWS_ACCESS_KEY_ID"));
         assert!(!environment.secret_values.contains_key("CF_SFU_APP_SECRET"));
     }

@@ -27,19 +27,24 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://caper_runtime:caper_runtime@postgres:5432/caperchat?sslmode=disable
-      MIGRATION_DATABASE_URL: postgres://caper_migrate:caper_migrate@postgres:5432/caperchat?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:-postgres://caper_runtime:caper_runtime@postgres:5432/caperchat?sslmode=disable}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgres://caper_migrate:caper_migrate@postgres:5432/caperchat?sslmode=disable}
       DATABASE_ALLOW_INSECURE: "true"
-      APP_SECRET_ID: staging/apps/caper
+      APP_SECRET_ID: ${APP_SECRET_ID:-staging/apps/caper}
       AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_CODE_ATTEMPTS: ${AUTH_CODE_ATTEMPTS:-3}
+      AUTH_EMAIL_15M_LIMIT: ${AUTH_EMAIL_15M_LIMIT:-3}
+      AUTH_EMAIL_DAILY_LIMIT: ${AUTH_EMAIL_DAILY_LIMIT:-5}
+      AUTH_IP_HOURLY_LIMIT: ${AUTH_IP_HOURLY_LIMIT:-10}
+      AUTH_GLOBAL_HOURLY_LIMIT: ${AUTH_GLOBAL_HOURLY_LIMIT:-500}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       AWS_REGION: us-east-1
       AWS_DEFAULT_REGION: us-east-1
       AWS_EC2_METADATA_DISABLED: "true"
-      SES_FROM_ADDRESS: Caper <noreply@staging.caper.chat>
-      SES_CONFIGURATION_SET: staging-caper-transactional
+      SES_FROM_ADDRESS: ${SES_FROM_ADDRESS:-Caper <noreply@staging.caper.chat>}
+      SES_CONFIGURATION_SET: ${SES_CONFIGURATION_SET:-staging-caper-transactional}
       MEDIA_ENABLED: ${MEDIA_ENABLED:-false}
       MEDIA_BIND: 0.0.0.0:3001
       CF_SFU_APP_ID: ${CF_SFU_APP_ID:-}

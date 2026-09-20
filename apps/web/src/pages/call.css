@@ -36,6 +36,7 @@
 .join-card > p { color: var(--text-muted); line-height: 1.6; }
 .join-card form { display: grid; gap: 10px; margin-top: 30px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.join-card form strong { overflow-wrap: anywhere; }
 .volume-control { width: min(240px, 25vw); display: grid; gap: 5px; }
 .volume-control > span { display: flex; justify-content: space-between; color: var(--text-muted); font-size: .8rem; font-weight: 700; }
 .volume-control output { font-variant-numeric: tabular-nums; }
