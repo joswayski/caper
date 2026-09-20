@@ -8,6 +8,7 @@ body {
 .page { min-height: 100vh; background: #0c0d0f; }
 .shell { width: min(1520px, calc(100% - 80px)); margin-inline: auto; }
 .site-header { min-height: 104px; display: flex; align-items: center; justify-content: space-between; }
+.site-header-actions { display: flex; align-items: center; gap: 20px; }
 .login-button { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 700; text-decoration: none; }
 .login-button:hover { border-color: var(--terracotta); }
 .login-button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
+import AccountNav from "../account/AccountNav";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import type { CallViewState } from "../media/types";
@@ -163,6 +164,7 @@ export default function Call() {
     <main className="call-page">
       <header className="call-header">
         <a className="wordmark" href="/">caper</a>
+        <AccountNav />
       </header>
       <section className="call-room">
         <aside className="people-panel">

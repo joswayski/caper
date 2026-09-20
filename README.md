@@ -54,7 +54,8 @@ and join without an account or profile. Set `MEDIA_ENABLED=true` and the four
 server-only Cloudflare variables in `.env.example` in the API environment to
 enable calls. No database is required; leave database URLs unset for local voice
 testing. The account API supports email sign-in codes when its database, SES, and
-`AUTH_SECRET` settings are configured; web and desktop login screens are not wired
-up yet. Guest names remain unverified and are not reserved.
+`AUTH_SECRET` settings are configured. The website supports email-code sign-in and
+required username/display-name onboarding; desktop login is not wired up yet.
+Guest names remain unverified and are not reserved.
 See the [media runbook](docs/media.md) for provider configuration, deployment,
 privacy guidance, and the validation matrix.
