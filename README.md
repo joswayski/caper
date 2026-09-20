@@ -34,6 +34,12 @@ short-lived credentials. Keep it running in the foreground so restarting the
 stack refreshes expiring SSO credentials, and stop it with Ctrl-C. Populate `.env`
 from `.env.example` only when using the fallback; at minimum it needs `AUTH_SECRET`.
 
+Compose also starts disposable local Valkey for shared call state; no AWS cache
+is needed for staging. Its port is not published to the host. API restarts keep
+the state while Valkey stays running; restarting Valkey clears active calls.
+Leave `VALKEY_URL` unset in `.env` and `staging/apps/caper` to use this default.
+See [local shared-state testing](docs/media.md#local-compose-shared-state-testing).
+
 Inspect which keys come from Secrets Manager, differ from `.env`, or are missing
 without printing any values:
 

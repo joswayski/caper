@@ -125,6 +125,42 @@ Record actual notification/reconnect latency, multi-network/TURN, sustained voic
 and physical-device results separately. None of those live-media checks is proven
 by the shared-store tests or by HTTP readiness.
 
+### Local Compose shared-state testing
+
+`npm run dev` starts Valkey 8.1 alongside the API, web, gateway and Postgres.
+The API waits for Valkey's health check and defaults to `redis://valkey:6379`.
+Only Compose sets the process-only `VALKEY_ALLOW_INSECURE=true` opt-in, which
+allows plaintext to the exact service hostname `valkey`, not arbitrary hosts.
+Production still requires authenticated TLS; this flag never disables certificate
+verification. No Valkey port is published to the host and no AWS cache is needed.
+Leave `VALKEY_URL` absent from `staging/apps/caper` and unset/empty in `.env` to use
+local Valkey; a Secrets Manager URL still takes precedence over Compose's default.
+
+From the repository root, with Docker running and the staging AWS profile logged in:
+
+```bash
+npm run dev -- --scale api=2
+```
+
+In another terminal:
+
+```bash
+docker compose -f compose.staging.yaml exec valkey valkey-cli ping
+docker compose -f compose.staging.yaml ps
+docker compose -f compose.staging.yaml restart api
+```
+
+Expect `PONG` and two API containers. The last command replaces API processes
+while keeping Valkey alive; it is not a Kubernetes rolling rollout. Voice testing
+still requires `MEDIA_ENABLED=true` and staging Cloudflare credentials. Check
+join/mute/leave in two browsers, then verify sessions survive the API restart.
+Two replicas alone do not prove that two particular clients hit different replicas.
+
+Valkey is deliberately disposable: disk snapshots and append-only persistence are
+disabled. Restarting Valkey clears active calls; restarting only the API does not.
+Stop the stack with Ctrl-C. `docker compose -f compose.staging.yaml down` removes
+containers; do not add `--volumes` unless you also want to delete local Postgres data.
+
 ## Provisioned resources and configuration
 
 On September 6, 2026, the owner authorized Cloudflare provisioning. Created in
@@ -142,7 +178,8 @@ Keep this temporary test separate from any future production app/key.
 | --- | --- |
 | `APP_SECRET_ID` | Optional AWS Secrets Manager JSON record loaded by the API before other configuration. Application settings in this record take precedence over process environment fallback. AWS credentials, region, and this secret ID remain bootstrap settings outside the record. |
 | `MEDIA_ENABLED` | `true` enables voice; absent/false disables it |
-| `VALKEY_URL` | API-only shared live call state. Empty uses single-process development mode. Hosted endpoints require `rediss://username:password@host:6379` with certificate verification. Plain `redis://` is allowed only on loopback for disposable tests. Never project this into the web container. |
+| `VALKEY_URL` | API-only shared live call state. Empty uses single-process development mode outside Compose; Compose defaults to local Valkey. Hosted endpoints require `rediss://username:password@host:6379` with certificate verification. Plain `redis://` is allowed on loopback, or the Compose hostname with the explicit opt-in below. Never project this into the web container. |
+| `VALKEY_ALLOW_INSECURE` | Process-only local-development opt-in (`true` or `1`); allows the exact hostname `valkey` without TLS/password. Set by staging Compose, absent in production. Does not relax requirements for other remote hosts or disable TLS verification. |
 | `CF_SFU_APP_ID` | SFU app ID, not account ID |
 | `CF_SFU_APP_SECRET` | SFU secret, server-only |
 | `CF_TURN_KEY_ID` | TURN key ID |

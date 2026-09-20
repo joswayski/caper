@@ -49,6 +49,19 @@ fn unavailable() -> ApiError {
     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "media state unavailable")
 }
 
+fn validate_url(url: &str, allow_insecure: bool) -> Result<(), ApiError> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| unavailable())?;
+    let local = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+        || (allow_insecure && parsed.host_str() == Some("valkey"));
+    if !matches!(parsed.scheme(), "redis" | "rediss")
+        || (!local && (parsed.scheme() != "rediss" || parsed.password().is_none()))
+        || parsed.fragment().is_some()
+    {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+
 pub(super) struct ValkeyStore {
     client: redis::Client,
     reads: Mutex<MultiplexedConnection>,
@@ -70,14 +83,12 @@ impl Drop for ValkeyStore {
 
 impl ValkeyStore {
     async fn connect(url: &str, key: &str) -> Result<(Arc<Self>, PubSub), ApiError> {
-        let parsed = reqwest::Url::parse(url).map_err(|_| unavailable())?;
-        let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-        if !matches!(parsed.scheme(), "redis" | "rediss")
-            || (!loopback && (parsed.scheme() != "rediss" || parsed.password().is_none()))
-            || parsed.fragment().is_some()
-        {
-            return Err(unavailable());
-        }
+        // Process-only opt-in, matching DATABASE_ALLOW_INSECURE: a hosted secret
+        // cannot disable transport requirements. Only the Compose hostname qualifies.
+        let allow_insecure = std::env::var("VALKEY_ALLOW_INSECURE")
+            .ok()
+            .is_some_and(|value| value == "true" || value == "1");
+        validate_url(url, allow_insecure)?;
         let client = redis::Client::open(url).map_err(|_| unavailable())?;
         let reads = client
             .get_multiplexed_async_connection()
@@ -376,5 +387,29 @@ impl AppState {
             self.events.send_replace(());
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plaintext_compose_requires_opt_in_without_weakening_hosted_urls() {
+        for (url, without_opt_in, with_opt_in) in [
+            ("redis://valkey:6379", false, true),
+            ("redis://localhost:6379", true, true),
+            ("redis://127.0.0.1:6379", true, true),
+            ("redis://[::1]:6379", true, true),
+            ("redis://valkey.example:6379", false, false),
+            ("redis://user:password@cache.example:6379", false, false),
+            ("rediss://cache.example:6379", false, false),
+            ("rediss://user:password@cache.example:6379", true, true),
+            ("redis://valkey:6379#fragment", false, false),
+            ("https://valkey:6379", false, false),
+        ] {
+            assert_eq!(validate_url(url, false).is_ok(), without_opt_in, "{url}");
+            assert_eq!(validate_url(url, true).is_ok(), with_opt_in, "{url}");
+        }
     }
 }
