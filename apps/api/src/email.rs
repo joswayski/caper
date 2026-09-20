@@ -1,3 +1,4 @@
+use crate::RuntimeEnvironment;
 use async_trait::async_trait;
 use aws_sdk_sesv2::{
     Client,
@@ -16,16 +17,18 @@ pub(crate) struct SesEmailSender {
 }
 
 impl SesEmailSender {
-    pub(crate) async fn from_env() -> Result<Self, String> {
+    pub(crate) async fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
         let get = |name| {
-            std::env::var(name)
-                .ok()
+            environment
+                .get(name)
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| format!("{name} is required when AUTH_SECRET is set"))
         };
         let from = get("SES_FROM_ADDRESS")?;
         let configuration_set = get("SES_CONFIGURATION_SET")?;
-        if std::env::var("AWS_REGION").is_err() && std::env::var("AWS_DEFAULT_REGION").is_err() {
+        if environment.get("AWS_REGION").is_none()
+            && environment.get("AWS_DEFAULT_REGION").is_none()
+        {
             return Err("AWS_REGION is required when AUTH_SECRET is set".into());
         }
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;

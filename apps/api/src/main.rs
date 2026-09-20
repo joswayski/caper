@@ -1,4 +1,6 @@
-use caper_api::{Cloudflare, Config, app, connect_database, shutdown_cleanup, spawn_cleanup};
+use caper_api::{
+    Cloudflare, Config, RuntimeEnvironment, app, connect_database, shutdown_cleanup, spawn_cleanup,
+};
 use std::{future::IntoFuture, sync::Arc, time::Duration};
 
 // Leave 20 seconds for provider cleanup and a margin inside Kubernetes' 60s grace.
@@ -8,9 +10,19 @@ mod telemetry;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    let telemetry = telemetry::init();
+    let environment = match RuntimeEnvironment::load().await {
+        Ok(environment) => environment,
+        Err(error) => {
+            eprintln!("API configuration failed: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let telemetry = telemetry::init(&environment);
+    if environment.secret_loaded() {
+        tracing::info!("application settings loaded from Secrets Manager");
+    }
     tracing::info!(event_name = "service_starting", "media API starting");
-    let result = run().await;
+    let result = run(&environment).await;
     if let Err(error) = &result {
         tracing::error!(
             event_name = "service_failed",
@@ -29,19 +41,19 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run() -> Result<(), String> {
+async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some("--migrate"), None) => return caper_api::migrate_database().await,
         (None, None) => {}
         _ => return Err("usage: caper-api [--migrate]".into()),
     }
-    let config = Config::from_env()?;
+    let config = Config::from_env(environment)?;
     let bind = config.bind;
     let database = connect_database().await?;
     let mut state =
         caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
-    state.enable_accounts_from_env().await?;
+    state.enable_accounts_from_env(environment).await?;
     spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await

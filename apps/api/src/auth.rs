@@ -1,4 +1,4 @@
-use crate::{ApiError, accounts, email};
+use crate::{ApiError, RuntimeEnvironment, accounts, email};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
@@ -58,9 +58,9 @@ impl AuthVerifier {
         }
     }
 
-    pub async fn from_env() -> Result<Self, String> {
-        let Some(secret) = std::env::var("AUTH_SECRET")
-            .ok()
+    pub async fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
+        let Some(secret) = environment
+            .get("AUTH_SECRET")
             .filter(|value| !value.trim().is_empty())
         else {
             tracing::info!("AUTH_SECRET unset; account login remains disabled");
@@ -69,7 +69,7 @@ impl AuthVerifier {
         if secret.len() < 32 {
             return Err("AUTH_SECRET must contain at least 32 bytes".into());
         }
-        let sender = email::SesEmailSender::from_env().await?;
+        let sender = email::SesEmailSender::from_env(environment).await?;
         Ok(Self {
             enabled: Some(EnabledAuth {
                 secret: Arc::from(secret.into_bytes()),

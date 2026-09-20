@@ -38,8 +38,10 @@ pub mod accounts;
 mod auth;
 mod db;
 mod email;
+mod environment;
 
 pub use db::{connect_database, migrate_database};
+pub use environment::RuntimeEnvironment;
 
 #[derive(Clone)]
 pub struct Config {
@@ -55,13 +57,16 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, String> {
-        let enabled = std::env::var("MEDIA_ENABLED").is_ok_and(|v| v == "true" || v == "1");
-        let get = |key| std::env::var(key).ok().filter(|v| !v.trim().is_empty());
+    pub fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
+        let enabled = environment
+            .get("MEDIA_ENABLED")
+            .is_some_and(|v| v == "true" || v == "1");
+        let get = |key| environment.get(key).filter(|v| !v.trim().is_empty());
         let config = Self {
             enabled,
-            bind: std::env::var("MEDIA_BIND")
-                .unwrap_or_else(|_| "0.0.0.0:3001".into())
+            bind: environment
+                .get("MEDIA_BIND")
+                .unwrap_or_else(|| "0.0.0.0:3001".into())
                 .parse()
                 .map_err(|_| "MEDIA_BIND must be a socket address")?,
             app_id: get("CF_SFU_APP_ID"),
@@ -614,8 +619,11 @@ impl AppState {
         self.database.as_ref()
     }
 
-    pub async fn enable_accounts_from_env(&mut self) -> Result<(), String> {
-        self.auth = auth::AuthVerifier::from_env().await?;
+    pub async fn enable_accounts_from_env(
+        &mut self,
+        environment: &RuntimeEnvironment,
+    ) -> Result<(), String> {
+        self.auth = auth::AuthVerifier::from_env(environment).await?;
         Ok(())
     }
 }

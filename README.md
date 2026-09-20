@@ -24,20 +24,20 @@ npm run dev:web
 ```
 
 Local staging runs the complete app through Docker Compose. It uses the regular
-`staging` AWS profile, tries `staging/apps/caper` in Secrets Manager first, and
-falls back to the ignored repository `.env` when that record is unavailable.
-PostgreSQL URLs and roles are owned by Compose; no environment exports are needed.
+`staging` AWS profile and passes only its temporary credentials into the API
+container. The Rust API reads `staging/apps/caper` from Secrets Manager and falls
+back to the ignored repository `.env` when that record is unavailable. PostgreSQL
+URLs and roles are owned by Compose; no environment exports are needed.
 
 ```bash
 aws sso login --profile staging
 npm run staging
 ```
 
-Open `http://localhost:3000/login`. The launcher passes short-lived credentials
-from the admin profile to the API container for staging SES; it never prints or
-writes them. Keep it running in the foreground so restarting the stack refreshes
-expiring SSO credentials, and stop it with Ctrl-C. Populate `.env` from
-`.env.example` only when using the fallback; at minimum it needs `AUTH_SECRET`.
+Open `http://localhost:3000/login`. The helper never prints or writes the
+short-lived credentials. Keep it running in the foreground so restarting the
+stack refreshes expiring SSO credentials, and stop it with Ctrl-C. Populate `.env`
+from `.env.example` only when using the fallback; at minimum it needs `AUTH_SECRET`.
 
 Run the desktop shell with:
 
