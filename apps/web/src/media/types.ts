@@ -40,6 +40,22 @@ export interface RemoteMedia {
   stream: MediaStream;
 }
 
+export interface ConnectionDiagnostics {
+  join: string;
+  microphoneSessionMs: number;
+  signalingMs: number;
+  transportMs: number;
+  rosterMs: number;
+  receivedBytes: number;
+  sentBytes: number;
+  receiveBitrate: number;
+  sendBitrate: number;
+  packetsLost: number;
+  maxJitterMs: number;
+  roundTripMs: number;
+  route: "relay" | "direct" | "unknown";
+}
+
 export interface CallViewState {
   phase: CallPhase;
   muted: boolean;
@@ -54,7 +70,7 @@ export interface CallViewState {
   participants: Participant[];
   remoteMedia: RemoteMedia[];
   error?: string;
-  diagnostics?: string;
+  diagnostics?: ConnectionDiagnostics;
   noiseSuppression?: NoiseSuppression;
   audioSetup?: AudioSetup;
   noiseSuppressionStatus?: string;

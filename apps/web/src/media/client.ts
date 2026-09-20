@@ -7,6 +7,7 @@ import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
 export { waitFor } from "./rtc.ts";
 import type {
   CallSnapshot,
+  ConnectionDiagnostics,
   CallViewState,
   JoinResponse,
   MediaKind,
@@ -75,13 +76,14 @@ export class PublicCallClient {
   private events?: CallEvents;
   private microphoneDeviceId?: string;
   private statsTimer?: number;
-  private diagnostics = "";
+  private diagnostics?: ConnectionDiagnostics;
+  private previousStats?: { received: number; sent: number; sampledAt: number };
   private noiseSuppression: NoiseSuppression = "dpdfnet8";
   private audioSetup: AudioSetup = "headphones";
   private microphoneStatus?: string;
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
-  private joinTiming = "";
+  private joinTiming?: Omit<ConnectionDiagnostics, "receivedBytes" | "sentBytes" | "receiveBitrate" | "sendBitrate" | "packetsLost" | "maxJitterMs" | "roundTripMs" | "route">;
   private readonly noiseAssets = new NoiseAssets();
   private readonly dpdfnet = new DpdfnetPreparation();
 
@@ -244,7 +246,13 @@ export class PublicCallClient {
     this.phase = "connected";
     // Monitoring has already detached the public sender; only its private return uses audio.
     microphone.enabled = this.monitoring || !this.muted;
-    this.joinTiming = `${label} in ${(performance.now() - started).toFixed(0)} ms · microphone + session ${(prepared - started).toFixed(0)} ms · signaling + live updates ${(signaled - prepared).toFixed(0)} ms · transport + state ${(connected - signaled).toFixed(0)} ms · roster ${(performance.now() - connected).toFixed(0)} ms`;
+    this.joinTiming = {
+      join: `${label} in ${(performance.now() - started).toFixed(0)} ms`,
+      microphoneSessionMs: prepared - started,
+      signalingMs: signaled - prepared,
+      transportMs: connected - signaled,
+      rosterMs: performance.now() - connected,
+    };
     this.emit();
     this.startPolling();
   }
@@ -618,6 +626,7 @@ export class PublicCallClient {
     const generation = this.generation;
     if (this.pollAgain) void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
     this.pollTimer = window.setInterval(() => void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); }), 15_000);
+    void this.readStats();
     this.statsTimer = window.setInterval(() => void this.readStats(), 1_000);
   }
 
@@ -640,7 +649,23 @@ export class PublicCallClient {
           relay ||= report.get(stat.localCandidateId)?.candidateType === "relay";
         }
       });
-      this.diagnostics = `${this.joinTiming} · This connection: ${(received / 1e6).toFixed(2)} MB received · ${(sent / 1e6).toFixed(2)} MB sent · ${lost} packets lost · ${(jitter * 1000).toFixed(0)} ms max jitter · ${(rtt * 1000).toFixed(0)} ms RTT · ${relay ? "TURN relay" : "direct / relay not observed"}`;
+      const sampledAt = performance.now();
+      const elapsed = sampledAt - (this.previousStats?.sampledAt ?? sampledAt);
+      const receiveBitrate = elapsed > 0 ? Math.max(0, (received - (this.previousStats?.received ?? received)) * 8_000 / elapsed) : 0;
+      const sendBitrate = elapsed > 0 ? Math.max(0, (sent - (this.previousStats?.sent ?? sent)) * 8_000 / elapsed) : 0;
+      this.previousStats = { received, sent, sampledAt };
+      if (!this.joinTiming) return;
+      this.diagnostics = {
+        ...this.joinTiming,
+        receivedBytes: received,
+        sentBytes: sent,
+        receiveBitrate,
+        sendBitrate,
+        packetsLost: lost,
+        maxJitterMs: jitter * 1_000,
+        roundTripMs: rtt * 1_000,
+        route: relay ? "relay" : rtt > 0 ? "direct" : "unknown",
+      };
       this.emit();
     } catch { /* Stats support varies; diagnostics must never interrupt media. */ }
   }
@@ -790,8 +815,9 @@ export class PublicCallClient {
     for (const capture of this.captures.values()) capture.stop();
     this.captures.clear();
     window.clearInterval(this.statsTimer);
-    this.diagnostics = "";
-    this.joinTiming = "";
+    this.diagnostics = undefined;
+    this.previousStats = undefined;
+    this.joinTiming = undefined;
     this.microphoneStatus = undefined;
     this.stopReceivedMonitor();
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());
