@@ -37,6 +37,7 @@ const BODY_LIMIT: usize = 256 * 1024;
 pub mod accounts;
 mod auth;
 mod db;
+mod email;
 
 pub use db::{connect_database, migrate_database};
 
@@ -612,6 +613,11 @@ impl AppState {
     pub fn database(&self) -> Option<&PgPool> {
         self.database.as_ref()
     }
+
+    pub async fn enable_accounts_from_env(&mut self) -> Result<(), String> {
+        self.auth = auth::AuthVerifier::from_env().await?;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -738,10 +744,14 @@ pub fn app(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/account/me", get(account_me))
         .route("/api/account/profile", post(account_profile))
+        .route("/api/auth/logout", post(auth_logout))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             account_auth,
         ));
+    let account_login = Router::new()
+        .route("/api/auth/email/request", post(auth_email_request))
+        .route("/api/auth/email/verify", post(auth_email_verify));
     let media = Router::new()
         .route("/api/media/status", get(status))
         .route("/api/media/join", post(join))
@@ -756,6 +766,7 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
+        .merge(account_login)
         .merge(protected)
         .merge(media)
         .layer(DefaultBodyLimit::disable())
@@ -814,7 +825,8 @@ async fn account_auth(
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .or_else(|| session_cookie(request.headers()));
     #[cfg(test)]
     let token = if state.auth.is_test_bypass() {
         token.or(Some("test-fixture"))
@@ -830,6 +842,109 @@ async fn account_auth(
         .await?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
+}
+
+fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("cookie")?
+        .to_str()
+        .ok()?
+        .split(';')
+        .map(str::trim)
+        .find_map(|cookie| cookie.strip_prefix("caper_session="))
+        .filter(|token| !token.is_empty())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmailRequestInput {
+    email: String,
+}
+
+async fn auth_email_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<EmailRequestInput>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ip = headers
+        .get("cf-connecting-ip")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    let challenge_id = state
+        .auth
+        .request_code(state.database.as_ref(), &input.email, ip)
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"challengeId": challenge_id})),
+    ))
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum TokenTransport {
+    Cookie,
+    Bearer,
+}
+
+fn cookie_transport() -> TokenTransport {
+    TokenTransport::Cookie
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EmailVerifyInput {
+    challenge_id: Uuid,
+    code: String,
+    #[serde(default = "cookie_transport")]
+    token_transport: TokenTransport,
+}
+
+async fn auth_email_verify(
+    State(state): State<AppState>,
+    Json(input): Json<EmailVerifyInput>,
+) -> Result<Response, ApiError> {
+    let session = state
+        .auth
+        .verify_code(state.database.as_ref(), input.challenge_id, &input.code)
+        .await?;
+    let mut response = match input.token_transport {
+        TokenTransport::Cookie => Json(json!({"account": session.user.public()})).into_response(),
+        TokenTransport::Bearer => {
+            Json(json!({"account": session.user.public(), "token": session.token})).into_response()
+        }
+    };
+    if matches!(input.token_transport, TokenTransport::Cookie) {
+        response.headers_mut().insert(
+            "set-cookie",
+            format!(
+                "caper_session={}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax",
+                session.token
+            )
+            .parse()
+            .expect("session token makes a valid cookie"),
+        );
+    }
+    Ok(response)
+}
+
+async fn auth_logout(
+    State(state): State<AppState>,
+    Extension(principal): Extension<auth::Principal>,
+) -> Result<Response, ApiError> {
+    state
+        .auth
+        .logout(state.database.as_ref(), &principal.token_hash)
+        .await?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response.headers_mut().insert(
+        "set-cookie",
+        axum::http::HeaderValue::from_static(
+            "caper_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+        ),
+    );
+    Ok(response)
 }
 
 async fn account_me(Extension(principal): Extension<auth::Principal>) -> Json<Value> {

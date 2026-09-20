@@ -7,21 +7,29 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait = "0.1"
+aws-config = "=1.8.14"
+aws-sdk-sesv2 = "=1.120.0"
 axum = "0.8"
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+email_address = "0.2"
 futures-util = "0.3"
+hmac = "0.12"
 opentelemetry = { version = "0.32", default-features = false, features = ["logs"] }
 opentelemetry-appender-tracing = { version = "0.32", default-features = false, features = ["experimental_span_attributes"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client", "reqwest-rustls"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["logs"] }
+rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls-ring-webpki",
     "postgres",
     "chrono",
+    "uuid",
     "migrate",
     "macros",
 ] }

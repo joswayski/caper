@@ -61,6 +61,10 @@ Keep this temporary test separate from any future production app/key.
 | `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
 | `DATABASE_URL` | API-only runtime URL: pooled port `6432`, database `/caperchat`, restricted app role, verified TLS. Missing configuration fails account/media access closed. |
 | `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Neither DB secret belongs in WEB. |
+| `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
+| `AWS_REGION` | SES region; production and staging use `us-east-1` |
+| `SES_FROM_ADDRESS` | Verified Caper sender, including the friendly name |
+| `SES_CONFIGURATION_SET` | Required SES transactional configuration set |
 
 Use `.env.example`; Rust does not auto-load dotenv files. Export a private env
 file before `cargo run -p caper-api`. Run the independent web process with
@@ -966,7 +970,7 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
   stop the supervised media service for the orb). Revoke the temporary SFU app
   and TURN key after testing. The website can remain up.
 
-## Accounts (currently unavailable)
+## Accounts
 
 The temporary `/live` demo is public again. The browser uses `unique-names-generator`
 to assign a readable color-and-animal name for each visit and keeps it through reconnects. No account,
@@ -974,9 +978,10 @@ profile, or database is needed for voice. The API accepts names of 1–40 Unicod
 characters after trimming, with no control characters. Names are unverified,
 nonunique, and not reserved. Country flags use the API-provided Cloudflare country
 code; no flag is invented when location is unavailable. Account
-sign-up, sign-in, and profiles remain unavailable. Login/profile pages point to
-the guest demo. The Rust API still rejects production account credentials with
-503; account authentication is not applied to media routes.
+sign-up and sign-in UI remains unavailable; login/profile pages still point to the
+guest demo. The Rust account API is implemented but remains disabled until
+`AUTH_SECRET`, the database URLs, and SES settings are configured. Account
+authentication is not yet applied to media routes.
 
 `MEDIA_ENABLED=true` and all four Cloudflare credentials remain required. Existing
 12-participant capacity, global join and per-participant operation limits,
@@ -1017,10 +1022,18 @@ The table keeps only primary-key, required-field and uniqueness constraints.
 Format, length, normalization and onboarding validation live in the application,
 not SQL `CHECK` expressions.
 
-Provider middleware, callbacks, token verification, key fetching, session hooks,
-and browser forwarding have been removed. Server functions retain CSRF middleware.
+`202609190001_email_auth.sql` adds single-use email challenges and revocable
+30-day sessions. Codes expire after 10 minutes, allow five attempts, and are stored
+only as HMAC-SHA-256 values. Session tokens contain 256 random bits and only their
+SHA-256 hashes are stored. Request limits are enforced in PostgreSQL across API
+replicas: three sends per address per 15 minutes, ten per address per day, twenty
+per keyed IP hash per hour, and a 500-email global hourly budget. Throttled requests
+return an indistinguishable synthetic challenge ID and do not call SES.
+
+External-provider middleware, callbacks, token verification, key fetching, session
+hooks, and browser forwarding remain removed. Server functions retain CSRF middleware.
 The production web service owns no `/api` routes; Traefik sends same-origin
-`/api/*` requests directly to Rust. Only account routes retain unavailable auth.
+`/api/*` requests directly to Rust.
 
 ### Public API: web, desktop and mobile
 
@@ -1029,7 +1042,7 @@ directly to the existing Rust `caper-api` service. `https://caper.chat/*` serves
 the website through `caper-web`. `https://api.caper.chat` remains a direct API
 alias. No second Rust backend or native-specific gateway exists.
 
-Account endpoints remain unavailable. Media status and guest join are public;
+Media status and guest join are public;
 all subsequent media requests require the issued `x-caper-media-token` capability
 header (including SSE and private monitor joins). Tokens stay in browser memory,
 not URLs, cookies, or persistent storage. Possession authorizes that call session.
@@ -1037,24 +1050,30 @@ not URLs, cookies, or persistent storage. Possession authorizes that call sessio
 | Method | Public endpoint | Purpose |
 | --- | --- | --- |
 | GET | `/health`, `/api/health` | Unauthenticated health checks |
-| GET | `/api/account/me` | Unavailable; no account provisioning |
-| POST | `/api/account/profile` | Unavailable; no profile writes |
+| POST | `/api/auth/email/request` | Request a 6-digit, 10-minute email code; returns a challenge ID |
+| POST | `/api/auth/email/verify` | Consume a challenge and create a 30-day session |
+| POST | `/api/auth/logout` | Revoke the current session |
+| GET | `/api/account/me` | Read the authenticated public account |
+| POST | `/api/account/profile` | Set a unique username and display name |
 | GET | `/api/media/status` | Public availability flag |
 | POST | `/api/media/join` | Public guest join with `{ "name": "Guest name" }`; issues a call capability |
 | GET | `/api/media/events` | Capability-protected roster events |
 | POST | `/api/media/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Capability-protected operations; all paths under `/api/media` |
 
-Account routes return 401 without a bearer credential and 503 with one; neither
-permits account access. Guest media capabilities are not account credentials.
+Web verification defaults to an `HttpOnly`, `Secure`, `SameSite=Lax` cookie.
+Desktop and future mobile clients request `tokenTransport: "bearer"` and store the
+returned opaque token in the OS credential vault (Keychain/Keystore), never plain
+preferences or web storage. Protected routes accept either transport. Logout
+revokes the same database session for every client type. Guest media capabilities
+are not account credentials.
 
-Native account flows are not implemented. A future design must include secure
-credential storage and explicit browser/native parity before account access returns.
+Native account screens and secure-vault integration are not implemented yet.
 Arbitrary third-party browser CORS access, API keys and developer OAuth consent
 are not implemented; native/server HTTP clients do not require CORS. Browser WebRTC
 does not prove native audio support.
 
 Bigint account IDs stay internal and are never exposed in profile responses.
-Random NanoIDs provide permanent public references without revealing signup order
+Random 128-bit IDs provide permanent public references without revealing signup order
 or the internal sequence. Stored as `external_id` for integrations and external
 references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
@@ -1126,6 +1145,7 @@ cargo run --locked --release -p caper-api -- --migrate
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v runtime_role="$CAPER_RUNTIME_ROLE" <<'SQL'
 GRANT USAGE ON SCHEMA public TO :"runtime_role";
 GRANT SELECT, INSERT, UPDATE ON public.users TO :"runtime_role";
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.auth_email_challenges, public.account_sessions TO :"runtime_role";
 GRANT USAGE ON SEQUENCE public.users_id_seq TO :"runtime_role";
 SQL
 ```
@@ -1140,11 +1160,11 @@ flux resume kustomization production-apps -n flux-system
 flux reconcile kustomization production-apps -n flux-system --with-source
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 kubectl -n default exec deployment/caper-web -- node -e \
-  'fetch("http://caper-api:3001/api/account/me",{headers:{authorization:"Bearer unavailable-check"}}).then(r=>{console.log(r.status);if(r.status!==503)process.exit(1)})'
+  'fetch("http://caper-api:3001/api/account/me").then(r=>{console.log(r.status);if(r.status!==401)process.exit(1)})'
 ```
 
-The credential-bearing account request must return 503. These are operator
-instructions only; this change performs no production writes.
+The unauthenticated account request must return 401. These are operator instructions
+only; this change performs no production writes or SES sends.
 
 An optional operator command remains available to migrate without starting HTTP;
 it reads only the securely exported `MIGRATION_DATABASE_URL`:
@@ -1161,8 +1181,9 @@ Old images are not compatible with the rewritten schema; do not roll them back
 without an explicitly reviewed schema recovery. No production reset or deployment
 is performed by this PR.
 
-Do not activate account or media ingress merely by merging this application code.
-Authentication must be designed and implemented first.
+Do not activate account login merely by merging this application code. Add
+`AUTH_SECRET` to `production/apps/caper`, project it into the API through a reviewed
+infrastructure change, verify SES workload identity, then deploy and test the API.
 
 Database tests are explicitly ignored in the ordinary no-DB Rust suite. The CI
 `Account database (Postgres)` job runs them against disposable Postgres 17. To run
@@ -1178,8 +1199,8 @@ Orb setup installs Postgres binaries; an isolated UTF-8 cluster can be initializ
 with `/usr/lib/postgresql/15/bin/initdb -D /tmp/caper-test-pg -A trust -E UTF8` and
 run with `amp orb service start account-test-db --command '/usr/lib/postgresql/15/bin/postgres -D /tmp/caper-test-pg -h 127.0.0.1 -p 55432 -k /tmp'`.
 Local trust authentication is for the disposable loopback-only test server, not
-deployment. HTTP tests cover the unavailable production boundary and the explicit
-test-only bypass used by retained media tests.
+deployment. Database tests cover code issuance, resend throttling, session creation,
+authentication, and revocation without calling SES.
 Provider-specific staging results are obsolete. PlanetScale connectivity, physical
 desktop/mobile account access, and live authenticated SFU voice remain untested.
 Earlier media results above predate the current unavailable account boundary.

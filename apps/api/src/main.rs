@@ -39,7 +39,9 @@ async fn run() -> Result<(), String> {
     let config = Config::from_env()?;
     let bind = config.bind;
     let database = connect_database().await?;
-    let state = caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
+    let mut state =
+        caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
+    state.enable_accounts_from_env().await?;
     spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await
