@@ -90,6 +90,13 @@ fn validate_migration_options(options: &PgConnectOptions) -> Result<(), String> 
 }
 
 pub(crate) fn connect_options(url: &str) -> Result<PgConnectOptions, String> {
+    let allow_insecure = std::env::var("DATABASE_ALLOW_INSECURE")
+        .ok()
+        .is_some_and(|value| value == "true" || value == "1");
+    connect_options_with(url, allow_insecure)
+}
+
+fn connect_options_with(url: &str, allow_insecure: bool) -> Result<PgConnectOptions, String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return Err("DATABASE_URL must be a PostgreSQL URL".into());
@@ -101,7 +108,7 @@ pub(crate) fn connect_options(url: &str) -> Result<PgConnectOptions, String> {
     let mut options = PgConnectOptions::from_str(trimmed)
         .map_err(|_| "DATABASE_URL must be a PostgreSQL URL".to_string())?;
     let loopback = matches!(options.get_host(), "localhost" | "127.0.0.1" | "::1");
-    if !loopback && !matches!(options.get_ssl_mode(), PgSslMode::VerifyFull) {
+    if !loopback && !allow_insecure && !matches!(options.get_ssl_mode(), PgSslMode::VerifyFull) {
         options = options.ssl_mode(PgSslMode::VerifyFull);
     }
     Ok(options)
@@ -154,6 +161,20 @@ mod tests {
     use super::*;
     use sqlx::Executor;
     use uuid::Uuid;
+
+    #[test]
+    fn non_loopback_database_requires_verified_tls_unless_explicitly_allowed() {
+        let url = "postgres://user:password@postgres:5432/caperchat?sslmode=disable";
+
+        assert!(matches!(
+            connect_options_with(url, false).unwrap().get_ssl_mode(),
+            PgSslMode::VerifyFull
+        ));
+        assert!(matches!(
+            connect_options_with(url, true).unwrap().get_ssl_mode(),
+            PgSslMode::Disable
+        ));
+    }
 
     #[test]
     fn runtime_role_is_quoted_as_a_postgres_identifier() {
