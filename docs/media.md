@@ -1147,10 +1147,12 @@ the API-provided Cloudflare country code; no flag is invented when location is
 unavailable. The web login page sends email codes and then requires a unique
 username and display name. Account login is enabled when `AUTH_SECRET`, the database
 URLs, and SES settings are configured. Desktop/native account screens remain future work.
-Each code is six uppercase `A-Z0-9` characters, expires after 10 minutes, and has
-three attempts by default. A replacement code consumes the prior active code for
-that email. Request limits default to 3/email/15 minutes, 5/email/day, 10/IP/hour,
-and 500 globally/hour; all are configurable through the application secret.
+Each code is six uppercase characters from `ABCDEFGHJKMNPQRSTWXYZ23456789`,
+excluding visually ambiguous `0/O`, `1/I/L`, and `U/V`. Codes expire after 10
+minutes and have three attempts by default. A replacement code consumes the prior
+active code for that email. Request limits default to 3/email/15 minutes,
+5/email/day, 10/IP/hour, and 500 globally/hour; all are configurable through the
+application secret.
 
 ### Notifications webhook
 

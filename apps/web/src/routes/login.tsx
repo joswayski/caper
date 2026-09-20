@@ -78,7 +78,7 @@ function Login() {
         <p>Enter the six-character code sent to <strong>{email.trim()}</strong>. It expires in 10 minutes.</p>
         <form onSubmit={(event) => void verifyCode(event)}>
           <label htmlFor="code">Sign-in code</label>
-          <input id="code" name="code" value={code} onChange={(event) => setCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))} autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} pattern="[A-Z0-9]{6}" maxLength={6} disabled={attemptsRemaining === 0} required autoFocus />
+          <input id="code" name="code" value={code} onChange={(event) => setCode(event.target.value.toUpperCase().replace(/[^A-HJKMNPQRSTWXYZ2-9]/g, "").slice(0, 6))} autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} pattern="[A-HJKMNPQRSTWXYZ2-9]{6}" maxLength={6} disabled={attemptsRemaining === 0} required autoFocus />
           {error && <p className="account-error" role="alert">{error}</p>}
           {attemptsRemaining === 1 && <p className="account-warning" role="status">One attempt left. Check the code carefully.</p>}
           {attemptsRemaining === 0

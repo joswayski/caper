@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 const CODE_LIFETIME: Duration = Duration::minutes(10);
 const SESSION_LIFETIME: Duration = Duration::days(30);
-const CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+// Excludes visually ambiguous characters: 0/O, 1/I/L, and U/V.
+const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTWXYZ23456789";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -274,11 +275,7 @@ impl AuthVerifier {
     ) -> Result<VerifiedSession, ApiError> {
         let auth = self.enabled()?;
         let pool = pool.ok_or_else(unavailable)?;
-        if code.len() != 6
-            || !code
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-        {
+        if code.len() != 6 || !code.bytes().all(|byte| CODE_ALPHABET.contains(&byte)) {
             return Err(invalid_code(None));
         }
         let mut transaction = pool.begin().await.map_err(database_unavailable)?;
@@ -548,14 +545,11 @@ mod tests {
     }
 
     #[test]
-    fn generated_codes_are_six_uppercase_letters_or_digits() {
+    fn generated_codes_use_only_unambiguous_characters() {
         for _ in 0..100 {
             let code = random_code();
             assert_eq!(code.len(), 6);
-            assert!(
-                code.bytes()
-                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-            );
+            assert!(code.bytes().all(|byte| CODE_ALPHABET.contains(&byte)));
         }
     }
 
