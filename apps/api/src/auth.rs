@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 const CODE_LIFETIME: Duration = Duration::minutes(10);
 const SESSION_LIFETIME: Duration = Duration::days(30);
-const CODE_ATTEMPTS: i16 = 5;
+const CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -26,6 +26,40 @@ pub(crate) struct AuthVerifier {
 struct EnabledAuth {
     secret: Arc<[u8]>,
     sender: Arc<dyn email::EmailSender>,
+    limits: AuthLimits,
+}
+
+#[derive(Clone, Copy)]
+struct AuthLimits {
+    code_attempts: i16,
+    email_15m: i64,
+    email_daily: i64,
+    ip_hourly: i64,
+    global_hourly: i64,
+}
+
+impl AuthLimits {
+    fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
+        Ok(Self {
+            code_attempts: parse_limit(environment, "AUTH_CODE_ATTEMPTS", 3, 10)? as i16,
+            email_15m: parse_limit(environment, "AUTH_EMAIL_15M_LIMIT", 3, 100)?,
+            email_daily: parse_limit(environment, "AUTH_EMAIL_DAILY_LIMIT", 5, 1_000)?,
+            ip_hourly: parse_limit(environment, "AUTH_IP_HOURLY_LIMIT", 10, 10_000)?,
+            global_hourly: parse_limit(environment, "AUTH_GLOBAL_HOURLY_LIMIT", 500, 1_000_000)?,
+        })
+    }
+}
+
+impl Default for AuthLimits {
+    fn default() -> Self {
+        Self {
+            code_attempts: 3,
+            email_15m: 3,
+            email_daily: 5,
+            ip_hourly: 10,
+            global_hourly: 500,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -69,11 +103,13 @@ impl AuthVerifier {
         if secret.len() < 32 {
             return Err("AUTH_SECRET must contain at least 32 bytes".into());
         }
+        let limits = AuthLimits::from_env(environment)?;
         let sender = email::SesEmailSender::from_env(environment).await?;
         Ok(Self {
             enabled: Some(EnabledAuth {
                 secret: Arc::from(secret.into_bytes()),
                 sender: Arc::new(sender),
+                limits,
             }),
             #[cfg(test)]
             bypass: false,
@@ -172,13 +208,25 @@ impl AuthVerifier {
         .map_err(database_unavailable)?;
 
         let id = Uuid::new_v4();
-        if email_recent >= 3 || email_daily >= 10 || ip_hourly >= 20 || global_hourly >= 500 {
+        if email_recent >= auth.limits.email_15m
+            || email_daily >= auth.limits.email_daily
+            || ip_hourly >= auth.limits.ip_hourly
+            || global_hourly >= auth.limits.global_hourly
+        {
             transaction.commit().await.map_err(database_unavailable)?;
             return Ok(id);
         }
 
-        let code = format!("{:06}", rand::rng().random_range(0..1_000_000_u32));
+        let code = random_code();
         let code_hash = code_hash(&auth.secret, id, &email, &code);
+        sqlx::query(
+            "UPDATE public.auth_email_challenges SET consumed_at = now()
+             WHERE email = $1 AND consumed_at IS NULL",
+        )
+        .bind(&email)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_unavailable)?;
         sqlx::query(
             "INSERT INTO public.auth_email_challenges
              (id, email, code_hash, request_ip_hash, attempts_remaining, expires_at)
@@ -188,7 +236,7 @@ impl AuthVerifier {
         .bind(&email)
         .bind(code_hash)
         .bind(ip_hash)
-        .bind(CODE_ATTEMPTS)
+        .bind(auth.limits.code_attempts)
         .bind(Utc::now() + CODE_LIFETIME)
         .execute(&mut *transaction)
         .await
@@ -215,8 +263,12 @@ impl AuthVerifier {
     ) -> Result<VerifiedSession, ApiError> {
         let auth = self.enabled()?;
         let pool = pool.ok_or_else(unavailable)?;
-        if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(invalid_code());
+        if code.len() != 6
+            || !code
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        {
+            return Err(invalid_code(None));
         }
         let mut transaction = pool.begin().await.map_err(database_unavailable)?;
         let challenge: Option<Challenge> = sqlx::query_as(
@@ -228,26 +280,31 @@ impl AuthVerifier {
         .await
         .map_err(database_unavailable)?;
         let Some(challenge) = challenge else {
-            return Err(invalid_code());
+            return Err(invalid_code(None));
         };
+        if challenge.consumed_at.is_some()
+            || challenge.expires_at <= Utc::now()
+            || challenge.attempts_remaining <= 0
+        {
+            transaction.commit().await.map_err(database_unavailable)?;
+            return Err(invalid_code(Some(0)));
+        }
         let expected = code_hash(&auth.secret, challenge_id, &challenge.email, code);
-        let valid = challenge.consumed_at.is_none()
-            && challenge.expires_at > Utc::now()
-            && challenge.attempts_remaining > 0
-            && bool::from(challenge.code_hash.ct_eq(&expected));
-        if !valid {
+        if !bool::from(challenge.code_hash.ct_eq(&expected)) {
+            let attempts_remaining = challenge.attempts_remaining - 1;
             sqlx::query(
                 "UPDATE public.auth_email_challenges
-                 SET attempts_remaining = GREATEST(attempts_remaining - 1, 0),
-                     consumed_at = CASE WHEN attempts_remaining <= 1 THEN now() ELSE consumed_at END
-                 WHERE id = $1 AND consumed_at IS NULL",
+                 SET attempts_remaining = $2,
+                     consumed_at = CASE WHEN $2 = 0 THEN now() ELSE consumed_at END
+                 WHERE id = $1",
             )
             .bind(challenge_id)
+            .bind(attempts_remaining)
             .execute(&mut *transaction)
             .await
             .map_err(database_unavailable)?;
             transaction.commit().await.map_err(database_unavailable)?;
-            return Err(invalid_code());
+            return Err(invalid_code(Some(attempts_remaining as u8)));
         }
 
         sqlx::query("UPDATE public.auth_email_challenges SET consumed_at = now() WHERE id = $1")
@@ -271,7 +328,7 @@ impl AuthVerifier {
         .map_err(database_unavailable)?;
         let Some(user) = user else {
             transaction.commit().await.map_err(database_unavailable)?;
-            return Err(invalid_code());
+            return Err(invalid_code(None));
         };
         let token_bytes: [u8; 32] = rand::random();
         let token = URL_SAFE_NO_PAD.encode(token_bytes);
@@ -369,11 +426,48 @@ fn code_hash(secret: &[u8], id: Uuid, email: &str, code: &str) -> Vec<u8> {
     keyed_hash(secret, b"login-code", &value)
 }
 
-fn invalid_code() -> ApiError {
-    ApiError::new(
+fn random_code() -> String {
+    let mut rng = rand::rng();
+    (0..6)
+        .map(|_| CODE_ALPHABET[rng.random_range(0..CODE_ALPHABET.len())] as char)
+        .collect()
+}
+
+fn parse_limit(
+    environment: &RuntimeEnvironment,
+    name: &'static str,
+    default: i64,
+    maximum: i64,
+) -> Result<i64, String> {
+    parse_limit_value(name, environment.get(name), default, maximum)
+}
+
+fn parse_limit_value(
+    name: &'static str,
+    value: Option<String>,
+    default: i64,
+    maximum: i64,
+) -> Result<i64, String> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    let parsed = value
+        .parse::<i64>()
+        .ok()
+        .filter(|value| (1..=maximum).contains(value))
+        .ok_or_else(|| format!("{name} must be an integer between 1 and {maximum}"))?;
+    Ok(parsed)
+}
+
+fn invalid_code(attempts_remaining: Option<u8>) -> ApiError {
+    let error = ApiError::new(
         axum::http::StatusCode::UNAUTHORIZED,
         "invalid or expired code",
-    )
+    );
+    match attempts_remaining {
+        Some(attempts_remaining) => error.with_attempts_remaining(attempts_remaining),
+        None => error,
+    }
 }
 
 fn unavailable() -> ApiError {
@@ -425,6 +519,30 @@ mod tests {
         assert_ne!(hash, code_hash(secret, id, "person@example.com", "654321"));
     }
 
+    #[test]
+    fn generated_codes_are_six_uppercase_letters_or_digits() {
+        for _ in 0..100 {
+            let code = random_code();
+            assert_eq!(code.len(), 6);
+            assert!(
+                code.bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+            );
+        }
+    }
+
+    #[test]
+    fn auth_limits_use_defaults_and_reject_unsafe_values() {
+        assert_eq!(parse_limit_value("LIMIT", None, 3, 10).unwrap(), 3);
+        assert_eq!(
+            parse_limit_value("LIMIT", Some("7".into()), 3, 10).unwrap(),
+            7
+        );
+        assert!(parse_limit_value("LIMIT", Some("0".into()), 3, 10).is_err());
+        assert!(parse_limit_value("LIMIT", Some("11".into()), 3, 10).is_err());
+        assert!(parse_limit_value("LIMIT", Some("many".into()), 3, 10).is_err());
+    }
+
     #[sqlx::test(migrations = "./migrations")]
     #[ignore = "requires disposable Postgres DATABASE_URL"]
     async fn email_code_creates_revocable_session_and_throttles_resends(pool: PgPool) {
@@ -435,6 +553,7 @@ mod tests {
             enabled: Some(EnabledAuth {
                 secret: Arc::from(b"a sufficiently long test-only auth secret".as_slice()),
                 sender: sender.clone(),
+                limits: AuthLimits::default(),
             }),
             bypass: false,
         };
@@ -444,28 +563,16 @@ mod tests {
             .request_code(Some(&pool), " Person@Example.COM ", ip)
             .await
             .unwrap();
-        for _ in 0..3 {
-            verifier
-                .request_code(Some(&pool), "person@example.com", ip)
-                .await
-                .unwrap();
-        }
         let deliveries = sender.deliveries.lock().unwrap().clone();
-        assert_eq!(
-            deliveries.len(),
-            3,
-            "fourth request must be silently throttled"
-        );
         assert_eq!(deliveries[0].0, "person@example.com");
         let code = &deliveries[0].1;
-
-        if code != "000000" {
-            let wrong = verifier
-                .verify_code(Some(&pool), challenge, "000000")
-                .await
-                .unwrap_err();
-            assert_eq!(wrong.status, axum::http::StatusCode::UNAUTHORIZED);
-        }
+        let wrong_code = if code == "AAAAAA" { "BBBBBB" } else { "AAAAAA" };
+        let wrong = verifier
+            .verify_code(Some(&pool), challenge, wrong_code)
+            .await
+            .unwrap_err();
+        assert_eq!(wrong.status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(wrong.attempts_remaining, Some(2));
         let session = verifier
             .verify_code(Some(&pool), challenge, code)
             .await
@@ -488,5 +595,60 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        for _ in 0..3 {
+            verifier
+                .request_code(Some(&pool), "person@example.com", ip)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            sender.deliveries.lock().unwrap().len(),
+            3,
+            "the fourth request in 15 minutes must be silently throttled"
+        );
+
+        let exhausted = verifier
+            .request_code(Some(&pool), "attempts@example.com", ip)
+            .await
+            .unwrap();
+        let exhausted_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
+        let incorrect = if exhausted_code == "AAAAAA" {
+            "BBBBBB"
+        } else {
+            "AAAAAA"
+        };
+        for expected in [2, 1, 0] {
+            let error = verifier
+                .verify_code(Some(&pool), exhausted, incorrect)
+                .await
+                .unwrap_err();
+            assert_eq!(error.attempts_remaining, Some(expected));
+        }
+        let consumed = verifier
+            .verify_code(Some(&pool), exhausted, &exhausted_code)
+            .await
+            .unwrap_err();
+        assert_eq!(consumed.attempts_remaining, Some(0));
+
+        let old = verifier
+            .request_code(Some(&pool), "replacement@example.com", ip)
+            .await
+            .unwrap();
+        let old_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
+        let replacement = verifier
+            .request_code(Some(&pool), "replacement@example.com", ip)
+            .await
+            .unwrap();
+        let replacement_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
+        let superseded = verifier
+            .verify_code(Some(&pool), old, &old_code)
+            .await
+            .unwrap_err();
+        assert_eq!(superseded.attempts_remaining, Some(0));
+        verifier
+            .verify_code(Some(&pool), replacement, &replacement_code)
+            .await
+            .unwrap();
     }
 }

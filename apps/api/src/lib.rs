@@ -704,6 +704,7 @@ struct ApiError {
     status: StatusCode,
     message: &'static str,
     error_id: Option<Uuid>,
+    attempts_remaining: Option<u8>,
 }
 impl ApiError {
     fn new(status: StatusCode, message: &'static str) -> Self {
@@ -711,12 +712,24 @@ impl ApiError {
             status,
             message,
             error_id: None,
+            attempts_remaining: None,
         }
+    }
+
+    fn with_attempts_remaining(mut self, attempts_remaining: u8) -> Self {
+        self.attempts_remaining = Some(attempts_remaining);
+        self
     }
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let mut response = (self.status, Json(json!({"error":self.message}))).into_response();
+        let body = match self.attempts_remaining {
+            Some(attempts_remaining) => {
+                json!({"error": self.message, "attemptsRemaining": attempts_remaining})
+            }
+            None => json!({"error": self.message}),
+        };
+        let mut response = (self.status, Json(body)).into_response();
         if let Some(id) = self.error_id {
             response
                 .headers_mut()
@@ -828,13 +841,7 @@ async fn account_auth(
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<Response, ApiError> {
-    let token = request
-        .headers()
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|value| !value.is_empty())
-        .or_else(|| session_cookie(request.headers()));
+    let token = account_token(request.headers());
     #[cfg(test)]
     let token = if state.auth.is_test_bypass() {
         token.or(Some("test-fixture"))
@@ -850,6 +857,15 @@ async fn account_auth(
         .await?;
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
+}
+
+fn account_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+        .or_else(|| session_cookie(headers))
 }
 
 fn session_cookie(headers: &HeaderMap) -> Option<&str> {
@@ -1184,8 +1200,18 @@ async fn join(
     Json(input): Json<Join>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
-    let name = input.name.as_deref().unwrap_or_default().trim();
-    if name.is_empty() || name.chars().count() > 40 || name.chars().any(char::is_control) {
+    let submitted_name = input.name.as_deref().unwrap_or_default().trim();
+    let account_name = if let Some(token) = account_token(&headers) {
+        s.auth
+            .authenticate(token, s.database.as_ref())
+            .await
+            .ok()
+            .and_then(|principal| principal.user.display_name)
+    } else {
+        None
+    };
+    let name = account_name.as_deref().unwrap_or(submitted_name).trim();
+    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
     let country_code = country_code(&headers);

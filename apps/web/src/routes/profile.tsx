@@ -49,7 +49,7 @@ function Profile() {
       <form onSubmit={(event) => void save(event)}>
         <label htmlFor="username">Username</label>
         <input id="username" name="username" value={username} onChange={(event) => setUsername(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32))} autoComplete="username" minLength={3} maxLength={32} pattern="[a-z0-9_]{3,32}" required />
-        <small>3–32 lowercase letters, numbers, or underscores.</small>
+        <small>3-32 lowercase letters, numbers, or underscores.</small>
         <label htmlFor="display-name">Display name</label>
         <input id="display-name" name="displayName" value={displayName} onChange={(event) => setDisplayName(event.target.value.slice(0, 64))} autoComplete="name" maxLength={64} required />
         <small>Shown to other people. It does not need to be unique.</small>

@@ -1,3 +1,4 @@
+use crate::RuntimeEnvironment;
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
@@ -8,9 +9,9 @@ use std::{str::FromStr, time::Duration};
 ///
 /// `DATABASE_URL` is optional so local and image checks still boot without a
 /// database. Use PlanetScale's pooled port 6432 for application queries.
-pub async fn connect_database() -> Result<Option<PgPool>, String> {
-    let Some(url) = std::env::var("DATABASE_URL")
-        .ok()
+pub async fn connect_database(environment: &RuntimeEnvironment) -> Result<Option<PgPool>, String> {
+    let Some(url) = environment
+        .get("DATABASE_URL")
         .filter(|value| !value.trim().is_empty())
     else {
         tracing::info!("DATABASE_URL unset; starting without a database");
@@ -18,27 +19,27 @@ pub async fn connect_database() -> Result<Option<PgPool>, String> {
     };
     // Validate runtime configuration before performing any schema changes.
     connect_options(&url)?;
-    migrate_database().await?;
+    migrate_database(environment).await?;
     let pool = connect(&url).await?;
     Ok(Some(pool))
 }
 
 /// Startup and explicit migration command; never falls back to the application URL.
-pub async fn migrate_database() -> Result<(), String> {
-    let url = std::env::var("MIGRATION_DATABASE_URL")
-        .ok()
+pub async fn migrate_database(environment: &RuntimeEnvironment) -> Result<(), String> {
+    let url = environment
+        .get("MIGRATION_DATABASE_URL")
         .filter(|value| !value.trim().is_empty())
         .ok_or("MIGRATION_DATABASE_URL is required to run migrations")?;
     let options =
         connect_options(&url).map_err(|_| "MIGRATION_DATABASE_URL must be a PostgreSQL URL")?;
     validate_migration_options(&options)?;
-    let runtime_role = runtime_role_from_env().await?;
+    let runtime_role = runtime_role_from_env(environment).await?;
     migrate_database_with(options, runtime_role.as_deref()).await
 }
 
-async fn runtime_role_from_env() -> Result<Option<String>, String> {
-    let Some(url) = std::env::var("DATABASE_URL")
-        .ok()
+async fn runtime_role_from_env(environment: &RuntimeEnvironment) -> Result<Option<String>, String> {
+    let Some(url) = environment
+        .get("DATABASE_URL")
         .filter(|value| !value.trim().is_empty())
     else {
         return Ok(None);
@@ -107,8 +108,9 @@ fn connect_options_with(url: &str, allow_insecure: bool) -> Result<PgConnectOpti
     }
     let mut options = PgConnectOptions::from_str(trimmed)
         .map_err(|_| "DATABASE_URL must be a PostgreSQL URL".to_string())?;
-    let loopback = matches!(options.get_host(), "localhost" | "127.0.0.1" | "::1");
-    if !loopback && !allow_insecure && !matches!(options.get_ssl_mode(), PgSslMode::VerifyFull) {
+    let local = matches!(options.get_host(), "localhost" | "127.0.0.1" | "::1")
+        || (allow_insecure && options.get_host() == "postgres");
+    if !local && !matches!(options.get_ssl_mode(), PgSslMode::VerifyFull) {
         options = options.ssl_mode(PgSslMode::VerifyFull);
     }
     Ok(options)
@@ -173,6 +175,15 @@ mod tests {
         assert!(matches!(
             connect_options_with(url, true).unwrap().get_ssl_mode(),
             PgSslMode::Disable
+        ));
+        assert!(matches!(
+            connect_options_with(
+                "postgres://user:password@hosted.example/caperchat?sslmode=disable",
+                true
+            )
+            .unwrap()
+            .get_ssl_mode(),
+            PgSslMode::VerifyFull
         ));
     }
 
