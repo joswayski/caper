@@ -1,26 +1,27 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
-import { AccountApiError, getAccount, logout, updateProfile, type Account } from "../account/client";
+import { AccountApiError, getAccount, getRememberedAccount, logout, updateProfile, type Account } from "../account/client";
 import "../pages/account.css";
 
 export const Route = createFileRoute("/profile")({ component: Profile });
 
 function Profile() {
   const navigate = useNavigate();
-  const [account, setAccount] = useState<Account>();
-  const [username, setUsername] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const [account, setAccount] = useState<Account | undefined>(() => getRememberedAccount());
+  const [username, setUsername] = useState(() => getRememberedAccount()?.username ?? "");
+  const [displayName, setDisplayName] = useState(() => getRememberedAccount()?.displayName ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    if (account) return;
     void getAccount().then((result) => {
       if (!result) return void navigate({ to: "/login", replace: true });
       setAccount(result);
       setUsername(result.username ?? "");
       setDisplayName(result.displayName ?? "");
-    }).catch(() => setError("Your account could not be loaded. Please try again."));
-  }, [navigate]);
+    }).catch(() => void navigate({ to: "/login", replace: true }));
+  }, [account, navigate]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -39,14 +40,7 @@ function Profile() {
     }
   }
 
-  if (!account) return <main className="account-page">
-    <section className="account-card" aria-busy="true">
-      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="account-dot">.</span></a>
-      <p className="account-eyebrow">ONE LAST THING</p>
-      <h1>Setting up your account…</h1>
-      <p role="status">{error ?? "Loading your account…"}</p>
-    </section>
-  </main>;
+  if (!account) return null;
 
   return <main className="account-page">
     <section className="account-card">

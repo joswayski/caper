@@ -83,7 +83,7 @@ function Login() {
           {attemptsRemaining === 1 && <p className="account-warning" role="status">One attempt left. Check the code carefully.</p>}
           {attemptsRemaining === 0
             ? <button className="account-primary" type="button" disabled={pending} onClick={() => void sendCode()}>{pending ? "Sending…" : <>Email me a new code <span aria-hidden="true">→</span></>}</button>
-            : <button className="account-primary" type="submit" disabled={pending || code.length !== 6}>{pending ? "Checking…" : <>Continue <span aria-hidden="true">→</span></>}</button>}
+            : <button className={`account-primary${pending ? " account-primary-loading" : ""}`} type="submit" disabled={pending || code.length !== 6}>{pending ? <><span className="account-spinner" aria-hidden="true" />Checking…</> : <>Continue <span aria-hidden="true">→</span></>}</button>}
           <button className="account-secondary" type="button" disabled={pending} onClick={() => { setChallengeId(undefined); setError(undefined); setAttemptsRemaining(undefined); }}>Use a different email</button>
         </form>
       </> : <>

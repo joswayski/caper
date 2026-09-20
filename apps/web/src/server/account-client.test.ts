@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AccountApiError, getAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
+import { AccountApiError, getAccount, getRememberedAccount, logout, requestEmailCode, updateProfile, verifyEmailCode } from "../account/client.ts";
 
 function mockFetch(t: test.TestContext, handler: (path: string, init?: RequestInit) => Response) {
   const original = globalThis.fetch;
@@ -21,9 +21,12 @@ test("web account client uses cookie sessions across the complete onboarding flo
 
   assert.equal((await requestEmailCode("person@example.com")).challengeId, "challenge-1");
   assert.equal((await verifyEmailCode("challenge-1", "123456")).username, null);
+  assert.equal(getRememberedAccount()!.username, null);
   assert.equal((await updateProfile("caper_user", "Caper User")).username, "caper_user");
+  assert.equal(getRememberedAccount()!.displayName, "Caper User");
   assert.equal((await getAccount())?.displayName, "Caper User");
   await logout();
+  assert.equal(getRememberedAccount(), undefined);
 
   assert.deepEqual(calls.map(([path]) => path), [
     "/api/auth/email/request",
