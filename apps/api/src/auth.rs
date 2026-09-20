@@ -255,16 +255,14 @@ impl AuthVerifier {
             .execute(&mut *transaction)
             .await
             .map_err(database_unavailable)?;
-        let external_id = Uuid::new_v4().simple().to_string();
         let user: Option<accounts::User> = sqlx::query_as(
-            "INSERT INTO public.users (external_id, email, email_verified_at)
-             VALUES ($1, $2, now())
+            "INSERT INTO public.users (email, email_verified_at)
+             VALUES ($1, now())
              ON CONFLICT (email) DO UPDATE SET
                 email_verified_at = COALESCE(users.email_verified_at, now()), updated_at = now()
              WHERE users.deleted_at IS NULL
-             RETURNING id, external_id, email, username, display_name",
+             RETURNING id, email, username, display_name",
         )
-        .bind(external_id)
         .bind(&challenge.email)
         .fetch_optional(&mut *transaction)
         .await
@@ -300,7 +298,6 @@ impl AuthVerifier {
             return Ok(Principal {
                 user: accounts::User {
                     id: 1,
-                    external_id: "V1StGXR8_Z5jdHi6B-myT".into(),
                     email: None,
                     username: Some("test".into()),
                     display_name: Some("Test User".into()),
@@ -312,7 +309,7 @@ impl AuthVerifier {
         let pool = pool.ok_or_else(unavailable)?;
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
         let user = sqlx::query_as(
-            "SELECT u.id, u.external_id, u.email, u.username, u.display_name
+            "SELECT u.id, u.email, u.username, u.display_name
              FROM public.account_sessions s
              JOIN public.users u ON u.id = s.user_id
              WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()

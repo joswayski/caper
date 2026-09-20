@@ -1,3 +1,7 @@
+-- Accounts use only the bigint identity. The earlier scaffold's unused public ID
+-- was never part of a working account flow and is removed before provisioning users.
+ALTER TABLE users DROP COLUMN external_id;
+
 CREATE TABLE auth_email_challenges (
     id uuid PRIMARY KEY,
     email text NOT NULL,
