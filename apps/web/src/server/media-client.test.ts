@@ -253,6 +253,15 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   await client.setMuted(false);
   assert.equal(Peer.latest.senders[0].track, track);
   await client.setDeafened(true);
+  assert.equal(track.enabled, false);
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(states.at(-1)?.deafened, true);
+  await client.setDeafened(false);
+  assert.equal(track.enabled, false, "undeafening leaves the microphone muted");
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(states.at(-1)?.deafened, false);
   client.leaveImmediately();
   assert.equal(track.readyState, "ended");
   assert.equal(Peer.latest.connectionState, "closed");
@@ -556,6 +565,8 @@ test("mute and deafen update local media and view state without waiting for rost
   await muting;
 
   const deafening = client.setDeafened(true);
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.muted, true);
   assert.equal(states.at(-1)?.deafened, true);
   await new Promise((resolve) => setImmediate(resolve));
   finishState();

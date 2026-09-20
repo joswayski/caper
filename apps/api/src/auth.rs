@@ -72,6 +72,7 @@ pub(crate) struct Principal {
 pub(crate) struct VerifiedSession {
     pub user: accounts::User,
     pub token: String,
+    pub user_created: bool,
 }
 
 #[derive(FromRow)]
@@ -81,6 +82,16 @@ struct Challenge {
     attempts_remaining: i16,
     expires_at: chrono::DateTime<Utc>,
     consumed_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(FromRow)]
+struct VerifiedUser {
+    id: i64,
+    external_id: String,
+    email: Option<String>,
+    username: Option<String>,
+    display_name: Option<String>,
+    created: bool,
 }
 
 impl AuthVerifier {
@@ -313,13 +324,20 @@ impl AuthVerifier {
             .await
             .map_err(database_unavailable)?;
         let external_id = Uuid::new_v4().simple().to_string();
-        let user: Option<accounts::User> = sqlx::query_as(
-            "INSERT INTO public.users (external_id, email, email_verified_at)
-             VALUES ($1, $2, now())
-             ON CONFLICT (email) DO UPDATE SET
-                email_verified_at = COALESCE(users.email_verified_at, now()), updated_at = now()
-             WHERE users.deleted_at IS NULL
-             RETURNING id, external_id, email, username, display_name",
+        let user: Option<VerifiedUser> = sqlx::query_as(
+            "WITH inserted AS (
+                INSERT INTO public.users (external_id, email, email_verified_at)
+                VALUES ($1, $2, now())
+                ON CONFLICT (email) DO NOTHING
+                RETURNING id, external_id, email, username, display_name, true AS created
+             ), existing AS (
+                UPDATE public.users SET
+                    email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
+                WHERE email = $2 AND deleted_at IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM inserted)
+                RETURNING id, external_id, email, username, display_name, false AS created
+             )
+             SELECT * FROM inserted UNION ALL SELECT * FROM existing",
         )
         .bind(external_id)
         .bind(&challenge.email)
@@ -344,7 +362,17 @@ impl AuthVerifier {
         .await
         .map_err(database_unavailable)?;
         transaction.commit().await.map_err(database_unavailable)?;
-        Ok(VerifiedSession { user, token })
+        Ok(VerifiedSession {
+            user: accounts::User {
+                id: user.id,
+                external_id: user.external_id,
+                email: user.email,
+                username: user.username,
+                display_name: user.display_name,
+            },
+            token,
+            user_created: user.created,
+        })
     }
 
     pub async fn authenticate(
@@ -577,6 +605,7 @@ mod tests {
             .verify_code(Some(&pool), challenge, code)
             .await
             .unwrap();
+        assert!(session.user_created);
         assert_eq!(session.user.email.as_deref(), Some("person@example.com"));
         assert!(session.user.username.is_none());
 

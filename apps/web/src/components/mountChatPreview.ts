@@ -25,8 +25,9 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
   const model = createChatModel(draw);
   const chat = model.group;
   const rest = { x: 0.10, y: -0.20, z: -0.035 };
-  const idle = { x: 0.018, y: 0.025, z: 0.009 };
-  const float = 0.08;
+  const idle = { x: 0.0216, y: 0.03, z: 0.0108 };
+  const float = 0.096;
+  const previewScale = 1.3;
   chat.rotation.set(rest.x, rest.y, rest.z);
   scene.add(chat);
   scene.add(new AmbientLight(0xffffff, 1.7));
@@ -237,13 +238,16 @@ export function mountChatPreview(host: HTMLElement, onReady: () => void) {
     envelope.getSize(frame);
     envelope.getCenter(center);
     const pad = 0.9;
+    // The envelope includes every idle and interactive pose, so zooming the
+    // camera keeps the larger preview inside its canvas at every breakpoint.
+    const cameraDistance = Math.max(
+      (frame.y + pad) / (2 * Math.tan(verticalFov / 2)),
+      (frame.x + pad) / (2 * Math.tan(horizontalFov / 2)),
+    ) + frame.z / 2 + 0.5;
     camera.position.set(
       center.x,
       center.y,
-      Math.max(
-        (frame.y + pad) / (2 * Math.tan(verticalFov / 2)),
-        (frame.x + pad) / (2 * Math.tan(horizontalFov / 2)),
-      ) + frame.z / 2 + 0.5,
+      center.z + cameraDistance / previewScale,
     );
     camera.updateProjectionMatrix();
     if (ready) draw();
