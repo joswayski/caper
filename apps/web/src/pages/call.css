@@ -35,10 +35,7 @@
 .join-card h1 { margin: 0; font-size: clamp(2rem, 3.5vw, 3rem); line-height: 1.08; letter-spacing: -.05em; }
 .join-card > p { color: var(--text-muted); line-height: 1.6; }
 .join-card form { display: grid; gap: 10px; margin-top: 30px; }
-.device-control { width: min(240px, 25vw); display: grid; gap: 5px; }
-.device-control span { color: var(--text-muted); font-size: .8rem; font-weight: 700; }
-.device-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
-.device-control select { width: 100%; height: 34px; padding: 0 8px; font-size: .8rem; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .volume-control { width: min(240px, 25vw); display: grid; gap: 5px; }
 .volume-control > span { display: flex; justify-content: space-between; color: var(--text-muted); font-size: .8rem; font-weight: 700; }
 .volume-control output { font-variant-numeric: tabular-nums; }
@@ -94,11 +91,20 @@
 .call-diagnostics dt { font-size: .75rem; }
 .call-diagnostics dd { margin: 0; color: var(--text); font-size: .78rem; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .call-diagnostics > p { margin: 12px 0 0; font-size: .7rem; line-height: 1.45; }
-.call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
+.call-controls { grid-column: 1 / -1; min-height: 86px; display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 15px 20px; border-top: 1px solid var(--border); background: var(--surface-raised); }
+.voice-action-group { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.voice-icon-button { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); cursor: pointer; }
+.voice-icon-button svg, .control-buttons svg { width: 19px; height: 19px; stroke-width: 2.25; }
+.voice-icon-button:hover, .voice-icon-button.active { border-color: #805143; color: #fff; background: #39231e; }
+.voice-icon-button:disabled { opacity: .5; cursor: wait; }
+.device-select { min-width: 0; }
+.device-select select { width: min(180px, 18vw); height: 40px; padding: 0 30px 0 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); font-size: .78rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.device-select select:disabled { opacity: .5; cursor: wait; }
 .control-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.control-buttons button, .stage-placeholder button { min-height: 40px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font-size: .82rem; font-weight: 750; cursor: pointer; }
+.control-buttons { margin-left: auto; }
+.control-buttons button, .stage-placeholder button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font-size: .82rem; font-weight: 750; cursor: pointer; }
 .control-buttons button:hover, .control-buttons button.active { border-color: #805143; background: #39231e; }
-.control-buttons button:disabled, .device-control select:disabled { opacity: .5; cursor: wait; }
+.control-buttons button:disabled { opacity: .5; cursor: wait; }
 .control-buttons .leave-button { border-color: var(--terracotta); color: #fff; background: var(--terracotta); }
 @media (prefers-reduced-motion: reduce) {
   .recording-clock i { animation: none; }
@@ -122,7 +128,9 @@
   .mic-meter { gap: 3px; }
   .call-diagnostics dl { grid-template-columns: 1fr; }
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
-  .device-control { width: 100%; }
+  .voice-action-group { width: 100%; }
+  .device-select { flex: 1; }
+  .device-select select { width: 100%; }
   .volume-control { width: 100%; }
-  .control-buttons { display: grid; grid-template-columns: repeat(2, 1fr); }
+  .control-buttons { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
 }
