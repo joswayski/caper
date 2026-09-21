@@ -340,6 +340,68 @@ test("pre-join mic test uses the local denoised track and releases it before joi
   assert.equal(states.at(-1)?.monitorStream, undefined);
 });
 
+test("a failed join can open a local mic test", async (t) => {
+  const { client, states, install } = setup(t);
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/publish")
+    ? Promise.resolve(Response.json({ error: "publication unavailable" }, { status: 503 }))
+    : original(url, init));
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "failed");
+
+  const testTrack = new Track();
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([testTrack]) } });
+  await client.startLocalMicTest();
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.equal(states.at(-1)?.monitorStream?.getAudioTracks()[0], testTrack);
+  client.stopLocalMicTest();
+  assert.equal(testTrack.readyState, "ended");
+});
+
+test("stopping a pending local mic test releases capture that arrives later", async (t) => {
+  const { client, states, install } = setup(t);
+  const lateTrack = new Track();
+  let finish!: () => void;
+  install("navigator", { mediaDevices: { getUserMedia: () => new Promise<Stream>((resolve) => {
+    finish = () => resolve(new Stream([lateTrack]));
+  }) } });
+
+  const starting = client.startLocalMicTest();
+  await tick();
+  client.stopLocalMicTest();
+  finish();
+  await starting;
+
+  assert.equal(lateTrack.readyState, "ended");
+  assert.equal(states.at(-1)?.monitorStream, undefined);
+});
+
+test("pre-join microphone selection is retained and can be supplied when testing", async (t) => {
+  const { client, install } = setup(t);
+  const deviceIds: Array<ConstrainDOMString | undefined> = [];
+  install("navigator", { mediaDevices: { getUserMedia: async (constraints: MediaStreamConstraints) => {
+    deviceIds.push((constraints.audio as MediaTrackConstraints).deviceId);
+    return new Stream([new Track()]);
+  } } });
+
+  await client.changeMicrophone("desk-mic");
+  await client.startLocalMicTest();
+  assert.deepEqual(deviceIds[0], { exact: "desk-mic" });
+  client.stopLocalMicTest();
+
+  await client.startLocalMicTest("headset-mic");
+  assert.deepEqual(deviceIds[1], { exact: "headset-mic" });
+  client.stopLocalMicTest();
+  await client.join();
+  assert.deepEqual(deviceIds[2], { exact: "headset-mic" }, "Join without an override keeps the pre-join selection");
+  await client.leave();
+  await client.startLocalMicTest("");
+  assert.equal(deviceIds[3], undefined, "An explicit system default clears a removed or previously selected device");
+  client.stopLocalMicTest();
+  await client.join("Guest", "");
+  assert.equal(deviceIds[4], undefined);
+});
+
 test("voice processing defaults to 25%, clamps updates, and changes the live capture", async (t) => {
   const { client, track, states } = setup(t);
   await client.join();
@@ -1011,6 +1073,75 @@ test("initial subscription negotiation completes before microphone audio is enab
   await joining;
   assert.equal(track.enabled, true);
   assert.equal(states.at(-1)?.phase, "connected");
+});
+
+test("subscription renegotiation may reconnect transport before Join enables audio", async (t) => {
+  const { client, track, states, install } = setup(t);
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
+    : original(url, init));
+  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
+    if (description.type === "offer") Peer.latest.connectionState = "connecting";
+  });
+
+  const joining = client.join();
+  await tick();
+  await tick();
+  assert.equal(Peer.latest.connectionState, "connecting");
+  assert.equal(states.at(-1)?.phase, "joining");
+  assert.equal(track.enabled, false, "renegotiating transport must remain silent");
+
+  Peer.latest.connectionState = "connected";
+  Peer.latest.dispatchEvent(new Event("connectionstatechange"));
+  await joining;
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(track.enabled, true);
+});
+
+test("leaving while subscription transport reconnects cancels Join and keeps audio closed", async (t) => {
+  const { client, track, states, install } = setup(t);
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
+    : original(url, init));
+  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
+    if (description.type === "offer") Peer.latest.connectionState = "connecting";
+  });
+
+  const joining = client.join();
+  await tick();
+  await tick();
+  assert.equal(Peer.latest.connectionState, "connecting");
+  await client.leave();
+  await joining;
+  assert.equal(states.at(-1)?.phase, "idle");
+  assert.equal(track.enabled, false);
+  assert.equal(track.readyState, "ended");
+  assert.equal(Peer.latest.connectionState, "closed");
+});
+
+test("subscription transport reconnection still times out without enabling audio", async (t) => {
+  const { client, track, states, install } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? Promise.resolve(Response.json({ participants: [{id:"other",name:"Other",muted:false,deafened:false,tracks:[{id:"remote",kind:"microphone"}]}] }))
+    : original(url, init));
+  t.mock.method(Peer.prototype, "setRemoteDescription", async (description: RTCSessionDescriptionInit) => {
+    if (description.type === "offer") Peer.latest.connectionState = "connecting";
+  });
+
+  const joining = client.join();
+  await tick();
+  await tick();
+  assert.equal(Peer.latest.connectionState, "connecting");
+  t.mock.timers.tick(12_000);
+  await joining;
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.match(states.at(-1)?.error ?? "", /Timed out waiting for connectionstatechange/);
+  assert.equal(track.enabled, false);
+  assert.equal(track.readyState, "ended");
 });
 
 test("a received participant track is exposed for that participant's speaking indicator", async (t) => {

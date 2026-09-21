@@ -10,6 +10,18 @@ An independently enabled [public text demo](#public-text-demo) shares the page;
 reading and sending messages do not require an account or joining voice.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
+Input/output device lists open directly beside the profile's microphone/headphone
+controls; input gain lives in Settings. Output volume in the headphone menu scales
+received audio alongside each person's volume and also controls mic-test playback.
+Settings opens mic test and connection details
+in dialogs without moving the message list. Close or Escape cancels a test,
+releases pre-join capture, or restores the active call's previous mute/deafen state.
+`node scripts/test-voice-controls.mjs http://localhost:5174` checks these flows,
+typing animation/reduced motion, and desktop/narrow layout against a local Vite
+server with synthetic audio and mocked HTTP/WebSocket/WebRTC. It is not live SFU
+or physical-device validation. Client tests also cover transport returning to
+`connecting` during startup subscription negotiation: Join waits for it to be
+connected again, with the existing timeout/cancellation and audio-readiness gates.
 The Rust API replaces a signed-in participant's submitted name
 with the account display name. Guest names can collide and are not verified or
 reserved; participant IDs, not names, distinguish people. With `VALKEY_URL` configured,
