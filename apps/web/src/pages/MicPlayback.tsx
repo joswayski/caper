@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import Slider from "../components/Slider";
 import { createVoiceComparison, MAX_RECORDING_SECONDS, recordReceivedAudio, type ReceivedRecording } from "../media/recording";
 
-const INPUT_METER_SEGMENTS = 40;
-
 function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }) {
   const [level, setLevel] = useState(0);
 
@@ -21,9 +19,7 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
       analyser.getByteTimeDomainData(samples);
       if (now - lastUpdate > 80) {
         const rms = Math.sqrt(samples.reduce((sum, sample) => sum + ((sample - 128) / 128) ** 2, 0) / samples.length);
-        // Browser microphone samples are quiet for normal speaking. Scale the
-        // display independently from the recorded signal so speech is legible.
-        setLevel(Math.min(1, rms * 32));
+        setLevel(Math.min(1, rms * 5));
         lastUpdate = now;
       }
       frame = requestAnimationFrame(read);
@@ -39,7 +35,7 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
   }, [active, stream]);
 
   return <div className="mic-meter" aria-label={active ? "Received microphone level" : "Microphone level inactive"}>
-    {Array.from({ length: INPUT_METER_SEGMENTS }, (_, index) => <i key={index} className={active && index / INPUT_METER_SEGMENTS < level ? "lit" : ""} />)}
+    {Array.from({ length: 24 }, (_, index) => <i key={index} className={active && index / 24 < level ? "lit" : ""} />)}
   </div>;
 }
 
@@ -48,14 +44,12 @@ interface Clip {
   silent: boolean;
 }
 
-function RecordingPlayback({ clip, label, output, autoPlay, onEnded, onPlay, onAudioElement, onDeviceError }: {
+function RecordingPlayback({ clip, label, output, autoPlay, onEnded, onDeviceError }: {
   clip: Clip;
   label: string;
   output: string;
   autoPlay: boolean;
   onEnded?(): void;
-  onPlay?(): void;
-  onAudioElement?(element: HTMLAudioElement | null): void;
   onDeviceError(): void;
 }) {
   const ref = useRef<HTMLAudioElement>(null);
@@ -76,7 +70,7 @@ function RecordingPlayback({ clip, label, output, autoPlay, onEnded, onPlay, onA
     void prepare();
     return () => { current = false; };
   }, [autoPlay, clip.url, output]);
-  return <audio ref={(element) => { ref.current = element; onAudioElement?.(element); }} aria-label={`${label} microphone sample`} controls src={clip.url} onEnded={onEnded} onPlay={onPlay} />;
+  return <audio ref={ref} aria-label={`${label} microphone sample`} controls src={clip.url} onEnded={onEnded} />;
 }
 
 function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
@@ -95,7 +89,6 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
   onClose?(): void;
 }) {
   const urlsRef = useRef<{ natural?: string; processed?: string }>({});
-  const playbackRefs = useRef<{ natural?: HTMLAudioElement; processed?: HTMLAudioElement }>({});
   const sessionRef = useRef<ReceivedRecording | undefined>(undefined);
   const generation = useRef(0);
   const [recording, setRecording] = useState(false);
@@ -106,8 +99,6 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
   const [naturalPlaybackEnded, setNaturalPlaybackEnded] = useState(false);
   const [error, setError] = useState<string>();
   const [deviceError, setDeviceError] = useState(false);
-
-  const pauseSample = (sample: "natural" | "processed") => playbackRefs.current[sample]?.pause();
 
   const discardAll = () => {
     generation.current++;
@@ -208,7 +199,7 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
     </div>
     <p className="mic-test-copy">Record once to compare the same sample with and without voice enhancement.</p>
     <div className="voice-processing-control">
-      <div className="voice-processing-heading"><ProcessingDetail label="Voice processing" id="voice-processing-detail">Adds high-pass filtering, warmth and presence EQ, compression, makeup gain, and peak limiting. The slider controls the strength.</ProcessingDetail><output>{processingStrength}%</output></div>
+      <div className="voice-processing-heading"><span>Voice processing</span><output>{processingStrength}%</output></div>
       <Slider label="Voice processing" value={processingStrength} disabled={recording} onChange={onProcessingStrengthChange} />
       <div><small>Natural</small><small>Enhanced</small></div>
     </div>
@@ -216,7 +207,7 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
       {!recording && <button type="button" className="mic-test-button" disabled={processing} onClick={startRecording}>{processing ? "Preparing…" : "Mic Test"}</button>}
       {recording && <button type="button" className="mic-test-button" onClick={() => sessionRef.current?.finish()}>Stop Testing</button>}
       <div className="mic-level">
-        <div className="mic-meter-label"><span>Input level</span></div>
+        <div className="mic-meter-label"><span>Input level</span><small>Lights up while recording</small></div>
         <InputMeter active={recording} stream={stream} />
       </div>
     </div>
@@ -226,20 +217,21 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
       <article>
         <div><strong>Natural</strong></div>
         {clips.natural
-          ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} autoPlay onEnded={() => setNaturalPlaybackEnded(true)} onPlay={() => pauseSample("processed")} onAudioElement={(element) => { playbackRefs.current.natural = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
+          ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} autoPlay onEnded={() => setNaturalPlaybackEnded(true)} onDeviceError={() => setDeviceError(true)} />
             {clips.natural.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
           : <p>Your natural recording will appear here.</p>}
       </article>
       <article className={clips.processed ? "latest" : undefined}>
         <div><strong>Enhanced</strong></div>
         {clips.processed
-          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} autoPlay={naturalPlaybackEnded} onPlay={() => pauseSample("natural")} onAudioElement={(element) => { playbackRefs.current.processed = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
+          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} autoPlay={naturalPlaybackEnded} onDeviceError={() => setDeviceError(true)} />
             {clips.processed.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
           : <p>{processing ? "Applying voice enhancement…" : "Your enhanced comparison will appear here."}</p>}
       </article>
     </div>
     <div className="processing-details" aria-label="Audio processing details">
       <ProcessingDetail label="On-device noise cancellation" id="noise-cancellation-detail">DPDFNet-8 HR removes background noise locally before your voice is sent.</ProcessingDetail>
+      <ProcessingDetail label="Voice enhancement" id="voice-enhancement-detail">Adds high-pass filtering, warmth and presence EQ, compression, makeup gain, and peak limiting. The slider controls the strength.</ProcessingDetail>
     </div>
   </section>;
 }
