@@ -1416,9 +1416,9 @@ are not implemented; native/server HTTP clients do not require CORS. Browser Web
 does not prove native audio support.
 
 Bigint account IDs stay internal and are never exposed in profile responses.
-Random 128-bit IDs provide permanent public references without revealing signup order
-or the internal sequence. Stored as `external_id` for integrations and external
-references, the API returns this value as `id`, alongside
+Random 12-character alphanumeric IDs provide permanent public references without
+revealing signup order or the internal sequence. Stored as `external_id` for
+integrations and external references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
 
