@@ -13,7 +13,7 @@ function evaluate(code) { return browser("eval", `(async()=>{${code}})()`); }
 
 try {
   browser("open", new URL("/live", origin).href);
-  browser("wait", "--fn", "!!document.querySelector('.join-card button:not(:disabled)') || document.body.textContent.includes('Voice is currently unavailable')");
+  browser("wait", "--fn", "!!document.querySelector('.voice-channel:not(:disabled)') || document.body.textContent.includes('Voice is currently unavailable')");
   evaluate(`
     const {default: React} = await import('/node_modules/.vite/deps/react.js');
     const {default: {createRoot}} = await import('/node_modules/.vite/deps/react-dom_client.js');

@@ -43,6 +43,8 @@ export default function Chat({ name, signedIn }: { name: string; signedIn: boole
   };
 
   const sending = !!state.pendingSend && !state.sendError;
+  const characterCount = Array.from(draft).length;
+  const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const submit = async () => {
     setValidationError(undefined);
     const submitted = state.pendingSend?.text ?? draft;
@@ -56,8 +58,8 @@ export default function Chat({ name, signedIn }: { name: string; signedIn: boole
 
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
-      <div><p className="eyebrow">{state.spaceName}</p><h2 id="chat-heading"># {state.channelName}</h2></div>
-      <span className={state.online ? "chat-live" : "chat-offline"}>{state.online ? "Live" : state.phase === "loading" ? "Loading" : "Offline"}</span>
+      <h2 id="chat-heading"># {state.channelName}</h2>
+      {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
     </header>
 
     <div className="chat-messages" ref={listRef} aria-live="polite" aria-busy={state.phase === "loading"} onScroll={(event) => {
@@ -84,9 +86,8 @@ export default function Chat({ name, signedIn }: { name: string; signedIn: boole
         <textarea id="chat-message" rows={2} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${state.channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
-        <div><small>{Array.from(draft).length.toLocaleString()} / 4,000</small><button type="submit" disabled={state.phase !== "ready" || sending || !draft.trim() || Array.from(draft).length > 4_000}>{sending ? "Sending…" : "Send"}</button></div>
+        <div>{characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}<button type="submit" disabled={state.phase !== "ready" || sending || !draft.trim() || characterCount > 4_000}>{sending ? "Sending…" : "Send"}</button></div>
       </form>
-      <p className="chat-public-note">Public demo. Messages are saved and visible to everyone.</p>
     </div>
   </section>;
 }

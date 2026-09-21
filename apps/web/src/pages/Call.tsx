@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { Headphones, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
+import { ArrowUp, Hash, Headphones, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import { getAccount } from "../account/client";
 import Chat from "../chat/Chat";
@@ -132,6 +132,7 @@ export default function Call() {
   const [accountDisplayName, setAccountDisplayName] = useState<string>();
   const [identityReady, setIdentityReady] = useState(false);
   const [available, setAvailable] = useState<boolean>();
+  const [hasTriedVoice, setHasTriedVoice] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [output, setOutput] = useState("");
@@ -209,8 +210,18 @@ export default function Call() {
       </header>
       <section className="call-room">
         <aside className="people-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Caper</p><h1>Voice channel</h1></div></div>
-          <div className="voice-channel"><span aria-hidden="true">◖))</span> General {roster.length > 0 && <small aria-label={`${roster.length} in voice`}>{roster.length}</small>}</div>
+          <div className="panel-heading"><div><p className="eyebrow">Caper</p><h1>Channels</h1></div></div>
+          <p className="channel-label">Text</p>
+          <a className="text-channel" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /> General</a>
+          <p className="channel-label">Voice</p>
+          <button className="voice-channel" type="button" aria-label={connected ? "Connected to General voice" : "Join General voice"} aria-pressed={connected} disabled={available !== true || !identityReady || !idle || state.phase === "leaving" || actionPending} onClick={() => {
+            setHasTriedVoice(true);
+            setActionError(undefined);
+            void clientRef.current?.join(name.trim(), deviceId || undefined);
+          }}><Volume2 aria-hidden="true" /> General {roster.length > 0 && <small aria-label={`${roster.length} in voice`}>{roster.length}</small>}</button>
+          {idle && available === true && !hasTriedVoice && <p className="voice-hint"><ArrowUp aria-hidden="true" /><span>Click General to join voice.<small>Or just stay and chat.</small></span></p>}
+          {available !== true && <p className="voice-availability" role="status">{available === false ? "Voice is currently unavailable." : "Checking voice…"}</p>}
+          {idle && <button className="mic-test-link" disabled={!identityReady || actionPending || state.phase === "leaving"} type="button" onClick={() => { void act(() => clientRef.current!.startLocalMicTest()); }}>Mic test</button>}
           <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label="People in voice">
             {roster.map((participant) => {
               const self = participant.id === state.selfId;
@@ -264,21 +275,8 @@ export default function Call() {
           </ul>
         </aside>
         <div className="stage">
-          <div className="stage-title"><div><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>
-          {state.monitorStream && !actionPending
-            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} onClose={idle ? () => clientRef.current?.stopLocalMicTest() : undefined} />
-            : idle ? <div className="join-card">
-            <span className="voice-symbol" aria-hidden="true">◖))</span>
-            <h1>Drop in. Talk. Head out.</h1>
-            <p>{accountDisplayName ? "Join the shared General channel using your Caper display name." : "Join the shared General channel as a guest. No account or invite needed."}</p>
-            {available === false ? <p className="call-error" role="alert">Voice is currently unavailable. Please try again later.</p> : <form onSubmit={(event) => { event.preventDefault(); void clientRef.current?.join(name.trim(), deviceId || undefined); }}>
-              <p>Joining as <strong>{identityReady ? name : "…"}</strong></p>
-              <button className="primary-button" disabled={available !== true || !identityReady || !name.trim() || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : !identityReady ? "Checking profile…" : "Join voice"}</button>
-            </form>}
-            <button className="mic-test-link" disabled={!identityReady} type="button" onClick={() => { setActionError(undefined); void act(() => clientRef.current!.startLocalMicTest()); }}>Test your mic first</button>
-            <p className="privacy-note">You’ll be asked for microphone access when you join.</p>
-          </div>
-            : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{connected ? "Say hello, or run a mic test to hear yourself first." : "Getting everything ready."}</p>{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
+          {state.phase !== "idle" && state.phase !== "failed" && <p className="voice-status" role="status">{connected ? "Connected to voice" : state.phase === "joining" ? "Joining voice…" : state.phase === "reconnecting" ? "Reconnecting to voice…" : "Leaving voice…"}</p>}
+          {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} onClose={idle ? () => clientRef.current?.stopLocalMicTest() : undefined} />}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
