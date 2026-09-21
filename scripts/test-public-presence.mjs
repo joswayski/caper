@@ -195,7 +195,33 @@ try {
     browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
     browser("screenshot", `${process.cwd()}/.amp/in/artifacts/voice-sync-recovery-mobile.png`, "--full");
   }
-  console.log(evaluate(`await restoreConnectedEvents();await cleanup();return 'PASS mute/deafen pushes after stream recovery without replacing voice peer';`));
+  console.log(evaluate(`await restoreConnectedEvents();return 'PASS mute/deafen pushes after stream recovery without replacing voice peer';`));
+  console.log(evaluate(`
+    const peer=fixture.peers.at(-1),count=fixture.peers.length,original=window.fetch;
+    let rejected=0;
+    window.fetch=(url,init)=>{
+      if(String(url).includes('/api/media/events?')&&rejected<3){
+        rejected++;return Promise.resolve(Response.json({code:'api_draining'},{status:503}));
+      }
+      return original(url,init);
+    };
+    for(const s of [...fixture.streams])if(!s.pub)s.controller.enqueue(new TextEncoder().encode('event: draining\\ndata: {}\\n\\n'));
+    await until(()=>rejected===1);
+    // The other device changes intent while this stream is handing off.
+    for(const [muted,deafened] of [[true,true],[false,false],[true,false]]){
+      pushRoster(fixture.people.map(p=>p.id==='phone'?{...p,muted,deafened}:p));await wait(15);
+    }
+    await until(()=>[...fixture.streams].some(s=>!s.pub));
+    await until(()=>{
+      const row=[...mount.querySelectorAll('.participant')].find(p=>p.textContent.includes('Phone'));
+      return row&&row.textContent.includes('Muted')&&!row.textContent.includes('Deafened');
+    });
+    assert(rejected===3,'did not exercise draining routing rejections');
+    assert(peer.connectionState==='connected'&&fixture.peers.length===count,'handoff replaced voice peer');
+    assert(mount.textContent.includes('You’re in General.'),'handoff changed connected phase');
+    window.fetch=original;await cleanup();
+    return 'PASS three draining-route rejections recover current mute/deafen within the fixture deadline, preserving voice peer';
+  `));
 } catch (error) {
   console.error(evaluate(`return {page:document.body.innerText,presenceJsonRequests:window.fixture?.presenceReads};`));
   throw error;

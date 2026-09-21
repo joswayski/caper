@@ -92,9 +92,36 @@ renewal, not the notification path. Speaking indicators remain browser-side audi
 analysis, with no per-frame Valkey traffic. Spectator streams send an initial roster
 and push changes, including an empty roster after leave. Ten-second SSE heartbeats
 detect broken connections; they are not the roster update interval. Spectators
-reconnect with backoff from 250 ms to five seconds after failures and immediately
+reconnect with backoff from 250 ms to five seconds after failures and after 50 ms
 on planned draining, then replace the roster with a fresh snapshot. The sidebar
 marks last-known data with “Updating live roster…” until a snapshot arrives.
+
+During a rolling restart the existing SSE connection still belongs to the old
+pod; replica availability does not transfer that connection. The infrastructure
+companion adds a five-second `preStop` serving window before SIGTERM so endpoint
+withdrawal can propagate while existing requests and SSE still work. Its 65-second
+termination grace includes that window and preserves the API's 60-second budget.
+The first deployment of the hook terminates old pods that do not yet have it.
+
+The browser recognizes only explicit `503` bodies with `code: api_draining` as
+planned stream rejection. Both in-call and spectator recovery allow ten fast
+50ms retries (including a `draining` event), then use ordinary exponential backoff.
+This avoids turning a brief stale route into seconds of additional client delay
+without retrying rapidly forever. A restored connection sends current state, not
+every intermediate toggle. There is still a reconnect round trip; neither the
+hook nor unit/browser mocks prove zero production interruption or a latency SLA.
+
+Rollout validation: web tests inject repeated draining rejections, verify retry
+budgets/reset/cancellation, and distinguish generic 503/502 responses. The real
+Call browser fixture rejects three reconnects while changing the remote state,
+then checks the current mute/deafen UI and unchanged voice peer. Its API/WebRTC
+are mocked. Cluster endpoint propagation and physical devices remain unverified.
+Deploy the companion infrastructure manifest and this web image; no API image or
+Valkey schema change is needed. After merging and the web image build:
+
+```sh
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
+```
 
 Deploy the API containing `/api/media/presence/events` before the updated web image.
 Existing clients remain compatible with the JSON endpoint. This change requires
@@ -282,7 +309,8 @@ provision first, deploy compatible API/web images while still in single-process
 mode, then perform the **one-time empty-channel cutover** before enabling two pods.
 Never overlap local-mode and shared-mode callers or roll back to a local-only image.
 Subsequent same-schema deployments use RollingUpdate with `maxUnavailable: 0`,
-`maxSurge: 1`, `/readyz`, and the existing 60-second termination grace.
+`maxSurge: 1`, `/readyz`, and a 65-second termination grace including the five-second
+preStop serving window from the infrastructure companion.
 
 Real disposable Redis integration tests (Redis-compatible protocol) cover independent
 API instances, cross-pod notifications and capability replacement, full replacement
@@ -410,7 +438,7 @@ through the infrastructure repository's OpenTofu cleanup, not console deletion.
 Consumers receive only their required fields:
 the API's Cloudflare projection remains Kubernetes Secret `caper-api-cloudflare`.
 Keep one desired API replica with `RollingUpdate`,
-`maxSurge: 1`, `maxUnavailable: 0`, and a 60-second termination grace, port 3001,
+`maxSurge: 1`, `maxUnavailable: 0`, and a 65-second termination grace, port 3001,
 `/api/media` routing, and existing `MEDIA_*` / `CF_*` configuration names.
 The web Deployment, Service, Ingress, PDB, container, and deployment target are
 named `caper-web`; it runs with two replicas.
@@ -935,7 +963,8 @@ No handshake within ten seconds or no valid event within 25 seconds fails the
 stream. An SSE failure during startup fails Join; during an established call it
 reopens only the event stream with the same capability, backing off from 250 ms
 to three seconds while keeping healthy audio. Planned `draining` reconnects start
-after 50 ms. An SSE-only outage does not force a new voice session while
+after 50 ms; explicit `503/api_draining` rejections share the bounded fast retry
+budget described above. An SSE-only outage does not force a new voice session while
 authenticated snapshot renewals succeed. Connected recovery keeps the layout stable;
 invalid sessions or sustained heartbeat failure still trigger session recovery.
 Each restored stream receives current state, not a replay of missed mute/unmute

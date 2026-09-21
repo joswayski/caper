@@ -101,7 +101,7 @@ test("startup failure and EOF retry, while a successful snapshot resets liveness
   assert.equal(live.at(-1), true);
 });
 
-test("draining reopens immediately, requires a fresh snapshot, and cancellation suppresses late work", async (t) => {
+test("draining reopens promptly, requires a fresh snapshot, and cancellation suppresses late work", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const mock = streams(t);
   const snapshots: CallSnapshot[] = [];
@@ -116,7 +116,7 @@ test("draining reopens immediately, requires a fresh snapshot, and cancellation 
   await tick();
   assert.equal(live.at(-1), false);
   assert.equal(mock.requests.length, 1);
-  t.mock.timers.tick(0);
+  t.mock.timers.tick(50);
   await tick();
   assert.equal(mock.requests.length, 2, "planned draining bypasses failure backoff");
   assert.equal(live.at(-1), false, "reopening alone does not restore live status");
@@ -136,6 +136,51 @@ test("draining reopens immediately, requires a fresh snapshot, and cancellation 
   await tick();
   assert.equal(mock.requests.length, 2, "cancelled watchers never reopen");
   assert.equal(snapshots.length, snapshotCount, "cancelled watchers cannot publish late updates");
+});
+
+test("spectator draining rejections use a bounded fast retry budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const mock = streams(t);
+  const original = fetch;
+  let attempts = 0;
+  let rejecting = true;
+  t.mock.method(globalThis, "fetch", async (...args: Parameters<typeof fetch>) => {
+    if (rejecting) {
+      attempts++;
+      return Response.json({ code: "api_draining" }, { status: 503 });
+    }
+    return original(...args);
+  });
+  const snapshots: CallSnapshot[] = [];
+  const stop = watchPresence((value) => snapshots.push(value), () => undefined);
+  t.after(stop);
+  await tick();
+  for (let i = 0; i < 10; i++) {
+    t.mock.timers.tick(50);
+    await tick();
+  }
+  assert.equal(attempts, 11);
+  t.mock.timers.tick(249);
+  await tick();
+  assert.equal(attempts, 11, "fast retries must be bounded during an outage");
+  rejecting = false;
+  t.mock.timers.tick(1);
+  await tick();
+  assert.equal(mock.opened.length, 1);
+  mock.opened[0].controller.enqueue(event("ready"));
+  mock.opened[0].controller.enqueue(event("snapshot", { participants: [participant], revision: 4 }));
+  await tick();
+  assert.equal(snapshots[0].participants[0].id, "self");
+  rejecting = true;
+  mock.opened[0].controller.enqueue(event("draining"));
+  await tick();
+  t.mock.timers.tick(50);
+  await tick();
+  assert.equal(attempts, 12, "a fresh roster resets the drain retry budget");
+  stop();
+  t.mock.timers.tick(10_000);
+  await tick();
+  assert.equal(attempts, 12, "cancellation must stop scheduled retries");
 });
 
 test("public presence rejects snapshots containing private authenticated track data", async (t) => {

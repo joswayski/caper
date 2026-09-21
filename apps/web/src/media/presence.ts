@@ -7,6 +7,7 @@ export function watchPresence(snapshot: (value: CallSnapshot) => void, live: (va
   let stream: CallEvents | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let failures = 0;
+  let drainRetries = 0;
   const connect = () => {
     if (owner.signal.aborted) return;
     stream?.stop();
@@ -15,11 +16,12 @@ export function watchPresence(snapshot: (value: CallSnapshot) => void, live: (va
       live(false);
       current.stop();
       clearTimeout(timer);
-      timer = setTimeout(connect, planned ? 0 : Math.min(250 * 2 ** Math.min(failures++, 5), 5_000));
+      timer = setTimeout(connect, planned && drainRetries++ < 10 ? 50 : Math.min(250 * 2 ** Math.min(failures++, 5), 5_000));
     };
-    const current = stream = new CallEvents(() => undefined, () => retry(), (value) => {
+    const current = stream = new CallEvents(() => undefined, (_error, draining) => retry(draining), (value) => {
       if (owner.signal.aborted || stream !== current) return;
       failures = 0;
+      drainRetries = 0;
       snapshot(value);
       live(true);
     }, () => retry(true));

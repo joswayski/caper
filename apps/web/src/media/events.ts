@@ -12,10 +12,10 @@ export class CallEvents {
   private timer?: ReturnType<typeof setTimeout>;
 
   private readonly changed: () => void;
-  private readonly lost: (error: Error) => void;
+  private readonly lost: (error: Error, draining: boolean) => void;
   private readonly snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void;
   private readonly draining?: () => void;
-  constructor(changed: () => void, lost: (error: Error) => void, snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void, draining?: () => void) {
+  constructor(changed: () => void, lost: (error: Error, draining: boolean) => void, snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void, draining?: () => void) {
     this.changed = changed;
     this.lost = lost;
     this.snapshot = snapshot;
@@ -33,6 +33,7 @@ export class CallEvents {
   private openStream(token: string | undefined, signal: AbortSignal): Promise<void> {
     if (signal.aborted) return Promise.reject(signal.reason);
     return new Promise<void>((resolve, reject) => {
+      let draining = false;
       const abort = () => this.stop();
       signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
@@ -47,6 +48,12 @@ export class CallEvents {
           signal: this.controller.signal,
           cache: "no-store",
         });
+        if (response.status === 503) {
+          // Routing can briefly send a reconnect to a terminating pod. This
+          // explicit admission rejection is not an ordinary stream outage.
+          const body = await response.json().catch(() => undefined);
+          draining = body?.code === "api_draining";
+        }
         if (!response.ok || !response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) {
           throw new Error("Live updates are unavailable. Please try joining again.");
         }
@@ -113,7 +120,7 @@ export class CallEvents {
         this.connected = false;
         const error = reason instanceof Error ? reason : new Error("Live updates disconnected.");
         reject(error);
-        if (!signal.aborted && !this.stopped) this.lost(error);
+        if (!signal.aborted && !this.stopped) this.lost(error, draining);
       }).finally(() => {
         clearTimeout(this.timer);
         signal.removeEventListener("abort", abort);
