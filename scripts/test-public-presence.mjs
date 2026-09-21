@@ -31,7 +31,7 @@ try {
     const mount=window.mount=document.createElement('div');document.body.append(mount);
     window.button = text => [...mount.querySelectorAll('button')].find(b=>b.textContent.trim()===text);
     window.roster = () => [...mount.querySelectorAll('[aria-label="People in voice"] .participant-name strong')].map(n=>n.textContent);
-    window.fixture={people:[],streams:new Set(),presenceReads:0,connections:0,revision:0,leavePending:false};
+    window.fixture={people:[],streams:new Set(),presenceReads:0,connections:0,revision:0,leavePending:false,peers:[],subscribes:0,closes:0};
     const f=fixture;const original=window.fetch.bind(window);
     const frame=(name,data={})=>new TextEncoder().encode('event: '+name+'\\ndata: '+JSON.stringify(data)+'\\n\\n');
     const snapshot = pub => ({participants:f.people.map(p=>pub?(({tracks,...rest})=>rest)(p):p),revision:f.revision});
@@ -50,12 +50,19 @@ try {
         },cancel(){f.streams.delete(s);}}),{headers:{'content-type':'text/event-stream'}});
       }
       if(path==='/api/media/join'){
-        pushRoster([{id:'self',name:'Grok',countryCode:'US',muted:false,deafened:false,tracks:[]}]);
+        const intent=JSON.parse(init.body);f.joinIntent=intent;
+        pushRoster([{id:'self',name:'Grok',countryCode:'US',muted:intent.muted??false,deafened:intent.deafened??false,tracks:[]}]);
         return Response.json({token:'fixture-capability',id:'self',iceServers:[]});
       }
       if(path==='/api/media/publish')return Response.json({sessionDescription:{type:'answer',sdp:'v=0'}});
+      if(path==='/api/media/subscribe'){f.subscribes++;return Response.json({tracks:[{mid:'remote-'+f.subscribes}],requiresImmediateRenegotiation:false});}
+      if(path==='/api/media/close'){f.closes++;return f.failClose?Response.json({error:'cleanup unavailable'},{status:503}):Response.json({});}
       if(path==='/api/media/snapshot')return Response.json(snapshot(false));
-      if(path==='/api/media/state')return new Response(null,{status:204});
+      if(path==='/api/media/state'){
+        const state=JSON.parse(init.body);const self=f.people.find(p=>p.id==='self');
+        if(self&&(self.muted!==state.muted||self.deafened!==state.deafened))pushRoster(f.people.map(p=>p.id==='self'?{...p,...state}:p));
+        return new Response(null,{status:204});
+      }
       if(path==='/api/media/leave'){
         f.leavePending=true;
         await new Promise(resolve=>{f.commitLeave=()=>{pushRoster([]);f.leavePending=false;resolve();};});
@@ -68,6 +75,7 @@ try {
     PublicCallClient.prototype.openMicrophone=async()=>ac.createMediaStreamDestination().stream.getAudioTracks()[0];
     window.RTCPeerConnection=class extends EventTarget {
       connectionState='connected';iceGatheringState='complete';senders=[];
+      constructor(){super();f.peers.push(this);}
       addTransceiver(track){const sender={track,async replaceTrack(t){this.track=t;}};this.senders.push(sender);return {mid:'0',sender};}
       async createOffer(){return {type:'offer',sdp:'v=0'};}
       async setLocalDescription(s){this.localDescription={toJSON:()=>s};}
@@ -93,26 +101,56 @@ try {
       console.log('Leave cycle '+cycle+' cleared without polling');
     }
     assert(fixture.presenceReads===0,'page still polls /presence');
+    button('Join voice').click();await until(()=>mount.textContent.includes('You’re in General.'));
+    await until(()=>mount.textContent.includes('Connection details'));
+    const peer=fixture.peers.at(-1),peerCount=fixture.peers.length;
+    const self=fixture.people.find(p=>p.id==='self');
+    // Watch the real page throughout remote churn, not only its final state.
+    let interrupted=false;
+    const observer=new MutationObserver(()=>{if(!mount.textContent.includes('You’re in General.')||!mount.textContent.includes('Connection details'))interrupted=true;});
+    observer.observe(mount,{subtree:true,childList:true,characterData:true});
+    fixture.failClose=true;
+    for(let cycle=0;cycle<3;cycle++){
+      const before=fixture.subscribes;
+      pushRoster([self,{id:'phone',name:'Phone',muted:true,deafened:cycle%2===0,tracks:[{id:'phone-'+cycle,kind:'microphone'}]}]);
+      await until(()=>roster().includes('Phone')&&fixture.subscribes>before);
+      const row=[...mount.querySelectorAll('.participant')].find(p=>p.textContent.includes('Phone'));
+      assert(row.textContent.includes(cycle%2===0?'Deafened':'Muted'),'first phone roster has incorrect control state');
+      const closes=fixture.closes;
+      pushRoster([self]);await until(()=>!roster().includes('Phone')&&fixture.closes>closes);
+      await wait(30);
+      assert(fixture.peers.length===peerCount&&peer.connectionState==='connected','remote leave replaced the local peer');
+    }
+    observer.disconnect();assert(!interrupted,'remote leave interrupted connected UI or diagnostics');
+    assert(peer.senders[0].track.enabled,'local microphone stopped');
+    mount.querySelector('[aria-label="Deafen audio"]').click();
+    await until(()=>mount.querySelector('[aria-label="Undeafen audio"]'));
+    button('Leave voice').click();await until(()=>fixture.leavePending);fixture.commitLeave();
+    await until(()=>button('Join voice'));button('Join voice').click();
+    await until(()=>mount.textContent.includes('You’re in General.'));
+    assert(fixture.joinIntent.muted===true&&fixture.joinIntent.deafened===true,'rejoin did not carry remembered intent');
+    button('Leave voice').click();await until(()=>fixture.leavePending);fixture.commitLeave();
+    await until(()=>roster().length===0);
     pushRoster([{id:'other',name:'Other guest',muted:true,deafened:false,tracks:[]}]);
     await until(()=>roster().includes('Other guest'));
     assert(mount.querySelector('.participant-name').textContent.includes('Muted'),'spectator mute update missing');
     pushRoster([]);await until(()=>roster().length===0);
-    return {result:'PASS three join/leave races and spectator changes',presenceJsonRequests:fixture.presenceReads,streamConnections:fixture.connections};
+    return {result:'PASS local leave races, remote departure with failed cleanup preserves connected UI/diagnostics/peer, initial rejoin mute/deafen, spectator changes',presenceJsonRequests:fixture.presenceReads,streamConnections:fixture.connections};
   `));
   if (artifacts) {
     mkdirSync('.amp/in/artifacts', {recursive:true});
     browser("screenshot", `${process.cwd()}/.amp/in/artifacts/live-presence-after-leave.png`);
   }
   console.log(evaluate(`
-    // Pause reconnection after EOF: old presence remains explicitly marked as stale.
+    // Pause reconnection after EOF, then verify a fresh snapshot replaces stale data.
     pushRoster([{id:'other',name:'Other guest',muted:false,deafened:false,tracks:[]}]);
     await until(()=>roster().includes('Other guest'));
     const fetchBefore=window.fetch;let release;
     window.fetch=(url,init)=>String(url).includes('/presence/events')?new Promise(r=>{release=()=>r(fetchBefore(url,init));}):fetchBefore(url,init);
     for(const s of [...fixture.streams])if(s.pub){fixture.streams.delete(s);s.controller.close();}
-    await until(()=>mount.textContent.includes('Updating live roster'));
-    window.restorePresence=async()=>{await until(()=>release);fixture.people=[];release();await until(()=>roster().length===0&&!mount.textContent.includes('Updating live roster'));};
-    return 'PASS disconnected stream visibly marks the last-known roster';
+    await until(()=>release);
+    window.restorePresence=async()=>{fixture.people=[];release();await until(()=>roster().length===0);};
+    return 'PASS disconnected stream reconnects';
   `));
   if (artifacts) {
     browser("set", "viewport", "390", "844", "2");

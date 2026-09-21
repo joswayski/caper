@@ -213,7 +213,7 @@ export class PublicCallClient {
   private async prepareJoin() {
     const capture = this.openMicrophone(this.microphoneDeviceId);
     const issuedAt = performance.now();
-    const joining = this.api<JoinResponse>("join", { name: this.name }, undefined);
+    const joining = this.api<JoinResponse>("join", { name: this.name, muted: this.muted, deafened: this.deafened }, undefined);
     const [captureResult, joinResult] = await Promise.allSettled([capture, joining]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
       if (captureResult.status === "fulfilled") this.stopMicrophone(captureResult.value);
@@ -261,18 +261,16 @@ export class PublicCallClient {
     this.selfId = joined.id;
     const pc = this.pc = this.makePeerConnection(joined.iceServers);
     // Negotiate with a disabled track while the independent event stream opens.
-    // Both promises have rejection handlers before either can fail.
+    // All startup promises have rejection handlers before any can fail.
     const [events] = await Promise.all([
       this.openEvents(generation),
       this.publishTrack("microphone", microphone, generation),
+      // Reconcile any intent changed during capture/join, without waiting for SDP.
+      this.setState(),
     ]);
     signal.throwIfAborted();
     const signaled = performance.now();
-    // State updates touch only the Rust registry, not SDP or the media transport.
-    await Promise.all([
-      waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal),
-      this.setState(),
-    ]);
+    await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     const connected = performance.now();
     // Subscription negotiation still waits for transport. Never open audio early.
     // A pushed roster does not renew the lease consumed by signaling/transport setup.
@@ -714,12 +712,18 @@ export class PublicCallClient {
     return this.serialize(async () => {
       const mid = this.subscriptions.get(trackId);
       if (!mid) return;
-      await this.closeMid(mid);
-      if (generation !== this.generation) return;
-      this.subscriptions.delete(trackId);
+      // A departed source is no longer playable, regardless of cleanup latency.
       this.remoteMedia.get(trackId)?.stream.getTracks().forEach((track) => track.stop());
       this.remoteMedia.delete(trackId);
       this.emit();
+      try { await this.closeMid(mid); } catch (error) {
+        if (generation !== this.generation) return;
+        // Force-close does not negotiate SDP. Keep healthy media and retry this
+        // MID on the next roster reconciliation/lease heartbeat, not a new join.
+        if (transientControlError(error)) return;
+        throw error;
+      }
+      if (generation === this.generation) this.subscriptions.delete(trackId);
     }, generation);
   }
 
@@ -741,9 +745,8 @@ export class PublicCallClient {
   }
 
   private async closeMid(mid: string, token = this.token) {
-    try { await this.api("close", { mid }, token); } catch (error) {
+    try { await this.api("close", { mid }, token, SNAPSHOT_TIMEOUT_MS); } catch (error) {
       if (error instanceof CallApiError && error.status === 404) return;
-      if (token === this.token) this.scheduleReconnect();
       throw error;
     }
   }

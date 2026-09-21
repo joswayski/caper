@@ -497,6 +497,14 @@ impl Cloudflare {
         }
         let value =
             value.map_err(|_| failure("invalid_json", Some(status.as_u16()), ray.clone(), None))?;
+        if operation == "subscribe" && rejected_remote_track(&value) {
+            return Err(failure(
+                "track_unavailable",
+                Some(status.as_u16()),
+                ray,
+                provider_code(&value),
+            ));
+        }
         if validate_provider_envelope(&value).is_err() {
             return Err(failure(
                 "provider_error",
@@ -539,6 +547,33 @@ impl Cloudflare {
         tracing::debug!(%id, operation, status = status.as_u16(), elapsed_ms = started.elapsed().as_millis(), "Cloudflare operation succeeded");
         Ok(value)
     }
+}
+// A single rejected pull without a MID or SDP did not change the listener's
+// negotiation. Never infer this from an HTTP error, timeout, or partial offer.
+fn rejected_remote_track(value: &Value) -> bool {
+    value.get("errorCode").is_none_or(Value::is_null)
+        && value.get("success").and_then(Value::as_bool) != Some(false)
+        && value
+            .get("errors")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty))
+        && value.get("sessionDescription").is_none_or(Value::is_null)
+        && value
+            .get("requiresImmediateRenegotiation")
+            .and_then(Value::as_bool)
+            == Some(false)
+        && value
+            .get("tracks")
+            .and_then(Value::as_array)
+            .is_some_and(|tracks| {
+                tracks.len() == 1
+                    && tracks[0]
+                        .get("mid")
+                        .is_none_or(|v| v.is_null() || v.as_str() == Some(""))
+                    && matches!(
+                        tracks[0].get("errorCode").and_then(Value::as_str),
+                        Some("not_found_track_error" | "track_error")
+                    )
+            })
 }
 fn validate_provider_envelope(value: &Value) -> Result<(), ProviderError> {
     if !value.is_object()
@@ -1396,6 +1431,10 @@ struct Join {
     #[serde(default)]
     name: Option<String>,
     monitor: Option<MonitorRole>,
+    #[serde(default)]
+    muted: bool,
+    #[serde(default)]
+    deafened: bool,
 }
 
 fn country_code(headers: &HeaderMap) -> Option<String> {
@@ -1541,8 +1580,8 @@ async fn join(
         turn_retired: vec![],
         turn_claim: None,
         turn_attempts: VecDeque::new(),
-        muted: false,
-        deafened: false,
+        muted: input.muted,
+        deafened: input.deafened,
         lease: Timestamp::now(),
         joined: Timestamp::now(),
         tracks: HashMap::new(),
@@ -2308,6 +2347,17 @@ async fn subscribe(
             json!({"tracks":[{"location":"remote","sessionId":source.1,"trackName":source.2}]}),
         )
         .await;
+    if matches!(&result, Err(ProviderError::Request(f)) if f.kind == "track_unavailable") {
+        s.update(|r| {
+            let id = authenticate(r, token)?;
+            let p = r.participants.get_mut(&id).unwrap();
+            p.operation = false;
+            p.operation_started = None;
+            Ok(())
+        })
+        .await?;
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found").with_code("track_gone"));
+    }
     let valid_result = result
         .as_ref()
         .ok()
@@ -2447,44 +2497,29 @@ async fn close(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
     }
     let token = bearer(&headers)?;
-    let (id, session, source) = s
-        .update(|r| {
-            let id = authenticate(r, token)?;
-            let p = r.participants.get(&id).unwrap();
-            if !p.tracks.contains_key(&i.mid) && !p.subscriptions.contains_key(&i.mid) {
-                return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found"));
-            }
-            let source = p.tracks.get(&i.mid).map(|t| t.id);
-            let p = r.participants.get_mut(&id).unwrap();
-            begin_operation(p)?;
-            Ok((id, p.session.clone(), source))
-        })
-        .await?;
-    let result = s.provider.close(&s.config, &session, &i.mid).await;
-    if !matches!(result.as_ref(), Ok(v) if validate_provider_envelope(v).is_ok()) {
-        enqueue_cleanup(&s, session, i.mid).await;
-        remove_participant(&s, id).await;
-        return Err(result
-            .err()
-            .unwrap_or_else(|| ProviderError::invalid_response("close"))
-            .into());
-    }
-    let result = result.unwrap();
     s.update(|r| {
-        let Some(p) = r.participants.get_mut(&id) else {
+        let id = authenticate(r, token)?;
+        let p = r.participants.get_mut(&id).unwrap();
+        if !p.tracks.contains_key(&i.mid) && !p.subscriptions.contains_key(&i.mid) {
             return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found"));
-        };
+        }
+        begin_operation(p)?;
         p.operation = false;
         p.operation_started = None;
-        p.tracks.remove(&i.mid);
+        let session = p.session.clone();
+        let source = p.tracks.remove(&i.mid).map(|t| t.id);
         p.subscriptions.remove(&i.mid);
+        // force:true stops only this MID's data flow, without changing SDP.
+        // Commit removal and cleanup together; a provider timeout/rejection must
+        // never revoke the caller's unrelated tracks or call capability.
+        enqueue_cleanup_locked(r, session, i.mid.clone());
         if let Some(source) = source {
             close_dependents_locked(r, source);
         }
         Ok(())
     })
     .await?;
-    Ok(Json(result))
+    Ok(Json(json!({})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

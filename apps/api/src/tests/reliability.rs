@@ -365,6 +365,87 @@ async fn upstream(router: Router) -> (Config, tokio::task::JoinHandle<()>) {
 }
 
 #[tokio::test]
+async fn provider_rejected_departed_track_preserves_listener_only_without_sdp_mutation() {
+    let missing = json!({"requiresImmediateRenegotiation":false,"tracks":[{"mid":"","errorCode":"not_found_track_error"}]});
+    let mut offered = missing.clone();
+    offered["sessionDescription"] = json!({"type":"offer","sdp":"v=0"});
+    let mut pending = missing.clone();
+    pending["requiresImmediateRenegotiation"] = json!(true);
+    let mut allocated = missing.clone();
+    allocated["tracks"][0]["mid"] = json!("1");
+    let mut session_error = missing.clone();
+    session_error["errorCode"] = json!("session_error");
+    for (http_status, response_body, safe) in [
+        (StatusCode::OK, missing.clone(), true),
+        (StatusCode::OK, offered, false),
+        (StatusCode::OK, pending, false),
+        (StatusCode::OK, allocated, false),
+        (StatusCode::OK, session_error, false),
+        (StatusCode::BAD_GATEWAY, missing, false),
+    ] {
+        let (s, _) = state();
+        let speaker = joined(&s, "phone").await;
+        let listener = joined(&s, "laptop").await;
+        let token = listener["token"].as_str().unwrap();
+        let id: Uuid = listener["id"].as_str().unwrap().parse().unwrap();
+        let source_id: Uuid = speaker["id"].as_str().unwrap().parse().unwrap();
+        let mut track = Value::Null;
+        for (person, mid) in [(&speaker, "phone-mic"), (&listener, "laptop-mic")] {
+            let published = call(app(s.clone()), "POST", "/api/media/publish", person["token"].as_str(),
+                json!({"kind":"microphone","mid":mid,"sessionDescription":{"type":"offer","sdp":"v=0"}})).await;
+            assert_eq!(published.0, StatusCode::OK);
+            if mid == "phone-mic" {
+                track = published.1["trackId"].clone();
+            }
+        }
+        let session = s.registry.lock().await.participants[&id].session.clone();
+        let (config, server) = upstream(Router::new().fallback({
+            let s = s.clone();
+            move || {
+                let s = s.clone();
+                let body = response_body.clone();
+                async move {
+                    // The source leaves after Caper validated the pull but before
+                    // the real provider adapter receives its HTTP response.
+                    remove_participant(&s, source_id).await;
+                    (http_status, Json(body))
+                }
+            }
+        }))
+        .await;
+        let mut api = s.clone();
+        api.config = config;
+        api.provider = Arc::new(Cloudflare::new());
+        let (status, response) = call(
+            app(api),
+            "POST",
+            "/api/media/subscribe",
+            Some(token),
+            json!({"trackId":track}),
+        )
+        .await;
+        server.abort();
+        if safe {
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert_eq!(response["code"], "track_gone");
+            let r = s.registry.lock().await;
+            let p = &r.participants[&id];
+            assert_eq!(p.session, session);
+            assert!(p.tracks.contains_key("laptop-mic"));
+            assert!(!p.operation && !p.pending_offer);
+            assert!(p.subscriptions.is_empty());
+            assert!(!r.cleanup.iter().any(|job| matches!(&job.action, CleanupAction::Close { session: target, .. } | CleanupAction::Discover { session: target } if target == &session)));
+        } else {
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert!(
+                !s.registry.lock().await.participants.contains_key(&id),
+                "ambiguous SDP still requires recovery"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn provider_failures_preserve_status_ray_code_and_never_replay_mutations() {
     let calls = Arc::new(AtomicUsize::new(0));
     let router = Router::new().fallback({
@@ -907,4 +988,136 @@ async fn shutdown_drains_multiple_batches_and_discovered_tracks() {
     shutdown_cleanup(&s).await;
     assert_eq!(faults.mock.closes.lock().await.len(), 10);
     assert!(s.registry.lock().await.cleanup.is_empty());
+}
+
+#[tokio::test]
+async fn remote_close_failure_never_invalidates_the_listener() {
+    let faults = Arc::new(Faults::new());
+    let s = AppState::new(Config::test(true), faults.clone());
+    let speaker = joined(&s, "phone").await;
+    let listener = joined(&s, "laptop").await;
+    let token = listener["token"].as_str().unwrap();
+    let id: Uuid = listener["id"].as_str().unwrap().parse().unwrap();
+    let mut source = Value::Null;
+    for (person, mid) in [(&speaker, "phone-mic"), (&listener, "laptop-mic")] {
+        let (status, published) = call(app(s.clone()), "POST", "/api/media/publish", person["token"].as_str(),
+            json!({"kind":"microphone","mid":mid,"sessionDescription":{"type":"offer","sdp":"v=0"}})).await;
+        assert_eq!(status, StatusCode::OK);
+        if mid == "phone-mic" {
+            source = published["trackId"].clone();
+        }
+    }
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/subscribe",
+            Some(token),
+            json!({"trackId":source})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/negotiate",
+            Some(token),
+            json!({"sessionDescription":{"type":"answer","sdp":"v=0"}})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let session = s.registry.lock().await.participants[&id].session.clone();
+    faults.cleanup_failure.store(2, Ordering::SeqCst);
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/close",
+            Some(token),
+            json!({"mid":"remote-mid"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        faults.cleanup_calls.load(Ordering::SeqCst),
+        0,
+        "close commits locally without waiting for Cloudflare"
+    );
+    retry_backlog(&s).await;
+    assert_eq!(faults.cleanup_calls.load(Ordering::SeqCst), 1);
+    let (status, snapshot) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/snapshot",
+        Some(token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "failed remote cleanup must not revoke the listener"
+    );
+    assert_eq!(snapshot["participants"].as_array().unwrap().len(), 2);
+    {
+        let mut r = s.registry.lock().await;
+        let p = &r.participants[&id];
+        assert_eq!(p.session, session);
+        assert!(p.tracks.contains_key("laptop-mic"));
+        assert!(p.subscriptions.is_empty());
+        assert!(!p.operation && !p.pending_offer);
+        r.cleanup[0].not_before = Timestamp::now();
+    }
+    faults.cleanup_failure.store(0, Ordering::SeqCst);
+    retry_backlog(&s).await;
+    assert_eq!(
+        *faults.mock.closes.lock().await,
+        vec![(session, "remote-mid".into())]
+    );
+    assert!(s.registry.lock().await.cleanup.is_empty());
+}
+
+#[tokio::test]
+async fn first_roster_contains_join_mute_and_deafen_intent() {
+    let (s, _) = state();
+    let mut stream = presence_response(&s).await.into_body().into_data_stream();
+    next_event(&mut stream).await;
+    presence_snapshot_event(&mut stream).await;
+    for (muted, deafened) in [(true, false), (false, true), (true, true), (false, false)] {
+        let (status, joined) = call(
+            app(s.clone()),
+            "POST",
+            "/api/media/join",
+            None,
+            json!({"name":"phone","muted":muted,"deafened":deafened}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let first = presence_snapshot_event(&mut stream).await;
+        assert_eq!(first["participants"][0]["muted"], muted);
+        assert_eq!(first["participants"][0]["deafened"], deafened);
+        assert_eq!(
+            call(
+                app(s.clone()),
+                "POST",
+                "/api/media/leave",
+                joined["token"].as_str(),
+                json!({})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            presence_snapshot_event(&mut stream).await["participants"],
+            json!([])
+        );
+    }
 }
