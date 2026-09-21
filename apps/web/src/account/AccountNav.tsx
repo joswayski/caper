@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
 import { getAccount, logout, type Account } from "./client";
 
-export default function AccountNav() {
-  const [account, setAccount] = useState<Account | null>();
+export default function AccountNav({ account: initialAccount }: { account?: Account | null }) {
+  const [account, setAccount] = useState(initialAccount);
 
   useEffect(() => {
+    if (initialAccount !== undefined) return;
+
     let current = true;
     void getAccount()
       .then((result) => { if (current) setAccount(result); })
       .catch(() => { if (current) setAccount(null); });
     return () => { current = false; };
-  }, []);
+  }, [initialAccount]);
 
   if (account === undefined) return <span className="size-[7px] rounded-full bg-border" aria-label="Checking account" />;
   if (account === null) return <a className="text-sm font-bold text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 max-[560px]:text-[.78rem]" href="/login">Sign in</a>;

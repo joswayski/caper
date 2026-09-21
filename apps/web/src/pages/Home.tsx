@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import AccountNav from "../account/AccountNav";
+import type { Account } from "../account/client";
 import LowPolyChat from "../components/LowPolyChat";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
@@ -8,13 +9,14 @@ const contactEmail = "contact@josevalerio.com";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
+  account: Account | null;
   initialNow: number;
   latestChanges: readonly LatestChange[];
 };
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 
-export default function Home({ initialNow, latestChanges }: HomeProps) {
+export default function Home({ account, initialNow, latestChanges }: HomeProps) {
   const [now, setNow] = useState(initialNow);
 
   useEffect(() => {
@@ -27,7 +29,7 @@ export default function Home({ initialNow, latestChanges }: HomeProps) {
     <main className="page">
       <header className="site-header shell">
         <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
-        <div className="site-header-actions"><AccountNav /><a className="login-button" href="/live">Try voice</a></div>
+        <div className="site-header-actions"><AccountNav account={account} /><a className="login-button" href="/live">Try voice</a></div>
       </header>
 
       <section className="hero shell">

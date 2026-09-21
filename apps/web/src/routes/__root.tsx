@@ -17,15 +17,34 @@ export const Route = createRootRoute({
         content: "Chat with anyone, about anything.",
       },
       { name: "theme-color", content: "#0c0d0f" },
+      { name: "color-scheme", content: "dark" },
       { title: "Caper - A place for your people" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
-      { rel: "preconnect", href: "https://api.fontshare.com" },
-      { rel: "preconnect", href: "https://cdn.fontshare.com", crossOrigin: "anonymous" },
       {
-        rel: "stylesheet",
-        href: "https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap",
+        rel: "preload",
+        href: "/fonts/satoshi-400.woff2",
+        as: "font",
+        type: "font/woff2",
+      },
+      {
+        rel: "preload",
+        href: "/fonts/satoshi-500.woff2",
+        as: "font",
+        type: "font/woff2",
+      },
+      {
+        rel: "preload",
+        href: "/fonts/satoshi-700.woff2",
+        as: "font",
+        type: "font/woff2",
+      },
+      {
+        rel: "preload",
+        href: "/fonts/satoshi-900.woff2",
+        as: "font",
+        type: "font/woff2",
       },
     ],
   }),
@@ -52,6 +71,7 @@ function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
     <html lang="en">
       <head>
         <HeadContent />
+        <style>{"html,body{background:#0c0d0f;color-scheme:dark}"}</style>
       </head>
       <body>
         {children}

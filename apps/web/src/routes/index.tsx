@@ -1,8 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { getInitialAccount } from "../account/server";
 import Home from "../pages/Home";
 
 export const Route = createFileRoute("/")({
-  loader: () => ({ initialNow: Date.now(), latestChanges: __LATEST_CHANGES__ }),
+  loader: async () => ({
+    account: await getInitialAccount(),
+    initialNow: Date.now(),
+    latestChanges: __LATEST_CHANGES__,
+  }),
   component: HomeRoute,
   head: () => ({
     links: [
@@ -25,6 +30,6 @@ export const Route = createFileRoute("/")({
 });
 
 function HomeRoute() {
-  const { initialNow, latestChanges } = Route.useLoaderData();
-  return <Home initialNow={initialNow} latestChanges={latestChanges} />;
+  const { account, initialNow, latestChanges } = Route.useLoaderData();
+  return <Home account={account} initialNow={initialNow} latestChanges={latestChanges} />;
 }
