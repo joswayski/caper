@@ -1,5 +1,4 @@
 import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression } from "./microphone.ts";
-import { ReceivedMonitor } from "./monitor.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
 import { EventConnection } from "./event-connection.ts";
@@ -76,9 +75,7 @@ export class PublicCallClient {
   private inputVolume = 100;
   private monitoring = false;
   private monitorStream?: MediaStream;
-  private receivedMonitor?: ReceivedMonitor;
-  private monitorConnecting = false;
-  private monitorStatus?: string;
+  private localTestTrack?: MediaStreamTrack;
   private stateBeforeMonitoring?: { muted: boolean; deafened: boolean };
   private pollPromise?: Promise<void>;
   private pollAgain = false;
@@ -126,8 +123,6 @@ export class PublicCallClient {
       inputVolume: this.inputVolume,
       monitoring: this.monitoring,
       monitorStream: this.monitorStream,
-      monitorConnecting: this.monitorConnecting,
-      monitorStatus: this.monitorStatus,
       selfId: this.selfId,
       localMedia: this.localMedia,
       participants: this.participants,
@@ -226,6 +221,7 @@ export class PublicCallClient {
 
   async join(name = "Guest", microphoneDeviceId?: string) {
     if (this.phase !== "idle" && this.phase !== "failed") return;
+    this.stopLocalMicTest();
     const started = performance.now();
     this.name = name.trim();
     this.microphoneDeviceId = microphoneDeviceId || undefined;
@@ -485,12 +481,15 @@ export class PublicCallClient {
     if (monitoring) {
       this.stateBeforeMonitoring = { muted: this.muted, deafened: this.deafened };
       this.monitoring = true;
-      this.monitorConnecting = true;
-      this.monitorStatus = "Preparing your microphone test…";
       this.muted = true;
       this.deafened = true;
+      const microphone = this.senders.get("microphone");
+      if (!microphone) throw new Error("No microphone is available for testing.");
+      // The test records the locally captured, noise-suppressed audio. It does
+      // not need a round trip through the SFU and never publishes this stream.
+      this.monitorStream = new MediaStream([this.captures.get(microphone.track)?.naturalTrack ?? microphone.track]);
     } else {
-      this.stopReceivedMonitor();
+      this.monitorStream = undefined;
       this.monitoring = false;
       this.muted = this.stateBeforeMonitoring?.muted ?? false;
       this.deafened = this.stateBeforeMonitoring?.deafened ?? false;
@@ -507,45 +506,9 @@ export class PublicCallClient {
       await current.sender.replaceTrack(this.muted || this.monitoring ? null : current.track);
       current.track.enabled = this.monitoring || !this.muted;
     });
-    if (this.token) await this.setState();
-    if (monitoring && this.monitoring) await this.startReceivedMonitor();
-  }
-
-  private async startReceivedMonitor() {
-    const microphone = this.senders.get("microphone");
-    if (!this.monitoring || !microphone || !this.token || this.receivedMonitor || this.phase !== "connected") return;
-    const monitor = new ReceivedMonitor(this.api.bind(this), this.token, () => {
-      if (this.receivedMonitor !== monitor) return;
-      this.stopReceivedMonitor();
-      this.monitorStatus = "Mic test connection lost. Stop the test and try again; the channel remains muted.";
-      this.emit();
-    });
-    this.receivedMonitor = monitor;
-    this.monitorConnecting = true;
-    this.monitorStatus = "Connecting your microphone test…";
-    this.emit();
-    try {
-      const stream = await monitor.start(this.captures.get(microphone.track)?.naturalTrack ?? microphone.track);
-      if (this.receivedMonitor !== monitor || !this.monitoring) return;
-      this.monitorStream = stream;
-      this.monitorConnecting = false;
-      this.monitorStatus = "Ready to record.";
-      this.emit();
-    } catch (error) {
-      if (this.receivedMonitor !== monitor) return;
-      this.stopReceivedMonitor();
-      this.monitorStatus = "Mic test failed. Stop the test and try again; the channel remains muted.";
-      this.emit();
-      throw error;
-    }
-  }
-
-  private stopReceivedMonitor() {
-    this.receivedMonitor?.stop();
-    this.receivedMonitor = undefined;
-    this.monitorStream = undefined;
-    this.monitorConnecting = false;
-    this.monitorStatus = undefined;
+    // State synchronization is best-effort: local testing must work even when
+    // the channel control plane is temporarily unavailable.
+    if (this.token) void this.setState().catch(() => undefined);
   }
 
   private setState(): Promise<void> {
@@ -603,13 +566,30 @@ export class PublicCallClient {
 
   setInputVolume(volume: number) {
     this.inputVolume = Math.max(0, Math.min(volume, 200));
-    this.captures.get(this.senders.get("microphone")?.track!)?.setInputVolume(this.inputVolume);
+    this.captures.get(this.localTestTrack ?? this.senders.get("microphone")?.track!)?.setInputVolume(this.inputVolume);
     this.emit();
   }
 
   setVoiceProcessingStrength(strength: number) {
     this.voiceProcessingStrength = clampVoiceProcessingStrength(strength);
-    this.captures.get(this.senders.get("microphone")?.track!)?.setVoiceProcessingStrength(this.voiceProcessingStrength);
+    this.captures.get(this.localTestTrack ?? this.senders.get("microphone")?.track!)?.setVoiceProcessingStrength(this.voiceProcessingStrength);
+    this.emit();
+  }
+
+  async startLocalMicTest() {
+    if (this.phase !== "idle" || this.localTestTrack) return;
+    const track = await this.openMicrophone(this.microphoneDeviceId);
+    if (this.phase !== "idle") { this.stopMicrophone(track); return; }
+    this.localTestTrack = track;
+    this.monitorStream = new MediaStream([this.captures.get(track)?.naturalTrack ?? track]);
+    this.emit();
+  }
+
+  stopLocalMicTest() {
+    if (!this.localTestTrack) return;
+    this.stopMicrophone(this.localTestTrack);
+    this.localTestTrack = undefined;
+    this.monitorStream = undefined;
     this.emit();
   }
 
@@ -656,7 +636,7 @@ export class PublicCallClient {
         senderReplaced = true;
         if (generation !== this.generation) throw new Error("Call session changed.");
         track.enabled = this.monitoring || !this.muted;
-        if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(this.captures.get(track)?.naturalTrack ?? track);
+        if (this.monitoring) this.monitorStream = new MediaStream([this.captures.get(track)?.naturalTrack ?? track]);
         if (generation !== this.generation) throw new Error("Call session changed.");
         microphone.track = track;
         this.localMedia = new MediaStream([track]);
@@ -673,7 +653,7 @@ export class PublicCallClient {
         if (senderReplaced && generation === this.generation && this.senders.get("microphone") === microphone) {
           try {
             await microphone.sender.replaceTrack(this.muted || this.monitoring ? null : old);
-            if (this.monitoring && this.receivedMonitor) await this.receivedMonitor.replaceTrack(oldCapture?.naturalTrack ?? old);
+            if (this.monitoring) this.monitorStream = new MediaStream([oldCapture?.naturalTrack ?? old]);
           } catch { rollbackFailed = true; }
         }
         if (track) this.stopMicrophone(track);
@@ -929,7 +909,11 @@ export class PublicCallClient {
       if (generation !== this.generation) { this.stopMicrophone(track); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
       await this.connectPrepared(track, joined, generation, started, "Rejoined", issuedAt);
       this.reconnects = 0;
-      if (this.monitoring) await this.startReceivedMonitor().catch(() => undefined);
+      if (this.monitoring) {
+        const microphone = this.senders.get("microphone");
+        if (microphone) this.monitorStream = new MediaStream([this.captures.get(microphone.track)?.naturalTrack ?? microphone.track]);
+        this.emit();
+      }
     } catch {
       if (captured) this.stopMicrophone(captured);
       if (generation !== this.generation) return;
@@ -995,7 +979,8 @@ export class PublicCallClient {
     this.previousStats = undefined;
     this.joinTiming = undefined;
     this.microphoneStatus = undefined;
-    this.stopReceivedMonitor();
+    this.monitorStream = undefined;
+    this.localTestTrack = undefined;
     this.pc?.getReceivers().forEach((receiver) => receiver.track.stop());
     this.pc?.getSenders().forEach((sender) => { if (sender.track !== preserve) sender.track?.stop(); });
     for (const publication of this.senders.values()) if (publication.track !== preserve) publication.track.stop();
@@ -1006,12 +991,16 @@ export class PublicCallClient {
   }
 
   private resetMonitoring() {
-    if (!this.monitoring) return;
+    if (!this.monitoring) {
+      this.stopLocalMicTest();
+      return;
+    }
     this.monitoring = false;
     this.muted = this.stateBeforeMonitoring?.muted ?? false;
     this.deafened = this.stateBeforeMonitoring?.deafened ?? false;
     this.stateBeforeMonitoring = undefined;
-    this.stopReceivedMonitor();
+    this.monitorStream = undefined;
+    this.localTestTrack = undefined;
   }
 
   private requirePc() {

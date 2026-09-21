@@ -295,8 +295,8 @@ test("join, 204 state responses, real sender mute, deafen, undeafen, and immedia
   assert.ok(calls.includes("leave"));
 });
 
-test("mic test detaches channel audio, plays a separately received track, and restores prior state", async (t) => {
-  const { client, track, states, stateUpdates, audioSinks } = setup(t);
+test("mic test stays local, detaches channel audio, and restores prior state", async (t) => {
+  const { client, track, calls, states, stateUpdates } = setup(t);
   await client.join("Guest");
   const naturalTrack = new Track();
   const capture = (client as unknown as { captures: Map<Track, { naturalTrack: Track }> }).captures.get(track)!;
@@ -306,22 +306,16 @@ test("mic test detaches channel audio, plays a separately received track, and re
   await client.setDeafened(false);
 
   await client.setMonitoring(true);
-  assert.deepEqual(Peer.all[1].remoteDescriptions, [{ type: "answer", sdp: senderSdp }], "private sender uses the same DTX as the channel");
-  assert.deepEqual(Peer.all[2].remoteDescriptions, [{ type: "offer", sdp: providerSdp }], "receive-only monitor needs no sender override");
   assert.equal(states.at(-1)?.monitoring, true);
   assert.equal(states.at(-1)?.muted, true);
   assert.equal(states.at(-1)?.deafened, true);
   const monitorTrack = states.at(-1)?.monitorStream?.getAudioTracks()[0] as unknown as Track;
-  assert.notEqual(monitorTrack, track, "only the separately received/decoded track should feed playback");
-  assert.equal(monitorTrack.enabled, true, "the local loopback track must remain audible");
+  assert.equal(monitorTrack, naturalTrack, "the test records the local denoised tap");
+  assert.equal(Peer.all.length, 1, "the test must not create a private SFU connection");
+  assert.equal(calls.filter((operation) => operation === "join").length, 1, "the test must not join a fake participant");
   assert.equal(track.enabled, true, "sender detachment, not track disabling, isolates the channel");
   assert.equal(channelPeer.senders[0].track, null, "the microphone must not reach the channel");
-  assert.equal(Peer.all[1].senders[0].track, naturalTrack, "the comparison records the denoised tap before voice processing");
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
-  assert.equal(audioSinks.length, 1);
-  assert.equal(audioSinks[0].muted, true);
-  assert.equal(audioSinks[0].srcObject, states.at(-1)?.monitorStream);
-  assert.equal(audioSinks[0].playing, true, "the received track drains before recording starts");
 
   await client.setMonitoring(false);
   assert.equal(states.at(-1)?.monitoring, false);
@@ -329,13 +323,21 @@ test("mic test detaches channel audio, plays a separately received track, and re
   assert.equal(states.at(-1)?.muted, true);
   assert.equal(states.at(-1)?.deafened, false);
   assert.equal(track.enabled, false);
-  assert.equal(monitorTrack.readyState, "ended", "stopping releases the received track");
   assert.equal(track.readyState, "live", "stopping must not stop microphone capture");
-  assert.equal(naturalTrack.readyState, "live", "the monitor borrows the denoised tap without owning it");
+  assert.equal(naturalTrack.readyState, "live", "the local test borrows the denoised tap without owning it");
   assert.equal(channelPeer.senders[0].track, null);
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: false });
-  assert.equal(audioSinks[0].playing, false);
-  assert.equal(audioSinks[0].srcObject, null);
+});
+
+test("pre-join mic test uses the local denoised track and releases it before joining", async (t) => {
+  const { client, track, calls, states } = setup(t);
+  await client.startLocalMicTest();
+  assert.equal(states.at(-1)?.phase, "idle");
+  assert.equal(states.at(-1)?.monitorStream?.getAudioTracks()[0], track);
+  assert.deepEqual(calls, [], "starting a local test must not contact the media API");
+  client.stopLocalMicTest();
+  assert.equal(track.readyState, "ended");
+  assert.equal(states.at(-1)?.monitorStream, undefined);
 });
 
 test("voice processing defaults to 25%, clamps updates, and changes the live capture", async (t) => {
@@ -349,11 +351,10 @@ test("voice processing defaults to 25%, clamps updates, and changes the live cap
   assert.deepEqual(update.mock.calls.map((call) => call.arguments), [[100]]);
 });
 
-test("monitor capture replacement stays private and retains the same received stream", async (t) => {
+test("monitor capture replacement stays private and uses the replacement local stream", async (t) => {
   const { client, track, states, install } = setup(t);
   await client.join();
   await client.setMonitoring(true);
-  const received = states.at(-1)!.monitorStream;
   await client.setMuted(false);
   await client.setDeafened(false);
   assert.equal(states.at(-1)!.muted, true);
@@ -362,25 +363,23 @@ test("monitor capture replacement stays private and retains the same received st
   install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([replacement]) } });
   await client.setNoiseSuppression("off");
   assert.equal(Peer.all[0].senders[0].track, null);
-  assert.equal(Peer.all[1].senders[0].track, replacement);
   assert.equal(track.readyState, "ended");
-  assert.equal(states.at(-1)!.monitorStream, received);
+  assert.equal(states.at(-1)!.monitorStream?.getAudioTracks()[0], replacement);
   await client.setMonitoring(false);
   assert.equal(Peer.all[0].senders[0].track, replacement);
-  assert.ok(Peer.all.slice(1).every((peer) => peer.connectionState === "closed"));
+  assert.equal(Peer.all.length, 1);
 });
 
-test("failed private join keeps channel isolated until explicit stop", async (t) => {
+test("mic test still starts when state synchronization is unavailable", async (t) => {
   const { client, track, states, install } = setup(t);
   await client.join();
   const originalFetch = fetch;
-  install("fetch", (url: string, options: RequestInit) => url.endsWith("/join")
-    ? Promise.resolve(Response.json({ error: "test unavailable" }, { status: 503 })) : originalFetch(url, options));
-  await assert.rejects(client.setMonitoring(true), /test unavailable/);
+  install("fetch", (url: string, options: RequestInit) => url.endsWith("/state")
+    ? Promise.resolve(Response.json({ error: "state unavailable" }, { status: 503 })) : originalFetch(url, options));
+  await client.setMonitoring(true);
   assert.equal(Peer.all[0].senders[0].track, null);
-  assert.equal(states.at(-1)!.monitorStream, undefined);
+  assert.equal(states.at(-1)!.monitorStream?.getAudioTracks()[0], track);
   assert.equal(states.at(-1)!.monitoring, true);
-  assert.equal(states.at(-1)!.monitorConnecting, false);
   await client.setMonitoring(false);
   assert.equal(Peer.all[0].senders[0].track, track);
 });
@@ -549,34 +548,6 @@ test("terminal reconnect failure stops mic monitoring before an explicit join", 
   await client.join();
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(Peer.latest.senders[0].track, retryTrack);
-});
-
-test("stop during pending test joins releases late capabilities without publishing", async (t) => {
-  const { client, track, states, install } = setup(t);
-  await client.join();
-  const originalFetch = fetch;
-  const grants: Array<() => void> = [];
-  const left: string[] = [];
-  let published = 0;
-  install("fetch", (url: string, options: RequestInit) => {
-    if (url.endsWith("/join")) return new Promise<Response>((resolve) => {
-      const role = JSON.parse(options.body as string).monitor;
-      grants.push(() => resolve(Response.json({ token: role, iceServers: [] })));
-    });
-    if (url.endsWith("/publish")) published++;
-    if (url.endsWith("/leave")) left.push(new Headers(options.headers).get("x-caper-media-token")!);
-    return originalFetch(url, options);
-  });
-  const starting = client.setMonitoring(true);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(grants.length, 2);
-  await client.setMonitoring(false);
-  grants.forEach((grant) => grant());
-  await starting;
-  assert.equal(published, 0);
-  assert.deepEqual(left.sort(), ["receiver", "sender"]);
-  assert.equal(states.at(-1)!.monitorStream, undefined);
-  assert.equal(Peer.all[0].senders[0].track, track);
 });
 
 test("mute and deafen update local media and view state without waiting for roster sync", async (t) => {
@@ -1145,18 +1116,18 @@ test("automatic rejoin reopens SSE and preserves mute until explicitly unmuted",
   assert.equal(Peer.latest.getSenders()[0].track?.enabled, true);
 });
 
-test("rejoin restores private microphone testing without reattaching the public sender", async (t) => {
+test("rejoin restores local microphone testing without reattaching the public sender", async (t) => {
   const { client, states } = setup(t);
   await client.join();
   await client.setMonitoring(true);
   const previousPeers = Peer.all.length;
   await (client as unknown as { rejoin(): Promise<void> }).rejoin();
-  const [publicPeer, privateSender] = Peer.all.slice(previousPeers);
+  const [publicPeer] = Peer.all.slice(previousPeers);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.monitoring, true);
   assert.equal(states.at(-1)?.muted, true);
   assert.equal(publicPeer.senders[0].track, null);
-  assert.equal(privateSender.senders[0].track?.enabled, true);
+  assert.equal(Peer.all.length, previousPeers + 1);
   assert.ok(states.at(-1)?.monitorStream);
 });
 
