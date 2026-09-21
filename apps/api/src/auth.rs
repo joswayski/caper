@@ -323,27 +323,57 @@ impl AuthVerifier {
             .execute(&mut *transaction)
             .await
             .map_err(database_unavailable)?;
-        let external_id = random_external_id();
+        let email_lock_hash = keyed_hash(
+            &auth.secret,
+            b"email-verify-lock",
+            challenge.email.as_bytes(),
+        );
+        let email_lock_id =
+            i64::from_be_bytes(email_lock_hash[..8].try_into().expect("hash length"));
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(email_lock_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_unavailable)?;
+
+        // Do not attempt an insert for an existing account: PostgreSQL advances an
+        // identity sequence before resolving INSERT ... ON CONFLICT.
         let user: Option<VerifiedUser> = sqlx::query_as(
-            "WITH inserted AS (
-                INSERT INTO public.users (external_id, email, email_verified_at)
-                VALUES ($1, $2, now())
-                ON CONFLICT (email) DO NOTHING
-                RETURNING id, external_id, email, username, display_name, true AS created
-             ), existing AS (
-                UPDATE public.users SET
-                    email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
-                WHERE email = $2 AND deleted_at IS NULL
-                    AND NOT EXISTS (SELECT 1 FROM inserted)
-                RETURNING id, external_id, email, username, display_name, false AS created
-             )
-             SELECT * FROM inserted UNION ALL SELECT * FROM existing",
+            "UPDATE public.users SET
+                email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
+             WHERE email = $1 AND deleted_at IS NULL
+             RETURNING id, external_id, email, username, display_name, false AS created",
         )
-        .bind(external_id)
         .bind(&challenge.email)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_unavailable)?;
+        let user = match user {
+            Some(user) => Some(user),
+            None => {
+                let email_exists: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM public.users WHERE email = $1)",
+                )
+                .bind(&challenge.email)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(database_unavailable)?;
+                if email_exists {
+                    None
+                } else {
+                    sqlx::query_as(
+                        "INSERT INTO public.users (external_id, email, email_verified_at)
+                         VALUES ($1, $2, now())
+                         RETURNING id, external_id, email, username, display_name, true AS created",
+                    )
+                    .bind(random_external_id())
+                    .bind(&challenge.email)
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .map_err(database_unavailable)?
+                }
+            }
+        };
         let Some(user) = user else {
             transaction.commit().await.map_err(database_unavailable)?;
             return Err(invalid_code(None));
@@ -621,6 +651,27 @@ mod tests {
         assert!(session.user_created);
         assert_eq!(session.user.email.as_deref(), Some("person@example.com"));
         assert!(session.user.username.is_none());
+
+        let repeat_challenge = verifier
+            .request_code(Some(&pool), "person@example.com", ip)
+            .await
+            .unwrap();
+        let repeat_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
+        let repeat_session = verifier
+            .verify_code(Some(&pool), repeat_challenge, &repeat_code)
+            .await
+            .unwrap();
+        assert!(!repeat_session.user_created);
+        assert_eq!(repeat_session.user.id, session.user.id);
+        let next_user_id: i64 = sqlx::query_scalar(
+            "INSERT INTO public.users (external_id, email)
+             VALUES ('sequence-regression-check', 'next@example.com')
+             RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(next_user_id, session.user.id + 1);
 
         let principal = verifier
             .authenticate(&session.token, Some(&pool))
