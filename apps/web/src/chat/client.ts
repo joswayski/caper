@@ -108,7 +108,7 @@ export class ChatClient {
     if (this.controller.signal.aborted) return;
     clearTimeout(this.typingIdleTimer);
     this.typingActive = active;
-    if (active) this.typingIdleTimer = setTimeout(() => this.setTyping(false), 3_000);
+    if (active) this.typingIdleTimer = setTimeout(() => this.setTyping(false), 250);
     this.flushTyping();
   }
 
@@ -118,7 +118,7 @@ export class ChatClient {
     if (this.typingRequest || !channel || !session || this.controller.signal.aborted) return;
     const active = this.typingActive;
     if (!active && !this.typingSent) return;
-    if (active && this.typingSent && Date.now() - this.typingSentAt < 2_000) return;
+    if (active && this.typingSent && Date.now() - this.typingSentAt < 500) return;
     this.typingSent = active;
     this.typingSentAt = Date.now();
     // Serialize start/stop so a delayed start request cannot overtake its stop.
