@@ -241,7 +241,7 @@ test("guest name is trimmed, preserved on reconnect, and replaceable after leavi
   assert.deepEqual(joinedNames, ["Jose 🌱", "Jose 🌱", "Another guest"]);
 });
 
-test("join, 204 state responses, real sender mute, deafen and immediate device cleanup", async (t) => {
+test("join, 204 state responses, real sender mute, deafen, undeafen, and immediate device cleanup", async (t) => {
   const { client, track, calls, states } = setup(t);
   await client.join("Guest");
   assert.deepEqual(Peer.latest.remoteDescriptions, [{ type: "answer", sdp: senderSdp }]);
@@ -258,9 +258,9 @@ test("join, 204 state responses, real sender mute, deafen and immediate device c
   assert.equal(states.at(-1)?.muted, true);
   assert.equal(states.at(-1)?.deafened, true);
   await client.setDeafened(false);
-  assert.equal(track.enabled, false, "undeafening leaves the microphone muted");
-  assert.equal(Peer.latest.senders[0].track, null);
-  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(track.enabled, true, "undeafening restores the microphone");
+  assert.equal(Peer.latest.senders[0].track, track);
+  assert.equal(states.at(-1)?.muted, false);
   assert.equal(states.at(-1)?.deafened, false);
   client.leaveImmediately();
   assert.equal(track.readyState, "ended");
