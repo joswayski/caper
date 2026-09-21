@@ -1,10 +1,10 @@
-import { CallEvents } from "./events.ts";
+import { EventConnection } from "./event-connection.ts";
 import type { CallSnapshot } from "./types.ts";
 
 /** Read-only roster subscription; it does not join voice or renew anyone's lease. */
 export function watchPresence(snapshot: (value: CallSnapshot) => void, live: (value: boolean) => void) {
   const owner = new AbortController();
-  let stream: CallEvents | undefined;
+  let stream: EventConnection | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let failures = 0;
   let drainRetries = 0;
@@ -18,7 +18,7 @@ export function watchPresence(snapshot: (value: CallSnapshot) => void, live: (va
       clearTimeout(timer);
       timer = setTimeout(connect, planned && drainRetries++ < 10 ? 50 : Math.min(250 * 2 ** Math.min(failures++, 5), 5_000));
     };
-    const current = stream = new CallEvents(() => undefined, (_error, draining) => retry(draining), (value) => {
+    const current = stream = new EventConnection(() => undefined, (_error, draining) => retry(draining), (value) => {
       if (owner.signal.aborted || stream !== current) return;
       failures = 0;
       drainRetries = 0;

@@ -42,6 +42,55 @@ unguessable short-lived call capability. Clients use Caper track IDs, not
 arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 **not E2EE**.
 
+### Messaging transport decision (not implemented)
+
+Use a WebSocket gateway for future authenticated app events, with HTTP commands
+for sending messages. WebSockets connect clients to the gateway; Valkey Pub/Sub
+distributes committed events between servers. They are different layers, not
+alternatives. Keep the gateway independently deployable from command handlers so
+ordinary API releases need not rotate client event connections. Gateway releases
+still need overlapping handoff and cursor-based recovery. The current voice MVP
+continues using SSE; merely replacing its transport would not fix shutdown order.
+
+The intended message path is:
+
+1. A client sends an idempotent command with a client-generated message ID.
+2. One Postgres transaction stores the message and its outbox event. A successful
+   response means accepted durably, not delivered to every recipient.
+3. Wake the outbox publisher immediately after commit (with a durable pending-row
+   scan to recover lost wakeups), then fan out the full message event through
+   Valkey to the gateways serving authorized recipients. Do not wait for a periodic
+   client poll or require recipients to fetch the database for each new message.
+4. Gateways push the payload over WebSockets. Events have stable IDs and ordered
+   per-channel positions; serialize publication per channel and deduplicate
+   retries. Membership/authorization checks apply to live delivery and replay.
+5. On reconnect or a detected sequence gap, replay durable events after the last
+   received position, then continue live delivery. Subscribe/buffer live events
+   before replaying through a captured high-water mark; merge by position so the
+   replay-to-live boundary cannot miss or reorder concurrent messages. An expired
+   replay window requires explicit resynchronization, not silent omission.
+
+Valkey loss must not lose accepted messages. A publisher crash between publish and
+mark-delivered can create duplicates, so delivery is at least once with client
+deduplication, not an exactly-once claim. A gateway losing Pub/Sub must catch up
+from the durable event log even if its client socket stayed open. Bound per-client
+queues; a slow client resumes instead of exhausting gateway memory. Typing/presence
+are expiring transient state, separate from durable message history and replay.
+
+Proposed acceptance target: healthy same-region clients receive message events at
+p95 below 250ms and p99 below one second from server commit, including routine
+rolling deployments. Measure commit-to-publish, gateway delivery, and client receipt
+separately under sustained traffic, publisher failures, broker reconnects, and
+gateway restarts. This is a target for the messaging implementation, **not a
+measured production guarantee**. No message tables, outbox, WebSocket endpoint,
+gateway deployment, or replay log exists in this voice change.
+
+Discord's documented [Gateway](https://docs.discord.com/developers/events/gateway)
+uses WebSockets and sequence-based resume; its
+[Create Message](https://docs.discord.com/developers/resources/message#create-message)
+HTTP operation emits a Gateway event. These public contracts inform the boundary
+above, not assumptions about Discord's internal databases or broker.
+
 ## Shared call state and rolling deployments
 
 This implements shared state for **General only**, still capped at 12 participants.
@@ -71,10 +120,12 @@ in Postgres; typing indicators would be transient events, not durable messages.
   unready; reconnection wakes streams to resynchronize. Read/write failure returns
   503, never an independent in-memory fallback. `/health` remains liveness;
   configure Kubernetes readiness to `/readyz` after the compatible API is deployed.
-- SIGTERM emits `draining`, rejects new media commands, and allows in-flight HTTP
-  requests to finish. Shared-mode shutdown does **not** remove participants or
-  close provider tracks. Healthy media stays browser ↔ Cloudflare while SSE
-  reconnects to another pod with the same capability. No sticky sessions are needed.
+- SIGTERM rejects new media commands and allows in-flight HTTP requests to finish.
+  Streams opting into `handoff=1` receive `migrating` and keep forwarding shared
+  state during a ten-second handoff window. Older streams receive `draining` and
+  close. Shared-mode shutdown does **not** remove participants or close provider
+  tracks. Healthy media stays browser ↔ Cloudflare while SSE changes pods with the
+  same capability. No sticky sessions are needed.
 - Explicit leave publishes immediately. A vanished browser is different: its
   existing 45-second lease expires, with a five-second sweep (up to about 50 seconds
   after the last renewal). SSE disconnect alone is not leave, because deployments
@@ -93,7 +144,7 @@ analysis, with no per-frame Valkey traffic. Spectator streams send an initial ro
 and push changes, including an empty roster after leave. Ten-second SSE heartbeats
 detect broken connections; they are not the roster update interval. Spectators
 reconnect with backoff from 250 ms to five seconds after failures and after 50 ms
-on planned draining, then replace the roster with a fresh snapshot. The sidebar
+on legacy draining, then replace the roster with a fresh snapshot. The sidebar
 marks last-known data with “Updating live roster…” until a snapshot arrives.
 
 During a rolling restart the existing SSE connection still belongs to the old
@@ -103,23 +154,43 @@ withdrawal can propagate while existing requests and SSE still work. Its 65-seco
 termination grace includes that window and preserves the API's 60-second budget.
 The first deployment of the hook terminates old pods that do not yet have it.
 
-The browser recognizes only explicit `503` bodies with `code: api_draining` as
-planned stream rejection. Both in-call and spectator recovery allow ten fast
-50ms retries (including a `draining` event), then use ordinary exponential backoff.
-This avoids turning a brief stale route into seconds of additional client delay
-without retrying rapidly forever. A restored connection sends current state, not
-every intermediate toggle. There is still a reconnect round trip; neither the
-hook nor unit/browser mocks prove zero production interruption or a latency SLA.
+For opt-in streams, `migrating` opens a replacement **without closing the old
+stream**. The browser continues rendering old-stream pushes until the replacement
+delivers a valid snapshot at least as recent as its last received revision. `ready`
+alone is insufficient. Only then does it cancel the old stream. Replacement
+registration changes the shared connection ID, but a retiring stream temporarily
+ignores that supersession while still authenticating the capability on each read;
+leave/revocation still ends it. Non-retiring streams retain single-connection
+replacement semantics. No participant schema change is required.
 
-Rollout validation: web tests inject repeated draining rejections, verify retry
-budgets/reset/cancellation, and distinguish generic 503/502 responses. The real
-Call browser fixture rejects three reconnects while changing the remote state,
-then checks the current mute/deafen UI and unchanged voice peer. Its API/WebRTC
-are mocked. Cluster endpoint propagation and physical devices remain unverified.
-Deploy the companion infrastructure manifest and this web image; no API image or
-Valkey schema change is needed. After merging and the web image build:
+At most two streams are open per logical subscription. Replacement failure retries
+while the old stream keeps serving; a candidate without a current snapshot times
+out after five seconds. Only explicit `503/api_draining` admission rejections use
+up to ten fast 50ms retries; other failures back off. If the old stream expires and
+no replacement succeeds, existing outage recovery takes over without tearing down
+healthy voice. The handoff fits inside the existing 30-second HTTP drain budget.
+Process crashes, network loss, blocked intermediaries, or a replacement unavailable
+beyond the serving window still cannot provide uninterrupted updates.
+
+Validation uses real local HTTP servers and disposable Redis to test Axum graceful
+shutdown, overlapping authenticated/spectator delivery after replacement
+registration, capability revocation, and completion after cancellation. Cloudflare
+is mocked. Browser tests cover delayed/stale snapshots, retry/timeout/cancellation,
+and repeated handoffs. The real Call component fixture holds replacement snapshots
+while pushing 30 status changes through old streams and verifies each rendered
+state and unchanged voice peer (mocked API/WebRTC). These do not measure production
+cluster routing or physical-device latency.
+
+Deploy **all API pods first, then web**, and refresh both clients. Keep the merged
+infrastructure preStop hook. The protocol is opt-in: old browsers still get the
+legacy close/reconnect behavior, and new browsers talking to an older API fall
+back to its `draining` event. The first API rollout replaces binaries without the
+overlap behavior, so retest after both deployments finish. After both image builds:
 
 ```sh
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
+# Wait for that workflow and every API pod to run the new image, then:
+kubectl -n default rollout status deployment/caper-api --timeout=15m
 gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
 ```
 
@@ -962,7 +1033,8 @@ expiry and idle-resource policy; they are not implemented here.
 No handshake within ten seconds or no valid event within 25 seconds fails the
 stream. An SSE failure during startup fails Join; during an established call it
 reopens only the event stream with the same capability, backing off from 250 ms
-to three seconds while keeping healthy audio. Planned `draining` reconnects start
+to three seconds while keeping healthy audio. Opt-in `migrating` events use the
+overlapping snapshot-gated handoff described above. Legacy `draining` reconnects start
 after 50 ms; explicit `503/api_draining` rejections share the bounded fast retry
 budget described above. An SSE-only outage does not force a new voice session while
 authenticated snapshot renewals succeed. Connected recovery keeps the layout stable;

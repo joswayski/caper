@@ -2,7 +2,7 @@ import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppress
 import { ReceivedMonitor } from "./monitor.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
-import { CallEvents } from "./events.ts";
+import { EventConnection } from "./event-connection.ts";
 import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
 import { TurnRenewal } from "./turn-renewal.ts";
 import { clampVoiceProcessingStrength, DEFAULT_VOICE_PROCESSING_STRENGTH } from "./voice-processing.ts";
@@ -86,7 +86,7 @@ export class PublicCallClient {
   private pushedSnapshotVersion = 0;
   private snapshotInvalidation = 0;
   private latestRevision?: number;
-  private events?: CallEvents;
+  private events?: EventConnection;
   private microphoneDeviceId?: string;
   private statsTimer?: number;
   private diagnostics?: ConnectionDiagnostics;
@@ -305,7 +305,7 @@ export class PublicCallClient {
 
   private async openEvents(generation: number) {
     this.events?.stop();
-    const events = this.events = new CallEvents(() => {
+    const events = this.events = new EventConnection(() => {
       if (generation !== this.generation) return;
       ++this.snapshotInvalidation;
       if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });

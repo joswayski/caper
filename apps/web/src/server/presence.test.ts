@@ -23,7 +23,7 @@ function streams(t: TestContext, failures: number[] = []) {
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input);
     requests.push({ url, init });
-    assert.equal(url, "/api/media/presence/events");
+    assert.match(url, /^\/api\/media\/presence\/events(?:\?handoff=1)?$/);
     const headers = new Headers(init.headers);
     assert.equal(headers.get("authorization"), null, "public presence must not send authentication");
     assert.equal(headers.get("x-caper-media-token"), null, "public presence must not send the media capability");

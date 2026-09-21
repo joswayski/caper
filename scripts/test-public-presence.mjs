@@ -35,7 +35,7 @@ try {
     const f=fixture;const original=window.fetch.bind(window);
     const frame=(name,data={})=>new TextEncoder().encode('event: '+name+'\\ndata: '+JSON.stringify(data)+'\\n\\n');
     const snapshot = pub => ({participants:f.people.map(p=>pub?(({tracks,...rest})=>rest)(p):p),revision:f.revision});
-    window.pushRoster = people => {f.people=people;f.revision++;for(const s of f.streams)s.controller.enqueue(frame('snapshot',snapshot(s.pub)));};
+    window.pushRoster = people => {f.people=people;f.revision++;for(const s of f.streams)if(!s.hold)s.sendSnapshot();};
     window.fetch=async (input,init={})=>{
       const path=new URL(input,location.origin).pathname;
       if(path==='/api/account/me')return Response.json({id:'account',username:'fixture',displayName:'Grok'});
@@ -44,9 +44,9 @@ try {
       if(path.endsWith('/events')){
         const pub=path.includes('/presence/');if(pub)f.connections++;
         let s;return new Response(new ReadableStream({start(controller){
-          s={controller,pub};f.streams.add(s);
+          s={controller,pub,hold:f.holdHandoff&&!pub,sendSnapshot:()=>controller.enqueue(frame('snapshot',snapshot(pub)))};f.streams.add(s);
           init.signal?.addEventListener('abort',()=>{f.streams.delete(s);controller.error(new DOMException('Cancelled','AbortError'));},{once:true});
-          controller.enqueue(frame('ready'));controller.enqueue(frame('snapshot',snapshot(pub)));
+          controller.enqueue(frame('ready'));if(!s.hold)s.sendSnapshot();
         },cancel(){f.streams.delete(s);}}),{headers:{'content-type':'text/event-stream'}});
       }
       if(path==='/api/media/join'){
@@ -219,8 +219,37 @@ try {
     assert(rejected===3,'did not exercise draining routing rejections');
     assert(peer.connectionState==='connected'&&fixture.peers.length===count,'handoff replaced voice peer');
     assert(mount.textContent.includes('You’re in General.'),'handoff changed connected phase');
-    window.fetch=original;await cleanup();
+    window.fetch=original;
     return 'PASS three draining-route rejections recover current mute/deafen within the fixture deadline, preserving voice peer';
+  `));
+  console.log(evaluate(`
+    const peer=fixture.peers.at(-1),count=fixture.peers.length,latencies=[];
+    for(let cycle=0;cycle<3;cycle++){
+      const old=[...fixture.streams].find(s=>!s.pub);
+      fixture.holdHandoff=true;
+      old.controller.enqueue(new TextEncoder().encode('event: migrating\\ndata: {}\\n\\n'));
+      await until(()=>[...fixture.streams].some(s=>!s.pub&&s!==old));
+      const candidate=[...fixture.streams].find(s=>!s.pub&&s!==old);
+      for(let i=0;i<10;i++){
+        const muted=i%2===0,deafened=i%3===0,started=performance.now();
+        pushRoster(fixture.people.map(p=>p.id==='phone'?{...p,muted,deafened}:p));
+        await until(()=>{
+          const text=[...mount.querySelectorAll('.participant')].find(p=>p.textContent.includes('Phone')).textContent;
+          return deafened?text.includes('Deafened'):muted?text.includes('Muted'):!text.includes('Deafened')&&!text.includes('Muted');
+        });
+        latencies.push(performance.now()-started);
+        assert(fixture.streams.has(old),'old stream closed before replacement snapshot');
+        assert(mount.textContent.includes('You’re in General.'),'handoff changed call phase');
+        await wait(100);
+      }
+      assert(candidate.hold,'replacement should still be awaiting a snapshot');
+      fixture.holdHandoff=false;candidate.hold=false;candidate.sendSnapshot();
+      await until(()=>!fixture.streams.has(old));
+      assert(fixture.peers.at(-1)===peer&&fixture.peers.length===count,'planned handoff replaced voice peer');
+    }
+    assert(Math.max(...latencies)<250,'local mocked updates paused during planned handoff');
+    await cleanup();
+    return {result:'PASS continuous status delivery during three overlapping handoffs (mocked API/WebRTC)',updates:latencies.length,maxLocalPushToDomMs:Math.round(Math.max(...latencies))};
   `));
 } catch (error) {
   console.error(evaluate(`return {page:document.body.innerText,presenceJsonRequests:window.fixture?.presenceReads};`));
