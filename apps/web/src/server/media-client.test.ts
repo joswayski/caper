@@ -430,20 +430,24 @@ test("heartbeat timeout covers response bodies without closing healthy media", a
 });
 
 test("failed mute state synchronization retries the latest state after API recovery", async (t) => {
-  const { client, track, stateUpdates, install } = setup(t);
+  const { client, track, stateUpdates, states, install } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   await client.join();
   await new Promise((resolve) => setImmediate(resolve));
   const originalFetch = fetch;
   let unavailable = true;
   install("fetch", (url: string, options: RequestInit) => unavailable && url.endsWith("/state")
     ? Promise.resolve(Response.json({}, { status: 503 })) : originalFetch(url, options));
-  await assert.rejects(client.setMuted(true));
+  await client.setMuted(true);
   assert.equal(track.enabled, false);
   assert.equal(Peer.latest.senders[0].track, null);
-  await assert.rejects(client.setDeafened(true));
+  await client.setDeafened(true);
+  assert.equal(states.at(-1)?.stateSyncPending, true);
   unavailable = false;
-  await (client as unknown as { poll(): Promise<void> }).poll();
+  t.mock.timers.tick(250);
+  await tick();
   assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: true });
+  assert.equal(states.at(-1)?.stateSyncPending, false);
   assert.equal(Peer.all.length, 1);
 });
 
@@ -591,10 +595,9 @@ test("mute media changes are not queued behind roster synchronization", async (t
   assert.equal(finishStates.length, 1);
 
   finishStates.shift()!();
-  await deafening;
   await new Promise((resolve) => setImmediate(resolve));
   finishStates.shift()!();
-  await muting;
+  await Promise.all([deafening, muting]);
 });
 
 test("unmute during a pending microphone switch attaches the new track", async (t) => {
@@ -1074,22 +1077,31 @@ test("SSE loss during startup fails closed but an established call recovers its 
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
-test("persistent SSE outage is bounded even while snapshots succeed", async (t) => {
+test("SSE-only outage never restarts healthy voice while authenticated renewals succeed", async (t) => {
   const { client, events, states, install } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   await client.join();
+  const peer = Peer.latest;
   const original = fetch;
+  let unavailable = true;
   install("fetch", (url: string, init: RequestInit) => url.includes("/events?")
-    ? Promise.resolve(Response.json({}, { status: 503 })) : original(url, init));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+    && unavailable ? Promise.resolve(Response.json({}, { status: 503 })) : original(url, init));
   events[0].close();
   await tick();
+  for (let seconds = 0; seconds < 90; seconds += 3) {
+    t.mock.timers.tick(3_000);
+    await tick();
+  }
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.liveUpdatesPending, true);
+  assert.equal(Peer.latest, peer);
+  assert.equal(peer.senders[0].track?.enabled, true);
+  unavailable = false;
   t.mock.timers.tick(3_000);
   await tick();
-  await (client as unknown as { poll(): Promise<void> }).poll();
-  assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.tick(27_000);
-  await tick();
-  assert.equal(states.at(-1)?.phase, "reconnecting");
+  assert.equal(events.length, 2);
+  assert.equal(states.at(-1)?.liveUpdatesPending, false);
+  assert.equal(Peer.latest, peer);
 });
 
 test("automatic rejoin reopens SSE and preserves mute until explicitly unmuted", async (t) => {
@@ -1219,6 +1231,381 @@ test("queued pushed snapshots never suppress a scheduled lease heartbeat", async
   await tick();
   assert.equal(requests, 2, "the queued push cannot replace the authenticated renewal");
   assert.equal(states.at(-1)?.participants[0]?.muted, true);
+});
+
+test("rapid mute changes coalesce to the latest intent behind an in-flight state write", async (t) => {
+  const { client, install, states } = setup(t);
+  await client.join();
+  const original = fetch;
+  const updates: boolean[] = [];
+  let finish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/state")) return original(url, init);
+    updates.push(JSON.parse(init.body as string).muted);
+    if (updates.length === 1) return new Promise<Response>((resolve) => { finish = () => resolve(new Response(null, { status: 204 })); });
+    return Promise.resolve(new Response(null, { status: 204 }));
+  });
+  const first = client.setMuted(true);
+  await tick();
+  const changes = [client.setMuted(false), client.setMuted(true), client.setMuted(false)];
+  await tick();
+  finish();
+  await Promise.all([first, ...changes]);
+  assert.deepEqual(updates, [true, false], "do not replay obsolete toggles after a slow request");
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(Peer.latest.senders[0].track?.enabled, true);
+});
+
+test("mute writes and pushed roster updates cannot block the scheduled lease renewal", async (t) => {
+  const { client, install, states, events, calls } = setup(t);
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+  await client.join();
+  const original = fetch;
+  const participants = [{ id: "other", name: "Other", muted: true, deafened: false, tracks: [] }];
+  let renewals = 0;
+  let finish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/snapshot")) {
+      renewals++;
+      return Promise.resolve(Response.json({ participants, revision: 1 }));
+    }
+    if (url.endsWith("/state")) return new Promise<Response>((resolve, reject) => {
+      finish = () => resolve(new Response(null, { status: 204 }));
+      init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    });
+    return original(url, init);
+  });
+  const muting = client.setMuted(true).catch(() => undefined);
+  await tick();
+  events[0].enqueue(snapshotEvent(participants, 1));
+  await tick();
+  const pushedMuted = states.at(-1)?.participants[0]?.muted;
+  t.mock.timers.tick(15_000);
+  await tick();
+  assert.ok(renewals > 0, "lease renewal must not queue behind a state request");
+  assert.equal(pushedMuted, true, "show pushed state before heartbeat, without waiting for our own write");
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
+  assert.equal(calls.filter((call) => call === "join").length, 1);
+  finish();
+  await muting;
+});
+
+test("draining with failed state writes retries latest intent without replacing the voice session", async (t) => {
+  const { client, events, install, states, calls } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const peer = Peer.latest;
+  const original = fetch;
+  const updates: Array<{ muted: boolean; deafened: boolean }> = [];
+  const tokens: string[] = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    tokens.push((init.headers as Record<string, string>)["x-caper-media-token"]);
+    if (!url.endsWith("/state")) return original(url, init);
+    updates.push(JSON.parse(init.body as string));
+    return Promise.resolve(updates.length <= 2
+      ? Response.json({}, { status: updates.length === 1 ? 503 : 504 })
+      : new Response(null, { status: 204 }));
+  });
+  await client.setMuted(true);
+  assert.equal(peer.senders[0].track, null);
+  assert.equal(states.at(-1)?.stateSyncPending, true);
+  events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
+  events[0].close();
+  await tick();
+  t.mock.timers.tick(50);
+  await tick();
+  await client.setDeafened(true);
+  await Promise.all([client.setDeafened(false), client.setMuted(false)]);
+  t.mock.timers.tick(300);
+  await tick();
+  assert.deepEqual(updates.at(-1), { muted: false, deafened: false });
+  assert.equal(states.at(-1)?.stateSyncPending, false);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.some((state) => state.error !== undefined), false);
+  assert.equal(events.length, 2);
+  assert.equal(Peer.latest, peer);
+  assert.equal(peer.getSenders()[0].track?.enabled, true);
+  assert.equal(calls.filter((call) => call === "join").length, 1);
+  assert.equal(calls.includes("leave"), false);
+  assert.deepEqual([...new Set(tokens)], ["capability"]);
+});
+
+test("blocked subscription negotiation cannot delay roster, mute synchronization, or lease renewal", async (t) => {
+  const { client, events, install, states, stateUpdates } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const original = fetch;
+  let finish!: () => void;
+  let renewals = 0;
+  let muted = false;
+  const roster = () => [{ id: "other", name: "Other", muted, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/subscribe")) return new Promise<Response>((resolve) => {
+      finish = () => { void original(url, init).then(resolve); };
+    });
+    if (url.endsWith("/snapshot")) {
+      renewals++;
+      return Promise.resolve(Response.json({ participants: roster(), revision: muted ? 2 : 1 }));
+    }
+    return original(url, init);
+  });
+  events[0].enqueue(snapshotEvent(roster(), 1));
+  await tick();
+  assert.equal(typeof finish, "function", "subscription is waiting on its provider response");
+  muted = true;
+  events[0].enqueue(snapshotEvent(roster(), 2));
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
+  await client.setMuted(true);
+  assert.equal(stateUpdates.at(-1)?.muted, true);
+  for (let heartbeat = 0; heartbeat < 2; heartbeat++) {
+    t.mock.timers.tick(15_000);
+    await tick();
+  }
+  assert.equal(renewals, 2, "heartbeat must run while SDP work is still pending");
+  assert.equal(states.at(-1)?.phase, "connected");
+  finish();
+  await tick();
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
+});
+
+test("a late timed-out mute write is repaired from a newer pushed self snapshot", async (t) => {
+  const { client, events, install, states } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const original = fetch;
+  const updates: boolean[] = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/state")) return original(url, init);
+    updates.push(JSON.parse(init.body as string).muted);
+    if (updates.length === 1) return new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    });
+    return Promise.resolve(new Response(null, { status: 204 }));
+  });
+  const muting = client.setMuted(true);
+  await tick();
+  t.mock.timers.tick(5_000);
+  await muting;
+  await client.setMuted(false);
+  assert.deepEqual(updates, [true, false]);
+  // The first request committed after the unmute, even though its HTTP wait aborted.
+  events[0].enqueue(snapshotEvent([{ id: "self", name: "Self", muted: true, deafened: false, tracks: [] }], 8));
+  await tick();
+  assert.deepEqual(updates, [true, false, false]);
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(Peer.latest.senders[0].track?.enabled, true);
+  events[0].enqueue(snapshotEvent([{ id: "self", name: "Self", muted: false, deafened: false, tracks: [] }], 9));
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.muted, false);
+  assert.equal(states.at(-1)?.stateSyncPending, false);
+  assert.equal(updates.length, 3, "an agreeing snapshot must not trigger another write");
+});
+
+test("leaving cancels pending state retries and ignores an old mute action after rejoin", async (t) => {
+  const { client, install, states } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const original = fetch;
+  let writes = 0;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/state")) {
+      writes++;
+      return Promise.resolve(Response.json({}, { status: 503 }));
+    }
+    return original(url, init);
+  });
+  await client.setMuted(true);
+  assert.equal(states.at(-1)?.stateSyncPending, true);
+  const oldAction = client.setMuted(false);
+  await client.leave();
+  await oldAction;
+  install("fetch", original);
+  await client.join();
+  t.mock.timers.tick(1_000);
+  await tick();
+  assert.equal(writes, 1, "no old-generation write or retry");
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.muted, false);
+  assert.equal(states.at(-1)?.stateSyncPending, false);
+  assert.equal(states.some((state) => state.error !== undefined), false);
+});
+
+for (const operation of ["join", "publish", "subscribe", "negotiate", "close"]) {
+  test(`${operation} retries explicit drain rejection without replacing the call`, async (t) => {
+    const { client, install, events, states, calls } = setup(t);
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    const startup = operation === "join" || operation === "publish";
+    if (!startup) await client.join();
+    const original = fetch;
+    let attempts = 0;
+    install("fetch", (url: string, init: RequestInit) => {
+      if (url.endsWith(`/${operation}`) && ++attempts === 1) return Promise.resolve(Response.json({ error: "API is draining", code: "api_draining" }, { status: 503 }));
+      return original(url, init);
+    });
+    const joining = startup ? client.join() : Promise.resolve();
+    if (!startup) {
+      events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }], 1));
+      await tick();
+      if (operation === "close") events[0].enqueue(snapshotEvent([], 2));
+    }
+    await tick();
+    assert.equal(attempts, 1);
+    t.mock.timers.tick(250);
+    await tick();
+    await joining;
+    assert.equal(attempts, 2);
+    assert.equal(states.at(-1)?.phase, "connected");
+    assert.equal(Peer.all.length, 1);
+    assert.equal(calls.filter((op) => op === "join").length, 1);
+    assert.equal(calls.includes("leave"), false);
+  });
+}
+
+for (const status of [502, 503, 504]) {
+  test(`ambiguous subscription ${status} is never blindly replayed`, async (t) => {
+    const { client, install, events, states } = setup(t);
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    await client.join();
+    const original = fetch;
+    let attempts = 0;
+    install("fetch", (url: string, init: RequestInit) => {
+      if (url.endsWith("/subscribe")) {
+        attempts++;
+        return Promise.resolve(Response.json({ error: "unknown mutation outcome" }, { status }));
+      }
+      return original(url, init);
+    });
+    events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }], 1));
+    await tick();
+    assert.equal(attempts, 1);
+    assert.equal(states.at(-1)?.phase, "reconnecting", "uncertain SDP still needs a new session");
+  });
+}
+
+test("a departure before subscribing skips only that track and retains the caller", async (t) => {
+  const { client, install, events, states, calls } = setup(t);
+  await client.join();
+  const peer = Peer.latest;
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/subscribe") && JSON.parse(init.body as string).trackId === "gone"
+    ? Promise.resolve(Response.json({ error: "track not found", code: "track_gone" }, { status: 404 }))
+    : original(url, init));
+  events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "gone", kind: "microphone" }, { id: "live", kind: "microphone" }] }], 1));
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(Peer.latest, peer);
+  assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "live", "continue subscribing to unaffected tracks");
+  assert.equal(calls.includes("leave"), false);
+});
+
+test("a source leaving during subscription completes negotiation then closes only that MID", async (t) => {
+  const { client, install, events, states, calls } = setup(t);
+  await client.join();
+  const peer = Peer.latest;
+  const original = fetch;
+  let finish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/subscribe")
+    ? new Promise<Response>((resolve) => { finish = () => { void original(url, init).then(resolve); }; })
+    : original(url, init));
+  events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "departing", kind: "microphone" }] }], 1));
+  await tick();
+  events[0].enqueue(snapshotEvent([], 2));
+  await tick();
+  finish();
+  await tick();
+  await tick();
+  assert.deepEqual(calls.filter((op) => ["negotiate", "close"].includes(op)), ["negotiate", "close"]);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(Peer.latest, peer);
+  assert.equal(peer.senders[0].track?.enabled, true);
+  assert.equal(states.at(-1)?.remoteMedia.length, 0);
+  assert.equal(calls.includes("leave"), false);
+});
+
+test("drain retries are bounded and leave cancels retry backoff", async (t) => {
+  const { client, install } = setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  await client.join();
+  const original = fetch;
+  let attempts = 0;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/subscribe")) return original(url, init);
+    attempts++;
+    return Promise.resolve(Response.json({ error: "API is draining", code: "api_draining" }, { status: 503 }));
+  });
+  const api = client as unknown as { api(operation: string): Promise<void> };
+  const exhausted = assert.rejects(api.api("subscribe"), /API is draining/);
+  await tick();
+  for (const delay of [250, 500, 1_000]) { t.mock.timers.tick(delay); await tick(); }
+  await exhausted;
+  assert.equal(attempts, 4);
+  const cancelled = assert.rejects(api.api("subscribe"));
+  await tick();
+  await client.leave();
+  await cancelled;
+  t.mock.timers.tick(2_000);
+  await tick();
+  assert.equal(attempts, 5, "no retry after leaving");
+});
+
+test("successful recovery resets the consecutive failure budget", async (t) => {
+  const { client, states } = setup(t);
+  await client.join();
+  const recovery = client as unknown as { rejoin(): Promise<void> };
+  for (let recoveryNumber = 0; recoveryNumber < 5; recoveryNumber++) {
+    await recovery.rejoin();
+    assert.equal(states.at(-1)?.phase, "connected", "successful recoveries must not consume a lifetime quota");
+  }
+});
+
+test("a pending old microphone request cannot block controls in a replacement call", async (t) => {
+  const { client, install, states, stateUpdates } = setup(t);
+  await client.join();
+  const capture = [...(client as unknown as { captures: Map<Track, { resume(): Promise<void> }> }).captures.values()][0];
+  const resume = t.mock.method(capture, "resume", async () => { throw new Error("old pipeline was stopped"); });
+  let finish!: () => void;
+  let captures = 0;
+  install("navigator", { mediaDevices: { getUserMedia: () => ++captures === 1
+    ? new Promise<Stream>((resolve) => { finish = () => resolve(new Stream([new Track()])); })
+    : Promise.resolve(new Stream([new Track()])) } });
+  const replacing = assert.rejects(client.changeMicrophone("old-device"), { name: "AbortError" });
+  await tick();
+  await client.leave();
+  await client.join();
+  let applied = false;
+  const muting = client.setMuted(true).then(() => { applied = true; });
+  await tick();
+  assert.equal(applied, true, "new media queue must not wait for uncancellable old getUserMedia");
+  assert.equal(stateUpdates.at(-1)?.muted, true);
+  finish();
+  await replacing;
+  await muting;
+  assert.equal(resume.mock.callCount(), 0, "never resurrect an old pipeline or let its failed rollback restart the new call");
+  assert.equal(states.at(-1)?.phase, "connected");
+});
+
+test("a late ended-track cleanup failure cannot reconnect a replacement call", async (t) => {
+  const { client, install, states, track } = setup(t);
+  await client.join();
+  const original = fetch;
+  let failClose!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) return Promise.resolve(Response.json({token:"replacement-capability",id:"new-self",iceServers:[]}));
+    if (url.endsWith("/close")) return new Promise<Response>((_resolve, reject) => { failClose = () => reject(new TypeError("late close failure")); });
+    return original(url, init);
+  });
+  track.dispatchEvent(new Event("ended"));
+  await tick();
+  await client.leave();
+  await client.join();
+  const peer = Peer.latest;
+  failClose();
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(Peer.latest, peer);
+  assert.equal(peer.senders[0].track?.enabled, true);
 });
 
 test("connection event wait ignores intermediate states", async (t) => {

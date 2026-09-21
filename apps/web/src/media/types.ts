@@ -25,6 +25,18 @@ export interface JoinResponse {
   token: string;
   id: string;
   iceServers: RTCIceServer[];
+  turn?: TurnGeneration;
+}
+
+export interface TurnGeneration {
+  generation: string;
+  refreshAfterMs: number;
+  expiresInMs: number;
+}
+
+export interface TurnResponse {
+  iceServers: RTCIceServer[];
+  turn: TurnGeneration;
 }
 
 export interface SessionDescriptionResponse {
@@ -60,6 +72,8 @@ export interface CallViewState {
   phase: CallPhase;
   muted: boolean;
   deafened: boolean;
+  stateSyncPending?: boolean;
+  liveUpdatesPending?: boolean;
   inputVolume: number;
   monitoring: boolean;
   monitorStream?: MediaStream;

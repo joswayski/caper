@@ -48,7 +48,10 @@ in Postgres; typing indicators would be transient events, not durable messages.
 
 - Valkey stores the call capability hash, Caper-to-Cloudflare session mapping,
   track/subscription metadata, mute/deafen state, leases, operation ownership,
-  temporary join reservations, and cleanup jobs. It never stores audio or SDP.
+  temporary join reservations, cleanup jobs, and the latest ephemeral TURN
+  credentials for retry-safe renewal. Treat this store as secret-bearing: TURN
+  passwords are not provider API keys, but do grant relay access until expiry.
+  It never stores audio or SDP (only an offer hash for renewal replay validation).
   A successful join is not returned until its mapping is committed.
 - `caper:{general}:v1:state` is a hash with one field per participant plus bounded
   channel metadata. Short WATCH/MULTI/EXEC transactions arbitrate concurrent pods;
@@ -73,16 +76,122 @@ in Postgres; typing indicators would be transient events, not durable messages.
 - Explicit leave publishes immediately. A vanished browser is different: its
   existing 45-second lease expires, with a five-second sweep (up to about 50 seconds
   after the last renewal). SSE disconnect alone is not leave, because deployments
-  and brief network changes also disconnect SSE. A call still has a one-hour cap.
+  and brief network changes also disconnect SSE. Active calls have no API age cap;
+  see the separate TURN credential lifetime below.
   Provider cleanup is asynchronous, with shared 30-second claims and safe retries.
   Abandoned joins and uncertain in-flight operations expire after 30 seconds;
   uncertain operations invalidate only the affected call and discover its tracks.
+  ICE renewal is an exception: its replayable offer has a replaceable 30-second
+  claim, not a deadline that removes the participant.
 
 Normal in-call updates have no polling interval: commit → Pub/Sub → API → SSE.
 Production end-to-end latency is **not measured**. The 15-second request is a lease
 renewal, not the notification path. Speaking indicators remain browser-side audio
 analysis, with no per-frame Valkey traffic. The unauthenticated pre-join roster
 still uses its existing ten-second polling; it is not part of this SSE change.
+
+The browser keeps lease renewal, mute/deafen synchronization, and SDP negotiation
+independent. Rapid mute/deafen changes coalesce to the latest local intent rather
+than replaying queued toggles. State writes time out after five seconds and retry
+transient failures after 250 ms while connected; local controls remain usable and
+the UI announces pending synchronization. A newer self snapshot that disagrees
+with local intent triggers repair, including when an older timed-out write commits
+late. Pushed rosters render without waiting for state writes or SDP negotiation.
+
+Rollout regression tests reproduce two failures in the previous browser: obsolete
+queued mute values and lease renewal blocked behind a pending state write. Tests
+also cover 503/504 state responses during SSE draining, slow subscription setup,
+late commits, and cancellation across leave/rejoin. Disposable Redis tests check
+alternating mute updates across API instances before and after replacement with
+unchanged capabilities/provider sessions and no provider track closures. These use
+mocked Cloudflare, not real media. Desktop and narrow Chromium UI checks use labeled
+mock calls; they are not physical iOS or live rollout verification. The reported
+production 504's originating request/intermediary and iOS audio-output warning
+remain unconfirmed.
+
+The follow-up disconnect audit also covers these interactions:
+
+| Trigger | Recovery behavior |
+| --- | --- |
+| Join/publish/subscribe/negotiate/close reaches a draining API | Explicit `503` + `code: api_draining` proves admission rejection before mutation. Retry up to three times after 250/500/1000 ms within the original request deadline. Generic 5xx/timeouts do not authorize replay. |
+| A speaker leaves before subscription starts | `404` + `code: track_gone` skips only that track; continue subscribing to other participants. Authentication errors still invalidate the session. |
+| A speaker leaves while a successful subscription is being created | Preserve the listener, finish any returned SDP offer, then close the unwanted MID from the latest roster. Do not discard the listener's own microphone/session. |
+| SSE fails while authenticated lease renewals work | Retry SSE independently; keep voice open and display a live-update recovery notice. Snapshots still repair state, but normal real-time delivery requires SSE recovery. |
+| A previous call still has a pending device request | New signaling/media queues do not wait on old work. Old rollback cannot restart the new call. |
+| Several separate successful recoveries over time | Reset the consecutive retry budget after each successful rejoin; no lifetime three-recovery quota. |
+
+Failure-injection coverage includes these cases and cancellation during retry
+backoff. Deploy the **API first, then web**, and refresh both clients before
+repeating the two-device rollout test. Error codes are additive; no Valkey schema,
+secret, or infrastructure change was needed for those interaction fixes. The TURN
+renewal extension below adds participant fields and requires API-first deployment.
+
+Remaining disconnect conditions are not solved by adding retries: unknown outcomes
+of provider SDP mutations, invalid/expired sessions, sustained network loss, and
+failed local capture/transport recovery.
+Initial SSE setup still fails Join if it cannot establish a valid handshake. The
+private mic test has separate failure handling; losing it does not leave General.
+
+**Call duration:** the API no longer expires public or private monitor sessions
+because of their age. Live sessions retain their IDs, tracks, and subscriptions
+while heartbeats renew the 45-second lease. TURN credentials for new joins use
+Cloudflare's maximum **48-hour lifetime**, not the previous one hour. Leave and
+lease expiry still enqueue credential revocation. If revocation cannot complete,
+credentials may now remain usable for up to 48 hours instead of one hour.
+
+**Automatic TURN renewal:** public calls and both private mic-test peers request
+fresh credentials halfway through the lifetime (24 hours), then restart ICE on
+the **same** peer and SFU session. Track IDs, subscriptions, capture, mute, and
+deafen state are retained. This removes the credential-age cutoff; it is not a
+guarantee against network outages, browser suspension, or a brief audio gap while
+the selected relay changes. `setConfiguration()` alone does not update an existing
+TURN allocation. The browser must gather and negotiate fresh ICE credentials.
+
+- `POST /api/media/turn` caches one current credential generation. A lost response
+  returns that same generation across pods, rather than minting another password.
+  Issuance is limited to two attempts/minute; expired passwords are pruned and
+  still-valid usernames retained for leave-time revocation. At most three known
+  credential generations may overlap.
+- `POST /api/media/restart-ice` accepts only an audio ICE-restart offer: no novel
+  sending MID, video, data channel, duplicate MID, or sendrecv direction. It uses
+  Cloudflare's `POST /sessions/{id}/tracks/new` with `autoDiscover:true` and requires
+  an answer with zero newly created tracks. `PUT /renegotiate` rejected restart
+  offers in the live probe; do not substitute it.
+- The credential generation, sequence, offer hash, and expiring ownership claim
+  live in Valkey. Retries replay the **exact** offer. No SDP or provider secret is
+  persisted. The browser holds its signaling queue until it applies the answer
+  and receives an idempotent `POST /api/media/restart-ice-ack`. Heartbeats,
+  mute/deafen writes, and leave do not wait behind that queue.
+- Transient network/HTTP failures retry with 1/2/4/8/15/30-second capped backoff.
+  Permanent signaling rejection uses existing bounded session recovery instead
+  of inventing a different offer while the old operation is pending. A stale
+  completion cannot clear a newer claim or restore a departed participant.
+- Deploy **all API replicas first**, then web. Old API writers do not preserve
+  the added fields. Refresh existing tabs and leave/rejoin once to install the
+  new browser renewal lifecycle; already-issued credentials cannot be extended.
+  No new infrastructure, secrets, or Postgres migration is required. Do not roll
+  the API back to an old writer underneath active renewal-enabled calls.
+
+References:
+[Cloudflare credential lifetime](https://developers.cloudflare.com/realtime/turn/generate-credentials/),
+[expiry behavior](https://developers.cloudflare.com/realtime/turn/faq/), and
+[WebRTC configuration semantics](https://w3c.github.io/webrtc-pc/#set-the-configuration).
+Regression tests simulate call ages around one hour and at 49 hours, including
+two API instances sharing disposable Valkey. These verify state retention and
+lease cleanup. Separate live Chromium probes used an isolated Cloudflare app/key,
+synthetic 440 Hz audio, and TURN/UDP forced on both peers. Same-session renewal
+preserved decoded audio beyond short-lived credentials' expiry; replaying a
+discarded answer kept the same remote ICE credentials and created zero tracks.
+No-renewal and configuration-only controls stopped receiving audio after expiry
+plus relay grace. The integrated probe runs the actual Rust routes against two
+API instances with shared disposable Redis and the actual `TurnRenewal` helper,
+with successful credential/answer/ACK responses deliberately discarded.
+With 90-second credentials, that probe completed eight renewals per peer over
+378 seconds, with zero recovery callbacks and decoded audio still present on
+the original tracks. The isolated Cloudflare app and TURN key were deleted afterward.
+These are accelerated expiry tests, not a 48-hour soak, physical-device testing,
+or proof of gapless audio. Safari/Firefox and restrictive TCP/TLS networks still
+need their own renewal acceptance checks.
 
 The hash is a bounded channel unit, not a global blob for every future channel.
 Adding spaces/channels will require routing and per-channel keys/subscriptions.
@@ -360,12 +469,14 @@ live ingestion into the user's dataset has not been verified.
   A running Mic test uses two additional private sessions within that same cap.
 - 30 joins/minute globally; 120 provider mutations/minute per participant;
   256 KiB request bodies. These are **not a spending cap or DDoS defense**.
-- One-hour session/TURN lifetime; 45-second presence lease, sweep every five
-  seconds. Background browser throttling can force a reconnect.
+- No fixed call-age limit; 48-hour TURN credentials renewed at 24 hours;
+  45-second presence lease, sweep every five seconds. Background browser
+  throttling can force a reconnect.
 - Leave stops local capture immediately, invalidates the capability, force-closes
   SFU tracks/subscriptions, and revokes TURN credentials. Failed track cleanup has
   a bounded retry backlog; crashes/outages can prevent immediate revocation.
-  Credentials remain bounded by expiry. No durable cleanup queue exists.
+  Credentials remain bounded by expiry. Shared mode persists cleanup in Valkey;
+  memory-only development loses its backlog on process exit.
 - Serialized negotiations and per-participant operation guards. Ambiguous provider
   creation is not blindly retried; the session is invalidated and cleaned up.
 - Transient heartbeat failures (network/timeout, HTTP 408/429/5xx) retry after
@@ -373,11 +484,12 @@ live ingestion into the user's dataset has not been verified.
   a five-second deadline including response-body reads; failures lasting at least
   30 seconds trigger recovery on the next failed poll. Successful snapshots reset
   that window. Invalid sessions trigger recovery immediately. Failed mute/deafen
-  state sync is retried with the latest local state after a successful heartbeat;
+  state sync retries the latest local state independently of heartbeats;
   ambiguous SFU mutations are not blindly replayed.
 - A transient WebRTC `disconnected` state gets ten seconds to recover in place;
-  `failed` or a sustained disconnect triggers up to three rejoins retaining mute/deafen and device
-  choice. Permission/device failures are visible. All microphone subscriptions
+  `failed` or a sustained disconnect triggers up to three consecutive failed rejoin
+  attempts retaining mute/deafen and device choice; success resets that budget.
+  Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
   browser echo cancellation and gain control are off for headphones. Codec-managed
@@ -515,7 +627,7 @@ exhausted jobs are logged as abandoned, not reported as successful cleanup.
 Shutdown stops the background loops, waits for an active local expiry pass, and
 spends up to 20 seconds draining cleanup batches after HTTP requests drain.
 Crashes, exhausted retries, queue overflow, and shutdown deadlines can leave
-provider resources behind. TURN expiry remains the one-hour backstop; this is
+provider resources behind. TURN expiry remains the 48-hour backstop; this is
 not a durable cleanup system or automatic provider failover.
 
 After merging, deploy **both** merged images using the normal **Deploy Caper API**
@@ -753,8 +865,9 @@ No handshake within ten seconds or no valid event within 25 seconds fails the
 stream. An SSE failure during startup fails Join; during an established call it
 reopens only the event stream with the same capability, backing off from 250 ms
 to three seconds while keeping healthy audio. Planned `draining` reconnects start
-after 50 ms. A 30-second recovery deadline after loss
-triggers the bounded full-session reconnect if live updates cannot be restored.
+after 50 ms. An SSE-only outage does not force a new voice session while
+authenticated snapshot renewals succeed. The UI announces delayed live updates;
+invalid sessions or sustained heartbeat failure still trigger session recovery.
 Each restored stream receives current state, not a replay of missed mute/unmute
 transitions. Initial Join readiness remains strict.
 Cancel/leave aborts the stream, startup event waits, and delayed retries. Fifteen-second snapshots
@@ -1177,7 +1290,7 @@ prevent registration. Delivery is best effort: it is neither retried nor durable
 
 `MEDIA_ENABLED=true` and all four Cloudflare credentials remain required. Existing
 12-participant capacity, global join and per-participant operation limits,
-45-second leases, one-hour call lifetime, private monitor isolation, and
+45-second leases, private monitor isolation, and
 leave/expiry cleanup still apply.
 This is an anonymous public test channel, not an abuse-resistant public launch.
 Anyone can consume its limited capacity. Keep provider usage under observation

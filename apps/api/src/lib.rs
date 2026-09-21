@@ -24,9 +24,10 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use uuid::Uuid;
 
 const LEASE: Duration = Duration::from_secs(45);
-// Also revoke on leave. Expiry bounds exposure if revocation or process recovery fails.
-const MAX_CALL_DURATION: Duration = Duration::from_secs(60 * 60);
-const TURN_TTL: u64 = MAX_CALL_DURATION.as_secs();
+// Cloudflare's maximum credential lifetime, not an application call-age limit.
+// Revoke on leave/lease expiry. The browser renews halfway through this lifetime
+// using ICE restart; setConfiguration alone does not renew allocations.
+const TURN_TTL: u64 = 48 * 60 * 60;
 const MAX_PARTICIPANTS: usize = 12;
 const MAX_TRACKS: usize = 1;
 const MAX_SUBSCRIPTIONS: usize = MAX_PARTICIPANTS - 1;
@@ -34,6 +35,7 @@ const JOIN_LIMIT_PER_MINUTE: usize = 30;
 const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
 const BODY_LIMIT: usize = 256 * 1024;
+const RESERVATION: Duration = Duration::from_secs(30);
 
 pub mod accounts;
 mod auth;
@@ -200,6 +202,14 @@ pub trait Provider: Send + Sync {
         session: &str,
         body: Value,
     ) -> Result<Value, ProviderError>;
+    async fn restart_ice(
+        &self,
+        config: &Config,
+        session: &str,
+        body: Value,
+    ) -> Result<Value, ProviderError> {
+        self.tracks_new(config, session, body).await
+    }
     async fn negotiate(
         &self,
         config: &Config,
@@ -320,6 +330,16 @@ impl Provider for Cloudflare {
             } else {
                 "publish"
             },
+            reqwest::Method::POST,
+            c,
+            &format!("apps/{}/sessions/{s}/tracks/new", required(&c.app_id)),
+            body,
+        )
+        .await
+    }
+    async fn restart_ice(&self, c: &Config, s: &str, body: Value) -> Result<Value, ProviderError> {
+        self.request(
+            "restart_ice",
             reqwest::Method::POST,
             c,
             &format!("apps/{}/sessions/{s}/tracks/new", required(&c.app_id)),
@@ -661,6 +681,14 @@ struct Participant {
     country_code: Option<String>,
     session: String,
     turn_usernames: Vec<String>,
+    #[serde(default)]
+    turn: Option<TurnCache>,
+    #[serde(default)]
+    turn_retired: Vec<RetiredTurn>,
+    #[serde(default)]
+    turn_claim: Option<Claim>,
+    #[serde(default)]
+    turn_attempts: VecDeque<Timestamp>,
     muted: bool,
     deafened: bool,
     lease: Timestamp,
@@ -670,9 +698,38 @@ struct Participant {
     pending_offer: bool,
     operation: bool,
     operation_started: Option<Timestamp>,
+    #[serde(default)]
+    restart: Option<PendingRestart>,
+    #[serde(default)]
+    restart_acknowledged: u64,
     operations: VecDeque<Timestamp>,
     monitor: Option<Monitor>,
     events: Option<Uuid>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct Claim {
+    nonce: Uuid,
+    started: Timestamp,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct TurnCache {
+    generation: Uuid,
+    ice_servers: Vec<IceServer>,
+    issued: Timestamp,
+    expires: Timestamp,
+    revoke_after: Timestamp,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct RetiredTurn {
+    usernames: Vec<String>,
+    expires: Timestamp,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct PendingRestart {
+    generation: Uuid,
+    sequence: u64,
+    hash: String,
+    claim: Option<Claim>,
 }
 #[derive(Clone, Copy, Serialize, Deserialize)]
 struct Monitor {
@@ -724,6 +781,7 @@ enum Kind {
 struct ApiError {
     status: StatusCode,
     message: &'static str,
+    code: Option<&'static str>,
     error_id: Option<Uuid>,
     attempts_remaining: Option<u8>,
 }
@@ -732,6 +790,7 @@ impl ApiError {
         Self {
             status,
             message,
+            code: None,
             error_id: None,
             attempts_remaining: None,
         }
@@ -741,15 +800,23 @@ impl ApiError {
         self.attempts_remaining = Some(attempts_remaining);
         self
     }
+
+    fn with_code(mut self, code: &'static str) -> Self {
+        self.code = Some(code);
+        self
+    }
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = match self.attempts_remaining {
+        let mut body = match self.attempts_remaining {
             Some(attempts_remaining) => {
                 json!({"error": self.message, "attemptsRemaining": attempts_remaining})
             }
             None => json!({"error": self.message}),
         };
+        if let Some(code) = self.code {
+            body["code"] = json!(code);
+        }
         let mut response = (self.status, Json(body)).into_response();
         if let Some(id) = self.error_id {
             response
@@ -798,6 +865,9 @@ pub fn app(state: AppState) -> Router {
         .route("/api/media/status", get(status))
         .route("/api/media/presence", get(presence))
         .route("/api/media/join", post(join))
+        .route("/api/media/turn", post(turn))
+        .route("/api/media/restart-ice", post(restart_ice))
+        .route("/api/media/restart-ice-ack", post(restart_ice_ack))
         .route("/api/media/snapshot", post(snapshot))
         .route("/api/media/events", get(events))
         .route("/api/media/publish", post(publish))
@@ -1065,10 +1135,10 @@ async fn ready(State(s): State<AppState>) -> Result<StatusCode, ApiError> {
 }
 fn ensure_enabled(s: &AppState) -> Result<(), ApiError> {
     if *s.shutting_down.borrow() {
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "API is draining",
-        ));
+        return Err(
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "API is draining")
+                .with_code("api_draining"),
+        );
     }
     s.config
         .enabled
@@ -1097,7 +1167,7 @@ fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
         .participants
         .get(&id)
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"))?;
-    if p.lease.elapsed() >= LEASE || p.joined.elapsed() >= MAX_CALL_DURATION {
+    if p.lease.elapsed() >= LEASE {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "session expired"));
     }
     if let Some(monitor) = p.monitor {
@@ -1106,7 +1176,7 @@ fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
             .get(&monitor.parent)
             .filter(|parent| parent.monitor.is_none())
             .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "parent session ended"))?;
-        if parent.lease.elapsed() >= LEASE || parent.joined.elapsed() >= MAX_CALL_DURATION {
+        if parent.lease.elapsed() >= LEASE {
             return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "parent session ended",
@@ -1261,6 +1331,16 @@ async fn events(
 }
 
 fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {
+    if p.operation {
+        return Err(ApiError::new(StatusCode::CONFLICT, "operation pending"));
+    }
+    record_operation(p)?;
+    p.operation = true;
+    p.operation_started = Some(Timestamp::now());
+    Ok(())
+}
+
+fn record_operation(p: &mut Participant) -> Result<(), ApiError> {
     let now = Timestamp::now();
     while p
         .operations
@@ -1269,9 +1349,6 @@ fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {
     {
         p.operations.pop_front();
     }
-    if p.operation {
-        return Err(ApiError::new(StatusCode::CONFLICT, "operation pending"));
-    }
     if p.operations.len() >= OP_LIMIT_PER_MINUTE {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -1279,8 +1356,6 @@ fn begin_operation(p: &mut Participant) -> Result<(), ApiError> {
         ));
     }
     p.operations.push_back(now);
-    p.operation = true;
-    p.operation_started = Some(now);
     Ok(())
 }
 
@@ -1379,6 +1454,7 @@ async fn join(
         .await?;
     // These independent provider requests run together. Session creation is intentionally
     // never retried: an ambiguous create could orphan a session.
+    let turn_issued = Timestamp::now();
     let (session, ice) = tokio::join!(
         s.provider.create_session(&s.config),
         s.provider.turn(&s.config)
@@ -1412,6 +1488,7 @@ async fn join(
         }
     };
     let id = Uuid::new_v4();
+    let generation = Uuid::new_v4();
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let p = Participant {
         id,
@@ -1423,6 +1500,16 @@ async fn join(
             .iter()
             .filter_map(|server| server.username.clone())
             .collect(),
+        turn: Some(TurnCache {
+            generation,
+            ice_servers: ice.clone(),
+            issued: turn_issued,
+            expires: turn_issued + Duration::from_secs(TURN_TTL),
+            revoke_after: Timestamp::now() + Duration::from_secs(TURN_TTL),
+        }),
+        turn_retired: vec![],
+        turn_claim: None,
+        turn_attempts: VecDeque::new(),
         muted: false,
         deafened: false,
         lease: Timestamp::now(),
@@ -1432,6 +1519,8 @@ async fn join(
         pending_offer: false,
         operation: false,
         operation_started: None,
+        restart: None,
+        restart_acknowledged: 0,
         operations: VecDeque::new(),
         monitor,
         events: None,
@@ -1442,11 +1531,9 @@ async fn join(
             .remove(&reservation)
             .is_some_and(|r| r.started.elapsed() < Duration::from_secs(30));
         let parent_valid = monitor.is_none_or(|monitor| {
-            r.participants.get(&monitor.parent).is_some_and(|parent| {
-                parent.monitor.is_none()
-                    && parent.lease.elapsed() < LEASE
-                    && parent.joined.elapsed() < MAX_CALL_DURATION
-            })
+            r.participants
+                .get(&monitor.parent)
+                .is_some_and(|parent| parent.monitor.is_none() && parent.lease.elapsed() < LEASE)
         });
         if !reserved || !parent_valid {
             cleanup_participant_locked(r, &p);
@@ -1460,7 +1547,442 @@ async fn join(
         Ok(Ok(()))
     })
     .await??;
-    Ok(Json(json!({"token":token,"id":id,"iceServers":ice})))
+    Ok(Json(
+        json!({"token":token,"id":id,"iceServers":ice,"turn":turn_metadata(p.turn.as_ref().unwrap())}),
+    ))
+}
+
+fn turn_metadata(cache: &TurnCache) -> Value {
+    let now = Timestamp::now();
+    json!({"generation":cache.generation,
+        "refreshAfterMs":(cache.issued + Duration::from_secs(TURN_TTL / 2)).duration_since(now).as_millis() as u64,
+        "expiresInMs":cache.expires.duration_since(now).as_millis() as u64})
+}
+
+fn prune_turn(p: &mut Participant) {
+    let now = Timestamp::now();
+    // Records written before credential caching contain only the original names.
+    if p.turn.is_none() && p.turn_retired.is_empty() && !p.turn_usernames.is_empty() {
+        p.turn_retired.push(RetiredTurn {
+            usernames: p.turn_usernames.clone(),
+            expires: p.joined + Duration::from_secs(TURN_TTL),
+        });
+    }
+    if p.turn.as_ref().is_some_and(|cache| cache.expires <= now) {
+        let cache = p.turn.take().unwrap();
+        p.turn_retired.push(RetiredTurn {
+            usernames: cache
+                .ice_servers
+                .iter()
+                .filter_map(|v| v.username.clone())
+                .collect(),
+            expires: cache.revoke_after,
+        });
+    }
+    p.turn_retired.retain(|retired| retired.expires > now);
+    p.turn_usernames = p
+        .turn_retired
+        .iter()
+        .flat_map(|r| r.usernames.iter().cloned())
+        .chain(
+            p.turn
+                .iter()
+                .flat_map(|c| c.ice_servers.iter().filter_map(|v| v.username.clone())),
+        )
+        .collect();
+    p.turn_usernames.sort();
+    p.turn_usernames.dedup();
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TurnInput {
+    generation: Option<Uuid>,
+}
+
+enum TurnDecision {
+    Cached(TurnCache),
+    Mint {
+        id: Uuid,
+        session: String,
+        claim: Uuid,
+    },
+}
+
+async fn turn(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<TurnInput>,
+) -> Result<Json<Value>, ApiError> {
+    ensure_enabled(&s)?;
+    let token = bearer(&headers)?;
+    let decision = s
+        .update(|r| {
+            let id = authenticate(r, token)?;
+            let p = r.participants.get_mut(&id).unwrap();
+            let now = Timestamp::now();
+            prune_turn(p);
+            if let Some(cache) = &p.turn {
+                let due = now.duration_since(cache.issued) >= Duration::from_secs(TURN_TTL / 2);
+                if input.generation != Some(cache.generation) || !due {
+                    return Ok(TurnDecision::Cached(cache.clone()));
+                }
+            }
+            if p.restart.is_some() {
+                return Err(ApiError::new(StatusCode::CONFLICT, "ICE restart pending")
+                    .with_code("ice_restart_pending"));
+            }
+            if p.turn_retired.len() + usize::from(p.turn.is_some()) >= 3 {
+                return Err(ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "credential generations still active",
+                ));
+            }
+            if p.turn_claim
+                .as_ref()
+                .is_some_and(|c| c.started.elapsed() < RESERVATION)
+            {
+                return Err(ApiError::new(StatusCode::CONFLICT, "TURN issuance pending")
+                    .with_code("ice_restart_pending"));
+            }
+            while p
+                .turn_attempts
+                .front()
+                .is_some_and(|t| t.elapsed() >= Duration::from_secs(60))
+            {
+                p.turn_attempts.pop_front();
+            }
+            if p.turn_attempts.len() >= 2 {
+                return Err(ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate limit exceeded",
+                ));
+            }
+            p.turn_attempts.push_back(now);
+            let claim = Uuid::new_v4();
+            p.turn_claim = Some(Claim {
+                nonce: claim,
+                started: now,
+            });
+            Ok(TurnDecision::Mint {
+                id,
+                session: p.session.clone(),
+                claim,
+            })
+        })
+        .await?;
+    if let TurnDecision::Cached(cache) = decision {
+        return Ok(Json(
+            json!({"iceServers":cache.ice_servers,"turn":turn_metadata(&cache)}),
+        ));
+    }
+    let TurnDecision::Mint { id, session, claim } = decision else {
+        unreachable!()
+    };
+    let issued = Timestamp::now();
+    let ice = match s.provider.turn(&s.config).await {
+        Ok(ice) => ice,
+        Err(error) => {
+            let _ = s
+                .update(|r| {
+                    if let Some(p) = r.participants.get_mut(&id)
+                        && p.turn_claim.as_ref().is_some_and(|c| c.nonce == claim)
+                    {
+                        p.turn_claim = None;
+                    }
+                    Ok(())
+                })
+                .await;
+            return Err(error.into());
+        }
+    };
+    let generation = Uuid::new_v4();
+    let expires = issued + Duration::from_secs(TURN_TTL);
+    let cache = TurnCache {
+        generation,
+        ice_servers: ice.clone(),
+        issued,
+        expires,
+        revoke_after: Timestamp::now() + Duration::from_secs(TURN_TTL),
+    };
+    let committed = s
+        .update(|r| {
+            let parent_live = r.participants.get(&id).is_some_and(|participant| {
+                participant.monitor.is_none_or(|monitor| {
+                    r.participants
+                        .get(&monitor.parent)
+                        .is_some_and(|parent| parent.lease.elapsed() < LEASE)
+                })
+            });
+            let Some(p) = r.participants.get_mut(&id) else {
+                return Ok(false);
+            };
+            if p.turn_claim.as_ref().is_none_or(|c| c.nonce != claim)
+                || p.session != session
+                || p.lease.elapsed() >= LEASE
+                || !parent_live
+            {
+                return Ok(false);
+            }
+            p.turn_claim = None;
+            if let Some(previous) = p.turn.take() {
+                p.turn_retired.push(RetiredTurn {
+                    usernames: previous
+                        .ice_servers
+                        .iter()
+                        .filter_map(|v| v.username.clone())
+                        .collect(),
+                    expires: previous.revoke_after,
+                });
+            }
+            p.turn = Some(cache.clone());
+            prune_turn(p);
+            Ok(true)
+        })
+        .await?;
+    if !committed {
+        for username in ice.iter().filter_map(|server| server.username.as_deref()) {
+            enqueue_action(
+                &s,
+                CleanupAction::Revoke {
+                    username: username.into(),
+                },
+            )
+            .await;
+        }
+        // A newer issuance claim may have won without ending this call.
+        s.read(|r| authenticate(r, token)).await?;
+        return Err(
+            ApiError::new(StatusCode::CONFLICT, "TURN issuance superseded")
+                .with_code("ice_restart_pending"),
+        );
+    }
+    Ok(Json(json!({"iceServers":ice,"turn":turn_metadata(&cache)})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RestartInput {
+    generation: Uuid,
+    sequence: u64,
+    session_description: Sdp,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestartAck {
+    generation: Uuid,
+    sequence: u64,
+}
+
+fn sdp_restart_valid(sdp: &str, p: &Participant) -> bool {
+    if !valid_text(sdp, 200_000) {
+        return false;
+    }
+    let mut mids = std::collections::HashSet::new();
+    let mut section: Option<(Option<&str>, Option<&str>)> = None;
+    let mut sections = vec![];
+    for line in sdp.lines().map(|l| l.trim_end_matches('\r')) {
+        if line.starts_with("m=") {
+            if let Some(v) = section.take() {
+                sections.push(v);
+            }
+            if !line.starts_with("m=audio ") {
+                return false;
+            }
+            section = Some((None, None));
+        } else if let Some(current) = section.as_mut() {
+            if let Some(mid) = line.strip_prefix("a=mid:") {
+                if current.0.is_some() {
+                    return false;
+                }
+                current.0 = Some(mid);
+            }
+            if matches!(
+                line,
+                "a=sendonly" | "a=recvonly" | "a=sendrecv" | "a=inactive"
+            ) {
+                if current.1.is_some() {
+                    return false;
+                }
+                current.1 = Some(&line[2..]);
+            }
+        }
+    }
+    if let Some(v) = section {
+        sections.push(v);
+    }
+    if sections.is_empty() {
+        return false;
+    }
+    sections.into_iter().all(|(mid, direction)| {
+        let Some(mid) = mid else { return false };
+        let Some(direction) = direction else {
+            return false;
+        };
+        if !valid_text(mid, 64) || !mids.insert(mid) {
+            return false;
+        }
+        if direction == "sendrecv" {
+            return false;
+        }
+        let sends = direction == "sendonly";
+        !sends
+            || (p.tracks.contains_key(mid)
+                && !p.monitor.is_some_and(|m| m.role == MonitorRole::Receiver))
+    })
+}
+
+async fn restart_ice(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(i): Json<RestartInput>,
+) -> Result<Json<Value>, ApiError> {
+    ensure_enabled(&s)?;
+    if i.sequence == 0 || !matches!(i.session_description.ty, SdpType::Offer) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
+    }
+    let hash = format!("{:x}", Sha256::digest(i.session_description.sdp.as_bytes()));
+    let claim = Uuid::new_v4();
+    let token = bearer(&headers)?;
+    let (id, session) = s
+        .update(|r| {
+            let id = authenticate(r, token)?;
+            let p = r.participants.get_mut(&id).unwrap();
+            if !sdp_restart_valid(&i.session_description.sdp, p) {
+                return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
+            }
+            if p.turn.as_ref().is_none_or(|t| t.generation != i.generation) {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "TURN generation mismatch",
+                ));
+            }
+            if i.sequence <= p.restart_acknowledged {
+                return Err(ApiError::new(StatusCode::CONFLICT, "stale ICE restart"));
+            }
+            if p.pending_offer || (p.operation && p.restart.is_none()) {
+                return Err(ApiError::new(StatusCode::CONFLICT, "operation pending")
+                    .with_code("ice_restart_pending"));
+            }
+            record_operation(p)?;
+            if let Some(pending) = &mut p.restart {
+                if pending.generation != i.generation
+                    || pending.sequence != i.sequence
+                    || pending.hash != hash
+                {
+                    return Err(ApiError::new(StatusCode::CONFLICT, "ICE restart mismatch"));
+                }
+                if pending
+                    .claim
+                    .as_ref()
+                    .is_some_and(|c| c.started.elapsed() < RESERVATION)
+                {
+                    return Err(ApiError::new(StatusCode::CONFLICT, "ICE restart pending")
+                        .with_code("ice_restart_pending"));
+                }
+                pending.claim = Some(Claim {
+                    nonce: claim,
+                    started: Timestamp::now(),
+                });
+            } else {
+                if i.sequence != p.restart_acknowledged + 1 {
+                    return Err(ApiError::new(
+                        StatusCode::CONFLICT,
+                        "ICE restart sequence mismatch",
+                    ));
+                }
+                p.operation = true;
+                p.operation_started = None;
+                p.restart = Some(PendingRestart {
+                    generation: i.generation,
+                    sequence: i.sequence,
+                    hash: hash.clone(),
+                    claim: Some(Claim {
+                        nonce: claim,
+                        started: Timestamp::now(),
+                    }),
+                });
+            }
+            Ok((id, p.session.clone()))
+        })
+        .await?;
+    let result = s.provider.restart_ice(&s.config, &session, json!({"sessionDescription":{"type":"offer","sdp":i.session_description.sdp},"autoDiscover":true})).await;
+    let valid = result.as_ref().is_ok_and(|v| {
+        validate_provider_envelope(v).is_ok()
+            && v.get("tracks")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+            && v.pointer("/sessionDescription/type")
+                .and_then(Value::as_str)
+                == Some("answer")
+            && v.pointer("/sessionDescription/sdp")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+    });
+    s.update(|r| {
+        authenticate(r, token)?;
+        if let Some(p) = r.participants.get_mut(&id).filter(|p| p.session == session)
+            && let Some(x) = &mut p.restart
+            && x.generation == i.generation
+            && x.sequence == i.sequence
+            && x.hash == hash
+            && x.claim.as_ref().is_some_and(|c| c.nonce == claim)
+        {
+            x.claim = None;
+            return Ok(());
+        }
+        Err(
+            ApiError::new(StatusCode::CONFLICT, "ICE restart superseded")
+                .with_code("ice_restart_pending"),
+        )
+    })
+    .await?;
+    if !valid {
+        if let Err(error) = result {
+            // Provider authentication failures are not expired user capabilities.
+            let retry = error.transient()
+                || matches!(&error, ProviderError::Request(f) if matches!(f.status, Some(401 | 403)));
+            return Err(ApiError::from(error).with_code(if retry {
+                "ice_restart_retry"
+            } else {
+                "ice_restart_invalid"
+            }));
+        }
+        return Err(
+            ApiError::new(StatusCode::BAD_GATEWAY, "invalid ICE restart answer")
+                .with_code("ice_restart_invalid"),
+        );
+    }
+    Ok(Json(result.unwrap()))
+}
+
+async fn restart_ice_ack(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(i): Json<RestartAck>,
+) -> Result<StatusCode, ApiError> {
+    ensure_enabled(&s)?;
+    let token = bearer(&headers)?;
+    s.update(|r| {
+        let id = authenticate(r, token)?;
+        let p = r.participants.get_mut(&id).unwrap();
+        if i.sequence <= p.restart_acknowledged {
+            return Ok(());
+        }
+        if p.restart
+            .as_ref()
+            .is_none_or(|x| x.generation != i.generation || x.sequence != i.sequence)
+        {
+            return Err(ApiError::new(StatusCode::CONFLICT, "ICE restart mismatch"));
+        }
+        p.restart_acknowledged = i.sequence;
+        p.restart = None;
+        p.operation = false;
+        p.operation_started = None;
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn release_join_reservation(s: &AppState, reservation: Uuid) {
@@ -1708,7 +2230,9 @@ async fn subscribe(
                         .find(|t| t.id == i.track_id)
                         .map(|t| (p.id, p.session.clone(), t.provider_name.clone(), t.kind))
                 })
-                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "track not found"))?;
+                .ok_or_else(|| {
+                    ApiError::new(StatusCode::NOT_FOUND, "track not found").with_code("track_gone")
+                })?;
             if source.0 == me {
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
@@ -1792,18 +2316,11 @@ async fn subscribe(
         return Err(ProviderError::invalid_response("subscribe").into());
     }
     s.update(|r| {
-        if !r
-            .participants
-            .values()
-            .any(|p| p.tracks.values().any(|track| track.id == i.track_id))
-        {
-            enqueue_cleanup_locked(r, session.clone(), mid.clone());
-            remove_participant_locked(r, me);
-            return Ok(Err(ApiError::new(
-                StatusCode::NOT_FOUND,
-                "source left during subscription",
-            )));
-        }
+        // The provider already created this MID and possibly an SDP offer.
+        // Even if the source left meanwhile, finish that negotiation rather
+        // than invalidating the listener's entire call. Its next roster omits
+        // the source, so the browser closes this MID; lease cleanup covers a
+        // browser that disappears before doing so.
         let Some(p) = r.participants.get_mut(&me) else {
             enqueue_cleanup_locked(r, session.clone(), mid.clone());
             return Ok(Err(ApiError::new(
@@ -2207,7 +2724,6 @@ async fn expire_sessions(s: &AppState) -> Result<(), ApiError> {
             .values()
             .filter(|p| {
                 p.lease.elapsed() >= LEASE
-                    || p.joined.elapsed() >= MAX_CALL_DURATION
                     || p.operation_started
                         .is_some_and(|t| t.elapsed() >= Duration::from_secs(30))
             })
@@ -2215,6 +2731,9 @@ async fn expire_sessions(s: &AppState) -> Result<(), ApiError> {
             .collect();
         for id in expired {
             remove_participant_locked(r, id);
+        }
+        for participant in r.participants.values_mut() {
+            prune_turn(participant);
         }
         Ok(())
     })

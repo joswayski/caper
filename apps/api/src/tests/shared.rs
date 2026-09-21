@@ -72,6 +72,26 @@ async fn delete(url: &str, key: &str) {
 
 #[tokio::test]
 #[ignore = "requires disposable TEST_VALKEY_URL"]
+async fn renewal_replays_across_api_instances() {
+    let (a, b, mock, url, key) = shared().await;
+    renewal::exercise_rotation(&a, &b, &mock).await;
+    a.begin_shutdown();
+    b.begin_shutdown();
+    delete(&url, &key).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable TEST_VALKEY_URL"]
+async fn long_calls_keep_their_session_across_pods() {
+    let (a, b, _, url, key) = shared().await;
+    reliability::exercise_long_call(&a, &b).await;
+    a.begin_shutdown();
+    b.begin_shutdown();
+    delete(&url, &key).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable TEST_VALKEY_URL"]
 async fn cross_pod_media_events_shutdown_and_replacement() {
     let (a, b, provider, url, key) = shared().await;
     let alice = joined(&a, "Alice").await;
@@ -127,6 +147,30 @@ async fn cross_pod_media_events_shutdown_and_replacement() {
         "store only token hashes"
     );
     assert!(!raw.contains("v=0"), "never store SDP");
+    for muted in [true, false, true, false] {
+        assert_eq!(
+            call(
+                app(a.clone()),
+                "POST",
+                "/api/media/state",
+                Some(alice_token),
+                json!({"muted":muted,"deafened":false})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let snapshot = event(&mut events, "snapshot").await;
+        assert_eq!(
+            snapshot["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == alice["id"])
+                .unwrap()["muted"],
+            muted
+        );
+    }
     let expected_mapping = b
         .read(|r| {
             Ok(r.participants
@@ -175,28 +219,33 @@ async fn cross_pod_media_events_shutdown_and_replacement() {
             .is_none(),
         "replacement revokes the old pod's stream"
     );
-    assert_eq!(
-        call(
-            app(replacement.clone()),
-            "POST",
-            "/api/media/state",
-            Some(alice_token),
-            json!({"muted":true,"deafened":false})
-        )
-        .await
-        .0,
-        StatusCode::NO_CONTENT
-    );
-    let snapshot = event(&mut resumed, "snapshot").await;
-    assert_eq!(
-        snapshot["participants"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["name"] == "Alice")
-            .unwrap()["muted"],
-        true
-    );
+    for (index, muted) in [true, false, true, false].into_iter().enumerate() {
+        let writer = if index % 2 == 0 { &replacement } else { &other };
+        assert_eq!(
+            call(
+                app(writer.clone()),
+                "POST",
+                "/api/media/state",
+                Some(alice_token),
+                json!({"muted":muted,"deafened":false})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let snapshot = event(&mut resumed, "snapshot").await;
+        assert_eq!(
+            snapshot["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == alice["id"])
+                .unwrap()["muted"],
+            muted
+        );
+    }
+    assert!(provider.closes.lock().await.is_empty());
+    assert!(provider.revocations.lock().await.is_empty());
     assert_eq!(
         call(
             app(other.clone()),
