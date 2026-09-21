@@ -79,6 +79,7 @@ export class PublicCallClient {
   private monitoring = false;
   private monitorStream?: MediaStream;
   private localTestTrack?: MediaStreamTrack;
+  private localTestGeneration = 0;
   private stateBeforeMonitoring?: { muted: boolean; deafened: boolean };
   private pollPromise?: Promise<void>;
   private pollAgain = false;
@@ -227,7 +228,7 @@ export class PublicCallClient {
     this.stopLocalMicTest();
     const started = performance.now();
     this.name = name.trim();
-    this.microphoneDeviceId = microphoneDeviceId || undefined;
+    if (microphoneDeviceId !== undefined) this.microphoneDeviceId = microphoneDeviceId || undefined;
     this.phase = "joining";
     this.emit();
     const generation = ++this.generation;
@@ -277,6 +278,15 @@ export class PublicCallClient {
     await this.poll(true);
     if (this.stateDirty) await this.setState();
     if (this.pollAgain) await this.poll();
+    signal.throwIfAborted();
+    if (generation !== this.generation || !events.connected || microphone.readyState !== "live") {
+      throw new Error("Voice setup changed before it was ready. Please join again.");
+    }
+    // Applying a subscription offer can legitimately move an established
+    // transport back through `connecting`. Keep audio closed until that
+    // negotiation restores connectivity instead of treating the transition as
+    // a changed session.
+    await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     signal.throwIfAborted();
     if (generation !== this.generation || !events.connected || pc.connectionState !== "connected" || microphone.readyState !== "live") {
       throw new Error("Voice setup changed before it was ready. Please join again.");
@@ -579,16 +589,22 @@ export class PublicCallClient {
     this.emit();
   }
 
-  async startLocalMicTest() {
-    if (this.phase !== "idle" || this.localTestTrack) return;
+  async startLocalMicTest(deviceId?: string) {
+    if ((this.phase !== "idle" && this.phase !== "failed") || this.localTestTrack) return;
+    if (deviceId !== undefined) this.microphoneDeviceId = deviceId || undefined;
+    const generation = ++this.localTestGeneration;
     const track = await this.openMicrophone(this.microphoneDeviceId);
-    if (this.phase !== "idle") { this.stopMicrophone(track); return; }
+    if (generation !== this.localTestGeneration || (this.phase !== "idle" && this.phase !== "failed")) {
+      this.stopMicrophone(track);
+      return;
+    }
     this.localTestTrack = track;
     this.monitorStream = new MediaStream([this.captures.get(track)?.naturalTrack ?? track]);
     this.emit();
   }
 
   stopLocalMicTest() {
+    ++this.localTestGeneration;
     if (!this.localTestTrack) return;
     this.stopMicrophone(this.localTestTrack);
     this.localTestTrack = undefined;
@@ -619,6 +635,10 @@ export class PublicCallClient {
   }
 
   async changeMicrophone(deviceId: string) {
+    if ((this.phase === "idle" || this.phase === "failed") && !this.senders.has("microphone")) {
+      this.microphoneDeviceId = deviceId || undefined;
+      return;
+    }
     const generation = this.generation;
     await this.serializeMedia(async () => {
       const microphone = this.senders.get("microphone");

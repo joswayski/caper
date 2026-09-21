@@ -181,7 +181,7 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
     </div>
 
     <p className="chat-typing" role="status" aria-atomic="true">
-      {typingLabel && <><span aria-hidden="true">•••</span><span>{typingLabel}</span></>}
+      {typingLabel && <><span className="chat-typing-dots" aria-hidden="true"><i /><i /><i /></span><span>{typingLabel}</span></>}
     </p>
 
     <div className="chat-composer">
