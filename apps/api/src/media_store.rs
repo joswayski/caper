@@ -49,7 +49,7 @@ fn unavailable() -> ApiError {
     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "media state unavailable")
 }
 
-fn validate_url(url: &str, allow_insecure: bool) -> Result<(), ApiError> {
+pub(crate) fn validate_url(url: &str, allow_insecure: bool) -> Result<(), ApiError> {
     let parsed = reqwest::Url::parse(url).map_err(|_| unavailable())?;
     let local = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
         || (allow_insecure && parsed.host_str() == Some("valkey"));

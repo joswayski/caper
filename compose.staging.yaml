@@ -59,6 +59,7 @@ services:
       SES_CONFIGURATION_SET: ${SES_CONFIGURATION_SET:-staging-caper-transactional}
       MEDIA_ENABLED: ${MEDIA_ENABLED:-false}
       MEDIA_BIND: 0.0.0.0:3001
+      CHAT_ENABLED: ${CHAT_ENABLED:-true}
       VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
       VALKEY_ALLOW_INSECURE: "true"
       CF_SFU_APP_ID: ${CF_SFU_APP_ID:-}
@@ -72,6 +73,34 @@ services:
       AXIOM_DATASET: ${AXIOM_DATASET:-caper}
       AXIOM_ENDPOINT: ${AXIOM_ENDPOINT:-}
 
+  chat-gateway:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: api
+    command: ["--gateway"]
+    # API startup owns migrations; retry if it has not finished yet.
+    restart: on-failure
+    stop_grace_period: 65s
+    depends_on:
+      - api
+    environment:
+      CHAT_ENABLED: ${CHAT_ENABLED:-true}
+      CHAT_GATEWAY_BIND: 0.0.0.0:3002
+      DATABASE_URL: ${DATABASE_URL:-postgres://caper_runtime:caper_runtime@postgres:5432/caperchat?sslmode=disable}
+      DATABASE_ALLOW_INSECURE: "true"
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      VALKEY_ALLOW_INSECURE: "true"
+      APP_SECRET_ID: ${APP_SECRET_ID:-staging/apps/caper}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      RUST_LOG: ${RUST_LOG:-caper_api=info}
+      ENVIRONMENT: staging
+
   web:
     build:
       context: .
@@ -84,6 +113,7 @@ services:
     image: caddy:2.10-alpine
     depends_on:
       - api
+      - chat-gateway
       - web
     ports:
       - "3000:3000"

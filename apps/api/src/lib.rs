@@ -39,14 +39,16 @@ const RESERVATION: Duration = Duration::from_secs(30);
 
 pub mod accounts;
 mod auth;
+mod chat;
 mod db;
 mod email;
 mod environment;
+pub mod gateway;
 mod media_store;
 mod notifications;
 use media_store::Timestamp;
 
-pub use db::{connect_database, migrate_database};
+pub use db::{connect_database, connect_runtime_database, migrate_database};
 pub use environment::RuntimeEnvironment;
 
 #[derive(Clone)]
@@ -631,6 +633,7 @@ pub struct AppState {
     registry: Arc<Mutex<Registry>>,
     store: Option<Arc<media_store::ValkeyStore>>,
     database: Option<PgPool>,
+    chat: Option<chat::Chat>,
     events: watch::Sender<()>,
     shutting_down: watch::Sender<bool>,
     cleanup_lock: Arc<Mutex<()>>,
@@ -663,6 +666,7 @@ impl AppState {
             registry: Arc::new(Mutex::new(Registry::default())),
             store: None,
             database,
+            chat: None,
             events,
             shutting_down,
             cleanup_lock: Arc::new(Mutex::new(())),
@@ -682,6 +686,14 @@ impl AppState {
     #[must_use]
     pub fn database(&self) -> Option<&PgPool> {
         self.database.as_ref()
+    }
+
+    pub async fn enable_chat(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
+        self.chat = chat::Chat::from_env(self.database.as_ref(), environment).await?;
+        if let Some(chat) = self.chat.clone() {
+            chat::spawn_publisher(chat);
+        }
+        Ok(())
     }
 
     pub async fn enable_accounts_from_env(
@@ -921,6 +933,7 @@ pub fn app(state: AppState) -> Router {
         .merge(account_login)
         .merge(protected)
         .merge(media)
+        .merge(chat::routes())
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(

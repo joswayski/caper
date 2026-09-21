@@ -492,8 +492,12 @@ fn random_code() -> String {
 }
 
 fn random_external_id() -> String {
+    random_id(EXTERNAL_ID_LENGTH)
+}
+
+pub(crate) fn random_id(length: usize) -> String {
     let mut rng = rand::rng();
-    (0..EXTERNAL_ID_LENGTH)
+    (0..length)
         .map(|_| EXTERNAL_ID_ALPHABET[rng.random_range(0..EXTERNAL_ID_ALPHABET.len())] as char)
         .collect()
 }
