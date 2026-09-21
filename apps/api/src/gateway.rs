@@ -34,6 +34,7 @@ const REPLAY_LIMIT: i64 = 2000;
 pub struct Gateway {
     chat: Chat,
     events: broadcast::Sender<Value>,
+    typing: broadcast::Sender<Value>,
     head: watch::Sender<i64>,
     drain: watch::Sender<bool>,
     slots: Arc<Semaphore>,
@@ -53,11 +54,13 @@ impl Gateway {
     }
     pub(crate) fn new(chat: Chat) -> Self {
         let (events, _) = broadcast::channel(256);
+        let (typing, _) = broadcast::channel(64);
         let (head, _) = watch::channel(0);
         let (drain, _) = watch::channel(false);
         Self {
             chat,
             events,
+            typing,
             head,
             drain,
             slots: Arc::new(Semaphore::new(128)),
@@ -79,8 +82,11 @@ impl Gateway {
                 )
                 .await
                     && matches!(
-                        tokio::time::timeout(Duration::from_secs(3), pubsub.subscribe(chat::TOPIC))
-                            .await,
+                        tokio::time::timeout(
+                            Duration::from_secs(3),
+                            pubsub.subscribe(&[chat::TOPIC, chat::TYPING_TOPIC])
+                        )
+                        .await,
                         Ok(Ok(()))
                     )
                 {
@@ -90,7 +96,12 @@ impl Gateway {
                         if let Ok(text) = message.get_payload::<String>()
                             && let Ok(event) = serde_json::from_str::<Value>(&text)
                         {
-                            let _ = state.events.send(event);
+                            let sender = if message.get_channel_name() == chat::TYPING_TOPIC {
+                                &state.typing
+                            } else {
+                                &state.events
+                            };
+                            let _ = sender.send(event);
                         }
                     }
                 }
@@ -145,6 +156,9 @@ async fn ready(State(state): State<Gateway>) -> StatusCode {
 struct Subscription {
     channel_id: String,
     after: String,
+    // Older browser parsers reject unknown events. Typing is explicitly opt-in.
+    #[serde(default)]
+    typing: bool,
 }
 
 async fn upgrade(
@@ -193,7 +207,15 @@ async fn upgrade(
         .max_frame_size(1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
-            let _ = serve(socket, state, channel, query.channel_id, after).await;
+            let _ = serve(
+                socket,
+                state,
+                channel,
+                query.channel_id,
+                after,
+                query.typing,
+            )
+            .await;
         })
         .into_response())
 }
@@ -248,6 +270,7 @@ async fn serve(
     channel: i64,
     external_id: String,
     mut after: i64,
+    with_typing: bool,
 ) -> Result<(), ()> {
     // Buffer live before capturing a DB high-water mark. Replay then merge by
     // sequence. Lagging bounded buffers trigger another replay, never a skip.
@@ -264,6 +287,9 @@ async fn serve(
     )
     .await
     .map_err(|_| ())??;
+    // No replay or initial buffer for ephemeral presence; dropping it must
+    // never consume durable buffer space or alter the delivery cursor.
+    let mut typing = state.typing.subscribe();
     if *drain.borrow_and_update() {
         write(&mut socket, json!({"type":"migrating"})).await?;
         deadline = Some(tokio::time::Instant::now() + HANDOFF_WINDOW);
@@ -285,6 +311,13 @@ async fn serve(
                     Err(broadcast::error::RecvError::Lagged(_)) => { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &mut after)).await.map_err(|_| ())??; }
                     Err(broadcast::error::RecvError::Closed) => return Err(()),
                     _ => {},
+                }
+            }
+            event = typing.recv(), if with_typing => {
+                if let Ok(event) = event
+                    && event["channelId"].as_str() == Some(&external_id)
+                {
+                    write(&mut socket, event).await?;
                 }
             }
             _ = head.changed() => {

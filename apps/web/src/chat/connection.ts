@@ -1,4 +1,4 @@
-import { isChatMessage, sequence, type ChatEvent, type ChatMessage } from "./types.ts";
+import { isChatAuthor, isChatMessage, sequence, type ChatEvent, type ChatMessage, type ChatTypingEvent } from "./types.ts";
 
 const OPEN_TIMEOUT_MS = 10_000;
 const MAX_HANDOFF_RETRIES = 8;
@@ -21,15 +21,17 @@ export interface ChatConnectionCallbacks {
   cursor: () => string;
   status: (online: boolean) => void;
   resync: () => void;
+  typing?: (event: ChatTypingEvent) => void;
 }
 
 type SocketFactory = (url: string) => SocketLike;
 
-function websocketUrl(channelId: string, cursor: string) {
+function websocketUrl(channelId: string, cursor: string, typing: boolean) {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const url = new URL("/api/chat/events", `${protocol}//${window.location.host}`);
   url.searchParams.set("channelId", channelId);
   url.searchParams.set("after", cursor);
+  if (typing) url.searchParams.set("typing", "true");
   return url.toString();
 }
 
@@ -40,6 +42,11 @@ function parseFrame(data: unknown): ChatEvent {
   if (value.type === "ready" && typeof value.cursor === "string") {
     sequence(value.cursor);
     return { type: "ready", cursor: value.cursor };
+  }
+  if (value.type === "typing.updated" && typeof value.channelId === "string" && isChatAuthor(value.author)
+    && typeof value.typing === "boolean" && typeof value.revision === "string") {
+    sequence(value.revision);
+    return value as ChatTypingEvent;
   }
   if (value.type === "message.created" && typeof value.channelId === "string" && typeof value.seq === "string" && isChatMessage(value.message)) {
     sequence(value.seq);
@@ -90,7 +97,7 @@ export class ChatConnection {
     if (this.stopped || (replacement ? this.candidate : this.active)) return;
     const start = sequence(this.callbacks.cursor());
     let socket: SocketLike;
-    try { socket = this.socketFactory(websocketUrl(this.channelId, start.toString())); }
+    try { socket = this.socketFactory(websocketUrl(this.channelId, start.toString(), !!this.callbacks.typing)); }
     catch { this.schedule(replacement); return; }
     const stream: Stream = { socket, position: start, ready: false, closed: false };
     if (replacement) this.candidate = stream;
@@ -110,6 +117,10 @@ export class ChatConnection {
     if (event.type === "migrating") {
       if (stream === this.candidate) this.failed(stream);
       else if (stream === this.active && !this.candidate) this.open(true);
+      return;
+    }
+    if (event.type === "typing.updated") {
+      if (event.channelId === this.channelId) this.callbacks.typing?.(event);
       return;
     }
     if (event.type === "message.created") {

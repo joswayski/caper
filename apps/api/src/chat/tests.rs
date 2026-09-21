@@ -5,6 +5,7 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 use std::{future::IntoFuture, str::FromStr};
+use tower::ServiceExt;
 
 #[test]
 fn text_limits_count_unicode_and_preserve_literal_text() {
@@ -54,6 +55,30 @@ async fn event(socket: &mut Socket) -> Value {
     })
     .await
     .expect("event timeout")
+}
+
+async fn typing_command(
+    app: &Router,
+    channel: &str,
+    token: Option<&str>,
+    body: Value,
+) -> StatusCode {
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/api/chat/channels/{channel}/typing"))
+        .header("content-type", "application/json");
+    if let Some(token) = token {
+        request = request.header("x-caper-chat-token", token);
+    }
+    app.clone()
+        .oneshot(
+            request
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
 }
 
 #[tokio::test]
@@ -151,6 +176,30 @@ async fn durable_guest_delivery_replay_and_handoff() {
         broker,
         wake: Arc::new(Notify::new()),
     };
+    let mut state = AppState::new(
+        crate::Config::test(false),
+        Arc::new(crate::Cloudflare::new()),
+    );
+    state.chat = Some(chat.clone());
+    let app = crate::app(state);
+    assert_eq!(
+        typing_command(&app, &channel, None, json!({"typing":true})).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        typing_command(&app, &channel, Some("wrong"), json!({"typing":true})).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        typing_command(
+            &app,
+            &channel,
+            Some(token),
+            json!({"typing":true,"text":"never accept drafts"})
+        )
+        .await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     // Simulate broker outage: durable send already succeeded; outbox remains pending.
     let down = Chat {
         broker: redis::Client::open("redis://127.0.0.1:1").unwrap(),
@@ -188,6 +237,72 @@ async fn durable_guest_delivery_replay_and_handoff() {
         event(&mut socket).await,
         json!({"type":"ready","cursor":"3"})
     );
+    // Real broker fanout reaches both gateways, without persisting presence or
+    // sending new event types to clients that did not opt in.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for address in [old_address, new_address] {
+            while reqwest::get(format!("http://{address}/readyz"))
+                .await
+                .unwrap()
+                .status()
+                != StatusCode::NO_CONTENT
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let (mut typing_old, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{old_address}/api/chat/events?channelId={channel}&after=3&typing=true"
+    ))
+    .await
+    .unwrap();
+    let (mut typing_new, _) = tokio_tungstenite::connect_async(format!(
+        "ws://{new_address}/api/chat/events?channelId={channel}&after=3&typing=true"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(event(&mut typing_old).await["cursor"], "3");
+    assert_eq!(event(&mut typing_new).await["cursor"], "3");
+    assert_eq!(
+        typing_command(&app, &channel, Some(token), json!({"typing":true})).await,
+        StatusCode::NO_CONTENT
+    );
+    let started = event(&mut typing_old).await;
+    assert_eq!(event(&mut typing_new).await, started);
+    assert_eq!(started["type"], "typing.updated");
+    assert_eq!(started["typing"], true);
+    assert_eq!(started["author"], one["author"]);
+    assert!(started.get("seq").is_none());
+    assert_eq!(
+        typing_command(&app, &channel, Some(token), json!({"typing":false})).await,
+        StatusCode::NO_CONTENT
+    );
+    let stopped = event(&mut typing_new).await;
+    assert_eq!(event(&mut typing_old).await, stopped);
+    assert_eq!(stopped["typing"], false);
+    assert!(
+        cursor(stopped["revision"].as_str().unwrap()).unwrap()
+            > cursor(started["revision"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(
+        typing_command(&app, &channel, Some(token), json!({"typing":true})).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        history_page(&pool, &channel, None).await.unwrap()["cursor"],
+        "3"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.channel_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        3
+    );
+    typing_old.close(None).await.unwrap();
+    typing_new.close(None).await.unwrap();
     // Mark-published state may be lost after broker delivery. Replay/republication
     // must not duplicate already sent events on an existing socket.
     assert!(publish_pending(&chat).await.unwrap());
@@ -265,6 +380,10 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .unwrap();
     assert_eq!(account_message["author"]["name"], "Account Name");
     assert_eq!(account_message["author"]["isGuest"], false);
+    assert_eq!(
+        typing_command(&app, &channel, Some("account-chat"), json!({"typing":true})).await,
+        StatusCode::NO_CONTENT
+    );
     sqlx::query("UPDATE public.account_sessions SET revoked_at = now() WHERE user_id = $1")
         .bind(user)
         .execute(&pool)
@@ -281,6 +400,10 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .await
         .unwrap_err()
         .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        typing_command(&app, &channel, Some("account-chat"), json!({"typing":true})).await,
         StatusCode::UNAUTHORIZED
     );
     // Boundary: 30 new sends/minute per guest; an already committed retry still
@@ -347,6 +470,16 @@ async fn durable_guest_delivery_replay_and_handoff() {
             .unwrap_err()
             .status,
         StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        typing_command(&app, &private_channel, Some(token), json!({"typing":true})).await,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE public.chat_sessions SET expires_at = now() - interval '1 second' WHERE token_hash = $1")
+        .bind(Sha256::digest(token.as_bytes()).as_slice()).execute(&pool).await.unwrap();
+    assert_eq!(
+        typing_command(&app, &channel, Some(token), json!({"typing":true})).await,
+        StatusCode::UNAUTHORIZED
     );
     pool.close().await;
     admin
