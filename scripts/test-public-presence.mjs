@@ -71,6 +71,10 @@ try {
       return original(input,init);
     };
     const ac=new AudioContext();await ac.resume();
+    navigator.mediaDevices.enumerateDevices=async()=>[
+      {deviceId:'default',groupId:'fixture',kind:'audioinput',label:'Mock microphone'},
+      {deviceId:'default',groupId:'fixture',kind:'audiooutput',label:'Mock speakers'},
+    ];
     PublicCallClient.prototype.prepareMicrophone=()=>{};
     PublicCallClient.prototype.openMicrophone=async()=>ac.createMediaStreamDestination().stream.getAudioTracks()[0];
     window.RTCPeerConnection=class extends EventTarget {
@@ -156,7 +160,42 @@ try {
     browser("set", "viewport", "390", "844", "2");
     browser("screenshot", `${process.cwd()}/.amp/in/artifacts/live-presence-reconnecting-mobile.png`);
   }
-  console.log(evaluate(`await restorePresence();await cleanup();return 'PASS reconnection replaces stale roster with current snapshot';`));
+  console.log(evaluate(`await restorePresence();return 'PASS reconnection replaces stale roster with current snapshot';`));
+  browser("set", "viewport", "1280", "900", "2");
+  console.log(evaluate(`
+    button('Join voice').click();await until(()=>mount.textContent.includes('You’re in General.'));
+    await until(()=>mount.querySelector('.call-diagnostics'));
+    const peer=fixture.peers.at(-1),count=fixture.peers.length;
+    const bounds=()=>['.stage-placeholder','.call-diagnostics','.call-controls'].map(selector=>mount.querySelector(selector).getBoundingClientRect().top);
+    const before=bounds();const original=window.fetch;let release;
+    window.fetch=(url,init)=>String(url).includes('/api/media/events?')?new Promise(r=>{release=()=>r(original(url,init));}):original(url,init);
+    for(const s of [...fixture.streams])if(!s.pub){fixture.streams.delete(s);s.controller.close();}
+    await until(()=>release);
+    assert(!mount.textContent.includes('Reconnecting live updates'),'removed banner appeared');
+    assert(JSON.stringify(bounds())===JSON.stringify(before),'SSE recovery shifted the layout');
+    assert(mount.textContent.includes('You’re in General.'),'SSE recovery changed call phase');
+    window.restoreConnectedEvents=async()=>{
+      window.fetch=original;release();await until(()=>[...fixture.streams].some(s=>!s.pub));
+      const self=fixture.people.find(p=>p.id==='self');
+      for(const [muted,deafened] of [[true,false],[true,true],[false,false]]){
+        pushRoster([self,{id:'phone',name:'Phone',muted,deafened,tracks:[]}]);
+        await until(()=>roster().includes('Phone'));
+        await until(()=>{
+          const text=[...mount.querySelectorAll('.participant')].find(p=>p.textContent.includes('Phone')).textContent;
+          return deafened?text.includes('Deafened'):muted?text.includes('Muted'):!text.includes('Deafened')&&!text.includes('Muted');
+        });
+      }
+      assert(peer.connectionState==='connected'&&fixture.peers.length===count,'SSE recovery replaced peer');
+    };
+    return 'PASS live-update outage keeps connected layout stable without the removed banner';
+  `));
+  if (artifacts) {
+    browser("screenshot", `${process.cwd()}/.amp/in/artifacts/voice-sync-recovery-desktop.png`);
+    browser("set", "viewport", "390", "844", "2");
+    browser("eval", "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
+    browser("screenshot", `${process.cwd()}/.amp/in/artifacts/voice-sync-recovery-mobile.png`, "--full");
+  }
+  console.log(evaluate(`await restoreConnectedEvents();await cleanup();return 'PASS mute/deafen pushes after stream recovery without replacing voice peer';`));
 } catch (error) {
   console.error(evaluate(`return {page:document.body.innerText,presenceJsonRequests:window.fixture?.presenceReads};`));
   throw error;

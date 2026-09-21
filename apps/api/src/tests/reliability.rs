@@ -1,5 +1,121 @@
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn unrelated_notifications_cannot_starve_sse_heartbeats() {
+    let (s, _) = state();
+    let mut stream = presence_response(&s).await.into_body().into_data_stream();
+    next_event(&mut stream).await;
+    presence_snapshot_event(&mut stream).await;
+    let waiting = tokio::spawn(async move { stream.next().await.unwrap().unwrap() });
+    tokio::task::yield_now().await;
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_secs(4)).await;
+        s.events.send_replace(()); // connection changes, not a new roster revision
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        waiting.is_finished(),
+        "heartbeat must arrive despite repeated non-roster notifications"
+    );
+    let frame = String::from_utf8(waiting.await.unwrap().to_vec()).unwrap();
+    assert!(frame.starts_with("event: heartbeat"), "{frame}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn heartbeat_delivers_a_new_revision_before_a_delayed_notification() {
+    let (s, _) = state();
+    let person = joined(&s, "phone").await;
+    let id = person["id"].as_str().unwrap().parse().unwrap();
+    let mut stream = presence_response(&s).await.into_body().into_data_stream();
+    next_event(&mut stream).await;
+    presence_snapshot_event(&mut stream).await;
+    {
+        // Simulate a committed shared-store update whose Pub/Sub wake is delayed.
+        let mut r = s.registry.lock().await;
+        r.participants.get_mut(&id).unwrap().muted = true;
+        r.revision += 1;
+    }
+    let frame = tokio::time::timeout(Duration::from_secs(11), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let frame = String::from_utf8(frame.to_vec()).unwrap();
+    assert!(
+        frame.starts_with("event: snapshot"),
+        "new revision must be delivered, not silently acknowledged: {frame}"
+    );
+    let snapshot: Value = serde_json::from_str(
+        frame
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(snapshot["participants"][0]["muted"], true);
+}
+
+pub(super) async fn exercise_state_ordering(writer: &AppState, reader: &AppState) {
+    let person = joined(writer, "phone").await;
+    let token = person["token"].as_str();
+    for (sequence, muted, deafened) in [(2, false, true), (1, true, false), (2, true, false)] {
+        assert_eq!(
+            call(
+                app(writer.clone()),
+                "POST",
+                "/api/media/state",
+                token,
+                json!({"sequence":sequence,"muted":muted,"deafened":deafened})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let (status, snapshot) = call(
+            app(reader.clone()),
+            "POST",
+            "/api/media/snapshot",
+            token,
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            snapshot["participants"][0]["muted"], false,
+            "late/duplicate writes must not replace newer intent"
+        );
+        assert_eq!(snapshot["participants"][0]["deafened"], true);
+    }
+    assert_eq!(
+        call(
+            app(reader.clone()),
+            "POST",
+            "/api/media/state",
+            token,
+            json!({"sequence":3,"muted":true,"deafened":false})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, snapshot) = call(
+        app(writer.clone()),
+        "POST",
+        "/api/media/snapshot",
+        token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(snapshot["participants"][0]["muted"], true);
+    assert_eq!(snapshot["participants"][0]["deafened"], false);
+}
+
+#[tokio::test]
+async fn delayed_state_write_cannot_overwrite_newer_intent() {
+    let (s, _) = state();
+    exercise_state_ordering(&s, &s).await;
+}
+
 #[tokio::test]
 async fn active_calls_have_no_absolute_age_limit() {
     let (s, _) = state();

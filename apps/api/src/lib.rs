@@ -726,6 +726,8 @@ struct Participant {
     turn_attempts: VecDeque<Timestamp>,
     muted: bool,
     deafened: bool,
+    #[serde(default)]
+    state_sequence: u64,
     lease: Timestamp,
     joined: Timestamp,
     tracks: HashMap<String, Track>,
@@ -1228,6 +1230,7 @@ struct EventStreamState {
     updates: watch::Receiver<()>,
     connection: Uuid,
     shutdown: watch::Receiver<bool>,
+    heartbeat: tokio::time::Interval,
     first: bool,
     snapshots: bool,
     initial_snapshot: bool,
@@ -1296,6 +1299,11 @@ async fn event_stream(
         updates.borrow_and_update();
         updates
     };
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_secs(10),
+        Duration::from_secs(10),
+    );
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let stream = stream::unfold(
         EventStreamState {
             state: s,
@@ -1303,6 +1311,7 @@ async fn event_stream(
             updates,
             connection,
             shutdown,
+            heartbeat,
             first: true,
             snapshots,
             initial_snapshot: snapshots,
@@ -1329,7 +1338,7 @@ async fn event_stream(
                             if changed.is_err() { return None; }
                             "changed"
                         }
-                        () = tokio::time::sleep(Duration::from_secs(10)) => "heartbeat",
+                        _ = stream.heartbeat.tick() => "heartbeat",
                     }
                 };
                 if event == "draining" {
@@ -1367,6 +1376,13 @@ async fn event_stream(
                     .await
                     .ok()?;
                 let (revision, snapshot) = snapshot;
+                // A delayed/lost Pub/Sub wake must not let a heartbeat acknowledge
+                // a new revision without delivering it. Heartbeats also repair state.
+                let event = if event == "heartbeat" && stream.revision != Some(revision) {
+                    "changed"
+                } else {
+                    event
+                };
                 // Connection replacement also wakes streams. Do not expose it as
                 // a roster mutation to unrelated participants.
                 if event == "changed" && stream.revision == Some(revision) {
@@ -1582,6 +1598,7 @@ async fn join(
         turn_attempts: VecDeque::new(),
         muted: input.muted,
         deafened: input.deafened,
+        state_sequence: 0,
         lease: Timestamp::now(),
         joined: Timestamp::now(),
         tracks: HashMap::new(),
@@ -2526,6 +2543,7 @@ async fn close(
 struct StateBody {
     muted: bool,
     deafened: bool,
+    sequence: Option<u64>,
 }
 async fn update_state(
     State(s): State<AppState>,
@@ -2537,6 +2555,14 @@ async fn update_state(
     s.update(|r| {
         let id = authenticate(r, token)?;
         let p = r.participants.get_mut(&id).unwrap();
+        if let Some(sequence) = i.sequence {
+            // A client timeout does not cancel an admitted request on another pod.
+            // Preserve newer intent even if an old write or replay commits later.
+            if sequence <= p.state_sequence {
+                return Ok(StatusCode::NO_CONTENT);
+            }
+            p.state_sequence = sequence;
+        }
         p.muted = i.muted;
         p.deafened = i.deafened;
         Ok(StatusCode::NO_CONTENT)

@@ -72,6 +72,16 @@ async fn delete(url: &str, key: &str) {
 
 #[tokio::test]
 #[ignore = "requires disposable TEST_VALKEY_URL"]
+async fn stale_state_writes_cannot_win_across_pods() {
+    let (a, b, _, url, key) = shared().await;
+    reliability::exercise_state_ordering(&a, &b).await;
+    a.begin_shutdown();
+    b.begin_shutdown();
+    delete(&url, &key).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable TEST_VALKEY_URL"]
 async fn spectators_receive_cross_pod_leave_before_provider_cleanup() {
     let (a, b, _, url, key) = shared().await;
     exercise_public_presence(&a, &b).await;
