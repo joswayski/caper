@@ -116,6 +116,14 @@ the UI announces pending synchronization. A newer self snapshot that disagrees
 with local intent triggers repair, including when an older timed-out write commits
 late. Pushed rosters render without waiting for state writes or SDP negotiation.
 
+Join includes the browser's current `muted` and `deafened` values. The API commits
+them with the participant, so the first public/in-call snapshot is correct rather
+than briefly advertising false defaults until publication finishes. Omitted fields
+remain false for older clients. A follow-up state write reconciles changes during
+capture/join concurrently with publication, rather than waiting for SDP/transport.
+Deploy all API pods with this request shape **before** the web update; the previous
+API rejects unknown join fields. No shared-state schema or secret changes are needed.
+
 Rollout regression tests reproduce two failures in the previous browser: obsolete
 queued mute values and lease renewal blocked behind a pending state write. Tests
 also cover 503/504 state responses during SSE draining, slow subscription setup,
@@ -134,9 +142,20 @@ The follow-up disconnect audit also covers these interactions:
 | Join/publish/subscribe/negotiate/close reaches a draining API | Explicit `503` + `code: api_draining` proves admission rejection before mutation. Retry up to three times after 250/500/1000 ms within the original request deadline. Generic 5xx/timeouts do not authorize replay. |
 | A speaker leaves before subscription starts | `404` + `code: track_gone` skips only that track; continue subscribing to other participants. Authentication errors still invalidate the session. |
 | A speaker leaves while a successful subscription is being created | Preserve the listener, finish any returned SDP offer, then close the unwanted MID from the latest roster. Do not discard the listener's own microphone/session. |
+| Cloudflare explicitly rejects a departed track during subscription | A successful HTTP response with one `not_found_track_error`/`track_error`, no MID/SDP, and explicit `requiresImmediateRenegotiation: false` becomes `track_gone`; release the operation lock and preserve the listener. HTTP errors, partial offers, allocated MIDs, and session errors remain ambiguous and do not take this path. |
+| Closing a departed track fails or times out | Remove local playback immediately; retry transient HTTP cleanup failures on subsequent reconciliation/lease heartbeat without rejoining. API close commits track removal and a cleanup job atomically. Provider cleanup failure never revokes the listener or its other tracks. |
 | SSE fails while authenticated lease renewals work | Retry SSE independently; keep voice open and display a live-update recovery notice. Snapshots still repair state, but normal real-time delivery requires SSE recovery. |
 | A previous call still has a pending device request | New signaling/media queues do not wait on old work. Old rollback cannot restart the new call. |
 | Several separate successful recoveries over time | Reset the consecutive retry budget after each successful rejoin; no lifetime three-recovery quota. |
+
+Track close uses Cloudflare's `force: true`, documented as stopping data flow
+[without WebRTC renegotiation](https://developers.cloudflare.com/realtime/static/realtime-api-2024-05-21.yaml).
+It is cleanup, not evidence that the remaining participant's connection failed.
+The browser fixture checks repeated remote joins/leaves with failed close requests:
+the connected heading, connection details, peer identity, and microphone remain
+unchanged. API tests exercise the actual provider HTTP adapter against a local
+stub for rejected pulls and verify the boundary with ambiguous responses. These
+are fault-injection checks, not live SFU or physical-device verification.
 
 Failure-injection coverage includes these cases and cancellation during retry
 backoff. Deploy the **API first, then web**, and refresh both clients before

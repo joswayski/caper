@@ -1608,6 +1608,67 @@ test("a late ended-track cleanup failure cannot reconnect a replacement call", a
   assert.equal(peer.senders[0].track?.enabled, true);
 });
 
+for (const failure of [502, 503, 504, "network", "timeout"] as const) {
+  test(`remote departure with ${failure} cleanup failure keeps the existing call and retries`, async (t) => {
+    const { client, install, events, states, calls, track } = setup(t);
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    await client.join();
+    const peer = Peer.latest;
+    const before = states.length;
+    events[0].enqueue(snapshotEvent([{ id: "phone", name: "Phone", muted: false, deafened: false, tracks: [{ id: "phone-mic", kind: "microphone" }] }], 1));
+    await tick();
+    assert.equal(states.at(-1)?.remoteMedia.length, 1);
+    const original = fetch;
+    let attempts = 0;
+    install("fetch", (url: string, init: RequestInit) => {
+      if (url.endsWith("/close") && ++attempts === 1) {
+        if (failure === "network") return Promise.reject(new TypeError("connection lost"));
+        if (failure === "timeout") return new Promise<Response>((_resolve, reject) => {
+          init.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+        });
+        return Promise.resolve(Response.json({ error: "temporary failure" }, { status: failure }));
+      }
+      return original(url, init);
+    });
+    events[0].enqueue(snapshotEvent([], 2));
+    await tick();
+    assert.equal(states.at(-1)?.remoteMedia.length, 0, "remove departed audio before waiting for cleanup");
+    if (failure === "timeout") { t.mock.timers.tick(5_000); await tick(); }
+    t.mock.timers.tick(15_000);
+    await tick();
+    await tick();
+    assert.equal(attempts, 2, "cleanup retries without creating another session");
+    assert.ok(states.slice(before).every((state) => state.phase === "connected"));
+    assert.equal(Peer.latest, peer);
+    assert.equal(peer.connectionState, "connected");
+    assert.equal(track.readyState, "live");
+    assert.equal(track.enabled, true);
+    assert.equal(calls.filter((op) => op === "join").length, 1);
+    assert.equal(calls.includes("leave"), false);
+  });
+}
+
+test("join carries current mute/deafen intent and synchronizes before slow publication finishes", async (t) => {
+  const { client, install, stateUpdates } = setup(t);
+  await client.setDeafened(true);
+  const original = fetch;
+  let joinBody: unknown;
+  let finish!: () => void;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) joinBody = JSON.parse(init.body as string);
+    if (url.endsWith("/publish")) return new Promise<Response>((resolve) => {
+      finish = () => { void original(url, init).then(resolve); };
+    });
+    return original(url, init);
+  });
+  const joining = client.join("Laptop");
+  await tick();
+  try {
+    assert.deepEqual(joinBody, { name: "Laptop", muted: true, deafened: true });
+    assert.deepEqual(stateUpdates, [{ muted: true, deafened: true }]);
+  } finally { finish(); await joining; }
+});
+
 test("connection event wait ignores intermediate states", async (t) => {
   setup(t);
   const target = new EventTarget();
