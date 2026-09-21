@@ -61,19 +61,11 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
   </section>;
 }
 
-function AudioMenu({ label, settings, children }: { label: string; settings?: boolean; children: ReactNode }) {
-  const ref = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    const dismiss = (event: PointerEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) ref.current.open = false;
-    };
-    document.addEventListener("pointerdown", dismiss);
-    return () => document.removeEventListener("pointerdown", dismiss);
-  }, []);
-  return <details ref={ref} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
-    if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
-  }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}>
-    <summary aria-label={label} title={label}>{settings ? <Settings2 aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary>
+function AudioMenu({ label, settings, open, onOpenChange, children }: { label: string; settings?: boolean; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode }) {
+  return <details open={open} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
+    if (event.key === "Escape") { onOpenChange(false); event.currentTarget.querySelector("summary")?.focus(); }
+  }}>
+    <summary aria-label={label} title={label} onClick={(event) => { event.preventDefault(); onOpenChange(!open); }}>{settings ? <Settings2 aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary>
     <div className="call-settings-panel">{children}</div>
   </details>;
 }
@@ -158,6 +150,7 @@ export default function Call() {
   const [available, setAvailable] = useState<boolean>();
   const [joinTooltipDismissed, setJoinTooltipDismissed] = useState(false);
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection">();
+  const [audioMenu, setAudioMenu] = useState<"input" | "output" | "settings">();
   const audioDialog = useRef<HTMLDialogElement>(null);
   const audioReturnFocus = useRef<HTMLElement | null>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -325,7 +318,7 @@ export default function Call() {
             <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             <div className="voice-action-group">
               <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} title={!connected ? "Join voice to use your microphone" : state.muted ? "Unmute" : "Mute"} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
-              <AudioMenu label="Input options">
+              <AudioMenu label="Input options" open={audioMenu === "input"} onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)}>
                 <fieldset className="device-options" disabled={controlsDisabled}>
                   <legend>Microphone</legend>
                   {deviceOptions(devices, "audioinput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="input-device" value={device.deviceId} checked={deviceId === device.deviceId} onChange={() => { if (connected) void act(() => clientRef.current!.changeMicrophone(device.deviceId), () => setDeviceId(device.deviceId)); else setDeviceId(device.deviceId); }} /><span>{label}</span></label>)}
@@ -335,7 +328,7 @@ export default function Call() {
             </div>
             <div className="voice-action-group">
               <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={!connected ? "Join voice to control its audio" : state.deafened ? "Listen" : "Deafen"} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
-              <AudioMenu label="Output options">
+              <AudioMenu label="Output options" open={audioMenu === "output"} onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)}>
                 {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <fieldset className="device-options">
                   <legend>Audio output</legend>
                   {deviceOptions(devices, "audiooutput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="output-device" value={device.deviceId} checked={output === device.deviceId} onChange={() => setOutput(device.deviceId)} /><span>{label}</span></label>)}
@@ -344,7 +337,7 @@ export default function Call() {
                 <div className="volume-control output-volume"><span>Output volume <output>{outputVolume}%</output></span><Slider label="Output volume" value={outputVolume} onChange={setOutputVolume} /></div>
               </AudioMenu>
             </div>
-            <AudioMenu label="Settings" settings>
+            <AudioMenu label="Settings" settings open={audioMenu === "settings"} onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)}>
               <strong>Audio settings</strong>
               <div className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><Slider label="My voice level" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /></div>
               <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
