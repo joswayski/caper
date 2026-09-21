@@ -152,7 +152,9 @@ jobs:
                   author: {name: ($display_name + " image is ready")},
                   title: $title,
                   color: 11947296,
-                  fields: ((if $body | test("[^[:space:]]") then
+                  fields: ((if $application == "caper-gateway" then
+                    [{name: "Deploy API first", value: "Deploy the matching Caper API image successfully first. Gateway deployment verifies the live API rollout before changing its image.", inline: false}]
+                  else [] end) + (if $body | test("[^[:space:]]") then
                     [{name: "Description", value: ($body | truncate_field), inline: false}]
                   else [] end) + [
                     {name: "Git SHA", value: ("`" + $git_sha + "`"), inline: false},

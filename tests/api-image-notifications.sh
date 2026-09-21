@@ -99,6 +99,11 @@ jq -e --arg sha "$GITHUB_SHA" --arg digest "$IMAGE_DIGEST" '
 
 jq -e --arg sha "$GITHUB_SHA" --arg digest "$IMAGE_DIGEST" '
   .embeds[0].author.name == "Caper chat gateway image is ready" and
+  .embeds[0].fields[0] == {
+    name: "Deploy API first",
+    value: "Deploy the matching Caper API image successfully first. Gateway deployment verifies the live API rollout before changing its image.",
+    inline: false
+  } and
   .embeds[0].fields[-1].value == ("`" + $digest + "`") and
   .components[0].components[0] == {
     type: 2,
