@@ -10,8 +10,8 @@ An independently enabled [public text demo](#public-text-demo) shares the page;
 reading and sending messages do not require an account or joining voice.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
-Input/output dropdowns sit beside the profile's microphone/headphone controls;
-input gain lives in Input options. Settings opens mic test and connection details
+Input/output device lists open directly beside the profile's microphone/headphone
+controls; input gain lives in Settings. Settings opens mic test and connection details
 in dialogs without moving the message list. Close or Escape cancels a test,
 releases pre-join capture, or restores the active call's previous mute/deafen state.
 `node scripts/test-voice-controls.mjs http://localhost:5174` checks these flows,

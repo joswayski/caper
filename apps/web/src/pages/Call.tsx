@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { ArrowLeft, ChevronDown, Hash, Headphones, Mic, MicOff, Speech, Settings2, VolumeX, X } from "lucide-react";
+import { ChevronDown, Hash, Headphones, Mic, MicOff, Speech, Settings2, VolumeX, X } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import { getAccount, type Account } from "../account/client";
 import Chat from "../chat/Chat";
@@ -157,7 +157,6 @@ export default function Call() {
   const [identityReady, setIdentityReady] = useState(false);
   const [available, setAvailable] = useState<boolean>();
   const [joinTooltipDismissed, setJoinTooltipDismissed] = useState(false);
-  const [hasTriedVoice, setHasTriedVoice] = useState(false);
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection">();
   const audioDialog = useRef<HTMLDialogElement>(null);
   const audioReturnFocus = useRef<HTMLElement | null>(null);
@@ -179,7 +178,7 @@ export default function Call() {
   const joinUnavailable = idle && available !== true;
   const controlsDisabled = (!idle && !connected) || actionPending;
   const roster = idle ? publicParticipants : state.participants;
-  const identityName = account?.username ? `@${account.username}` : chatAuthor?.name ?? name;
+  const identityName = account?.displayName || chatAuthor?.name || name;
 
   useEffect(() => {
     let current = true;
@@ -321,23 +320,31 @@ export default function Call() {
           </ul>
           </div>
           <div className="call-account">
-            <span className="account-avatar" aria-hidden="true">{identityName.replace(/^@/, "").slice(0, 1).toUpperCase()}</span>
+            <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
             <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             <div className="voice-action-group">
               <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} title={!connected ? "Join voice to use your microphone" : state.muted ? "Unmute" : "Mute"} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
               <AudioMenu label="Input options">
-                <label className="device-select">Microphone<select aria-label="Microphone" disabled={controlsDisabled || !deviceOptions(devices, "audioinput").length} value={deviceId} onChange={(event) => { const value = event.target.value; if (connected) void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); else setDeviceId(value); }}>{!deviceOptions(devices, "audioinput").length && <option value="">System default</option>}{deviceOptions(devices, "audioinput").map(({ device, label }) => <option value={device.deviceId} key={device.deviceId}>{label}</option>)}</select></label>
-                <div className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><Slider label="My voice level" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /><small>Changes how loud you sound to others.</small></div>
+                <fieldset className="device-options" disabled={controlsDisabled}>
+                  <legend>Microphone</legend>
+                  {deviceOptions(devices, "audioinput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="input-device" value={device.deviceId} checked={deviceId === device.deviceId} onChange={() => { if (connected) void act(() => clientRef.current!.changeMicrophone(device.deviceId), () => setDeviceId(device.deviceId)); else setDeviceId(device.deviceId); }} /><span>{label}</span></label>)}
+                  {!deviceOptions(devices, "audioinput").length && <p>System default · test your mic to see available devices.</p>}
+                </fieldset>
               </AudioMenu>
             </div>
             <div className="voice-action-group">
               <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={!connected ? "Join voice to control its audio" : state.deafened ? "Listen" : "Deafen"} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
               <AudioMenu label="Output options">
-                {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-select">Audio output<select aria-label="Audio output" disabled={!deviceOptions(devices, "audiooutput").length} value={output} onChange={(event) => setOutput(event.target.value)}>{!deviceOptions(devices, "audiooutput").length && <option value="">System default</option>}{deviceOptions(devices, "audiooutput").map(({ device, label }) => <option value={device.deviceId} key={device.deviceId}>{label}</option>)}</select></label> : <p className="noise-status">Choose audio output in system settings.</p>}
+                {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <fieldset className="device-options">
+                  <legend>Audio output</legend>
+                  {deviceOptions(devices, "audiooutput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="output-device" value={device.deviceId} checked={output === device.deviceId} onChange={() => setOutput(device.deviceId)} /><span>{label}</span></label>)}
+                  {!deviceOptions(devices, "audiooutput").length && <p>System default · test your mic to see available devices.</p>}
+                </fieldset> : <p className="noise-status">Choose audio output in system settings.</p>}
               </AudioMenu>
             </div>
             <AudioMenu label="Settings" settings>
               <strong>Audio settings</strong>
+              <div className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><Slider label="My voice level" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /><small>Changes how loud you sound to others.</small></div>
               <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
               {state.diagnostics && <button type="button" onClick={() => setAudioPanel("connection")}>Connection details</button>}
               {identityReady && <AccountNav account={account} />}
@@ -354,14 +361,12 @@ export default function Call() {
               <button className="voice-button" type="button" aria-label={connected ? "Leave voice" : !idle ? "Cancel joining voice" : state.phase === "leaving" ? "Leaving voice" : "Join voice"} aria-describedby={joinUnavailable ? "voice-availability" : undefined} aria-disabled={joinDisabled} onClick={() => {
                 if (joinDisabled) return;
                 if (!idle) { leave(); return; }
-                setHasTriedVoice(true);
                 setActionError(undefined);
                 void clientRef.current?.join(name.trim(), deviceId);
               }}><Speech aria-hidden="true" />{connected ? "Leave" : !idle ? "Cancel" : state.phase === "leaving" ? "Leaving…" : "Join"}</button>
               {joinUnavailable && <span id="voice-availability" className="voice-tooltip" role="tooltip">{available === false ? "Joining is not available at this time." : "Checking voice availability…"}</span>}
             </span>
             {!idle && <span className="voice-status" role="status">{connected ? "Voice connected" : state.phase === "joining" ? "Joining…" : "Reconnecting…"}</span>}
-            {idle && available === true && !hasTriedVoice && <p className="voice-hint"><ArrowLeft aria-hidden="true" /><span>Talk here, or keep typing.</span></p>}
           </div>} />
         </div>
       </section>
