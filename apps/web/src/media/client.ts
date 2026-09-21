@@ -62,6 +62,7 @@ export class PublicCallClient {
   private pollRetryTimer?: number;
   private eventRetryTimer?: number;
   private eventRetryAttempts = 0;
+  private eventDrainRetries = 0;
   private controlFailedSince?: number;
   private stateDirty = false;
   private stateRevision = 0;
@@ -309,9 +310,9 @@ export class PublicCallClient {
       ++this.snapshotInvalidation;
       if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
       else this.pollAgain = true;
-    }, (error) => {
+    }, (error, draining) => {
       if (generation !== this.generation) return;
-      if (this.phase === "connected") this.scheduleEventRecovery(generation);
+      if (this.phase === "connected") this.scheduleEventRecovery(generation, draining);
       else this.captureController.abort(error); // Startup still fails closed.
     }, (snapshot) => {
       if (generation !== this.generation) return;
@@ -323,6 +324,7 @@ export class PublicCallClient {
     await events.open(this.token!, this.captureController.signal);
     if (generation === this.generation && events === this.events && events.connected) {
       this.eventRetryAttempts = 0;
+      this.eventDrainRetries = 0;
       if (this.phase === "connected") this.emit();
     }
     return events;
@@ -334,7 +336,9 @@ export class PublicCallClient {
     // not tear down healthy audio while those renewals still succeed.
     this.emit();
     window.clearTimeout(this.eventRetryTimer);
-    const delay = draining ? 50 : Math.min(250 * 2 ** this.eventRetryAttempts++, 3_000);
+    // Keep explicit routing rejections fast, but do not hammer an unavailable
+    // deployment indefinitely. Ordinary failures still use exponential backoff.
+    const delay = draining && this.eventDrainRetries++ < 10 ? 50 : Math.min(250 * 2 ** this.eventRetryAttempts++, 3_000);
     this.eventRetryTimer = window.setTimeout(() => {
       if (generation !== this.generation || this.phase !== "connected") return;
       void this.openEvents(generation).then(() => {
@@ -977,6 +981,7 @@ export class PublicCallClient {
     this.queue = Promise.resolve();
     this.mediaQueue = Promise.resolve();
     this.eventRetryAttempts = 0;
+    this.eventDrainRetries = 0;
     this.controlFailedSince = undefined;
     this.stateDirty = false;
     this.captureController.abort();

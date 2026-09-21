@@ -151,3 +151,20 @@ test("one oversized complete event is still rejected even after valid frames", a
   assert.equal(events.connected, false);
   assert.match(errors[0]?.message ?? "", /Invalid live update stream/);
 });
+
+test("only an explicit draining rejection requests fast stream recovery", async (t) => {
+  for (const [status, body, expected] of [
+    [503, { code: "api_draining" }, true],
+    [503, { error: "state unavailable" }, false],
+    [502, { code: "api_draining" }, false],
+  ] as const) {
+    await t.test(`${status} ${JSON.stringify(body)}`, async (t) => {
+      t.mock.method(globalThis, "fetch", async () => Response.json(body, { status }));
+      let planned: boolean | undefined;
+      const events = new CallEvents(() => undefined, (_error, draining) => { planned = draining; });
+      t.after(() => events.stop());
+      await assert.rejects(events.open("test", new AbortController().signal), /unavailable/);
+      assert.equal(planned, expected);
+    });
+  }
+});

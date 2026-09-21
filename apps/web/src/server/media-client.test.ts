@@ -1234,6 +1234,54 @@ test("draining reopens control with the same call and does not rejoin or replace
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
+test("reconnects routed to a draining pod stay fast, bounded, and cancellable", async (t) => {
+  const { client, events, calls, states, install } = setup(t);
+  await client.join();
+  const peer = Peer.latest;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const original = fetch;
+  let attempts = 0;
+  let reject = true;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.includes("/events?") && reject) {
+      attempts++;
+      return Promise.resolve(Response.json({ code: "api_draining" }, { status: 503 }));
+    }
+    return original(url, init);
+  });
+  events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
+  await tick();
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    t.mock.timers.tick(50);
+    await tick();
+    assert.equal(attempts, attempt, "routing rejection must not add exponential backoff yet");
+  }
+  t.mock.timers.tick(249);
+  await tick();
+  assert.equal(attempts, 10, "persistent rejection must leave the fast retry budget");
+  reject = false;
+  t.mock.timers.tick(1);
+  await tick();
+  assert.equal(events.length, 2);
+  events[1].enqueue(snapshotEvent([{ id: "phone", name: "Phone", muted: true, deafened: false, tracks: [] }], 10));
+  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.muted, true);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(Peer.latest, peer);
+  assert.equal(calls.filter((op) => op === "join").length, 1);
+  // A later rollout gets a fresh budget; leaving cancels its pending retry.
+  reject = true;
+  events[1].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
+  await tick();
+  t.mock.timers.tick(50);
+  await tick();
+  assert.equal(attempts, 11);
+  client.leaveImmediately();
+  t.mock.timers.tick(5_000);
+  await tick();
+  assert.equal(attempts, 11);
+});
+
 test("queued pushed snapshots never suppress a scheduled lease heartbeat", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const { client, events, install, states } = setup(t);
