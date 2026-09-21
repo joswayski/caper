@@ -21,6 +21,7 @@ export interface ChatViewState {
   typingAuthors: ChatAuthor[];
   hasMore: boolean;
   loadingOlder: boolean;
+  olderError?: string;
   author?: ChatAuthor;
   sessionError?: string;
   sendError?: string;
@@ -164,8 +165,9 @@ export class ChatClient {
   }
 
   async loadOlder() {
-    if (!this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length) return;
-    this.update({ loadingOlder: true, error: undefined });
+    if (this.state.phase !== "ready" || !this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length || this.controller.signal.aborted) return;
+    const generation = this.generation;
+    this.update({ loadingOlder: true, olderError: undefined });
     try {
       const before = this.state.messages[0].seq;
       const response = await fetch(`/api/chat/channels/${encodeURIComponent(this.state.channelId)}/messages?before=${encodeURIComponent(before)}`, {
@@ -174,10 +176,11 @@ export class ChatClient {
       if (!response.ok) throw await apiError(response, "Older messages could not be loaded.");
       const history: unknown = await response.json();
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
+      if (generation !== this.generation) return;
       this.timeline.prepend(history.messages);
       this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
     } catch (error) {
-      if (!this.controller.signal.aborted) this.update({ loadingOlder: false, error: error instanceof Error ? error.message : "Older messages could not be loaded." });
+      if (!this.controller.signal.aborted && generation === this.generation) this.update({ loadingOlder: false, olderError: error instanceof Error ? error.message : "Older messages could not be loaded." });
     }
   }
 
@@ -250,7 +253,7 @@ export class ChatClient {
     this.connection = undefined;
     this.typers.clear();
     this.refreshTypers();
-    this.update({ phase: "loading", online: false, error: undefined });
+    this.update({ phase: "loading", online: false, error: undefined, loadingOlder: false, olderError: undefined });
     try {
       const response = await fetch("/api/chat/general", { cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]) });
       if (!response.ok) throw await apiError(response, "Messages are unavailable.");
