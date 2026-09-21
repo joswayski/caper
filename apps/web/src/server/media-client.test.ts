@@ -369,11 +369,52 @@ test("stopping a pending local mic test releases capture that arrives later", as
   const starting = client.startLocalMicTest();
   await tick();
   client.stopLocalMicTest();
-  finish();
   await starting;
+  const replacement = new Track();
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([replacement]) } });
+  await client.startLocalMicTest();
+  finish();
+  await tick();
 
   assert.equal(lateTrack.readyState, "ended");
+  assert.equal(states.at(-1)?.monitorStream?.getAudioTracks()[0], replacement);
+  assert.equal(replacement.readyState, "live");
+  client.stopLocalMicTest();
+});
+
+test("local mic test times out unanswered permission and releases a late grant", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { client, states, install } = setup(t);
+  let finish!: () => void;
+  const lateTrack = new Track();
+  install("navigator", { mediaDevices: { getUserMedia: () => new Promise<Stream>((resolve) => {
+    finish = () => resolve(new Stream([lateTrack]));
+  }) } });
+  let settled = false;
+  const starting = client.startLocalMicTest();
+  const rejected = assert.rejects(starting, /Microphone setup timed out/).then(() => { settled = true; });
+  t.mock.timers.tick(29_999);
+  await tick();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  await rejected;
+  finish();
+  await tick();
+  assert.equal(lateTrack.readyState, "ended");
   assert.equal(states.at(-1)?.monitorStream, undefined);
+  install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([new Track()]) } });
+  await client.startLocalMicTest();
+  assert.ok(states.at(-1)?.monitorStream);
+  client.stopLocalMicTest();
+});
+
+test("local mic test explains missing, denied, and busy devices", async (t) => {
+  const { client, install } = setup(t);
+  for (const [name, expected] of [["NotFoundError", /Connect a microphone/], ["NotAllowedError", /permission was denied/], ["NotReadableError", /another app/]] as const) {
+    install("navigator", { mediaDevices: { getUserMedia: async () => { throw new DOMException("Browser error", name); } } });
+    await assert.rejects(client.startLocalMicTest(), expected);
+  }
+  client.stopLocalMicTest();
 });
 
 test("pre-join microphone selection is retained and can be supplied when testing", async (t) => {

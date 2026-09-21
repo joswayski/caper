@@ -168,6 +168,7 @@ export default function Call() {
   const [outputVolume, setOutputVolume] = useState(100);
   const [actionError, setActionError] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
+  const actionGeneration = useRef(0);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
@@ -240,15 +241,19 @@ export default function Call() {
   }, [audioPanel]);
 
   const act = async (operation: () => Promise<unknown>, success?: () => void) => {
+    const generation = ++actionGeneration.current;
     setActionError(undefined);
     setActionPending(true);
-    try { await operation(); success?.(); } catch (error) {
-      setActionError(error instanceof Error ? error.message : "That action did not work.");
-    } finally { setActionPending(false); }
+    try { await operation(); if (generation === actionGeneration.current) success?.(); } catch (error) {
+      if (generation === actionGeneration.current) setActionError(error instanceof Error ? error.message : "That action did not work.");
+    } finally { if (generation === actionGeneration.current) setActionPending(false); }
   };
   const leave = () => void act(() => clientRef.current!.leave());
   const closeAudioPanel = () => {
     if (audioPanel === "mic") {
+      ++actionGeneration.current;
+      setActionPending(false);
+      setActionError(undefined);
       clientRef.current?.stopLocalMicTest();
       if (state.monitoring) void act(() => clientRef.current!.setMonitoring(false));
     }
@@ -394,9 +399,11 @@ export default function Call() {
           <h2 id="audio-dialog-title">{audioPanel === "mic" ? "Mic test" : "Connection details"}</h2>
           <button type="button" className="voice-icon-button" aria-label="Close audio settings" onClick={closeAudioPanel}><X aria-hidden="true" /></button>
         </div>
-        {(state.error || actionError) && <p className="call-error" role="alert">{state.error || actionError}</p>}
+        {(actionError || state.error) && <p className="call-error" role="alert">{actionError || state.error}</p>}
         {audioPanel === "mic" && <>
           {actionPending && <p className="noise-status" role="status">Preparing microphone…</p>}
+          {actionPending && <p className="noise-status">Allow microphone access if your browser asks. You can close this window to cancel.</p>}
+          {!actionPending && actionError && !state.monitorStream && <button type="button" className="voice-button" onClick={openMicTest}>Try again</button>}
           {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} volume={outputVolume} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />}
         </>}
         {audioPanel === "connection" && (state.diagnostics ? <ConnectionDiagnostics diagnostics={state.diagnostics} /> : <p className="noise-status">Join voice to see connection details.</p>)}

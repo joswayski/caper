@@ -118,6 +118,8 @@ async function fixture() {
   PublicCallClient.prototype.prepareMicrophone = () => {};
   PublicCallClient.prototype.openMicrophone = async function (deviceId) {
     f.devices.push(deviceId); f.client = this;
+    if (f.captureError) throw new DOMException('Fixture capture error', f.captureError);
+    if (f.holdCapture) await new Promise(resolve => { f.releaseCapture = resolve; });
     const destination = context.createMediaStreamDestination();
     signal.connect(destination);
     const track = destination.stream.getAudioTracks()[0];
@@ -287,6 +289,22 @@ try {
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
   click('Close audio settings'); wait(`!document.querySelector('dialog[open]')`);
   assert.equal(evaluate(`return voiceFixture.captures.at(-1).readyState;`), 'ended', 'Closing a pre-join test must release its microphone');
+  evaluate(`voiceFixture.holdCapture = true;`);
+  click('Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
+  wait(`document.querySelector('dialog[open] [role="status"]')`);
+  click('Close audio settings');
+  evaluate(`voiceFixture.holdCapture = false; voiceFixture.captureError = 'NotFoundError';`);
+  click('Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
+  wait(`document.querySelector('dialog[open] [role="alert"]')`);
+  assert.ok(evaluate(`return document.querySelector('dialog[open]').textContent.includes('Connect a microphone');`));
+  assert.equal(evaluate(`return !!document.querySelector('dialog[open] [role="status"]');`), false);
+  evaluate(`voiceFixture.captureError = undefined;`);
+  browser('find', 'role', 'button', 'click', '--name', 'Try again', '--exact');
+  wait(`document.querySelector('dialog[open] .mic-test-button')`);
+  evaluate(`voiceFixture.releaseCapture();`);
+  wait(`voiceFixture.captures.at(-1).readyState === 'ended'`);
+  assert.equal(evaluate(`return !!document.querySelector('dialog[open] .mic-test-button');`), true, 'Late cancelled capture must not disturb the successful retry');
+  click('Close audio settings');
   assert.equal(evaluate(`return !!document.querySelector('.call-controls') || /huddle/i.test(document.querySelector('.call-page').textContent);`), false);
   evaluate(`await voiceFixture.cleanup();`);
   console.log('PASS profile modal save/conflict/focus, aligned composer without Send, 0–200% input/output, master/participant/sample gain and cleanup, device menus, mute/deafen, diagnostics, recording cancellation, reduced motion, and narrow layout');

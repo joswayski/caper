@@ -5,11 +5,11 @@
 .account-profile:hover { background: var(--surface-composer); }
 .account-avatar { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
 .account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 20px; transform: translateY(-2px); }
-.call-account .voice-icon-button { width: 28px; height: 30px; border: 0; border-radius: 4px 0 0 4px; background: transparent; }
+.call-account .voice-icon-button { width: 28px; height: 30px; border: 0; border-radius: 4px 0 0 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .call-settings { flex: 0 0 auto; }
 .call-settings summary { width: 28px; height: 30px; display: grid; place-items: center; border-radius: 4px; color: var(--text-muted); cursor: pointer; list-style: none; }
 .call-settings summary::-webkit-details-marker { display: none; }
-.call-settings summary:hover, .call-settings[open] summary { background: var(--border); color: var(--text); }
+.call-settings summary:is(:hover, :focus-visible), .call-settings[open] summary { background: var(--border); color: #fff; }
 .call-settings summary svg { width: 19px; height: 19px; }
 .call-settings-panel { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 0; width: 100%; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
 .device-menu summary { width: 16px; border-radius: 0 4px 4px 0; }
@@ -128,8 +128,9 @@
 .call-diagnostics > p { margin: 12px 0 0; font-size: .7rem; line-height: 1.45; }
 .voice-action-group { display: flex; flex: 0 0 auto; align-items: center; border: 1px solid transparent; border-radius: 5px; }
 .voice-action-group:is(:hover, :focus-within, :has(details[open])) { border-color: var(--border); background: var(--surface-composer); }
-.call-account .voice-icon-button:hover:not(:disabled) { background: var(--border); }
+.call-account .voice-icon-button:is(:hover, :focus-visible):not(:disabled) { color: #fff; background: var(--border); }
 .call-account .voice-icon-button.active { color: var(--terracotta-bright); }
+.call-account .voice-icon-button:disabled { cursor: default; }
 .voice-icon-button { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); cursor: pointer; }
 .voice-icon-button svg { width: 19px; height: 19px; stroke-width: 2.25; }
 .voice-icon-button:hover:not(:disabled), .voice-icon-button.active { border-color: #805143; color: #fff; background: #39231e; }
