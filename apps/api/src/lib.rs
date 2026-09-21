@@ -2771,22 +2771,29 @@ async fn execute_cleanup(s: &AppState, action: &CleanupAction) -> Result<(), Pro
         }
     }
 }
-async fn retry_backlog(s: &AppState) {
+async fn retry_backlog(s: &AppState) -> Duration {
     // One batch at a time, including during shutdown. At most four provider
     // requests in flight and 512 queued; an outage cannot spawn unbounded tasks.
     let _guard = s.cleanup_lock.lock().await;
     let claim = Uuid::new_v4();
-    let jobs = s
+    let (jobs, next) = s
         .update(|r| {
             let mut jobs = vec![];
+            let now = Timestamp::now();
             for job in &mut r.cleanup {
-                if jobs.len() < 4 && job.not_before <= Timestamp::now() {
+                if jobs.len() < 4 && job.not_before <= now {
                     job.claim = Some(claim);
-                    job.not_before = Timestamp::now() + Duration::from_secs(30);
+                    job.not_before = now + Duration::from_secs(30);
                     jobs.push(job.clone());
                 }
             }
-            Ok(jobs)
+            let next = r
+                .cleanup
+                .iter()
+                .filter(|job| job.claim != Some(claim))
+                .map(|job| job.not_before)
+                .min();
+            Ok((jobs, next))
         })
         .await
         .unwrap_or_default();
@@ -2853,6 +2860,11 @@ async fn retry_backlog(s: &AppState) {
                 .await;
         })
         .await;
+    next.map_or(CLEANUP_RECONCILE_INTERVAL, |deadline| {
+        deadline
+            .duration_since(Timestamp::now())
+            .min(CLEANUP_RECONCILE_INTERVAL)
+    })
 }
 async fn expire_sessions(s: &AppState) -> Result<(), ApiError> {
     s.update(|r| {
@@ -2883,13 +2895,13 @@ pub fn spawn_cleanup(s: AppState) {
     tokio::spawn(async move {
         let mut shutdown = worker.shutting_down.subscribe();
         while !*shutdown.borrow() {
-            retry_backlog(&worker).await;
+            let wait = retry_backlog(&worker).await;
             // Local queue changes wake this worker immediately. The slower poll
             // recovers shared work left by a replica that exited after enqueueing.
             tokio::select! {
                 _ = shutdown.changed() => break,
                 () = worker.cleanup_wakeup.notified() => {},
-                () = tokio::time::sleep(CLEANUP_RECONCILE_INTERVAL) => {},
+                () = tokio::time::sleep(wait) => {},
             };
         }
     });

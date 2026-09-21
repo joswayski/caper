@@ -937,14 +937,16 @@ Registry removal, token revocation, dependent-subscription removal, and roster
 invalidation do not wait for provider cleanup.
 
 Cleanup uses an in-memory queue of at most 512 jobs and a single worker with four
-concurrent slots, checking for ready jobs every 250 ms. A separate five-second
-expiry sweep cannot be held up by provider IO. Each job has a 12-second bound;
-Cloudflare HTTP requests retain their 10-second timeout. Only session reads,
-`force:true` track closure (no SDP renegotiation), and TURN credential revocation
-are eligible for cleanup retries. Session creation, TURN issuance, tracks/new,
-and renegotiation are **never automatically replayed by the HTTP transport**.
-The existing client's bounded whole-session recovery is separate from replaying
-a mutation against the old session.
+concurrent slots. Local queue changes wake the worker immediately, retry deadlines
+wake it at their scheduled time, and a five-second reconciliation poll recovers
+shared work left by another replica. A separate five-second expiry sweep cannot
+be held up by provider IO. Each job has a 12-second bound; Cloudflare HTTP requests
+retain their 10-second timeout. Only session reads, `force:true` track closure (no
+SDP renegotiation), and TURN credential revocation are eligible for cleanup
+retries. Session creation, TURN issuance, tracks/new, and renegotiation are
+**never automatically replayed by the HTTP transport**. The existing client's
+bounded whole-session recovery is separate from replaying a mutation against the
+old session.
 
 Cleanup retries only network/timeouts and HTTP 408/429/500/502/503/504, at most five
 attempts per queued job, with 2/4/8/16-second delays plus up to 1.02 seconds jitter.

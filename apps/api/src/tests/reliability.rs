@@ -845,6 +845,21 @@ async fn cleanup_worker_wakes_without_waiting_for_reconciliation() {
     s.begin_shutdown();
 }
 
+#[tokio::test(start_paused = true)]
+async fn cleanup_worker_wait_tracks_retry_deadline_before_reconciliation() {
+    let faults = Arc::new(Faults::new());
+    faults.cleanup_failure.store(2, Ordering::SeqCst);
+    let s = AppState::new(Config::test(true), faults);
+    enqueue_cleanup(&s, "session".into(), "mid".into()).await;
+
+    retry_backlog(&s).await;
+    let deadline = s.registry.lock().await.cleanup[0].not_before;
+    let wait = retry_backlog(&s).await;
+
+    assert_eq!(wait, deadline.duration_since(Timestamp::now()));
+    assert!(wait < CLEANUP_RECONCILE_INTERVAL);
+}
+
 struct Faults {
     mock: Mock,
     fail: AtomicBool,
