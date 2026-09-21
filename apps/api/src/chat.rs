@@ -19,6 +19,8 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
+// Separate from durable events: older gateways require a sequence on that topic.
+pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
 const PAGE: i64 = 50;
 
 #[derive(Clone)]
@@ -86,6 +88,7 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/chat/channels/{channel}/messages",
             get(history).post(send),
         )
+        .route("/api/chat/channels/{channel}/typing", post(typing))
 }
 
 fn enabled(state: &AppState) -> Result<&Chat, ApiError> {
@@ -231,21 +234,108 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let token = headers
-        .get("x-caper-chat-token")
-        .and_then(|v| v.to_str().ok())
-        .filter(|v| v.len() <= 128)
-        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "guest session required"))?;
     let payload = persist(
         &chat.pool,
         &channel,
-        token,
+        sender_token(&headers)?,
         input.client_message_id,
         &input.text,
     )
     .await?;
     chat.wake.notify_one();
     Ok(Json(payload))
+}
+
+fn sender_token(headers: &HeaderMap) -> Result<&str, ApiError> {
+    headers
+        .get("x-caper-chat-token")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.len() <= 128)
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "guest session required"))
+}
+
+async fn authorize_sender(
+    connection: &mut sqlx::PgConnection,
+    token: &str,
+) -> Result<(i64, String, String, Option<i64>), ApiError> {
+    sqlx::query_as(
+        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
+        .bind(Sha256::digest(token.as_bytes()).as_slice()).fetch_optional(connection).await.map_err(database_error)?
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "guest session expired"))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypingInput {
+    typing: bool,
+}
+
+async fn typing(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    headers: HeaderMap,
+    Json(input): Json<TypingInput>,
+) -> Result<StatusCode, ApiError> {
+    publish_typing(
+        enabled(&state)?,
+        &channel,
+        sender_token(&headers)?,
+        input.typing,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn publish_typing(
+    chat: &Chat,
+    channel: &str,
+    token: &str,
+    typing: bool,
+) -> Result<(), ApiError> {
+    public_channel(&chat.pool, channel).await?;
+    let (_, author_id, name, user_id) = {
+        let mut connection = chat.pool.acquire().await.map_err(database_error)?;
+        authorize_sender(&mut connection, token).await?
+    };
+    let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none()},"typing":typing});
+    // Atomic shared limits and publication. No draft text, DB write, outbox, or
+    // sequence allocation. Broker time orders duplicate/overlapping streams;
+    // keep microseconds as a string rather than rounding through Lua/JS numbers.
+    let script = redis::Script::new(
+        r#"
+        local personal = redis.call('INCR', KEYS[1])
+        if personal == 1 then redis.call('EXPIRE', KEYS[1], 1) end
+        if personal > 2 then return 0 end
+        local global = redis.call('INCR', KEYS[2])
+        if global == 1 then redis.call('EXPIRE', KEYS[2], 1) end
+        if global > 60 then return 0 end
+        local event = cjson.decode(ARGV[2])
+        local clock = redis.call('TIME')
+        event.revision = clock[1] .. string.format('%06d', tonumber(clock[2]))
+        redis.call('PUBLISH', ARGV[1], cjson.encode(event))
+        return 1
+    "#,
+    );
+    let published = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut connection = chat.broker.get_multiplexed_async_connection().await?;
+        script
+            .key(format!("{TYPING_TOPIC}:rate:{channel}:{author_id}"))
+            .key(format!("{TYPING_TOPIC}:rate:global"))
+            .arg(TYPING_TOPIC)
+            .arg(event.to_string())
+            .invoke_async::<i64>(&mut connection)
+            .await
+    })
+    .await
+    .map_err(|_| unavailable())?
+    .map_err(|_| unavailable())?;
+    if published == 0 {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "typing updates too frequent",
+        ));
+    }
+    Ok(())
 }
 
 async fn persist(
@@ -265,11 +355,7 @@ async fn persist(
             .fetch_one(&mut *tx)
             .await
             .map_err(database_error)?;
-    let author: Option<(i64, String, String, Option<i64>)> = sqlx::query_as(
-        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
-        .bind(Sha256::digest(token.as_bytes()).as_slice()).fetch_optional(&mut *tx).await.map_err(database_error)?;
-    let (session_id, author_id, name, user_id) =
-        author.ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "guest session expired"))?;
+    let (session_id, author_id, name, user_id) = authorize_sender(&mut tx, token).await?;
     let hash = Sha256::digest(text.as_bytes()).to_vec();
     let existing: Option<(i64, Vec<u8>, Value)> = sqlx::query_as("SELECT session_id, request_hash, payload FROM public.messages WHERE channel_id = $1 AND client_message_id = $2")
         .bind(channel_id).bind(client_id).fetch_optional(&mut *tx).await.map_err(database_error)?;

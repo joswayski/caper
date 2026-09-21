@@ -30,7 +30,16 @@ export interface ChatSession {
   author: ChatAuthor;
 }
 
+export interface ChatTypingEvent {
+  type: "typing.updated";
+  channelId: string;
+  author: ChatAuthor;
+  typing: boolean;
+  revision: string;
+}
+
 export type ChatEvent =
+  | ChatTypingEvent
   | { type: "message.created"; channelId: string; seq: string; message: ChatMessage }
   | { type: "ready"; cursor: string }
   | { type: "migrating" }
@@ -41,13 +50,18 @@ export function sequence(value: string): bigint {
   return BigInt(value);
 }
 
+export function isChatAuthor(value: unknown): value is ChatAuthor {
+  if (!value || typeof value !== "object") return false;
+  const author = value as Partial<ChatAuthor>;
+  return typeof author.id === "string" && typeof author.name === "string" && typeof author.isGuest === "boolean";
+}
+
 export function isChatMessage(value: unknown): value is ChatMessage {
   if (!value || typeof value !== "object") return false;
   const message = value as Partial<ChatMessage>;
   return typeof message.id === "string" && typeof message.channelId === "string"
     && typeof message.seq === "string" && /^(0|[1-9]\d*)$/.test(message.seq)
     && typeof message.createdAt === "string" && typeof message.clientMessageId === "string"
-    && !!message.author && typeof message.author.id === "string" && typeof message.author.name === "string"
-    && typeof message.author.isGuest === "boolean" && !!message.content
+    && isChatAuthor(message.author) && !!message.content
     && message.content.version === 1 && message.content.type === "text" && typeof message.content.text === "string";
 }

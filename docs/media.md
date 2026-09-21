@@ -49,7 +49,8 @@ arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 Implemented behind `CHAT_ENABLED=true`; production activation is separate. The
 temporary **Public demo** space contains one **General** text channel. No space or
 channel creation, private membership, rich content, edits, deletion, moderation
-rules, typing, or message notifications ship in this slice. This demo is not a
+rules, or message notifications ship in this slice. Typing indicators are
+best-effort ephemeral presence, not saved messages. This demo is not a
 permanent public space when the product launches. Voice remains SSE/WebRTC.
 
 The same Rust image has two independently deployable roles:
@@ -88,6 +89,10 @@ HTTP contract (same origin, no cache):
   A reused key with different text or a different sender returns conflict.
 - `GET /api/chat/channels/{id}/messages?before={seq}`: earlier history, up to
   50 messages. Only the demo's General channel is accessible through these APIs.
+- `POST /api/chat/channels/{id}/typing {typing:boolean}` with
+  `X-Caper-Chat-Token`: checks the same sender/channel permissions as sending;
+  returns 204 after best-effort publication, 429 when throttled. No draft text is
+  accepted, saved, or broadcast. There are no new database migrations.
 
 Messages preserve literal Unicode text (up to 4,000 code points, nonblank;
 control characters other than newline/tab are rejected). Content is versioned
@@ -101,13 +106,31 @@ storage; drafts/pending sends survive reconnects but not closing/reloading a tab
 Guests reuse their saved identity; signed-in startup obtains a fresh capability
 from the current account session rather than identifying an account by its name.
 
-The browser immediately shows an optimistic `Sending…` row and clears the
+The browser immediately shows an optimistic message (without a `Sending…` label) and clears the
 composer. It keeps one outstanding command; a new draft can be typed while it
 waits. HTTP, ordered WebSocket replay, or a history resync replaces that row by
 matching its client UUID and sender, using the server's text, timestamp, and
 sequence. Provisional rows never advance the replay cursor. Ambiguous failures
 retain the exact command for retry; definitive rejections retain the text for
 Edit/Dismiss. A late HTTP failure cannot undo WebSocket confirmation.
+
+Typing uses a separate `caper:chat:v1:typing` Pub/Sub topic and a bounded
+64-event gateway buffer; it never enters the transactional outbox, history, or
+message sequence. Gateways deliver `typing.updated {channelId,author,typing,revision}`
+only to sockets that request `&typing=true`. This protects already-open older
+browser tabs and older gateways during rollout. Deploy API, gateway, then web;
+no configuration or infrastructure change is needed for typing.
+
+Typing publications are limited across API replicas to two per author/channel
+per second and 60 globally per second. The browser pulses at most every two
+seconds while editing, stops on clear/blur/send or three seconds of inactivity,
+and expires peer indicators after six seconds without a newer signal. Broker
+microsecond `revision` strings deduplicate overlapping socket events independently
+of message cursors; a brief stop tombstone prevents delayed starts from reviving
+an indicator. The browser caps tracked authors at 64 and never shows its own
+identity. Disconnect/resync clears presence; dropped signals are not replayed.
+Typing errors never block sending. This is approximate presence, not an online
+member list or a guarantee that every keystroke/start/stop is delivered.
 
 Delivery and recovery:
 
@@ -172,6 +195,7 @@ Validation matrix for this slice:
 | Check | Evidence / limitation |
 | --- | --- |
 | Transaction rollback, concurrent retry/order, replay, duplicate publish, lost last event, overlap | Automated integration test with disposable Postgres and real broker/WebSockets; also runs in CI with Postgres 17 + Valkey 8.1 |
+| Typing auth/rate limits, cross-gateway fanout, legacy opt-out, unchanged durable cursor | Automated disposable Postgres/broker integration; browser unit tests cover throttling, expiry, overlap and nonblocking sends |
 | Real guest browser send/receive | Two isolated Chromium sessions, real local HTTP/DB/broker/gateway; literal HTML-like text stays text |
 | Real process SIGTERM with replacement | Readiness-aware local test proxy; 12 messages received once, zero offline transitions; old socket closed after replacement ready |
 | Lost acknowledgment after commit | Injected browser fetch failure after real HTTP commit; Enter retry returned the same message, one visible copy |
@@ -195,7 +219,7 @@ storage/failover guarantees; this protocol does not claim exactly-once transport
 
 This implements shared state for **General only**, still capped at 12 participants.
 Voice state adds no Postgres tables. The separate text demo stores its space,
-channel, and history in Postgres; future typing indicators would be transient.
+channel, and history in Postgres; typing indicators are transient Pub/Sub events.
 
 - Valkey stores the call capability hash, Caper-to-Cloudflare session mapping,
   track/subscription metadata, mute/deafen state, leases, operation ownership,
