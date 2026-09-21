@@ -50,8 +50,9 @@ async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some("--migrate"), None) => return caper_api::migrate_database(environment).await,
+        (Some("--gateway"), None) => return run_gateway(environment).await,
         (None, None) => {}
-        _ => return Err("usage: caper-api [--migrate]".into()),
+        _ => return Err("usage: caper-api [--migrate|--gateway]".into()),
     }
     let config = Config::from_env(environment)?;
     let bind = config.bind;
@@ -60,6 +61,7 @@ async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
         caper_api::AppState::with_database(config, Arc::new(Cloudflare::new()), database);
     state.enable_accounts_from_env(environment).await?;
     state.enable_shared_media(environment).await?;
+    state.enable_chat(environment).await?;
     spawn_cleanup(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -74,6 +76,45 @@ async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     .map_err(|_| "media API serving or HTTP draining failed".to_owned())?;
     shutdown_cleanup(&shutdown_state).await;
     Ok(())
+}
+
+async fn run_gateway(environment: &RuntimeEnvironment) -> Result<(), String> {
+    let bind = environment
+        .get("CHAT_GATEWAY_BIND")
+        .unwrap_or_else(|| "0.0.0.0:3002".into());
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .map_err(|_| "could not bind chat gateway")?;
+    if !environment
+        .get("CHAT_ENABLED")
+        .is_some_and(|v| v == "true" || v == "1")
+    {
+        let router = axum::Router::new()
+            .route(
+                "/health",
+                axum::routing::get(|| async { axum::http::StatusCode::NO_CONTENT }),
+            )
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE });
+        return serve_with_drain(listener, router, shutdown_signal())
+            .await
+            .map_err(|_| "disabled gateway drain failed".into());
+    }
+    let pool = caper_api::connect_runtime_database(environment).await?;
+    let state = caper_api::gateway::Gateway::from_env(Some(&pool), environment).await?;
+    state.start();
+    tracing::info!(
+        event_name = "chat_gateway_listening",
+        "chat gateway listening"
+    );
+    serve_with_drain(listener, caper_api::gateway::router(state.clone()), async {
+        shutdown_signal().await;
+        state.begin_shutdown();
+        // Upgraded WebSockets outlive Axum's HTTP serve future. Keep the runtime
+        // alive explicitly while they hand off; readiness/new upgrades fail now.
+        tokio::time::sleep(caper_api::gateway::HANDOFF_WINDOW + Duration::from_secs(1)).await;
+    })
+    .await
+    .map_err(|_| "chat gateway drain failed".to_owned())
 }
 
 async fn serve_with_drain(

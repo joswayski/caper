@@ -3,6 +3,7 @@ import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { Headphones, Mic, MicOff, Volume2, VolumeX } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import { getAccount } from "../account/client";
+import Chat from "../chat/Chat";
 import Slider from "../components/Slider";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
@@ -282,6 +283,7 @@ export default function Call() {
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
+          {identityReady && <Chat name={name} signedIn={!!accountDisplayName} />}
         </div>
         {!idle && <footer className="call-controls" aria-label="Voice controls">
           <div className="voice-action-group">

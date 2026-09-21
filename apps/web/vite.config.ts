@@ -144,6 +144,9 @@ export default defineConfig(async ({ command }) => {
   server: {
     port: Number(process.env.PORT ?? 5174),
     allowedHosts: [".onamp.dev"],
+    proxy: {
+      "/api/chat/events": { target: "http://127.0.0.1:3002", ws: true },
+    },
     fs: { allow: [searchForWorkspaceRoot(import.meta.dirname)] },
   },
   };

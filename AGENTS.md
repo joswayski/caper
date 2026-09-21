@@ -6,7 +6,7 @@ Adapted from the conventions in `joswayski/captures`.
 
 - Caper is an early-stage space for conversations. Distinguish working features from roadmap ideas; do not describe mockups as shipped functionality.
 - `apps/web`: TanStack Start browser app and same-origin development API adapter.
-- `apps/api`: Rust media control service. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. MVP is one public General voice channel with join/leave, not outgoing calls. No text chat, database, camera or screen sharing.
+- `apps/api`: Rust media control, accounts, and public text demo. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. Voice is one public General channel, not outgoing calls. Text uses Postgres/outbox and the independently deployed `--gateway` WebSocket role with Valkey fanout. No user-created spaces/channels, camera, or screen sharing.
 - `shared/design.css`: shared visual tokens. `docs/brand` contains the owner's reference images and style guidance.
 - `docs/media.md`: configuration, deployment, privacy, validation matrix, and call runbook.
 

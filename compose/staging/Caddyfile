@@ -1,4 +1,8 @@
 :3000 {
+	handle /api/chat/events {
+		reverse_proxy chat-gateway:3002
+	}
+
 	handle /api/* {
 		reverse_proxy api:3001
 	}

@@ -52,6 +52,17 @@ jobs:
           jq -e '.enabled == false' /tmp/media-status.json
           test "$(curl --silent --show-error -o /tmp/media-join.json -w '%{http_code}' -H 'Content-Type: application/json' -d '{"name":"test"}' http://127.0.0.1:3001/api/media/join)" = 503
           jq -e '.error == "media disabled"' /tmp/media-join.json
+      - name: Verify independent gateway entrypoint without secrets
+        run: |
+          set -euo pipefail
+          container="$(docker run -d -p 3002:3002 caper-api:test --gateway)"
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3002/health; then break; fi
+            sleep 1
+          done
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3002/health)" = 204
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3002/readyz)" = 503
       - name: Configure AWS credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v6.2.3

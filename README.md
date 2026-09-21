@@ -8,7 +8,7 @@ its earliest stage today (and an active work in progress)!
 ## Repository layout
 
 - `apps/web` - TanStack Start website and health endpoint
-- `apps/api` - Rust voice-control and account service
+- `apps/api` - Rust voice-control, accounts, and text commands; separate WebSocket gateway role
 - `shared` - framework-neutral design tokens
 
 Brand references and the owner's style guide are in [docs/brand](docs/brand).
@@ -70,6 +70,12 @@ requires a one-time empty-channel cutover before enabling multiple replicas.
 In production, Traefik routes public `caper.chat/api/*`
 requests directly to that Rust service. Run `cargo run -p caper-api` alongside
 `npm run dev:web`; Vite forwards development `/api` requests to port `3001`.
+The exception is `/api/chat/events`, which goes to the independent WebSocket
+gateway on `3002` (`cargo run -p caper-api -- --gateway`). With `CHAT_ENABLED=true`,
+Postgres, and Valkey, `/live` also offers a temporary public space and General
+text channel. Guests can read/send without joining voice or signing in. Messages
+are persisted; the [text runbook](docs/media.md#public-text-demo) covers limits,
+replay, and staged production activation. Compose includes the gateway.
 The `/live` demo offers one public General voice channel: guests get a random name,
 while signed-in people use their display name. No account is required to join. Set `MEDIA_ENABLED=true` and the four
 server-only Cloudflare variables in `.env.example` in the API environment to

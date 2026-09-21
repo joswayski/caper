@@ -5,7 +5,9 @@
 One shared **General voice channel**, available to guests while the service is
 enabled. Accounts are optional. Signed-in participants use their account display
 name; guests receive a random name. This is not a dial/invite/call flow.
-No text chat, camera, screen sharing, channel creation, or server-side recording.
+No camera, screen sharing, channel creation, or server-side voice recording.
+An independently enabled [public text demo](#public-text-demo) shares the page;
+reading and sending messages do not require an account or joining voice.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 The Rust API replaces a signed-in participant's submitted name
@@ -42,60 +44,150 @@ unguessable short-lived call capability. Clients use Caper track IDs, not
 arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 **not E2EE**.
 
-### Messaging transport decision (not implemented)
+### Public text demo
 
-Use a WebSocket gateway for future authenticated app events, with HTTP commands
-for sending messages. WebSockets connect clients to the gateway; Valkey Pub/Sub
-distributes committed events between servers. They are different layers, not
-alternatives. Keep the gateway independently deployable from command handlers so
-ordinary API releases need not rotate client event connections. Gateway releases
-still need overlapping handoff and cursor-based recovery. The current voice MVP
-continues using SSE; merely replacing its transport would not fix shutdown order.
+Implemented behind `CHAT_ENABLED=true`; production activation is separate. The
+temporary **Public demo** space contains one **General** text channel. No space or
+channel creation, private membership, rich content, edits, deletion, moderation
+rules, typing, or message notifications ship in this slice. This demo is not a
+permanent public space when the product launches. Voice remains SSE/WebRTC.
 
-The intended message path is:
+The same Rust image has two independently deployable roles:
 
-1. A client sends an idempotent command with a client-generated message ID.
-2. One Postgres transaction stores the message and its outbox event. A successful
-   response means accepted durably, not delivered to every recipient.
-3. Wake the outbox publisher immediately after commit (with a durable pending-row
-   scan to recover lost wakeups), then fan out the full message event through
-   Valkey to the gateways serving authorized recipients. Do not wait for a periodic
-   client poll or require recipients to fetch the database for each new message.
-4. Gateways push the payload over WebSockets. Events have stable IDs and ordered
-   per-channel positions; serialize publication per channel and deduplicate
-   retries. Membership/authorization checks apply to live delivery and replay.
-5. On reconnect or a detected sequence gap, replay durable events after the last
-   received position, then continue live delivery. Subscribe/buffer live events
-   before replaying through a captured high-water mark; merge by position so the
-   replay-to-live boundary cannot miss or reorder concurrent messages. An expired
-   replay window requires explicit resynchronization, not silent omission.
+- `caper-api`: HTTP commands/history plus transactional-outbox publishing (3001).
+- `caper-api --gateway`: WebSocket delivery (3002, `CHAT_GATEWAY_BIND`). It uses
+  `DATABASE_URL` only, never `MIGRATION_DATABASE_URL` or media provider credentials.
+  `/health` is liveness; `/readyz` requires DB/broker readiness and no drain.
 
-Valkey loss must not lose accepted messages. A publisher crash between publish and
-mark-delivered can create duplicates, so delivery is at least once with client
-deduplication, not an exactly-once claim. A gateway losing Pub/Sub must catch up
-from the durable event log even if its client socket stayed open. Bound per-client
-queues; a slow client resumes instead of exhausting gateway memory. Typing/presence
-are expiring transient state, separate from durable message history and replay.
+Both need Postgres, the **same** authenticated TLS `VALKEY_URL`, and
+`CHAT_ENABLED=true`. The flag defaults off outside Compose. Compose defaults it
+on when no override exists; change the example `.env`'s false value to true to
+enable it. Secrets Manager overrides process environment settings. API startup
+runs the additive migration and runtime grants; startup seeding allocates stable
+random IDs under a transaction lock. Start the API before the gateway. The
+gateway retries startup in Compose if migrations are not ready yet.
 
-Proposed acceptance target: healthy same-region clients receive message events at
-p95 below 250ms and p99 below one second from server commit, including routine
-rolling deployments. Measure commit-to-publish, gateway delivery, and client receipt
-separately under sustained traffic, publisher failures, broker reconnects, and
-gateway restarts. This is a target for the messaging implementation, **not a
-measured production guarantee**. No message tables, outbox, WebSocket endpoint,
-gateway deployment, or replay log exists in this voice change.
+IDs follow the existing random alphanumeric convention: **12 characters** for
+spaces/channels/guest identities, **15** for messages, with unique constraints.
+Internal joins use bigint. IDs contain no timestamp and do not order messages.
+Per-channel decimal-string `seq` values are reconnect cursors; browser code uses
+BigInt, never floating-point numbers. The channel row lock allocates positions
+in commit order. There is no cross-channel ordering or sharding in this demo.
 
-Discord's documented [Gateway](https://docs.discord.com/developers/events/gateway)
-uses WebSockets and sequence-based resume; its
-[Create Message](https://docs.discord.com/developers/resources/message#create-message)
-HTTP operation emits a Gateway event. These public contracts inform the boundary
-above, not assumptions about Discord's internal databases or broker.
+HTTP contract (same origin, no cache):
+
+- `GET /api/chat/general`: space/channel IDs, latest 50 messages oldest-first,
+  `cursor`, and `hasMore`.
+- `POST /api/chat/session {name}`: opaque sender token and public author. Login
+  is optional; a valid account supplies the authoritative name. Guest names are
+  not verified. Tokens are stored hashed in Postgres and expire after 30 days.
+  Account-linked chat tokens also stop working after parent logout/expiry.
+- `POST /api/chat/channels/{id}/messages {clientMessageId,text}` with
+  `X-Caper-Chat-Token`: returns the committed message. The browser retries the
+  same UUID and original text after ambiguous errors, including Enter/Send.
+  A reused key with different text or a different sender returns conflict.
+- `GET /api/chat/channels/{id}/messages?before={seq}`: earlier history, up to
+  50 messages. Only the demo's General channel is accessible through these APIs.
+
+Messages preserve literal Unicode text (up to 4,000 code points, nonblank;
+control characters other than newline/tab are rejected). Content is versioned
+`{version:1,type:"text",text}`. `prepare_text` is the pre-publication boundary for
+future replacement rules such as BO2 → Wardogs: transform once before persistence
+and broadcast, not by deleting and reposting. No example replacement is enabled.
+Message bodies, guest capabilities, and account credentials are never logged.
+Messages and author snapshots are saved in Postgres and visible to everyone;
+there is no automatic retention purge in this demo. Browser tokens use local
+storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
+Guests reuse their saved identity; signed-in startup obtains a fresh capability
+from the current account session rather than identifying an account by its name.
+
+Delivery and recovery:
+
+1. One transaction writes message, channel position, and full event payload.
+   HTTP success means **durably accepted**, not delivered to every browser.
+2. The API wakes its publisher immediately; a one-second pending-row scan repairs
+   a lost wakeup. A transaction advisory lock serializes demo publishers across
+   API replicas without locking the sending channel row during broker I/O.
+3. Publisher sends the full event on Valkey Pub/Sub, then marks it published.
+   The event remains in Postgres for replay. A crash in between may republish it;
+   gateway/client sequence deduplication prevents a second visible message.
+4. `GET /api/chat/events?channelId={id}&after={cursor}` upgrades to a WebSocket.
+   It needs no login/token for this public demo. Each socket subscribes/buffers
+   before reading the committed high-water mark, replays through it, emits
+   `ready {cursor}`, then merges live events in order. Sends still use HTTP.
+5. One DB head check per gateway every two seconds repairs missed events even if
+   the final Pub/Sub event was lost and no later message arrives. Broker outage
+   does not erase accepted messages. Normal delivery uses full broker payloads,
+   not a per-recipient database fetch.
+
+Limits: 30 new messages/guest/minute, 120/channel/minute, and 60 new sender
+sessions/minute globally for this demo. Each gateway admits 128 sockets; its
+broadcast ring holds 256 events. A lagging receiver replays from Postgres.
+Replay reads batches of 16; sockets use 4 KiB read buffers and at most 64 KiB of
+queued writes. Writes time out after three seconds; initial/recovery replay is bounded to ten
+seconds and 2,000 events. Older/impossible cursors or missing retained events get
+`resync_required`, and the UI reloads recent history with older-page access.
+Heartbeat ping/pong runs every ten seconds, with a 30-second inactivity deadline.
+These are pre-launch demo limits, not an internet-scale abuse-prevention system.
+
+**Planned deployment handoff:** keep two ready gateway replicas, maxUnavailable 0,
+maxSurge 1, five-second preStop, and 65-second termination grace. SIGTERM rejects
+new upgrades/readiness and sends `migrating`, but old sockets continue delivering
+for 20 seconds. The runtime remains alive for at least 21 seconds. The browser
+opens a replacement while retaining the old socket and closes the old only after
+the replacement is ready and caught up to the current applied cursor. A stale or
+failed candidate cannot discard a healthy old stream. Unexpected failures use
+reconnect/backoff and replay. TCP sockets themselves do not move between pods.
+
+Production manifests, independent image activation, exact operator commands,
+and the one-time deployment target are in infrastructure
+[PR #117](https://github.com/joswayski/infrastructure/pull/117). Apply that reviewed
+infrastructure plan, then deploy the new **API image first**, **gateway second**,
+and **web third**. Do not start `--gateway` using an older pre-gateway image.
+Infrastructure merging may trigger Flux reconciliation of existing workloads;
+the new gateway is staged at zero until explicit activation. No production
+migration, infrastructure apply, or deployment was executed during development.
+
+Local development without Compose (point URLs at **disposable local data**):
+
+```bash
+# Shell 1: set DATABASE_URL, MIGRATION_DATABASE_URL, VALKEY_URL, CHAT_ENABLED=true.
+cargo run -p caper-api
+# Shell 2: same runtime DB/broker and feature flag; no migration credentials needed.
+cargo run -p caper-api -- --gateway
+# Shell 3: Vite proxies HTTP to 3001 and /api/chat/events upgrades to 3002.
+npm run dev:web
+```
+
+Validation matrix for this slice:
+
+| Check | Evidence / limitation |
+| --- | --- |
+| Transaction rollback, concurrent retry/order, replay, duplicate publish, lost last event, overlap | Automated integration test with disposable Postgres and real broker/WebSockets; also runs in CI with Postgres 17 + Valkey 8.1 |
+| Real guest browser send/receive | Two isolated Chromium sessions, real local HTTP/DB/broker/gateway; literal HTML-like text stays text |
+| Real process SIGTERM with replacement | Readiness-aware local test proxy; 12 messages received once, zero offline transitions; old socket closed after replacement ready |
+| Lost acknowledgment after commit | Injected browser fetch failure after real HTTP commit; Enter retry returned the same message, one visible copy |
+| Appearance | Desktop and 390px Chromium, empty/populated/offline/error states inspected; not physical-device/Safari evidence |
+| Production rolling deployment, sustained load, regional p95/p99, DB failover | Not measured; must be verified after operator activation |
+
+Run the integration test with `CHAT_TEST_DATABASE_URL` pointing at disposable
+loopback Postgres (test role can create/drop test databases) and
+`CHAT_TEST_VALKEY_URL` pointing at a disposable broker:
+
+```bash
+cargo test -p caper-api chat::tests::durable_guest_delivery_replay_and_handoff -- --ignored
+```
+
+The proposed healthy same-region target remains p95 below 250ms and p99 below one
+second commit-to-client, including routine rolls. Orb handoff timing is **not** a
+measurement of that production SLO. Database durability depends on the provider's
+storage/failover guarantees; this protocol does not claim exactly-once transport.
 
 ## Shared call state and rolling deployments
 
 This implements shared state for **General only**, still capped at 12 participants.
-It adds no Postgres tables. Future space/channel definitions and chat history belong
-in Postgres; typing indicators would be transient events, not durable messages.
+Voice state adds no Postgres tables. The separate text demo stores its space,
+channel, and history in Postgres; future typing indicators would be transient.
 
 - Valkey stores the call capability hash, Caper-to-Cloudflare session mapping,
   track/subscription metadata, mute/deafen state, leases, operation ownership,

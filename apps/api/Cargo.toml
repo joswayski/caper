@@ -10,7 +10,7 @@ async-trait = "0.1"
 aws-config = "=1.8.14"
 aws-sdk-secretsmanager = "=1.108.0"
 aws-sdk-sesv2 = "=1.120.0"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 email_address = "0.2"
@@ -47,6 +47,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["logs", "testing"] }
 tokio = { version = "1", features = ["test-util"] }
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 
 [lints]
