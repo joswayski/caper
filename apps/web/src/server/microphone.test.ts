@@ -302,6 +302,14 @@ test("browser baseline skips WASM and honestly reports unsupported suppression",
   microphone.stop();
 });
 
+test("a missing capture stream reports a microphone access error", async (t) => {
+  setup(t, { getUserMedia: async () => null as unknown as Stream });
+  await assert.rejects(
+    captureMicrophone(undefined, "off", new AbortController().signal, () => undefined),
+    /Microphone access was not granted/,
+  );
+});
+
 test("preloading never captures audio; warm capture still waits for the selected processor", async (t) => {
   let captures = 0;
   const { fetches } = setup(t, { getUserMedia: async () => { captures++; return new Stream([new Track()]); } });

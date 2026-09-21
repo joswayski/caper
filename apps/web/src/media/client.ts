@@ -32,6 +32,9 @@ class CallApiError extends Error {
 }
 
 function message(error: unknown) {
+  if (error instanceof DOMException && error.name === "NotAllowedError") {
+    return "Microphone permission was denied. Allow access and try again.";
+  }
   return error instanceof Error ? error.message : "The call could not continue.";
 }
 

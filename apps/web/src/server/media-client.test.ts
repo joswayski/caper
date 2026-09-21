@@ -717,6 +717,19 @@ test("join provisioning overlaps permission and leave cleans up both late result
   assert.equal(states.at(-1)?.phase, "idle");
 });
 
+test("denied microphone permission leaves the call and shows an actionable error", async (t) => {
+  const { client, calls, states, install } = setup(t);
+  install("navigator", { mediaDevices: { getUserMedia: async () => {
+    throw new DOMException("Permission denied", "NotAllowedError");
+  } } });
+
+  await client.join("Guest");
+
+  assert.deepEqual(calls, ["join", "leave"]);
+  assert.equal(states.at(-1)?.phase, "failed");
+  assert.equal(states.at(-1)?.error, "Microphone permission was denied. Allow access and try again.");
+});
+
 for (const cleanupFails of [false, true]) test(`leave releases local media and permits rejoin before old cleanup ${cleanupFails ? "fails" : "finishes"}`, async (t) => {
   const { client, track, states, install } = setup(t);
   let completeLeave!: () => void;
