@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChatClient, type ChatViewState } from "./client.ts";
 import "./chat.css";
 
@@ -12,7 +12,7 @@ function timeLabel(value: string) {
   return Number.isNaN(date.valueOf()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
 }
 
-export default function Chat({ name, signedIn }: { name: string; signedIn: boolean }) {
+export default function Chat({ name, signedIn, headerActions }: { name: string; signedIn: boolean; headerActions?: ReactNode }) {
   const [state, setState] = useState(initialView);
   const [draft, setDraft] = useState("");
   const [validationError, setValidationError] = useState<string>();
@@ -43,6 +43,7 @@ export default function Chat({ name, signedIn }: { name: string; signedIn: boole
   };
 
   const sending = !!state.pendingSend && !state.sendError;
+  const channelName = state.channelName.toLowerCase();
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const submit = async () => {
@@ -58,8 +59,10 @@ export default function Chat({ name, signedIn }: { name: string; signedIn: boole
 
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
-      <h2 id="chat-heading"># {state.channelName}</h2>
-      {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
+      <div className="chat-heading-title"><h2 id="chat-heading"># {channelName}</h2>
+        {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
+      </div>
+      {headerActions}
     </header>
 
     <div className="chat-messages" ref={listRef} aria-live="polite" aria-busy={state.phase === "loading"} onScroll={(event) => {
@@ -69,7 +72,7 @@ export default function Chat({ name, signedIn }: { name: string; signedIn: boole
       {state.hasMore && <button className="chat-history-button" type="button" disabled={state.loadingOlder} onClick={() => void loadOlder()}>{state.loadingOlder ? "Loading…" : "Load older messages"}</button>}
       {state.phase === "loading" && !state.messages.length && <p className="chat-state" role="status">Loading messages…</p>}
       {state.phase === "error" && <div className="chat-state" role="alert"><p>{state.error}</p><button type="button" onClick={() => clientRef.current?.retryLoad()}>Try again</button></div>}
-      {state.phase === "ready" && !state.messages.length && <div className="chat-state"><p>No messages yet.</p><small>Start the conversation in General.</small></div>}
+      {state.phase === "ready" && !state.messages.length && <div className="chat-state"><p>No messages yet.</p><small>Start the conversation in #{channelName}.</small></div>}
       {state.messages.map((message) => <article className="chat-message" key={message.id}>
         <div className="chat-avatar" aria-hidden="true">{message.author.name.slice(0, 1).toUpperCase()}</div>
         <div><header><strong>{message.author.name}</strong>{message.author.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header><p>{message.content.text}</p></div>
@@ -82,8 +85,8 @@ export default function Chat({ name, signedIn }: { name: string; signedIn: boole
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
       {(state.sendError || validationError) && <p className="chat-inline-error" role="alert">{state.sendError || validationError} {state.sendError && state.pendingSend && <button type="button" onClick={() => void submit()}>Retry send</button>}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-        <label className="sr-only" htmlFor="chat-message">Message General</label>
-        <textarea id="chat-message" rows={2} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${state.channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
+        <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
+        <textarea id="chat-message" rows={2} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
         <div>{characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}<button type="submit" disabled={state.phase !== "ready" || sending || !draft.trim() || characterCount > 4_000}>{sending ? "Sending…" : "Send"}</button></div>
