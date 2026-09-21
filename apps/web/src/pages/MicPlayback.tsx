@@ -60,8 +60,30 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
   onDeviceError(): void;
 }) {
   const ref = useRef<HTMLAudioElement>(null);
+  const contextRef = useRef<(AudioContext & { setSinkId(id: string): Promise<void> }) | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
   useEffect(() => {
-    if (ref.current) ref.current.volume = volume / 100;
+    const element = ref.current;
+    // Keep native playback (and its device picker) on browsers without
+    // AudioContext output selection. Native volume is limited to 100%.
+    if (!element || !("setSinkId" in AudioContext.prototype)) return;
+    const context = new AudioContext() as AudioContext & { setSinkId(id: string): Promise<void> };
+    const source = context.createMediaElementSource(element);
+    const gain = context.createGain();
+    source.connect(gain).connect(context.destination);
+    contextRef.current = context;
+    gainRef.current = gain;
+    return () => {
+      source.disconnect();
+      gain.disconnect();
+      contextRef.current = null;
+      gainRef.current = null;
+      void context.close();
+    };
+  }, []);
+  useEffect(() => {
+    if (gainRef.current) gainRef.current.gain.value = volume / 100;
+    else if (ref.current) ref.current.volume = Math.min(volume / 100, 1);
   }, [volume, clip.url]);
   useEffect(() => {
     const element = ref.current;
@@ -70,7 +92,8 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
     const prepare = async () => {
       const setSinkId = (element as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId?.bind(element);
       try {
-        if (setSinkId) await setSinkId(output);
+        if (contextRef.current) await contextRef.current.setSinkId(output);
+        else if (setSinkId) await setSinkId(output);
       } catch {
         if (current) onDeviceError();
         return;
@@ -80,7 +103,7 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
     void prepare();
     return () => { current = false; };
   }, [autoPlay, clip.url, output]);
-  return <audio ref={(element) => { ref.current = element; onAudioElement?.(element); }} aria-label={`${label} microphone sample`} controls src={clip.url} onEnded={onEnded} onPlay={onPlay} />;
+  return <audio ref={(element) => { ref.current = element; onAudioElement?.(element); }} aria-label={`${label} microphone sample`} controls src={clip.url} onEnded={onEnded} onPlay={() => { void contextRef.current?.resume(); onPlay?.(); }} />;
 }
 
 function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
