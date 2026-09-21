@@ -13,7 +13,7 @@
 .participant-avatar { position: relative; flex: 0 0 auto; }
 .avatar { flex: 0 0 auto; width: 38px; height: 38px; display: grid; place-items: center; border: 2px solid var(--border); border-radius: 50%; color: #fff; background: #354027; font-weight: 900; }
 .avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 3px rgb(99 122 67 / .2); }
-.participant-name { min-width: 0; display: grid; flex: 1; }
+.participant-name { min-width: 0; display: grid; grid-template-rows: 1.3em 1.2em; flex: 1; }
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
 .participant-country { position: absolute; right: -3px; bottom: -1px; width: 16px; height: 12px; border: 1px solid var(--surface); border-radius: 3px; box-shadow: 0 0 0 1px rgb(0 0 0 / .2); }
 .participant-name small { color: var(--text-muted); font-size: .72rem; }

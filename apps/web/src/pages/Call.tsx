@@ -213,17 +213,18 @@ export default function Call() {
           <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label="People in voice">
             {roster.map((participant) => {
               const self = participant.id === state.selfId;
-              const speaking = activeParticipants.has(participant.id);
               const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
               const participantMuted = self ? state.muted : participant.muted;
               const participantDeafened = self ? state.deafened : participant.deafened;
+              const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
               const activityMuted = participantMuted && !state.monitoring;
+              const speaking = activeParticipants.has(participant.id) && !activityMuted;
               return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={idle || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                 <span className="participant-avatar">
                   <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   <ParticipantCountry code={participant.countryCode} />
                 </span>
-                <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantDeafened ? <small>Deafened</small> : participantMuted ? <small>Muted</small> : null}</span>
+                <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><small aria-hidden={!participantStatus}>{participantStatus ?? "\u00a0"}</small></span>
                 {!idle && <VoiceActivity
                   stream={stream}
                   muted={activityMuted}
