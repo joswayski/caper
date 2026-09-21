@@ -35,6 +35,12 @@ function message(error: unknown) {
   if (error instanceof DOMException && error.name === "NotAllowedError") {
     return "Microphone permission was denied. Allow access and try again.";
   }
+  if (error instanceof DOMException && (error.name === "NotFoundError" || error.name === "OverconstrainedError")) {
+    return "No microphone is available. Connect a microphone or choose another input and try again.";
+  }
+  if (error instanceof DOMException && error.name === "NotReadableError") {
+    return "Your microphone could not be opened. Check whether another app is using it and try again.";
+  }
   return error instanceof Error ? error.message : "The call could not continue.";
 }
 
@@ -80,6 +86,7 @@ export class PublicCallClient {
   private monitorStream?: MediaStream;
   private localTestTrack?: MediaStreamTrack;
   private localTestGeneration = 0;
+  private localTestController?: AbortController;
   private stateBeforeMonitoring?: { muted: boolean; deafened: boolean };
   private pollPromise?: Promise<void>;
   private pollAgain = false;
@@ -560,9 +567,9 @@ export class PublicCallClient {
     return pending;
   }
 
-  private async openMicrophone(deviceId?: string) {
+  private async openMicrophone(deviceId?: string, signal = this.captureController.signal) {
     let microphone: Microphone;
-    microphone = await captureMicrophone(deviceId, this.noiseSuppression, this.captureController.signal, () => {
+    microphone = await captureMicrophone(deviceId, this.noiseSuppression, signal, () => {
       this.microphoneStatus = microphone.status;
       this.emit();
     }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceProcessingStrength);
@@ -591,20 +598,43 @@ export class PublicCallClient {
 
   async startLocalMicTest(deviceId?: string) {
     if ((this.phase !== "idle" && this.phase !== "failed") || this.localTestTrack) return;
+    this.stopLocalMicTest();
     if (deviceId !== undefined) this.microphoneDeviceId = deviceId || undefined;
     const generation = ++this.localTestGeneration;
-    const track = await this.openMicrophone(this.microphoneDeviceId);
-    if (generation !== this.localTestGeneration || (this.phase !== "idle" && this.phase !== "failed")) {
-      this.stopMicrophone(track);
-      return;
+    const controller = new AbortController();
+    this.localTestController = controller;
+    const signal = AbortSignal.any([controller.signal, this.captureController.signal]);
+    const timer = window.setTimeout(() => controller.abort(new Error("Microphone setup timed out. Check your browser’s microphone permission and selected input, then try again.")), 30_000);
+    let abort = () => {};
+    try {
+      const cancelled = new Promise<never>((_, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+      const opening = this.openMicrophone(this.microphoneDeviceId, signal).then((track) => {
+        if (signal.aborted || generation !== this.localTestGeneration) {
+          this.stopMicrophone(track);
+          throw signal.reason ?? new DOMException("Microphone test cancelled.", "AbortError");
+        }
+        return track;
+      });
+      const track = await Promise.race([opening, cancelled]);
+      this.localTestTrack = track;
+      this.monitorStream = new MediaStream([this.captures.get(track)?.naturalTrack ?? track]);
+      this.emit();
+    } catch (error) {
+      if (generation === this.localTestGeneration) throw new Error(message(error));
+    } finally {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
     }
-    this.localTestTrack = track;
-    this.monitorStream = new MediaStream([this.captures.get(track)?.naturalTrack ?? track]);
-    this.emit();
   }
 
   stopLocalMicTest() {
     ++this.localTestGeneration;
+    this.localTestController?.abort();
+    this.localTestController = undefined;
     if (!this.localTestTrack) return;
     this.stopMicrophone(this.localTestTrack);
     this.localTestTrack = undefined;

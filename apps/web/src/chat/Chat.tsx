@@ -190,10 +190,10 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
-        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
+        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} enterKeyHint="send" aria-describedby="chat-composer-hint" placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
-        <button type="submit" disabled={!identityReady || state.phase !== "ready" || !!state.pendingSend || !draft.trim() || characterCount > 4_000}>Send</button>
+        <span id="chat-composer-hint" className="sr-only">Enter to send. Shift+Enter for a new line.</span>
         {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
     </div>

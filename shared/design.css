@@ -11,7 +11,7 @@
   --terracotta: #b64d32;
   --terracotta-bright: #db6849;
   --caper: #637a43;
-  --radius: 8px;
+  --radius: 6px;
   font-family: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--blackout);
