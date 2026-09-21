@@ -72,6 +72,15 @@ async fn delete(url: &str, key: &str) {
 
 #[tokio::test]
 #[ignore = "requires disposable TEST_VALKEY_URL"]
+async fn spectators_receive_cross_pod_leave_before_provider_cleanup() {
+    let (a, b, _, url, key) = shared().await;
+    exercise_public_presence(&a, &b).await;
+    b.begin_shutdown();
+    delete(&url, &key).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable TEST_VALKEY_URL"]
 async fn renewal_replays_across_api_instances() {
     let (a, b, mock, url, key) = shared().await;
     renewal::exercise_rotation(&a, &b, &mock).await;

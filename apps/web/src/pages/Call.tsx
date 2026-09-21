@@ -6,6 +6,7 @@ import { getAccount } from "../account/client";
 import Slider from "../components/Slider";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
+import { watchPresence } from "../media/presence";
 import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback from "./MicPlayback";
@@ -140,6 +141,7 @@ export default function Call() {
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
+  const [presenceLive, setPresenceLive] = useState(false);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
@@ -172,20 +174,9 @@ export default function Call() {
   }, []);
 
   useEffect(() => {
-    if (!idle) return;
-    let current = true;
-    const update = () => {
-      const controller = new AbortController();
-      void fetch("/api/media/presence", { signal: controller.signal })
-        .then((response) => response.ok ? response.json() as Promise<PublicPresence> : undefined)
-        .then((result) => { if (current && result) setPublicParticipants(result.participants); })
-        .catch(() => undefined);
-      return controller;
-    };
-    let controller = update();
-    const timer = window.setInterval(() => { controller.abort(); controller = update(); }, 10_000);
-    return () => { current = false; window.clearInterval(timer); controller.abort(); };
-  }, [idle]);
+    if (!idle || available !== true) return;
+    return watchPresence((snapshot) => setPublicParticipants(snapshot.participants), setPresenceLive);
+  }, [idle, available]);
 
   useEffect(() => {
     if (!connected) return;
@@ -270,6 +261,7 @@ export default function Call() {
               </li>;
             })}
           </ul>
+          {idle && available === true && !presenceLive && <p role="status">Updating live roster…</p>}
         </aside>
         <div className="stage">
           <div className="stage-title"><div><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>

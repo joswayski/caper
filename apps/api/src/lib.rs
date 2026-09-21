@@ -864,6 +864,7 @@ pub fn app(state: AppState) -> Router {
     let media = Router::new()
         .route("/api/media/status", get(status))
         .route("/api/media/presence", get(presence))
+        .route("/api/media/presence/events", get(presence_events))
         .route("/api/media/join", post(join))
         .route("/api/media/turn", post(turn))
         .route("/api/media/restart-ice", post(restart_ice))
@@ -1188,7 +1189,7 @@ fn authenticate(r: &Registry, token: &str) -> Result<Uuid, ApiError> {
 
 struct EventStreamState {
     state: AppState,
-    token: String,
+    token: Option<String>,
     updates: watch::Receiver<()>,
     connection: Uuid,
     shutdown: watch::Receiver<bool>,
@@ -1210,6 +1211,24 @@ async fn events(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     ensure_enabled(&s)?;
+    event_stream(
+        s,
+        Some(bearer(&headers)?.to_owned()),
+        query.snapshots == Some(1),
+    )
+    .await
+}
+
+async fn presence_events(State(s): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+    ensure_enabled(&s)?;
+    event_stream(s, None, true).await
+}
+
+async fn event_stream(
+    s: AppState,
+    token: Option<String>,
+    snapshots: bool,
+) -> Result<Response, ApiError> {
     let shutdown = s.shutting_down.subscribe();
     if *shutdown.borrow() {
         return Err(ApiError::new(
@@ -1217,24 +1236,28 @@ async fn events(
             "API is draining",
         ));
     }
-    let token = bearer(&headers)?.to_owned();
     let connection = Uuid::new_v4();
     let updates = {
         // Listen before registration; the initial snapshot reads current shared state.
         let mut updates = s.events.subscribe();
-        s.update(|r| {
-            let id = authenticate(r, &token)?;
-            let participant = r.participants.get_mut(&id).unwrap();
-            if participant.monitor.is_some() {
-                return Err(ApiError::new(
-                    StatusCode::FORBIDDEN,
-                    "monitor sessions cannot receive public events",
-                ));
-            }
-            participant.events = Some(connection);
-            Ok(())
-        })
-        .await?;
+        if let Some(token) = &token {
+            s.update(|r| {
+                let id = authenticate(r, token)?;
+                let participant = r.participants.get_mut(&id).unwrap();
+                if participant.monitor.is_some() {
+                    return Err(ApiError::new(
+                        StatusCode::FORBIDDEN,
+                        "monitor sessions cannot receive public events",
+                    ));
+                }
+                participant.events = Some(connection);
+                Ok(())
+            })
+            .await?;
+        } else {
+            // Public spectators never create a participant or replace its event connection.
+            s.read(|_| Ok(())).await?;
+        }
         updates.borrow_and_update();
         updates
     };
@@ -1246,8 +1269,8 @@ async fn events(
             connection,
             shutdown,
             first: true,
-            snapshots: query.snapshots == Some(1),
-            initial_snapshot: query.snapshots == Some(1),
+            snapshots,
+            initial_snapshot: snapshots,
             done: false,
             revision: None,
         },
@@ -1291,12 +1314,20 @@ async fn events(
                 let snapshot = stream
                     .state
                     .read(|r| {
-                        let id = authenticate(r, &stream.token)?;
-                        if r.participants.get(&id).and_then(|p| p.events) != Some(stream.connection)
-                        {
-                            return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"));
+                        if let Some(token) = &stream.token {
+                            let id = authenticate(r, token)?;
+                            if r.participants.get(&id).and_then(|p| p.events)
+                                != Some(stream.connection)
+                            {
+                                return Err(ApiError::new(
+                                    StatusCode::UNAUTHORIZED,
+                                    "unauthorized",
+                                ));
+                            }
+                            Ok((r.revision, public_snapshot(r)))
+                        } else {
+                            Ok((r.revision, presence_snapshot(r)))
                         }
-                        Ok((r.revision, public_snapshot(r)))
                     })
                     .await
                     .ok()?;
@@ -2051,22 +2082,23 @@ struct PresenceView<'a> {
 }
 async fn presence(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
-    s.read(|r| {
-        let participants: Vec<_> = r
-            .participants
-            .values()
-            .filter(|p| p.monitor.is_none())
-            .map(|p| PresenceView {
-                id: p.id,
-                name: &p.name,
-                country_code: p.country_code.as_deref(),
-                muted: p.muted,
-                deafened: p.deafened,
-            })
-            .collect();
-        Ok(Json(json!({"participants":participants})))
-    })
-    .await
+    s.read(|r| Ok(Json(presence_snapshot(r)))).await
+}
+fn presence_snapshot(r: &Registry) -> Value {
+    let mut participants: Vec<_> = r
+        .participants
+        .values()
+        .filter(|p| p.monitor.is_none())
+        .map(|p| PresenceView {
+            id: p.id,
+            name: &p.name,
+            country_code: p.country_code.as_deref(),
+            muted: p.muted,
+            deafened: p.deafened,
+        })
+        .collect();
+    participants.sort_by_key(|p| p.id);
+    json!({"participants":participants,"revision":r.revision})
 }
 async fn snapshot(
     State(s): State<AppState>,

@@ -17,10 +17,12 @@ mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
 the registry keeps that code for the call and shares it in roster snapshots. Caper
 does not retain the visitor IP itself. Unknown and Tor locations are omitted.
-Visitors can see the current public roster before joining; the browser polls the
-unauthenticated `/api/media/presence` endpoint every ten seconds. That projection
+Visitors see the public roster before joining through the unauthenticated
+`/api/media/presence/events` SSE stream, without joining voice. That projection
 includes each participant's session ID, name, country code when available, mute,
 and deafen state, but never media track IDs, session tokens, or audio.
+The JSON `/api/media/presence` endpoint remains available for inspection and older
+clients; the current browser does not poll it. Spectators never renew call leases.
 
 Browser → same-origin `/api/media/*` → Rust Axum API pods → Cloudflare
 control API. Browser ↔ Cloudflare Realtime SFU/TURN for WebRTC audio. No media
@@ -84,11 +86,27 @@ in Postgres; typing indicators would be transient events, not durable messages.
   ICE renewal is an exception: its replayable offer has a replaceable 30-second
   claim, not a deadline that removes the participant.
 
-Normal in-call updates have no polling interval: commit → Pub/Sub → API → SSE.
+Normal in-call and spectator updates have no polling interval: commit → Pub/Sub → API → SSE.
 Production end-to-end latency is **not measured**. The 15-second request is a lease
 renewal, not the notification path. Speaking indicators remain browser-side audio
-analysis, with no per-frame Valkey traffic. The unauthenticated pre-join roster
-still uses its existing ten-second polling; it is not part of this SSE change.
+analysis, with no per-frame Valkey traffic. Spectator streams send an initial roster
+and push changes, including an empty roster after leave. Ten-second SSE heartbeats
+detect broken connections; they are not the roster update interval. Spectators
+reconnect with backoff from 250 ms to five seconds after failures and immediately
+on planned draining, then replace the roster with a fresh snapshot. The sidebar
+marks last-known data with “Updating live roster…” until a snapshot arrives.
+
+Deploy the API containing `/api/media/presence/events` before the updated web image.
+Existing clients remain compatible with the JSON endpoint. This change requires
+no Valkey migration, provider configuration, or infrastructure change.
+
+The browser regression fixture deliberately lets the idle sidebar read the old
+roster before leave commits. The previous polling page retains that row; the SSE
+page clears it on the pushed update. Run against a local Vite server with
+`node scripts/test-public-presence.mjs http://localhost:5174`. It exercises the real
+Call component/client with mocked API/WebRTC, including repeated join/leave and
+stream loss/reconnect; it does not validate live audio. Shared-store tests cover
+the server's cross-pod push independently, with provider cleanup still pending.
 
 The browser keeps lease renewal, mute/deafen synchronization, and SDP negotiation
 independent. Rapid mute/deafen changes coalesce to the latest local intent rather
