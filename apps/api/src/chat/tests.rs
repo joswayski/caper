@@ -286,6 +286,15 @@ async fn durable_guest_delivery_replay_and_handoff() {
         cursor(stopped["revision"].as_str().unwrap()).unwrap()
             > cursor(started["revision"].as_str().unwrap()).unwrap()
     );
+    for typing in [true, false] {
+        assert_eq!(
+            typing_command(&app, &channel, Some(token), json!({"typing":typing})).await,
+            StatusCode::NO_CONTENT
+        );
+        let update = event(&mut typing_old).await;
+        assert_eq!(event(&mut typing_new).await, update);
+        assert_eq!(update["typing"], typing);
+    }
     assert_eq!(
         typing_command(&app, &channel, Some(token), json!({"typing":true})).await,
         StatusCode::TOO_MANY_REQUESTS

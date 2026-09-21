@@ -825,6 +825,41 @@ async fn transient_cleanup_recovers_without_recreating_media() {
     assert!(s.registry.lock().await.cleanup.is_empty());
 }
 
+#[tokio::test(start_paused = true)]
+async fn cleanup_worker_wakes_without_waiting_for_reconciliation() {
+    let faults = Arc::new(Faults::new());
+    let s = AppState::new(Config::test(true), faults.clone());
+    spawn_cleanup(s.clone());
+    tokio::task::yield_now().await;
+
+    enqueue_cleanup(&s, "session".into(), "mid".into()).await;
+
+    tokio::time::timeout(Duration::from_millis(100), async {
+        while faults.cleanup_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("new cleanup work should wake the worker immediately");
+    assert!(s.registry.lock().await.cleanup.is_empty());
+    s.begin_shutdown();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cleanup_worker_wait_tracks_retry_deadline_before_reconciliation() {
+    let faults = Arc::new(Faults::new());
+    faults.cleanup_failure.store(2, Ordering::SeqCst);
+    let s = AppState::new(Config::test(true), faults);
+    enqueue_cleanup(&s, "session".into(), "mid".into()).await;
+
+    retry_backlog(&s).await;
+    let deadline = s.registry.lock().await.cleanup[0].not_before;
+    let wait = retry_backlog(&s).await;
+
+    assert_eq!(wait, deadline.duration_since(Timestamp::now()));
+    assert!(wait < CLEANUP_RECONCILE_INTERVAL);
+}
+
 struct Faults {
     mock: Mock,
     fail: AtomicBool,
