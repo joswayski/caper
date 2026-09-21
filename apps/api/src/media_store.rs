@@ -167,7 +167,7 @@ impl ValkeyStore {
     async fn update<T>(
         &self,
         update: impl Fn(&mut Registry) -> Result<T, ApiError>,
-    ) -> Result<(T, bool), ApiError> {
+    ) -> Result<(T, bool, bool), ApiError> {
         if !self.subscribed.load(Ordering::Acquire) {
             return Err(unavailable());
         }
@@ -210,12 +210,14 @@ impl ValkeyStore {
             let before = fields(&state)?;
             let visible = public_snapshot(&state);
             let connections = connection_ids(&state);
+            let cleanup = state.cleanup.clone();
             let result = update(&mut state)?;
             let changed = visible != public_snapshot(&state);
             if changed {
                 state.revision = state.revision.checked_add(1).ok_or_else(unavailable)?;
             }
             let notify = changed || connections != connection_ids(&state);
+            let cleanup_changed = cleanup != state.cleanup;
             let after = fields(&state)?;
             if before == after {
                 redis::cmd("UNWATCH")
@@ -223,7 +225,7 @@ impl ValkeyStore {
                     .await
                     .map_err(|_| unavailable())?;
                 self.transactions.lock().await.push(connection);
-                return Ok((result, false));
+                return Ok((result, false, false));
             }
             let mut transaction = redis::pipe();
             transaction.atomic();
@@ -247,7 +249,7 @@ impl ValkeyStore {
                 .map_err(|_| unavailable())?;
             if committed.is_some() {
                 self.transactions.lock().await.push(connection);
-                return Ok((result, notify));
+                return Ok((result, notify, cleanup_changed));
             }
             tokio::task::yield_now().await;
         }
@@ -371,7 +373,7 @@ impl AppState {
         &self,
         update: impl Fn(&mut Registry) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
-        let (result, notify) = if let Some(store) = &self.store {
+        let (result, notify, cleanup_changed) = if let Some(store) = &self.store {
             tokio::time::timeout(IO_TIMEOUT, store.update(update))
                 .await
                 .map_err(|_| unavailable())??
@@ -381,14 +383,18 @@ impl AppState {
             let result = update(&mut next)?;
             let changed = public_snapshot(&state) != public_snapshot(&next);
             let notify = changed || connection_ids(&state) != connection_ids(&next);
+            let cleanup_changed = state.cleanup != next.cleanup;
             if changed {
                 next.revision += 1;
             }
             *state = next;
-            (result, notify)
+            (result, notify, cleanup_changed)
         };
         if notify {
             self.events.send_replace(());
+        }
+        if cleanup_changed {
+            self.cleanup_wakeup.notify_one();
         }
         Ok(result)
     }

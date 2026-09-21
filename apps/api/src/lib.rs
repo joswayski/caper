@@ -19,7 +19,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify, watch};
 use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use uuid::Uuid;
 
@@ -34,6 +34,7 @@ const MAX_SUBSCRIPTIONS: usize = MAX_PARTICIPANTS - 1;
 const JOIN_LIMIT_PER_MINUTE: usize = 30;
 const OP_LIMIT_PER_MINUTE: usize = 120;
 const MAX_CLEANUP_BACKLOG: usize = 512;
+const CLEANUP_RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 const BODY_LIMIT: usize = 256 * 1024;
 const RESERVATION: Duration = Duration::from_secs(30);
 
@@ -636,6 +637,7 @@ pub struct AppState {
     chat: Option<chat::Chat>,
     events: watch::Sender<()>,
     shutting_down: watch::Sender<bool>,
+    cleanup_wakeup: Arc<Notify>,
     cleanup_lock: Arc<Mutex<()>>,
     expiry_lock: Arc<Mutex<()>>,
     auth: auth::AuthVerifier,
@@ -669,6 +671,7 @@ impl AppState {
             chat: None,
             events,
             shutting_down,
+            cleanup_wakeup: Arc::new(Notify::new()),
             cleanup_lock: Arc::new(Mutex::new(())),
             expiry_lock: Arc::new(Mutex::new(())),
             auth,
@@ -806,7 +809,7 @@ impl CleanupAction {
         }
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CleanupJob {
     action: CleanupAction,
     attempts: u8,
@@ -2878,14 +2881,16 @@ async fn expire_sessions(s: &AppState) -> Result<(), ApiError> {
 pub fn spawn_cleanup(s: AppState) {
     let worker = s.clone();
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_millis(250));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut shutdown = worker.shutting_down.subscribe();
         while !*shutdown.borrow() {
+            retry_backlog(&worker).await;
+            // Local queue changes wake this worker immediately. The slower poll
+            // recovers shared work left by a replica that exited after enqueueing.
             tokio::select! {
                 _ = shutdown.changed() => break,
-                _ = tick.tick() => retry_backlog(&worker).await,
-            }
+                () = worker.cleanup_wakeup.notified() => {},
+                () = tokio::time::sleep(CLEANUP_RECONCILE_INTERVAL) => {},
+            };
         }
     });
     // Provider cleanup must not delay lease/capability expiry.

@@ -825,6 +825,26 @@ async fn transient_cleanup_recovers_without_recreating_media() {
     assert!(s.registry.lock().await.cleanup.is_empty());
 }
 
+#[tokio::test(start_paused = true)]
+async fn cleanup_worker_wakes_without_waiting_for_reconciliation() {
+    let faults = Arc::new(Faults::new());
+    let s = AppState::new(Config::test(true), faults.clone());
+    spawn_cleanup(s.clone());
+    tokio::task::yield_now().await;
+
+    enqueue_cleanup(&s, "session".into(), "mid".into()).await;
+
+    tokio::time::timeout(Duration::from_millis(100), async {
+        while faults.cleanup_calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("new cleanup work should wake the worker immediately");
+    assert!(s.registry.lock().await.cleanup.is_empty());
+    s.begin_shutdown();
+}
+
 struct Faults {
     mock: Mock,
     fail: AtomicBool,
