@@ -1,4 +1,19 @@
 @import "../../../shared/design.css";
+@import "tailwindcss";
+
+@theme inline {
+  --color-blackout: var(--blackout);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-content: var(--text);
+  --color-content-muted: var(--text-muted);
+  --color-terracotta: var(--terracotta);
+  --color-terracotta-bright: var(--terracotta-bright);
+  --color-caper: var(--caper);
+  --font-satoshi: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
+  --radius-control: var(--radius);
+}
 
 body {
   color: var(--text);

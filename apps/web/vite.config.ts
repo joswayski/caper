@@ -1,5 +1,6 @@
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { nitro } from "nitro/vite";
 import { defineConfig, searchForWorkspaceRoot } from "vite";
 
@@ -107,6 +108,7 @@ export default defineConfig(async ({ command }) => {
     __LATEST_CHANGES__: JSON.stringify(changes),
   },
   plugins: [
+    tailwindcss(),
     tanstackStart({
       prerender: { enabled: false },
       server: { build: { inlineCss: true } },
