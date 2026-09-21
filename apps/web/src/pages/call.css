@@ -1,33 +1,37 @@
 .call-page { min-height: 100vh; background: var(--blackout); }
 .call-header { width: min(1400px, calc(100% - 56px)); height: 80px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
-.call-account { display: flex; align-items: center; gap: 16px; }
+.call-account { display: flex; flex: 0 0 auto; align-items: center; gap: 9px; margin: auto 12px 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
+.account-avatar { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
+.account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
 .call-settings { position: relative; }
 .call-settings summary { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; color: var(--text-muted); cursor: pointer; list-style: none; }
 .call-settings summary::-webkit-details-marker { display: none; }
 .call-settings summary:hover, .call-settings[open] summary { background: var(--surface-raised); color: var(--text); }
 .call-settings summary svg { width: 19px; height: 19px; }
-.call-settings-panel { position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; width: 190px; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
+.call-settings-panel { position: absolute; z-index: 5; bottom: calc(100% + 8px); right: 0; width: 190px; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
+.call-settings-panel > div { display: grid; gap: 12px; }
+.call-settings-panel a { overflow-wrap: anywhere; }
 .call-settings-panel strong { color: var(--text-muted); font-size: .72rem; }
 .call-settings-panel button { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: .8rem; text-align: left; cursor: pointer; }
 .call-settings-panel button:hover { border-color: var(--terracotta); }
 .call-settings-panel button:disabled { opacity: .5; cursor: default; }
 .eyebrow { margin: 0 0 8px; color: var(--text-muted); font-size: .7rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: minmax(0, 1fr) auto / 260px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
-.people-panel { padding: 28px 16px; border-right: 1px solid var(--border); background: var(--surface-sidebar); }
+.people-panel { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface-sidebar); }
+.sidebar-channels { flex: 1; min-height: 0; padding: 20px 16px; overflow-y: auto; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .panel-heading h1 { margin: 0; letter-spacing: -.04em; font-size: 1.3rem; }
-.channel-link { display: flex; align-items: center; gap: 10px; margin-top: 24px; padding: 10px 12px; border-radius: 8px; color: var(--text); background: rgb(182 77 50 / .14); font-weight: 700; text-decoration: none; }
-.channel-link > svg { width: 18px; height: 18px; color: var(--terracotta-bright); }
+.channel-link { display: flex; align-items: center; gap: 10px; margin-top: 20px; padding: 10px 12px; border-radius: 8px; color: var(--text); background: rgb(182 77 50 / .14); font-weight: 700; line-height: 20px; text-decoration: none; }
+.channel-link > svg { display: block; flex: 0 0 20px; width: 20px; height: 20px; color: var(--terracotta-bright); }
 .channel-link:hover { background: rgb(182 77 50 / .22); }
 .huddle-roster-label { margin: 24px 9px 0; color: var(--text-muted); font-size: .72rem; }
-.huddle-actions { display: grid; justify-items: end; gap: 8px; }
+.huddle-actions { position: relative; }
 .huddle-button { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-sidebar); font-size: .78rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
 .huddle-button > svg { width: 16px; height: 16px; }
 .huddle-button:hover:not(:disabled) { border-color: var(--terracotta); }
 .huddle-button:disabled { opacity: .5; cursor: default; }
-.huddle-hint { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--text-muted); font-size: .7rem; }
+.huddle-hint { position: absolute; z-index: 1; top: calc(100% + 8px); right: 0; display: flex; gap: 8px; align-items: center; width: max-content; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-sidebar); color: var(--text-muted); font-size: .7rem; pointer-events: none; }
 .huddle-hint > svg { flex: 0 0 16px; width: 16px; height: 16px; color: var(--terracotta-bright); animation: huddle-hint-bounce 1.4s ease-in-out 4; }
-.huddle-availability { max-width: 180px; margin: 0; color: var(--text-muted); font-size: .7rem; text-align: right; }
 .huddle-status { margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: .8rem; }
 @keyframes huddle-hint-bounce { 50% { transform: translateY(-5px); } }
 .people-panel ul { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
@@ -136,7 +140,8 @@
   .call-header, .call-room { width: calc(100% - 24px); }
   .call-header { height: 64px; }
   .call-room { grid-template: auto minmax(0, 1fr) auto / 1fr; }
-  .people-panel { padding: 16px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .people-panel { border-right: 0; border-bottom: 1px solid var(--border); }
+  .sidebar-channels { padding: 16px; }
   .people-panel ul { max-height: 240px; overflow-y: auto; }
   .people-panel ul.volume-menu-open { max-height: 420px; }
   .participant.volume-open { padding-bottom: 161px; }

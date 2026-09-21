@@ -68,7 +68,11 @@ export class ChatClient {
 
   constructor(changed: (state: ChatViewState) => void) { this.changed = changed; }
 
-  start(name: string, signedIn = false) {
+  start() {
+    void this.loadInitial();
+  }
+
+  identify(name: string, signedIn = false) {
     this.name = name;
     const saved = storedSession();
     // Guest identity may persist. Account names are not unique: mint a fresh
@@ -77,7 +81,6 @@ export class ChatClient {
       this.session = saved; this.update({ author: saved.author });
     }
     else void this.createSession();
-    void this.loadInitial();
   }
 
   stop() {

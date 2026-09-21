@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { ArrowUp, Hash, Headphones, Mic, MicOff, Phone, Settings2, VolumeX } from "lucide-react";
+import { ArrowUp, Hash, Headphones, Mic, MicOff, Speech, Settings2, VolumeX } from "lucide-react";
 import AccountNav from "../account/AccountNav";
-import { getAccount } from "../account/client";
+import { getAccount, type Account } from "../account/client";
 import Chat from "../chat/Chat";
+import type { ChatAuthor } from "../chat/types";
 import Slider from "../components/Slider";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
@@ -17,7 +18,7 @@ import "./call.css";
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
 type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
-const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { eager: true, import: "default", query: "?url" });
+const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { import: "default", query: "?url" });
 
 function formatBytes(bytes: number) {
   return `${(bytes / 1e6).toFixed(2)} MB`;
@@ -62,11 +63,17 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
 }
 
 function ParticipantCountry({ code }: { code?: string }) {
-  if (!code || !/^[A-Z]{2}$/.test(code)) return null;
+  const [flag, setFlag] = useState<{ code: string; source: string }>();
+  useEffect(() => {
+    if (!code || !/^[A-Z]{2}$/.test(code)) return;
+    let current = true;
+    const load = flags[`../../../../node_modules/flag-icons/flags/4x3/${code.toLowerCase()}.svg`];
+    void load?.().then((source) => { if (current) setFlag({ code, source }); }).catch(() => undefined);
+    return () => { current = false; };
+  }, [code]);
+  if (!code || flag?.code !== code) return null;
   const name = regionNames.of(code) ?? code;
-  const source = flags[`../../../../node_modules/flag-icons/flags/4x3/${code.toLowerCase()}.svg`];
-  if (!source) return null;
-  return <img className="participant-country" src={source} alt={`From ${name}`} title={name} />;
+  return <img className="participant-country" src={flag.source} alt={`From ${name}`} title={name} />;
 }
 
 function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStream; muted: boolean; name: string; output: string; volume: number }) {
@@ -129,7 +136,8 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
 export default function Call() {
   const [state, setState] = useState(initialState);
   const [name, setName] = useState("");
-  const [accountDisplayName, setAccountDisplayName] = useState<string>();
+  const [account, setAccount] = useState<Account | null>(null);
+  const [chatAuthor, setChatAuthor] = useState<ChatAuthor>();
   const [identityReady, setIdentityReady] = useState(false);
   const [available, setAvailable] = useState<boolean>();
   const [hasTriedHuddle, setHasTriedHuddle] = useState(false);
@@ -149,15 +157,16 @@ export default function Call() {
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const controlsDisabled = !connected || actionPending;
   const roster = idle ? publicParticipants : state.participants;
+  const identityName = account?.username ? `@${account.username}` : chatAuthor?.name ?? name;
 
   useEffect(() => {
     let current = true;
     setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
     void getAccount()
       .then((account) => {
-        if (!current || !account?.displayName) return;
-        setName(account.displayName);
-        setAccountDisplayName(account.displayName);
+        if (!current) return;
+        setAccount(account);
+        if (account?.displayName) setName(account.displayName);
       })
       .catch(() => undefined)
       .finally(() => { if (current) setIdentityReady(true); });
@@ -206,29 +215,12 @@ export default function Call() {
     <main className="call-page">
       <header className="call-header">
         <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
-        <div className="call-account">
-          <details className="call-settings" onKeyDown={(event) => {
-            if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
-          }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}>
-            <summary aria-label="Audio settings" title="Audio settings"><Settings2 aria-hidden="true" /></summary>
-            <div className="call-settings-panel">
-              <strong>Audio settings</strong>
-              <button disabled={!identityReady || actionPending || state.phase === "leaving" || (!idle && !connected)} type="button" onClick={(event) => {
-                event.currentTarget.closest("details")!.open = false;
-                if (idle) {
-                  if (state.monitorStream) clientRef.current?.stopLocalMicTest();
-                  else void act(() => clientRef.current!.startLocalMicTest());
-                } else void act(() => clientRef.current!.setMonitoring(!state.monitoring));
-              }}>{state.monitorStream || state.monitoring ? "End mic test" : "Mic test"}</button>
-            </div>
-          </details>
-          <AccountNav />
-        </div>
       </header>
       <section className="call-room">
         <aside className="people-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Caper</p><h1>Channels</h1></div></div>
-          <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /> general</a>
+          <div className="sidebar-channels">
+          <div className="panel-heading"><h1>Channels</h1></div>
+          <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span></a>
           {roster.length > 0 && <p className="huddle-roster-label">In this huddle · {roster.length}</p>}
           <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label="People in general’s huddle">
             {roster.map((participant) => {
@@ -281,6 +273,27 @@ export default function Call() {
               </li>;
             })}
           </ul>
+          </div>
+          <div className="call-account">
+            <span className="account-avatar" aria-hidden="true">{identityName.replace(/^@/, "").slice(0, 1).toUpperCase()}</span>
+            <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
+            <details className="call-settings" onKeyDown={(event) => {
+              if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
+            }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}>
+              <summary aria-label="Settings" title="Settings"><Settings2 aria-hidden="true" /></summary>
+              <div className="call-settings-panel">
+                <strong>Audio settings</strong>
+                <button disabled={!identityReady || actionPending || state.phase === "leaving" || (!idle && !connected)} type="button" onClick={(event) => {
+                  event.currentTarget.closest("details")!.open = false;
+                  if (idle) {
+                    if (state.monitorStream) clientRef.current?.stopLocalMicTest();
+                    else void act(() => clientRef.current!.startLocalMicTest());
+                  } else void act(() => clientRef.current!.setMonitoring(!state.monitoring));
+                }}>{state.monitorStream || state.monitoring ? "End mic test" : "Mic test"}</button>
+                {identityReady && <AccountNav account={account} />}
+              </div>
+            </details>
+          </div>
         </aside>
         <div className="stage">
           {state.phase !== "idle" && state.phase !== "failed" && <p className="huddle-status" role="status">{connected ? "You’re in general’s huddle" : state.phase === "joining" ? "Joining huddle…" : state.phase === "reconnecting" ? "Reconnecting to huddle…" : "Leaving huddle…"}</p>}
@@ -289,16 +302,16 @@ export default function Call() {
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
-          {identityReady && <Chat name={name} signedIn={!!accountDisplayName} headerActions={<div className="huddle-actions">
-              <button className="huddle-button" type="button" disabled={state.phase === "leaving" || (idle && (available !== true || actionPending))} onClick={() => {
+          <Chat name={name} signedIn={!!account} identityReady={identityReady} onAuthorChange={setChatAuthor} headerActions={<div className="huddle-actions">
+              <button className="huddle-button" type="button" aria-describedby={available !== true ? "huddle-availability" : undefined} title={available === false ? "Huddles are currently unavailable." : undefined} disabled={!identityReady || state.phase === "leaving" || (idle && (available !== true || actionPending))} onClick={() => {
                 if (!idle) { leave(); return; }
                 setHasTriedHuddle(true);
                 setActionError(undefined);
                 void clientRef.current?.join(name.trim(), deviceId || undefined);
-              }}><Phone aria-hidden="true" />{connected ? "Leave huddle" : !idle ? "Cancel" : state.phase === "leaving" ? "Leaving…" : "Join huddle"}</button>
+              }}><Speech aria-hidden="true" />{connected ? "Leave huddle" : !idle ? "Cancel" : state.phase === "leaving" ? "Leaving…" : "Join huddle"}</button>
             {idle && available === true && !hasTriedHuddle && <p className="huddle-hint"><span>Talk here, or keep typing.</span><ArrowUp aria-hidden="true" /></p>}
-            {available !== true && <p className="huddle-availability" role="status">{available === false ? "Huddles are currently unavailable." : "Checking huddle availability…"}</p>}
-          </div>} />}
+            {available !== true && <p id="huddle-availability" className="sr-only" role="status">{available === false ? "Huddles are currently unavailable." : "Checking huddle availability…"}</p>}
+          </div>} />
         </div>
         {!idle && <footer className="call-controls" aria-label="Huddle controls">
           <div className="voice-action-group">

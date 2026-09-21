@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChatClient, type ChatViewState } from "./client.ts";
+import type { ChatAuthor } from "./types.ts";
 import "./chat.css";
 
 const initialView: ChatViewState = {
@@ -12,7 +13,7 @@ function timeLabel(value: string) {
   return Number.isNaN(date.valueOf()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
 }
 
-export default function Chat({ name, signedIn, headerActions }: { name: string; signedIn: boolean; headerActions?: ReactNode }) {
+export default function Chat({ name, signedIn, identityReady, headerActions, onAuthorChange }: { name: string; signedIn: boolean; identityReady: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void }) {
   const [state, setState] = useState(initialView);
   const [draft, setDraft] = useState("");
   const [validationError, setValidationError] = useState<string>();
@@ -23,9 +24,17 @@ export default function Chat({ name, signedIn, headerActions }: { name: string; 
   useEffect(() => {
     const client = new ChatClient(setState);
     clientRef.current = client;
-    client.start(name, signedIn);
+    client.start();
     return () => { client.stop(); clientRef.current = undefined; };
-  }, [name, signedIn]);
+  }, []);
+
+  useEffect(() => {
+    if (identityReady) clientRef.current?.identify(name, signedIn);
+  }, [identityReady, name, signedIn]);
+
+  useEffect(() => {
+    if (state.author) onAuthorChange?.(state.author);
+  }, [state.author, onAuthorChange]);
 
   useEffect(() => {
     const list = listRef.current;
@@ -47,6 +56,7 @@ export default function Chat({ name, signedIn, headerActions }: { name: string; 
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const submit = async () => {
+    if (!identityReady) return;
     setValidationError(undefined);
     const submitted = state.pendingSend?.text ?? draft;
     try {
@@ -80,16 +90,16 @@ export default function Chat({ name, signedIn, headerActions }: { name: string; 
     </div>
 
     <div className="chat-composer">
-      <p className="chat-identity">Messaging as <strong>{state.author?.name ?? name}</strong>{state.author?.isGuest !== false && <span>Guest</span>}</p>
       {state.phase === "ready" && state.error && <p className="chat-inline-error" role="alert">{state.error}</p>}
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
       {(state.sendError || validationError) && <p className="chat-inline-error" role="alert">{state.sendError || validationError} {state.sendError && state.pendingSend && <button type="button" onClick={() => void submit()}>Retry send</button>}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
-        <textarea id="chat-message" rows={2} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
+        <textarea id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
-        <div>{characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}<button type="submit" disabled={state.phase !== "ready" || sending || !draft.trim() || characterCount > 4_000}>{sending ? "Sending…" : "Send"}</button></div>
+        <button type="submit" disabled={!identityReady || state.phase !== "ready" || sending || !draft.trim() || characterCount > 4_000}>{sending ? "Sending…" : "Send"}</button>
+        {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
     </div>
   </section>;

@@ -57,7 +57,8 @@ test("pressing Send again after an unknown outcome preserves the original UUID a
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
   t.after(() => client.stop());
-  client.start("Test Guest");
+  client.start();
+  client.identify("Test Guest");
   await tick(); await tick();
 
   assert.equal(await client.send("original text"), false);
@@ -89,9 +90,47 @@ test("signed-in startup does not reuse another account's capability with the sam
   let state!: ChatViewState;
   const client = new ChatClient((next) => { state = next; });
   t.after(() => client.stop());
-  client.start("Shared Name", true);
+  client.start();
+  client.identify("Shared Name", true);
   await tick(); await tick();
   assert.equal(sessions, 1);
   assert.equal(state.author?.id, "current-account");
   assert.equal(JSON.parse(localStorage.getItem("caper.chat.session")!).token, "current-account-token");
+});
+
+test("public history loads before identity and remains visible while the send session resolves", async (t) => {
+  installBrowser(t);
+  const message: ChatMessage = {
+    id: "existing", channelId: "general", seq: "7", author: { id: "other", name: "Other Guest", isGuest: true },
+    content: { version: 1, type: "text", text: "Already here" }, createdAt: "2026-09-21T12:00:00Z", clientMessageId: "old-command",
+  };
+  const requests: string[] = [];
+  let finishSession!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const path = String(input);
+    requests.push(path);
+    if (path === "/api/chat/session") return new Promise<Response>((resolve) => { finishSession = resolve; });
+    assert.equal(path, "/api/chat/general");
+    return Response.json({
+      space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" }, messages: [message], cursor: "7", hasMore: false,
+    });
+  });
+  let state!: ChatViewState;
+  const client = new ChatClient((next) => { state = next; });
+  t.after(() => client.stop());
+  client.start();
+  await tick(); await tick();
+  assert.deepEqual(requests, ["/api/chat/general"]);
+  assert.equal(state.phase, "ready");
+  assert.deepEqual(state.messages, [message]);
+  assert.equal(state.author, undefined);
+
+  client.identify("New Guest");
+  assert.equal(state.phase, "ready");
+  assert.deepEqual(state.messages, [message]);
+  finishSession(Response.json({ token: "new-capability", author: { id: "new", name: "New Guest", isGuest: true } }));
+  await tick(); await tick();
+  assert.deepEqual(state.author, { id: "new", name: "New Guest", isGuest: true });
+  assert.deepEqual(state.messages, [message]);
+  assert.deepEqual(requests, ["/api/chat/general", "/api/chat/session"]);
 });
