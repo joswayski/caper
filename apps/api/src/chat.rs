@@ -305,10 +305,10 @@ async fn publish_typing(
         r#"
         local personal = redis.call('INCR', KEYS[1])
         if personal == 1 then redis.call('EXPIRE', KEYS[1], 1) end
-        if personal > 2 then return 0 end
+        if personal > 4 then return 0 end
         local global = redis.call('INCR', KEYS[2])
         if global == 1 then redis.call('EXPIRE', KEYS[2], 1) end
-        if global > 60 then return 0 end
+        if global > 120 then return 0 end
         local event = cjson.decode(ARGV[2])
         local clock = redis.call('TIME')
         event.revision = clock[1] .. string.format('%06d', tonumber(clock[2]))
