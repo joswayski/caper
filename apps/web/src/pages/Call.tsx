@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { ArrowUp, Hash, Headphones, Mic, MicOff, Speech, Settings2, VolumeX } from "lucide-react";
+import { ArrowLeft, Hash, Headphones, Mic, MicOff, Speech, Settings2, VolumeX } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import { getAccount, type Account } from "../account/client";
 import Chat from "../chat/Chat";
@@ -303,13 +303,13 @@ export default function Call() {
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
           <Chat name={name} signedIn={!!account} identityReady={identityReady} onAuthorChange={setChatAuthor} headerActions={<div className="huddle-actions">
-              <button className="huddle-button" type="button" aria-describedby={available !== true ? "huddle-availability" : undefined} title={available === false ? "Huddles are currently unavailable." : undefined} disabled={!identityReady || state.phase === "leaving" || (idle && (available !== true || actionPending))} onClick={() => {
+              <button className="huddle-button" type="button" aria-label={connected ? "Leave voice" : !idle ? "Cancel joining voice" : state.phase === "leaving" ? "Leaving voice" : "Join voice"} aria-describedby={available !== true ? "huddle-availability" : undefined} title={available === false ? "Huddles are currently unavailable." : undefined} disabled={!identityReady || state.phase === "leaving" || (idle && (available !== true || actionPending))} onClick={() => {
                 if (!idle) { leave(); return; }
                 setHasTriedHuddle(true);
                 setActionError(undefined);
                 void clientRef.current?.join(name.trim(), deviceId || undefined);
-              }}><Speech aria-hidden="true" />{connected ? "Leave huddle" : !idle ? "Cancel" : state.phase === "leaving" ? "Leaving…" : "Join huddle"}</button>
-            {idle && available === true && !hasTriedHuddle && <p className="huddle-hint"><span>Talk here, or keep typing.</span><ArrowUp aria-hidden="true" /></p>}
+              }}><Speech aria-hidden="true" />{connected ? "Leave" : !idle ? "Cancel" : state.phase === "leaving" ? "Leaving…" : "Join"}</button>
+            {idle && available === true && !hasTriedHuddle && <p className="huddle-hint"><ArrowLeft aria-hidden="true" /><span>Talk here, or keep typing.</span></p>}
             {available !== true && <p id="huddle-availability" className="sr-only" role="status">{available === false ? "Huddles are currently unavailable." : "Checking huddle availability…"}</p>}
           </div>} />
         </div>

@@ -27,15 +27,15 @@
 .channel-link > span { transform: translateY(-2px); }
 .channel-link:hover { background: rgb(182 77 50 / .22); }
 .huddle-roster-label { margin: 24px 9px 0; color: var(--text-muted); font-size: .72rem; }
-.huddle-actions { position: relative; }
-.huddle-button { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-sidebar); font-size: .78rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
+.huddle-actions { min-width: 0; display: flex; align-items: center; gap: 12px; }
+.huddle-button { flex-shrink: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--terracotta) 65%, var(--border)); border-radius: 8px; color: color-mix(in srgb, var(--terracotta-bright) 65%, var(--text)); background: rgb(182 77 50 / .14); font-size: .78rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
 .huddle-button > svg { width: 16px; height: 16px; }
-.huddle-button:hover:not(:disabled) { border-color: var(--terracotta); }
+.huddle-button:hover:not(:disabled) { border-color: var(--terracotta-bright); background: rgb(182 77 50 / .24); }
 .huddle-button:disabled { opacity: .5; cursor: default; }
-.huddle-hint { position: absolute; z-index: 1; top: calc(100% + 8px); right: 0; display: flex; gap: 8px; align-items: center; width: max-content; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-sidebar); color: var(--text-muted); font-size: .7rem; pointer-events: none; }
+.huddle-hint { display: flex; gap: 8px; align-items: center; margin: 0; color: var(--text-muted); font-size: .7rem; pointer-events: none; }
 .huddle-hint > svg { flex: 0 0 16px; width: 16px; height: 16px; color: var(--terracotta-bright); animation: huddle-hint-bounce 1.4s ease-in-out 4; }
 .huddle-status { margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: .8rem; }
-@keyframes huddle-hint-bounce { 50% { transform: translateY(-5px); } }
+@keyframes huddle-hint-bounce { 50% { transform: translateX(-5px); } }
 .people-panel ul { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
 .participant { position: relative; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: 8px; }
 .participant-avatar { position: relative; flex: 0 0 auto; }

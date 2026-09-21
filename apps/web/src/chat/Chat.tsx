@@ -69,10 +69,9 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
 
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
-      <div className="chat-heading-title"><h2 id="chat-heading"># {channelName}</h2>
-        {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
-      </div>
+      <h2 id="chat-heading" className="sr-only"># {channelName}</h2>
       {headerActions}
+      {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
     </header>
 
     <div className="chat-messages" ref={listRef} aria-live="polite" aria-busy={state.phase === "loading"} onScroll={(event) => {
