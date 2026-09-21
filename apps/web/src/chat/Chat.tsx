@@ -42,6 +42,7 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const listRef = useRef<VirtuosoHandle>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
+  const latestMessage = state.messages.at(-1);
 
   useLayoutEffect(() => {
     const composer = composerRef.current;
@@ -96,8 +97,8 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   }, [state.author, onAuthorChange]);
 
   useEffect(() => {
-    if (state.pendingSend) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-  }, [state.pendingSend?.clientMessageId]);
+    if (followLatest.current) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+  }, [state.pendingSend?.clientMessageId, latestMessage?.clientMessageId]);
 
   const loadOlder = () => { void clientRef.current?.loadOlder(); };
 
@@ -106,13 +107,13 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const messages = state.pendingSend ? [...state.messages, state.pendingSend] : state.messages;
-  const latestMessage = state.messages.at(-1);
   const typingNames = state.typingAuthors.map((author) => author.name);
   const typingLabel = typingNames.length > 2 ? "Several people are typing…"
     : typingNames.length ? `${typingNames.join(" and ")} ${typingNames.length === 1 ? "is" : "are"} typing…` : "";
   const submit = async () => {
     if (!identityReady || sending || state.sendRejected) return;
     setValidationError(undefined);
+    followLatest.current = true;
     const submitted = state.pendingSend?.text ?? draft;
     try {
       await clientRef.current?.send(submitted);

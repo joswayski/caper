@@ -385,7 +385,7 @@ export default function Call() {
                 if (joinDisabled) return;
                 if (!idle) { leave(); return; }
                 setActionError(undefined);
-                void clientRef.current?.join(name.trim(), deviceId);
+                void clientRef.current?.join(identityName.trim(), deviceId);
               }}><Speech aria-hidden="true" />{connected ? "Leave" : !idle ? "Cancel" : state.phase === "leaving" ? "Leaving…" : "Join"}</button>
               {joinUnavailable && <span id="voice-availability" className="voice-tooltip" role="tooltip">{available === false ? "Joining is not available at this time." : "Checking voice availability…"}</span>}
             </span>
