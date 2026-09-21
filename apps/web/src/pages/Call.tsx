@@ -145,7 +145,7 @@ export default function Call() {
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
-  const controlsDisabled = !connected || actionPending || state.monitorConnecting;
+  const controlsDisabled = !connected || actionPending;
   const roster = idle ? publicParticipants : state.participants;
 
   useEffect(() => {
@@ -263,7 +263,9 @@ export default function Call() {
         </aside>
         <div className="stage">
           <div className="stage-title"><div><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>
-          {idle ? <div className="join-card">
+          {state.monitorStream && !actionPending
+            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} onClose={idle ? () => clientRef.current?.stopLocalMicTest() : undefined} />
+            : idle ? <div className="join-card">
             <span className="voice-symbol" aria-hidden="true">◖))</span>
             <h1>Drop in. Talk. Head out.</h1>
             <p>{accountDisplayName ? "Join the shared General channel using your Caper display name." : "Join the shared General channel as a guest. No account or invite needed."}</p>
@@ -271,10 +273,10 @@ export default function Call() {
               <p>Joining as <strong>{identityReady ? name : "…"}</strong></p>
               <button className="primary-button" disabled={available !== true || !identityReady || !name.trim() || state.phase === "leaving"} type="submit">{state.phase === "leaving" ? "Leaving voice…" : available === undefined ? "Checking voice…" : !identityReady ? "Checking profile…" : "Join voice"}</button>
             </form>}
+            <button className="mic-test-link" disabled={!identityReady} type="button" onClick={() => { setActionError(undefined); void act(() => clientRef.current!.startLocalMicTest()); }}>Test your mic first</button>
             <p className="privacy-note">You’ll be asked for microphone access when you join.</p>
-          </div> : state.monitorStream && !actionPending
-            ? <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />
-            : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Getting your private test ready." : connected ? "Say hello, or run a mic test to hear yourself first." : "Getting everything ready."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
+          </div>
+            : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{connected ? "Say hello, or run a mic test to hear yourself first." : "Getting everything ready."}</p>{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}

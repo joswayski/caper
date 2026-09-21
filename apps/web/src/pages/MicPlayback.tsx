@@ -81,11 +81,12 @@ function ProcessingDetail({ label, id, children }: { label: string; id: string; 
   </span>;
 }
 
-export default function MicPlayback({ stream, output, processingStrength, onProcessingStrengthChange }: {
+export default function MicPlayback({ stream, output, processingStrength, onProcessingStrengthChange, onClose }: {
   stream: MediaStream;
   output: string;
   processingStrength: number;
   onProcessingStrengthChange(strength: number): void;
+  onClose?(): void;
 }) {
   const urlsRef = useRef<{ natural?: string; processed?: string }>({});
   const sessionRef = useRef<ReceivedRecording | undefined>(undefined);
@@ -194,6 +195,7 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
         <h3 id="mic-test-heading">{recording ? "Recording your voice" : "Find your voice"}</h3>
       </div>
       {recording && <p className="recording-clock"><i aria-hidden="true" />{elapsed.toFixed(1)}s</p>}
+      {onClose && !recording && <button type="button" className="mic-test-close" onClick={onClose}>Back to join</button>}
     </div>
     <p className="mic-test-copy">Record once to compare the same sample with and without voice enhancement.</p>
     <div className="voice-processing-control">

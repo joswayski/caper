@@ -77,8 +77,6 @@ export interface CallViewState {
   inputVolume: number;
   monitoring: boolean;
   monitorStream?: MediaStream;
-  monitorConnecting?: boolean;
-  monitorStatus?: string;
   selfId?: string;
   localMedia?: MediaStream;
   participants: Participant[];
