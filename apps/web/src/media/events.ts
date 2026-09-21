@@ -4,7 +4,7 @@ const START_TIMEOUT_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 25_000;
 const MAX_BUFFER = 64 * 1024;
 
-/** One authenticated event stream per call. Reconnection belongs to the call lifecycle. */
+/** One media event stream. Reconnection belongs to its call or spectator lifecycle. */
 export class CallEvents {
   connected = false;
   private readonly controller = new AbortController();
@@ -23,6 +23,14 @@ export class CallEvents {
   }
 
   open(token: string, signal: AbortSignal): Promise<void> {
+    return this.openStream(token, signal);
+  }
+
+  openPresence(signal: AbortSignal): Promise<void> {
+    return this.openStream(undefined, signal);
+  }
+
+  private openStream(token: string | undefined, signal: AbortSignal): Promise<void> {
     if (signal.aborted) return Promise.reject(signal.reason);
     return new Promise<void>((resolve, reject) => {
       const abort = () => this.stop();
@@ -34,8 +42,8 @@ export class CallEvents {
       };
       watchdog(START_TIMEOUT_MS);
       const run = async () => {
-        const response = await fetch("/api/media/events?snapshots=1", {
-          headers: { accept: "text/event-stream", "x-caper-media-token": token },
+        const response = await fetch(token === undefined ? "/api/media/presence/events" : "/api/media/events?snapshots=1", {
+          headers: { accept: "text/event-stream", ...(token === undefined ? {} : { "x-caper-media-token": token }) },
           signal: this.controller.signal,
           cache: "no-store",
         });
@@ -72,14 +80,18 @@ export class CallEvents {
                 if (!value || typeof value !== "object" || !Array.isArray((value as CallSnapshot).participants)
                   || !(value as CallSnapshot).participants.every((p) => p && typeof p.id === "string" && typeof p.name === "string"
                     && typeof p.muted === "boolean" && typeof p.deafened === "boolean"
-                    && Array.isArray(p.tracks) && p.tracks.every((t) => t && typeof t.id === "string" && t.kind === "microphone"))) {
+                    && (token === undefined ? !("tracks" in p)
+                      : Array.isArray(p.tracks) && p.tracks.every((t) => t && typeof t.id === "string" && t.kind === "microphone")))) {
                   throw new Error("Invalid live update snapshot.");
                 }
                 const revision = (value as { revision?: unknown }).revision;
                 if (revision !== undefined && (!Number.isSafeInteger(revision) || (revision as number) < 0)) {
                   throw new Error("Invalid live update snapshot.");
                 }
-                this.snapshot?.(value as CallSnapshot & { revision?: number });
+                const snapshot = value as CallSnapshot & { revision?: number };
+                this.snapshot?.(token === undefined
+                  ? { ...snapshot, participants: snapshot.participants.map((p) => ({ ...p, tracks: [] })) }
+                  : snapshot);
               } else if (event === "draining") {
                 // Stop here: the following EOF must not replace the fast planned
                 // reconnect with the ordinary connection-failure backoff.

@@ -612,6 +612,147 @@ async fn next_event(stream: &mut axum::body::BodyDataStream) -> Option<String> {
         .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+async fn presence_response(s: &AppState) -> Response {
+    app(s.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/media/presence/events")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn presence_snapshot_event(stream: &mut axum::body::BodyDataStream) -> Value {
+    let event = next_event(stream).await.unwrap();
+    assert!(event.starts_with("event: snapshot\n"), "{event}");
+    serde_json::from_str(
+        event
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+async fn exercise_public_presence(a: &AppState, b: &AppState) {
+    let response = presence_response(a).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["x-accel-buffering"], "no");
+    let mut spectator = response.into_body().into_data_stream();
+    assert!(
+        next_event(&mut spectator)
+            .await
+            .unwrap()
+            .starts_with("event: ready")
+    );
+    assert_eq!(
+        presence_snapshot_event(&mut spectator).await["participants"],
+        json!([])
+    );
+    let joined = joined(b, "visible").await;
+    let token = joined["token"].as_str().unwrap();
+    let snapshot = presence_snapshot_event(&mut spectator).await;
+    assert_eq!(snapshot["participants"][0]["id"], joined["id"]);
+    let person = snapshot["participants"][0].as_object().unwrap();
+    assert_eq!(
+        person.len(),
+        4,
+        "only id/name/muted/deafened, no tracks or secrets"
+    );
+    assert_eq!(snapshot["participants"].as_array().unwrap().len(), 1);
+    assert_eq!(monitor_joined(b, token, "sender").await.0, StatusCode::OK);
+
+    let mut authenticated = event_response(b, Some(token), false)
+        .await
+        .into_body()
+        .into_data_stream();
+    assert!(
+        next_event(&mut authenticated)
+            .await
+            .unwrap()
+            .starts_with("event: ready")
+    );
+    // Another spectator must not replace the caller's authenticated event connection.
+    let mut other = presence_response(a).await.into_body().into_data_stream();
+    next_event(&mut other).await;
+    assert_eq!(
+        presence_snapshot_event(&mut other).await["participants"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        call(
+            app(b.clone()),
+            "POST",
+            "/api/media/state",
+            Some(token),
+            json!({"muted":true,"deafened":true})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let updated = presence_snapshot_event(&mut spectator).await;
+    assert_eq!(updated["participants"][0]["muted"], true);
+    assert_eq!(updated["participants"][0]["deafened"], true);
+    assert!(
+        next_event(&mut authenticated)
+            .await
+            .unwrap()
+            .starts_with("event: changed")
+    );
+    // The spectator already read the old roster. Leave must push [] without a poll,
+    // lease expiry, or provider cleanup (the cleanup worker is deliberately absent).
+    assert_eq!(
+        call(
+            app(b.clone()),
+            "POST",
+            "/api/media/leave",
+            Some(token),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        presence_snapshot_event(&mut spectator).await["participants"],
+        json!([])
+    );
+    b.read(|r| {
+        assert!(!r.cleanup.is_empty());
+        assert!(r.participants.is_empty());
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut reconnected = presence_response(b).await.into_body().into_data_stream();
+    next_event(&mut reconnected).await;
+    assert_eq!(
+        presence_snapshot_event(&mut reconnected).await["participants"],
+        json!([])
+    );
+    a.begin_shutdown();
+    assert!(
+        next_event(&mut spectator)
+            .await
+            .unwrap()
+            .starts_with("event: draining")
+    );
+    assert!(next_event(&mut spectator).await.is_none());
+}
+
+#[tokio::test]
+async fn public_presence_pushes_join_state_leave_without_call_capability_or_cleanup() {
+    let (s, _) = state();
+    exercise_public_presence(&s, &s).await;
+}
+
 #[tokio::test]
 async fn events_enforce_access_and_emit_ready_immediately() {
     let (s, _) = state();
