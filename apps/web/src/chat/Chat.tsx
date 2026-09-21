@@ -5,7 +5,7 @@ import "./chat.css";
 
 const initialView: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "General",
-  messages: [], hasMore: false, loadingOlder: false,
+  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
 };
 
 function timeLabel(value: string) {
@@ -86,6 +86,9 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const messages = state.pendingSend ? [...state.messages, state.pendingSend] : state.messages;
+  const typingNames = state.typingAuthors.map((author) => author.name);
+  const typingLabel = typingNames.length > 2 ? "Several people are typing…"
+    : typingNames.length ? `${typingNames.join(" and ")} ${typingNames.length === 1 ? "is" : "are"} typing…` : "";
   const submit = async () => {
     if (!identityReady || sending || state.sendRejected) return;
     setValidationError(undefined);
@@ -120,17 +123,15 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
           <div>
             <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header>
             <p>{"content" in message ? message.content.text : message.text}</p>
-            {pending && <div className={`chat-send-status${state.sendError ? " chat-send-error" : ""}`} role={state.sendError ? "alert" : "status"}>
-              {state.sendError ? <>
-                <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
-                {state.sendRejected ? <>
-                  <button type="button" disabled={!!draft} title={draft ? "Clear your current draft to edit this message." : undefined} onClick={() => {
-                    const text = clientRef.current?.discardRejected();
-                    if (text !== undefined) { setDraft(text); composerRef.current?.focus(); }
-                  }}>Edit</button>
-                  <button type="button" onClick={() => clientRef.current?.discardRejected()}>Dismiss</button>
-                </> : <button type="button" onClick={() => void submit()}>Retry send</button>}
-              </> : "Sending…"}
+            {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
+              <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
+              {state.sendRejected ? <>
+                <button type="button" disabled={!!draft} title={draft ? "Clear your current draft to edit this message." : undefined} onClick={() => {
+                  const text = clientRef.current?.discardRejected();
+                  if (text !== undefined) { setDraft(text); composerRef.current?.focus(); }
+                }}>Edit</button>
+                <button type="button" onClick={() => clientRef.current?.discardRejected()}>Dismiss</button>
+              </> : <button type="button" onClick={() => void submit()}>Retry send</button>}
             </div>}
           </div>
         </article>;
@@ -143,12 +144,15 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
-        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
+        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
         <button type="submit" disabled={!identityReady || state.phase !== "ready" || !!state.pendingSend || !draft.trim() || characterCount > 4_000}>Send</button>
         {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
+      <p className="chat-typing" role="status" aria-atomic="true">
+        {typingLabel && <><span aria-hidden="true">•••</span><span>{typingLabel}</span></>}
+      </p>
     </div>
   </section>;
 }

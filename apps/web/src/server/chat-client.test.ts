@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { ChatClient, type ChatViewState } from "../chat/client.ts";
-import type { ChatEvent, ChatMessage } from "../chat/types.ts";
+import type { ChatEvent, ChatMessage, ChatTypingEvent } from "../chat/types.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -106,7 +106,7 @@ test("signed-in startup does not reuse another account's capability with the sam
 });
 
 test("public history loads before identity and remains visible while the send session resolves", async (t) => {
-  installBrowser(t);
+  const sockets = installBrowser(t);
   const message: ChatMessage = {
     id: "existing", channelId: "general", seq: "7", author: { id: "other", name: "Other Guest", isGuest: true },
     content: { version: 1, type: "text", text: "Already here" }, createdAt: "2026-09-21T12:00:00Z", clientMessageId: "old-command",
@@ -135,9 +135,13 @@ test("public history loads before identity and remains visible while the send se
   client.identify("New Guest");
   assert.equal(state.phase, "ready");
   assert.deepEqual(state.messages, [message]);
+  sockets[0].frame({ type: "ready", cursor: "7" });
+  sockets[0].frame(typingEvent("new"));
+  assert.equal(state.typingAuthors.length, 1, "identity is not known until the session resolves");
   finishSession(Response.json({ token: "new-capability", author: { id: "new", name: "New Guest", isGuest: true } }));
   await tick(); await tick();
   assert.deepEqual(state.author, { id: "new", name: "New Guest", isGuest: true });
+  assert.equal(state.typingAuthors.length, 0, "late identity removes own typing from another tab immediately");
   assert.deepEqual(state.messages, [message]);
   assert.deepEqual(requests, ["/api/chat/general", "/api/chat/session"]);
 });
@@ -157,12 +161,19 @@ async function sendingFixture(t: TestContext) {
   const sockets = installBrowser(t);
   const history: ChatMessage[] = [];
   const posts: { body: SendBody; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
+  const typingPosts: { active: boolean; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     if (String(input) === "/api/chat/session") return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general") return Response.json({
       space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" },
       messages: history, cursor: history.at(-1)?.seq ?? "0", hasMore: false,
     });
+    if (String(input) === "/api/chat/channels/general/typing") {
+      assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+      const body = JSON.parse(String(init?.body));
+      assert.deepEqual(Object.keys(body), ["typing"], "draft text and claimed identity never enter typing requests");
+      return new Promise<Response>((resolve, reject) => typingPosts.push({ active: body.typing, resolve, reject }));
+    }
     assert.equal(String(input), "/api/chat/channels/general/messages");
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(Object.keys(body).sort(), ["clientMessageId", "text"], "local metadata never enters the wire contract");
@@ -174,7 +185,7 @@ async function sendingFixture(t: TestContext) {
   client.start(); client.identify("Test Guest");
   await tick();
   sockets[0].frame({ type: "ready", cursor: "0" });
-  return { client, sockets, posts, history, get state() { return state; } };
+  return { client, sockets, posts, typingPosts, history, get state() { return state; } };
 }
 
 test("optimistic send is immediate; HTTP-first confirmation uses server content/order without skipping replay", async (t) => {
@@ -293,4 +304,99 @@ test("confirmation during HTTP rejection propagation cannot resurrect an optimis
     assert.equal(f.state.sendError, undefined);
     assert.equal(f.state.messages.length, delay + 1);
   }
+});
+
+function typingEvent(id: string, revision = "9007199254740992", typing = true): ChatTypingEvent {
+  return { type: "typing.updated", channelId: "general", author: { id, name: "Shared Name", isGuest: true }, revision, typing };
+}
+
+test("typing is opt-in, author-deduplicated, expires independently, and never advances replay", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 });
+  const f = await sendingFixture(t);
+  assert.equal(new URL(f.sockets[0].url).searchParams.get("typing"), "true");
+  f.sockets[0].frame(typingEvent("guest"));
+  f.sockets[0].frame({ ...typingEvent("wrong-channel"), channelId: "private" });
+  assert.equal(f.state.typingAuthors.length, 0);
+  f.sockets[0].frame(typingEvent("a"));
+  f.sockets[0].frame(typingEvent("a"));
+  t.mock.timers.tick(4_000);
+  f.sockets[0].frame(typingEvent("b"));
+  f.sockets[0].frame(typingEvent("a"));
+  assert.deepEqual(f.state.typingAuthors.map((author) => author.id), ["a", "b"], "same names are not the same identity");
+  t.mock.timers.tick(2_000);
+  assert.deepEqual(f.state.typingAuthors.map((author) => author.id), ["b"], "duplicates do not prolong a stale indicator");
+  assert.deepEqual(f.state.messages, []);
+  f.sockets[0].frame({ type: "migrating" });
+  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), "0");
+  f.sockets[1].frame(typingEvent("b", "9007199254740993", false));
+  f.sockets[0].frame(typingEvent("b"));
+  assert.deepEqual(f.state.typingAuthors, [], "an older overlapping start cannot undo a stop, even above JS's safe integer limit");
+  f.sockets[1].frame({ type: "ready", cursor: "0" });
+  assert.equal(f.state.phase, "ready");
+});
+
+test("typing clears on message, offline, and history resync; unique typers are bounded", async (t) => {
+  const f = await sendingFixture(t);
+  f.sockets[0].frame(typingEvent("a"));
+  const message = committed({ clientMessageId: "peer", text: "hello" }, "1");
+  message.author.id = "a";
+  f.sockets[0].message(message);
+  assert.deepEqual(f.state.typingAuthors, []);
+  f.sockets[0].frame(typingEvent("a", "9007199254740993"));
+  f.sockets[0].dispatchEvent(new Event("close"));
+  assert.deepEqual(f.state.typingAuthors, []);
+  f.client.retryLoad();
+  await tick();
+  const current = f.sockets.at(-1)!;
+  current.frame({ type: "ready", cursor: "0" });
+  for (let index = 0; index < 100; index++) current.frame(typingEvent(`person-${index}`));
+  assert.equal(f.state.typingAuthors.length, 64);
+  f.client.retryLoad();
+  assert.deepEqual(f.state.typingAuthors, []);
+  await tick();
+});
+
+test("typing pulses are throttled, stop after inactivity, and failures stay out of send state", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 });
+  const f = await sendingFixture(t);
+  f.client.setTyping(true);
+  f.typingPosts[0].resolve(new Response(null, { status: 204 }));
+  await tick();
+  for (let index = 0; index < 100; index++) f.client.setTyping(true);
+  t.mock.timers.tick(1_999);
+  f.client.setTyping(true);
+  assert.equal(f.typingPosts.length, 1);
+  t.mock.timers.tick(1);
+  f.client.setTyping(true);
+  assert.equal(f.typingPosts.length, 2);
+  f.typingPosts[1].reject(new TypeError("broker unavailable"));
+  await tick();
+  t.mock.timers.tick(3_000);
+  assert.deepEqual(f.typingPosts.map((post) => post.active), [true, true, false]);
+  f.typingPosts[2].resolve(new Response(null, { status: 429 }));
+  await tick();
+  assert.equal(f.state.sendError, undefined);
+  assert.equal(f.state.sessionError, undefined);
+  f.client.stop();
+  f.client.setTyping(true);
+  t.mock.timers.tick(10_000);
+  assert.equal(f.typingPosts.length, 3);
+});
+
+test("a stop waits for its start but an optimistic send never waits for typing", async (t) => {
+  const f = await sendingFixture(t);
+  f.client.setTyping(true);
+  f.client.setTyping(false);
+  assert.deepEqual(f.typingPosts.map((post) => post.active), [true]);
+  const sending = f.client.send("instant");
+  assert.equal(f.state.pendingSend?.text, "instant");
+  f.posts[0].resolve(Response.json(committed(f.posts[0].body, "1")));
+  assert.equal(await sending, true);
+  f.typingPosts[0].resolve(new Response(null, { status: 204 }));
+  await tick();
+  assert.deepEqual(f.typingPosts.map((post) => post.active), [true, false]);
+  f.typingPosts[1].resolve(new Response(null, { status: 204 }));
+  await tick();
+  f.client.setTyping(false);
+  assert.equal(f.typingPosts.length, 2);
 });

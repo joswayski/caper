@@ -1,6 +1,6 @@
 import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
-import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type GeneralChatHistory } from "./types.ts";
+import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -18,6 +18,7 @@ export interface ChatViewState {
   channelId?: string;
   channelName: string;
   messages: ChatMessage[];
+  typingAuthors: ChatAuthor[];
   hasMore: boolean;
   loadingOlder: boolean;
   author?: ChatAuthor;
@@ -30,7 +31,7 @@ export interface ChatViewState {
 
 const initialState: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "General",
-  messages: [], hasMore: false, loadingOlder: false,
+  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
 };
 
 function apiError(response: Response, fallback: string) {
@@ -68,6 +69,13 @@ export class ChatClient {
   private session?: ChatSession;
   private sending = false;
   private confirmSend?: (message: ChatMessage) => void;
+  private typingActive = false;
+  private typingSent = false;
+  private typingSentAt = 0;
+  private typingRequest?: Promise<void>;
+  private typingIdleTimer?: ReturnType<typeof setTimeout>;
+  private typingExpiryTimer?: ReturnType<typeof setTimeout>;
+  private readonly typers = new Map<string, { author: ChatAuthor; typing: boolean; revision: bigint; expires: number }>();
   private readonly changed: (state: ChatViewState) => void;
 
   constructor(changed: (state: ChatViewState) => void) { this.changed = changed; }
@@ -90,7 +98,58 @@ export class ChatClient {
   stop() {
     this.generation++;
     this.controller.abort();
+    clearTimeout(this.typingIdleTimer);
+    clearTimeout(this.typingExpiryTimer);
     this.connection?.stop();
+  }
+
+  setTyping(active: boolean) {
+    if (this.controller.signal.aborted) return;
+    clearTimeout(this.typingIdleTimer);
+    this.typingActive = active;
+    if (active) this.typingIdleTimer = setTimeout(() => this.setTyping(false), 3_000);
+    this.flushTyping();
+  }
+
+  private flushTyping() {
+    const channel = this.state.channelId;
+    const session = this.session;
+    if (this.typingRequest || !channel || !session || this.controller.signal.aborted) return;
+    const active = this.typingActive;
+    if (!active && !this.typingSent) return;
+    if (active && this.typingSent && Date.now() - this.typingSentAt < 2_000) return;
+    this.typingSent = active;
+    this.typingSentAt = Date.now();
+    // Serialize start/stop so a delayed start request cannot overtake its stop.
+    // Presence is best-effort: failure must never block or fail a real message.
+    this.typingRequest = fetch(`/api/chat/channels/${encodeURIComponent(channel)}/typing`, {
+      method: "POST", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ typing: active }),
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(2_000)]),
+    }).then(() => undefined, () => undefined).finally(() => {
+      this.typingRequest = undefined;
+      if (this.typingActive !== active) this.flushTyping();
+    });
+  }
+
+  private receiveTyping(event: ChatTypingEvent) {
+    if (event.author.id === this.state.author?.id) return;
+    const previous = this.typers.get(event.author.id);
+    const revision = sequence(event.revision);
+    if (previous && revision <= previous.revision) return;
+    if (!previous && this.typers.size >= 64) return;
+    // Retain stop tombstones briefly to reject delayed/duplicate handoff frames.
+    this.typers.set(event.author.id, { author: event.author, typing: event.typing, revision, expires: Date.now() + 6_000 });
+    this.refreshTypers();
+  }
+
+  private refreshTypers() {
+    clearTimeout(this.typingExpiryTimer);
+    const now = Date.now();
+    for (const [id, entry] of this.typers) if (entry.expires <= now) this.typers.delete(id);
+    const entries = [...this.typers.values()];
+    this.update({ typingAuthors: entries.filter((entry) => entry.typing && entry.author.id !== this.state.author?.id).map((entry) => entry.author) });
+    if (entries.length) this.typingExpiryTimer = setTimeout(() => this.refreshTypers(), Math.min(...entries.map((entry) => entry.expires)) - now);
   }
 
   retryLoad() { void this.loadInitial(); }
@@ -140,6 +199,7 @@ export class ChatClient {
       this.update({ pendingSend: pending, sendError: "Your guest session is unavailable. Retry the session, then send again." });
       return false;
     }
+    this.setTyping(false);
     this.sending = true;
     const confirmation = new Promise<ChatMessage>((resolve) => { this.confirmSend = resolve; });
     this.update({ pendingSend: pending, sendError: undefined, sendRejected: undefined });
@@ -188,6 +248,8 @@ export class ChatClient {
     const generation = ++this.generation;
     this.connection?.stop();
     this.connection = undefined;
+    this.typers.clear();
+    this.refreshTypers();
     this.update({ phase: "loading", online: false, error: undefined });
     try {
       const response = await fetch("/api/chat/general", { cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]) });
@@ -204,10 +266,16 @@ export class ChatClient {
         cursor: () => this.timeline.cursor,
         message: (message) => {
           const result = this.timeline.applyEvent(message);
+          const typer = this.typers.get(message.author.id);
+          if (typer && result !== "duplicate") { typer.typing = false; this.refreshTypers(); }
           if (result !== "buffered" && result !== "overflow") this.update({ messages: this.timeline.messages });
           return result;
         },
-        status: (online) => this.update({ online }),
+        status: (online) => {
+          if (!online) { this.typers.clear(); this.refreshTypers(); }
+          this.update({ online });
+        },
+        typing: (event) => this.receiveTyping(event),
         resync: () => { if (generation === this.generation) void this.loadInitial(); },
       });
       this.connection.start();
@@ -238,6 +306,10 @@ export class ChatClient {
 
   private update(change: Partial<ChatViewState>) {
     this.state = { ...this.state, ...change };
+    if (change.author) {
+      this.typers.delete(change.author.id);
+      this.state = { ...this.state, typingAuthors: this.state.typingAuthors.filter((author) => author.id !== change.author!.id) };
+    }
     const pending = this.state.pendingSend;
     if (pending && change.messages) {
       const accepted = change.messages.find((message) => message.channelId === this.state.channelId
