@@ -43,6 +43,7 @@ export async function captureMicrophone(
     noiseSuppression: mode === "browser",
     autoGainControl: audioSetup === "speakers",
   } });
+  if (!stream) throw new Error("Microphone access was not granted.");
   const raw = stream.getAudioTracks()[0];
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
