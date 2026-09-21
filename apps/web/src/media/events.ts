@@ -59,9 +59,11 @@ export class CallEvents {
             if (done) throw new Error("Live updates disconnected. Please try joining again.");
             this.controller.signal.throwIfAborted();
             buffer += decoder.decode(value, { stream: true });
-            if (buffer.length > MAX_BUFFER) throw new Error("Invalid live update stream.");
             let boundary: RegExpExecArray | null;
             while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+              // Transport chunks can contain many valid frames after buffering.
+              // Limit individual events, not the arbitrary chunk boundary.
+              if (boundary.index > MAX_BUFFER) throw new Error("Invalid live update stream.");
               const lines = buffer.slice(0, boundary.index).split(/\r?\n/);
               buffer = buffer.slice(boundary.index + boundary[0].length);
               const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
@@ -100,6 +102,7 @@ export class CallEvents {
                 return;
               }
             }
+            if (buffer.length > MAX_BUFFER) throw new Error("Invalid live update stream.");
           }
         } finally {
           await reader.cancel().catch(() => undefined);

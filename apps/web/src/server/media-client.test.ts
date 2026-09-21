@@ -59,6 +59,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   const calls: string[] = [];
   const joinedNames: string[] = [];
   const stateUpdates: Array<{ muted: boolean; deafened: boolean }> = [];
+  const stateSequences: number[] = [];
   const states: CallViewState[] = [];
   const events: ReadableStreamDefaultController<Uint8Array>[] = [];
   const audioSinks: FakeAudio[] = [];
@@ -105,15 +106,41 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
     if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
     if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
     if (op === "snapshot") return Response.json({ participants: [] });
-    if (op === "state") stateUpdates.push(JSON.parse(options.body as string));
+    if (op === "state") {
+      const { muted, deafened, sequence } = JSON.parse(options.body as string);
+      stateUpdates.push({ muted, deafened });
+      stateSequences.push(sequence);
+    }
     return new Response(null, { status: 204 });
   });
   const client = new PublicCallClient((state) => states.push(state));
   // These tests isolate signaling with raw mock tracks; enhanced audio is tested separately.
   void client.setNoiseSuppression("off");
   t.after(async () => { client.leaveImmediately(); await tick(); restore.reverse().forEach((fn) => fn()); });
-  return { client, track, calls, joinedNames, stateUpdates, states, install, events, audioSinks };
+  return { client, track, calls, joinedNames, stateUpdates, stateSequences, states, install, events, audioSinks };
 }
+
+test("state requests carry increasing sequences across mute/deafen and retries", async (t) => {
+  const { client, stateSequences, install } = setup(t);
+  await client.join();
+  await client.setMuted(true);
+  await client.setDeafened(true);
+  await client.setDeafened(false);
+  assert.deepEqual(stateSequences, [1, 2, 3, 4]);
+  const original = fetch;
+  let rejected = false;
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/state") && !rejected) {
+      rejected = true;
+      await original(url, init);
+      throw new TypeError("response lost after commit");
+    }
+    return original(url, init);
+  });
+  await client.setMuted(false);
+  await client.setMuted(true);
+  assert.deepEqual(stateSequences, [1, 2, 3, 4, 5, 6]);
+});
 
 test("DPDFNet suppression is the fixed default and prepares before capture", async (t) => {
   const dpdfnet = t.mock.method(DpdfnetPreparation.prototype, "prepare", async () => undefined);
@@ -1318,7 +1345,7 @@ test("draining with failed state writes retries latest intent without replacing 
   await Promise.all([client.setDeafened(false), client.setMuted(false)]);
   t.mock.timers.tick(300);
   await tick();
-  assert.deepEqual(updates.at(-1), { muted: false, deafened: false });
+  assert.deepEqual(updates.at(-1), { muted: false, deafened: false, sequence: 5 });
   assert.equal(states.at(-1)?.stateSyncPending, false);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.some((state) => state.error !== undefined), false);

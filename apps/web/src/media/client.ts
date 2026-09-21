@@ -557,7 +557,7 @@ export class PublicCallClient {
       while (this.stateDirty && token && generation === this.generation) {
         const revision = this.stateRevision;
         try {
-          await this.api("state", { muted: this.muted, deafened: this.deafened }, token, SNAPSHOT_TIMEOUT_MS);
+          await this.api("state", { muted: this.muted, deafened: this.deafened, sequence: revision }, token, SNAPSHOT_TIMEOUT_MS);
         } catch (error) {
           if (generation !== this.generation) return;
           if (this.phase !== "connected" || !transientControlError(error)) throw error;

@@ -112,9 +112,37 @@ The browser keeps lease renewal, mute/deafen synchronization, and SDP negotiatio
 independent. Rapid mute/deafen changes coalesce to the latest local intent rather
 than replaying queued toggles. State writes time out after five seconds and retry
 transient failures after 250 ms while connected; local controls remain usable and
-the UI announces pending synchronization. A newer self snapshot that disagrees
-with local intent triggers repair, including when an older timed-out write commits
-late. Pushed rosters render without waiting for state writes or SDP negotiation.
+each write carries an increasing per-client sequence. The API ignores older or
+duplicate sequences, preventing a timed-out write on another pod from replacing
+newer intent. A newer self snapshot that disagrees with local intent also triggers
+repair. Pushed rosters render without waiting for state writes or SDP negotiation.
+
+SSE heartbeats use a fixed ten-second interval: unrelated connection notifications
+cannot postpone them indefinitely and trip the browser's 25-second watchdog. If a
+heartbeat observes a new roster revision before its Pub/Sub notification arrives,
+it sends the snapshot instead of silently acknowledging that revision. Normal
+updates remain push-driven. The browser limits each SSE frame, not an arbitrary
+network chunk that may contain many valid frames. Connected stream recovery no
+longer inserts a paragraph that shifts the call layout; actual call errors remain.
+
+For these synchronization fixes, deploy **all API pods before web**, then refresh
+clients. Old APIs reject the new `sequence` request field. Existing participant
+records default `state_sequence` to zero; there is no manual Valkey migration.
+Older browsers can still send unversioned state writes. After merge and both image
+builds, run the following from an operator environment (not performed by tests):
+
+```sh
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
+# Wait for that workflow to succeed and every API pod to run the new image.
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure -f git_sha=<merge-sha>
+```
+
+Regression tests cover heartbeat starvation, a delayed notification, and stale
+state ordering across two API instances sharing disposable Redis. The browser
+fixture holds an authenticated SSE reconnect, verifies unchanged layout/peer
+identity, then pushes mute/deafen changes after recovery. These checks use mocked
+API/WebRTC or mocked Cloudflare; they do not establish production delivery latency.
 
 Join includes the browser's current `muted` and `deafened` values. The API commits
 them with the participant, so the first public/in-call snapshot is correct rather
@@ -144,7 +172,7 @@ The follow-up disconnect audit also covers these interactions:
 | A speaker leaves while a successful subscription is being created | Preserve the listener, finish any returned SDP offer, then close the unwanted MID from the latest roster. Do not discard the listener's own microphone/session. |
 | Cloudflare explicitly rejects a departed track during subscription | A successful HTTP response with one `not_found_track_error`/`track_error`, no MID/SDP, and explicit `requiresImmediateRenegotiation: false` becomes `track_gone`; release the operation lock and preserve the listener. HTTP errors, partial offers, allocated MIDs, and session errors remain ambiguous and do not take this path. |
 | Closing a departed track fails or times out | Remove local playback immediately; retry transient HTTP cleanup failures on subsequent reconciliation/lease heartbeat without rejoining. API close commits track removal and a cleanup job atomically. Provider cleanup failure never revokes the listener or its other tracks. |
-| SSE fails while authenticated lease renewals work | Retry SSE independently; keep voice open and display a live-update recovery notice. Snapshots still repair state, but normal real-time delivery requires SSE recovery. |
+| SSE fails while authenticated lease renewals work | Retry SSE independently and keep voice/layout stable. Snapshots still repair state, but normal real-time delivery requires SSE recovery. |
 | A previous call still has a pending device request | New signaling/media queues do not wait on old work. Old rollback cannot restart the new call. |
 | Several separate successful recoveries over time | Reset the consecutive retry budget after each successful rejoin; no lifetime three-recovery quota. |
 
@@ -166,6 +194,11 @@ renewal extension below adds participant fields and requires API-first deploymen
 Remaining disconnect conditions are not solved by adding retries: unknown outcomes
 of provider SDP mutations, invalid/expired sessions, sustained network loss, and
 failed local capture/transport recovery.
+In particular, a Cloudflare HTTP 200 body containing `internal_error` is a failed
+provider operation; Caper reports 502. Without evidence that no MID/SDP mutation
+occurred, retrying the same subscription is unsafe. The September 21 production
+logs establish that error mapping, not the underlying provider cause or whether
+the session changed upstream. No unconditional subscription retry was added.
 Initial SSE setup still fails Join if it cannot establish a valid handshake. The
 private mic test has separate failure handling; losing it does not leave General.
 
@@ -903,7 +936,7 @@ stream. An SSE failure during startup fails Join; during an established call it
 reopens only the event stream with the same capability, backing off from 250 ms
 to three seconds while keeping healthy audio. Planned `draining` reconnects start
 after 50 ms. An SSE-only outage does not force a new voice session while
-authenticated snapshot renewals succeed. The UI announces delayed live updates;
+authenticated snapshot renewals succeed. Connected recovery keeps the layout stable;
 invalid sessions or sustained heartbeat failure still trigger session recovery.
 Each restored stream receives current state, not a replay of missed mute/unmute
 transitions. Initial Join readiness remains strict.

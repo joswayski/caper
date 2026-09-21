@@ -127,3 +127,27 @@ test("changed before ready and oversized partial frames are rejected", async (t)
     });
   }
 });
+
+test("many valid events coalesced into one network chunk do not disconnect SSE", async (t) => {
+  const { events, owner, send, changes, errors } = setup(t);
+  const opening = events.open("test-capability", owner.signal);
+  await tick();
+  send("event: ready\ndata: {}\n\n" + "event: changed\ndata: {}\n\n".repeat(3000));
+  await opening;
+  await tick();
+  assert.equal(changes(), 3000);
+  assert.equal(events.connected, true);
+  assert.equal(errors.length, 0);
+});
+
+test("one oversized complete event is still rejected even after valid frames", async (t) => {
+  const { events, owner, send, errors } = setup(t);
+  const opening = events.open("test-capability", owner.signal);
+  await tick();
+  send("event: ready\ndata: {}\n\n");
+  await opening;
+  send("event: heartbeat\ndata: {}\n\nevent: snapshot\ndata: " + "x".repeat(65_537) + "\n\n");
+  await tick();
+  assert.equal(events.connected, false);
+  assert.match(errors[0]?.message ?? "", /Invalid live update stream/);
+});
