@@ -155,7 +155,6 @@
   .people-panel ul.volume-menu-open { max-height: 420px; }
   .participant.volume-open { padding-bottom: 161px; }
   .channel-link { margin-top: 16px; }
-  .call-settings-panel { top: calc(100% + 8px); bottom: auto; }
   .mic-test-heading { align-items: flex-start; }
   .mic-test-action-row { grid-template-columns: 120px minmax(0, 1fr); gap: 10px; }
   .mic-test-button { width: 120px; }
