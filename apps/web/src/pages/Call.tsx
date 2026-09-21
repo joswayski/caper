@@ -140,6 +140,7 @@ export default function Call() {
   const [chatAuthor, setChatAuthor] = useState<ChatAuthor>();
   const [identityReady, setIdentityReady] = useState(false);
   const [available, setAvailable] = useState<boolean>();
+  const [joinTooltipDismissed, setJoinTooltipDismissed] = useState(false);
   const [hasTriedHuddle, setHasTriedHuddle] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
@@ -155,6 +156,8 @@ export default function Call() {
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
+  const joinDisabled = !identityReady || state.phase === "leaving" || (idle && (available !== true || actionPending));
+  const joinUnavailable = idle && available !== true;
   const controlsDisabled = !connected || actionPending;
   const roster = idle ? publicParticipants : state.participants;
   const identityName = account?.username ? `@${account.username}` : chatAuthor?.name ?? name;
@@ -277,6 +280,8 @@ export default function Call() {
           <div className="call-account">
             <span className="account-avatar" aria-hidden="true">{identityName.replace(/^@/, "").slice(0, 1).toUpperCase()}</span>
             <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
+            <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} title={!connected ? "Join a huddle to use your microphone" : state.muted ? "Unmute" : "Mute"} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
+            <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={!connected ? "Join a huddle to control its audio" : state.deafened ? "Listen" : "Deafen"} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
             <details className="call-settings" onKeyDown={(event) => {
               if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
             }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}>
@@ -303,23 +308,26 @@ export default function Call() {
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
           <Chat name={name} signedIn={!!account} identityReady={identityReady} onAuthorChange={setChatAuthor} headerActions={<div className="huddle-actions">
-              <button className="huddle-button" type="button" aria-label={connected ? "Leave voice" : !idle ? "Cancel joining voice" : state.phase === "leaving" ? "Leaving voice" : "Join voice"} aria-describedby={available !== true ? "huddle-availability" : undefined} title={available === false ? "Huddles are currently unavailable." : undefined} disabled={!identityReady || state.phase === "leaving" || (idle && (available !== true || actionPending))} onClick={() => {
+            <span className="huddle-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
+              if (event.key === "Escape") setJoinTooltipDismissed(true);
+            }}>
+              <button className="huddle-button" type="button" aria-label={connected ? "Leave voice" : !idle ? "Cancel joining voice" : state.phase === "leaving" ? "Leaving voice" : "Join voice"} aria-describedby={joinUnavailable ? "huddle-availability" : undefined} aria-disabled={joinDisabled} onClick={() => {
+                if (joinDisabled) return;
                 if (!idle) { leave(); return; }
                 setHasTriedHuddle(true);
                 setActionError(undefined);
                 void clientRef.current?.join(name.trim(), deviceId || undefined);
               }}><Speech aria-hidden="true" />{connected ? "Leave" : !idle ? "Cancel" : state.phase === "leaving" ? "Leaving…" : "Join"}</button>
+              {joinUnavailable && <span id="huddle-availability" className="huddle-tooltip" role="tooltip">{available === false ? "Joining is not available at this time." : "Checking huddle availability…"}</span>}
+            </span>
             {idle && available === true && !hasTriedHuddle && <p className="huddle-hint"><ArrowLeft aria-hidden="true" /><span>Talk here, or keep typing.</span></p>}
-            {available !== true && <p id="huddle-availability" className="sr-only" role="status">{available === false ? "Huddles are currently unavailable." : "Checking huddle availability…"}</p>}
           </div>} />
         </div>
         {!idle && <footer className="call-controls" aria-label="Huddle controls">
           <div className="voice-action-group">
-            <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} title={state.muted ? "Unmute" : "Mute"} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
             <label className="device-select"><span className="sr-only">Microphone</span><select aria-label="Microphone" disabled={controlsDisabled || !deviceOptions(devices, "audioinput").length} value={deviceId} onChange={(event) => { const value = event.target.value; void act(() => clientRef.current!.changeMicrophone(value), () => setDeviceId(value)); }}>{!deviceOptions(devices, "audioinput").length && <option value="">Loading…</option>}{deviceOptions(devices, "audioinput").map(({ device, label }) => <option value={device.deviceId} key={device.deviceId}>{label}</option>)}</select></label>
           </div>
           <div className="voice-action-group">
-            <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={state.deafened ? "Listen" : "Deafen"} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
             {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <label className="device-select"><span className="sr-only">Audio output</span><select aria-label="Audio output" disabled={!deviceOptions(devices, "audiooutput").length} value={output} onChange={(event) => setOutput(event.target.value)}>{!deviceOptions(devices, "audiooutput").length && <option value="">Loading…</option>}{deviceOptions(devices, "audiooutput").map(({ device, label }) => <option value={device.deviceId} key={device.deviceId}>{label}</option>)}</select></label> : <p className="noise-status">Choose audio output in system settings.</p>}
           </div>
           <div className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><Slider label="My voice level" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /><small>Changes how loud you sound to others.</small></div>

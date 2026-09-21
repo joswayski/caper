@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ChatClient, type ChatViewState } from "./client.ts";
 import type { ChatAuthor } from "./types.ts";
 import "./chat.css";
@@ -21,6 +21,26 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const listRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
+
+  useLayoutEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    const resize = () => {
+      composer.style.height = "0px";
+      composer.style.height = `${composer.scrollHeight + composer.offsetHeight - composer.clientHeight}px`;
+      const list = listRef.current;
+      if (list && followLatest.current) list.scrollTop = list.scrollHeight;
+    };
+    resize();
+    let width = composer.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (composer.clientWidth === width) return;
+      width = composer.clientWidth;
+      resize();
+    });
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, [draft]);
 
   useEffect(() => {
     let pendingId: string | undefined;
