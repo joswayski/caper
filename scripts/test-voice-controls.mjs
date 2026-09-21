@@ -78,6 +78,22 @@ async function fixture() {
   };
   f.typing = () => f.sockets.forEach(socket => socket.frame({ type: 'typing.updated', channelId: 'general', author: peer, typing: true, revision: String(Date.now() * 1000) }));
   const context = new AudioContext(); await context.resume();
+  const signal = context.createOscillator(); signal.start();
+  // Device IDs are synthetic; exercise selection without requiring host hardware.
+  HTMLMediaElement.prototype.setSinkId = async function () {};
+  f.addRemoteAudio = () => {
+    const createGain = AudioContext.prototype.createGain;
+    AudioContext.prototype.createGain = function () {
+      f.outputGain = createGain.call(this);
+      return f.outputGain;
+    };
+    f.people.push({ id: peer.id, name: peer.name, muted: false, deafened: false, tracks: [] });
+    f.client.participants = [...f.people];
+    f.remoteStream = context.createMediaStreamDestination().stream;
+    f.client.remoteMedia.set('remote', { trackId: 'remote', participantId: peer.id, kind: 'microphone', stream: f.remoteStream });
+    f.client.emit();
+    requestAnimationFrame(() => requestAnimationFrame(() => { AudioContext.prototype.createGain = createGain; }));
+  };
   navigator.mediaDevices.enumerateDevices = async () => [
     { deviceId: 'default', kind: 'audioinput', label: 'Desk microphone' },
     { deviceId: 'headset', kind: 'audioinput', label: 'Headset microphone' },
@@ -87,7 +103,9 @@ async function fixture() {
   PublicCallClient.prototype.prepareMicrophone = () => {};
   PublicCallClient.prototype.openMicrophone = async function (deviceId) {
     f.devices.push(deviceId); f.client = this;
-    const track = context.createMediaStreamDestination().stream.getAudioTracks()[0];
+    const destination = context.createMediaStreamDestination();
+    signal.connect(destination);
+    const track = destination.stream.getAudioTracks()[0];
     f.captures.push(track); return track;
   };
   window.RTCPeerConnection = class extends EventTarget {
@@ -105,7 +123,7 @@ async function fixture() {
   window.MediaRecorder = class extends Recorder { constructor(...args) { super(...args); f.recorders.push(this); } };
   localStorage.removeItem('caper.chat.session');
   const root = createRoot(mount); root.render(React.createElement(Call));
-  f.cleanup = async () => { root.unmount(); f.captures.forEach(track => track.stop()); await context.close(); };
+  f.cleanup = async () => { root.unmount(); f.captures.forEach(track => track.stop()); f.remoteStream?.getTracks().forEach(track => track.stop()); await context.close(); };
 }
 
 try {
@@ -119,6 +137,7 @@ try {
   assert.equal(evaluate(`return document.querySelector('.call-page').textContent.includes('Talk here, or keep typing');`), false);
   click('Input options');
   assert.equal(evaluate(`return !!document.querySelector('details[open] select, details[open] .volume-control');`), false, 'Device menu must have direct choices, no nested select or gain slider');
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('summary[aria-label="Input options"] svg')).transform;`), 'matrix(-1, 0, 0, -1, 0, 0)', 'Open chevron must point up');
   browser('check', 'input[name="input-device"][value="headset"]');
   assert.equal(evaluate(`return document.querySelector('input[name="input-device"]:checked').value;`), 'headset');
   screenshot('voice-input-options');
@@ -126,14 +145,19 @@ try {
   assert.equal(evaluate(`return document.querySelector('summary[aria-label="Input options"]').parentElement.open;`), false);
   browser('check', 'input[name="output-device"][value="headphones"]');
   assert.equal(evaluate(`return document.querySelector('input[name="output-device"]:checked').value;`), 'headphones');
+  browser('focus', '[aria-label="Output volume"]'); browser('press', 'PageDown');
+  assert.equal(evaluate(`return document.querySelector('.output-volume output').textContent;`), '90%');
   screenshot('voice-output-options');
   browser('press', 'Escape');
   assert.equal(evaluate(`return document.querySelector('summary[aria-label="Output options"]').parentElement.open;`), false);
   click('Settings');
   assert.equal(evaluate(`return !!document.querySelector('details[open] [aria-label="My voice level"]');`), true);
+  assert.equal(evaluate(`return document.querySelector('details[open]').textContent.includes('@fixture');`), false);
+  assert.equal(evaluate(`return document.querySelector('details[open] a[href="/profile"]').textContent;`), 'Edit profile');
+  assert.ok(evaluate(`return [...document.querySelectorAll('details[open] button')].every(button => { const style = getComputedStyle(button); return style.borderTopWidth === '0px' && style.backgroundColor === 'rgba(0, 0, 0, 0)'; });`), 'Menu actions must not look like bordered inputs');
   browser('focus', '[aria-label="My voice level"]');
   browser('press', 'ArrowRight');
-  assert.equal(evaluate(`return document.querySelector('.volume-control output').textContent;`), '101%');
+  assert.equal(evaluate(`return document.querySelector('details[open] .volume-control output').textContent;`), '101%');
   screenshot('voice-settings');
   browser('press', 'Escape');
 
@@ -141,6 +165,22 @@ try {
   wait(`document.querySelector('[aria-label="Leave voice"]')`);
   assert.deepEqual(bounds(), initialBounds, 'Joining must not move the chat header or composer');
   assert.equal(evaluate(`return voiceFixture.devices.at(-1);`), 'headset');
+  evaluate(`voiceFixture.addRemoteAudio();`);
+  wait(`voiceFixture.outputGain`);
+  const gain = () => evaluate(`return voiceFixture.outputGain.gain.value;`);
+  assert.ok(Math.abs(gain() - 0.9) < 0.00001, 'Master volume must reach the audio graph');
+  click('Audio controls for Peach Donkey');
+  browser('focus', '[aria-label="Peach Donkey volume"]'); browser('press', 'PageUp');
+  wait(`document.querySelector('[aria-label="Peach Donkey volume"]').getAttribute('aria-valuenow') === '110' && Math.abs(voiceFixture.outputGain.gain.value - 0.99) < 0.00001`);
+  assert.ok(Math.abs(gain() - 0.99) < 0.00001, '90% master × 110% participant must produce 99% gain');
+  click('Audio controls for Peach Donkey');
+  click('Output options'); browser('focus', '[aria-label="Output volume"]'); browser('press', 'Home');
+  wait(`voiceFixture.outputGain.gain.value === 0`);
+  assert.equal(gain(), 0, 'Zero master volume must silence playback');
+  browser('press', 'End');
+  wait(`Math.abs(voiceFixture.outputGain.gain.value - 1.1) < 0.00001`);
+  assert.ok(Math.abs(gain() - 1.1) < 0.00001, 'Restoring master must retain participant gain');
+  browser('press', 'PageDown'); browser('press', 'Escape');
   click('Mute microphone'); wait(`document.querySelector('[aria-label="Unmute microphone"]')`);
   click('Deafen audio'); wait(`document.querySelector('[aria-label="Undeafen audio"]')`);
   evaluate(`voiceFixture.client.diagnostics = { join: 'Fixture join', microphoneSessionMs: 10, signalingMs: 20, transportMs: 30, rosterMs: 40, receivedBytes: 10000, receiveBitrate: 32000, sentBytes: 10000, sendBitrate: 32000, packetsLost: 0, maxJitterMs: 1, roundTripMs: 12, route: 'direct' }; voiceFixture.client.emit();`);
@@ -187,10 +227,21 @@ try {
   assert.ok(evaluate(`const r = document.querySelector('details[open] .call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
   screenshot('voice-controls-narrow');
   browser('press', 'Escape');
+  click('Output options');
+  assert.ok(evaluate(`const r = document.querySelector('details[open] .call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
+  screenshot('voice-output-narrow');
+  browser('press', 'Escape');
+  click('Settings'); screenshot('voice-settings-narrow'); browser('press', 'Escape');
   click('Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
   centeredDialog();
   screenshot('voice-mic-test-narrow');
+  browser('click', '.mic-test-button');
+  wait(`document.querySelector('.recording-clock')`);
+  evaluate(`await new Promise(resolve => setTimeout(resolve, 1000));`);
+  browser('click', '.mic-test-button');
+  wait(`document.querySelector('audio[aria-label="Natural microphone sample"]')`);
+  assert.equal(evaluate(`return document.querySelector('audio[aria-label="Natural microphone sample"]').volume;`), 0.9, 'Mic-test playback must respect output volume too');
   browser('press', 'Escape'); wait(`!document.querySelector('dialog[open]')`);
   click('Leave voice'); wait(`document.querySelector('[aria-label="Join voice"]')`);
   click('Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
@@ -199,7 +250,7 @@ try {
   assert.equal(evaluate(`return voiceFixture.captures.at(-1).readyState;`), 'ended', 'Closing a pre-join test must release its microphone');
   assert.equal(evaluate(`return !!document.querySelector('.call-controls') || /huddle/i.test(document.querySelector('.call-page').textContent);`), false);
   evaluate(`await voiceFixture.cleanup();`);
-  console.log('PASS device menus, selection, mute/deafen, stable chat geometry, diagnostics, recording cancellation, focus restoration, animated/reduced-motion typing dots, and narrow layout');
+  console.log('PASS device menus, chevrons, flat settings actions, master/participant audio gain, selection, mute/deafen, stable chat geometry, diagnostics, recording cancellation, focus restoration, animated/reduced-motion typing dots, and narrow layout');
 } catch (error) {
   console.error(evaluate(`return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase };`));
   throw error;

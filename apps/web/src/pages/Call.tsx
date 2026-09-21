@@ -163,6 +163,7 @@ export default function Call() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState("");
   const [output, setOutput] = useState("");
+  const [outputVolume, setOutputVolume] = useState(100);
   const [actionError, setActionError] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
   const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
@@ -340,19 +341,20 @@ export default function Call() {
                   {deviceOptions(devices, "audiooutput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="output-device" value={device.deviceId} checked={output === device.deviceId} onChange={() => setOutput(device.deviceId)} /><span>{label}</span></label>)}
                   {!deviceOptions(devices, "audiooutput").length && <p>System default · test your mic to see available devices.</p>}
                 </fieldset> : <p className="noise-status">Choose audio output in system settings.</p>}
+                <div className="volume-control output-volume"><span>Output volume <output>{outputVolume}%</output></span><Slider label="Output volume" value={outputVolume} onChange={setOutputVolume} /></div>
               </AudioMenu>
             </div>
             <AudioMenu label="Settings" settings>
               <strong>Audio settings</strong>
-              <div className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><Slider label="My voice level" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /><small>Changes how loud you sound to others.</small></div>
+              <div className="volume-control"><span>My voice level <output>{state.inputVolume}%</output></span><Slider label="My voice level" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /></div>
               <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
               {state.diagnostics && <button type="button" onClick={() => setAudioPanel("connection")}>Connection details</button>}
-              {identityReady && <AccountNav account={account} />}
+              {identityReady && <AccountNav account={account} profileLabel="Edit profile" />}
             </AudioMenu>
           </div>
         </aside>
         <div className="stage">
-          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
+          {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {!audioPanel && (state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           <Chat name={name} signedIn={!!account} identityReady={identityReady} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
             <span className="voice-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
@@ -378,7 +380,7 @@ export default function Call() {
         {(state.error || actionError) && <p className="call-error" role="alert">{state.error || actionError}</p>}
         {audioPanel === "mic" && <>
           {actionPending && <p className="noise-status" role="status">Preparing microphone…</p>}
-          {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />}
+          {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} volume={outputVolume} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />}
         </>}
         {audioPanel === "connection" && (state.diagnostics ? <ConnectionDiagnostics diagnostics={state.diagnostics} /> : <p className="noise-status">Join voice to see connection details.</p>)}
       </dialog>

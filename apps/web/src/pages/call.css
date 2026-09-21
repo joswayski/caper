@@ -12,12 +12,14 @@
 .call-settings-panel { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 0; width: 100%; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
 .device-menu summary { width: 16px; }
 .device-menu summary svg { width: 12px; height: 12px; }
+.device-menu[open] > summary svg { transform: rotate(180deg); }
 .call-settings-panel > div { display: grid; gap: 12px; }
 .call-settings-panel a { overflow-wrap: anywhere; }
 .call-settings-panel strong { color: var(--text-muted); font-size: .72rem; }
-.call-settings-panel button { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: .8rem; text-align: left; cursor: pointer; }
-.call-settings-panel button:hover { border-color: var(--terracotta); }
+.call-settings-panel :is(button, a) { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 6px; color: var(--text); background: transparent; font-size: .8rem; font-weight: 600; text-align: left; text-decoration: none; cursor: pointer; }
+.call-settings-panel :is(button, a):hover { background: var(--surface-raised); }
 .call-settings-panel button:disabled { opacity: .5; cursor: default; }
+.output-volume { padding-top: 12px; border-top: 1px solid var(--border); }
 .eyebrow { margin: 0 0 8px; color: var(--text-muted); font-size: .7rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: minmax(0, 1fr) / 280px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .people-panel { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface-sidebar); }
@@ -64,7 +66,6 @@
 .volume-control { width: 100%; display: grid; gap: 5px; }
 .volume-control > span { display: flex; justify-content: space-between; color: var(--text-muted); font-size: .8rem; font-weight: 700; }
 .volume-control output { font-variant-numeric: tabular-nums; }
-.volume-control small { color: var(--text-muted); font-size: .7rem; line-height: 1.4; }
 .range-slider { position: relative; width: 100%; height: 20px; display: flex; align-items: center; touch-action: none; user-select: none; }
 .range-slider[data-disabled] { opacity: .5; }
 .range-slider-track { position: relative; height: 4px; flex: 1; overflow: hidden; border-radius: 999px; background: var(--border); }

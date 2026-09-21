@@ -48,10 +48,11 @@ interface Clip {
   silent: boolean;
 }
 
-function RecordingPlayback({ clip, label, output, autoPlay, onEnded, onPlay, onAudioElement, onDeviceError }: {
+function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onPlay, onAudioElement, onDeviceError }: {
   clip: Clip;
   label: string;
   output: string;
+  volume: number;
   autoPlay: boolean;
   onEnded?(): void;
   onPlay?(): void;
@@ -59,6 +60,9 @@ function RecordingPlayback({ clip, label, output, autoPlay, onEnded, onPlay, onA
   onDeviceError(): void;
 }) {
   const ref = useRef<HTMLAudioElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.volume = volume / 100;
+  }, [volume, clip.url]);
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
@@ -87,9 +91,10 @@ function ProcessingDetail({ label, id, children }: { label: string; id: string; 
   </span>;
 }
 
-export default function MicPlayback({ stream, output, processingStrength, onProcessingStrengthChange }: {
+export default function MicPlayback({ stream, output, volume = 100, processingStrength, onProcessingStrengthChange }: {
   stream: MediaStream;
   output: string;
+  volume?: number;
   processingStrength: number;
   onProcessingStrengthChange(strength: number): void;
 }) {
@@ -224,14 +229,14 @@ export default function MicPlayback({ stream, output, processingStrength, onProc
       <article>
         <div><strong>Natural</strong></div>
         {clips.natural
-          ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} autoPlay onEnded={() => setNaturalPlaybackEnded(true)} onPlay={() => pauseSample("processed")} onAudioElement={(element) => { playbackRefs.current.natural = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
+          ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} volume={volume} autoPlay onEnded={() => setNaturalPlaybackEnded(true)} onPlay={() => pauseSample("processed")} onAudioElement={(element) => { playbackRefs.current.natural = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
             {clips.natural.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
           : <p>Your natural recording will appear here.</p>}
       </article>
       <article className={clips.processed ? "latest" : undefined}>
         <div><strong>Enhanced</strong></div>
         {clips.processed
-          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} autoPlay={naturalPlaybackEnded} onPlay={() => pauseSample("natural")} onAudioElement={(element) => { playbackRefs.current.processed = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
+          ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} volume={volume} autoPlay={naturalPlaybackEnded} onPlay={() => pauseSample("natural")} onAudioElement={(element) => { playbackRefs.current.processed = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
             {clips.processed.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
           : <p>{processing ? "Applying voice enhancement…" : "Your enhanced comparison will appear here."}</p>}
       </article>
