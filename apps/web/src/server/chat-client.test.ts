@@ -400,3 +400,77 @@ test("a stop waits for its start but an optimistic send never waits for typing",
   f.client.setTyping(false);
   assert.equal(f.typingPosts.length, 2);
 });
+
+async function paginationFixture(t: TestContext) {
+  const sockets = installBrowser(t);
+  const base = 9_007_199_254_740_990n;
+  const message = (offset: number) => committed({ clientMessageId: `command-${offset}`, text: `Message ${offset}` }, String(base + BigInt(offset)));
+  const history = { messages: [message(4), message(5)], cursor: message(5).seq, hasMore: true };
+  const requests: { url: string; resolve: (response: Response) => void }[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "/api/chat/general") return Response.json({ ...history, space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" } });
+    return new Promise<Response>((resolve) => requests.push({ url, resolve }));
+  });
+  let state!: ChatViewState;
+  const client = new ChatClient((next) => { state = next; });
+  t.after(() => client.stop());
+  client.start();
+  await tick();
+  sockets[0].frame({ type: "ready", cursor: history.cursor });
+  return { client, sockets, message, history, requests, get state() { return state; } };
+}
+
+test("older pages serialize, merge with live delivery, retry the same cursor, and stop at the beginning", async (t) => {
+  const f = await paginationFixture(t);
+  const loading = f.client.loadOlder();
+  await f.client.loadOlder();
+  assert.equal(f.requests.length, 1, "scroll callbacks cannot start duplicate requests");
+  assert.equal(f.requests[0].url, `/api/chat/channels/general/messages?before=${f.message(4).seq}`);
+  f.sockets[0].message(f.message(6));
+  f.requests[0].resolve(Response.json({ messages: [f.message(2), f.message(3), f.message(4)], cursor: f.message(5).seq, hasMore: true }));
+  await loading;
+  assert.deepEqual(f.state.messages, [2, 3, 4, 5, 6].map(f.message), "overlap is deduplicated without losing a concurrent live message");
+  f.sockets[0].frame({ type: "migrating" });
+  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), f.message(6).seq, "older history never rewinds the live replay cursor");
+
+  const failed = f.client.loadOlder();
+  f.requests[1].resolve(Response.json({ error: "temporary history outage" }, { status: 503 }));
+  await failed;
+  assert.equal(f.state.olderError, "temporary history outage");
+  assert.equal(f.state.phase, "ready");
+  assert.equal(f.state.loadingOlder, false);
+  const retry = f.client.loadOlder();
+  assert.equal(f.state.olderError, undefined);
+  assert.equal(f.requests[2].url, f.requests[1].url);
+  assert.equal(f.requests[2].url, `/api/chat/channels/general/messages?before=${f.message(2).seq}`);
+  f.requests[2].resolve(Response.json({ messages: [f.message(1)], cursor: f.message(6).seq, hasMore: false }));
+  await retry;
+  assert.deepEqual(f.state.messages, [1, 2, 3, 4, 5, 6].map(f.message));
+  await f.client.loadOlder();
+  assert.equal(f.requests.length, 3);
+});
+
+for (const status of [200, 503]) {
+  test(`an older page returning ${status} after resync cannot overwrite the new history request`, async (t) => {
+    const f = await paginationFixture(t);
+    const obsolete = f.client.loadOlder();
+    f.history.messages = [f.message(8), f.message(9)];
+    f.history.cursor = f.message(9).seq;
+    f.sockets[0].frame({ type: "resync_required" });
+    await tick();
+    assert.equal(f.state.loadingOlder, false);
+    const current = f.client.loadOlder();
+    f.requests[0].resolve(status === 200
+      ? Response.json({ messages: [f.message(1)], cursor: f.message(5).seq, hasMore: false })
+      : Response.json({ error: "obsolete failure" }, { status }));
+    await obsolete;
+    assert.deepEqual(f.state.messages, [f.message(8), f.message(9)]);
+    assert.equal(f.state.hasMore, true);
+    assert.equal(f.state.olderError, undefined);
+    assert.equal(f.state.loadingOlder, true, "obsolete completion must not unlock a current request");
+    f.requests[1].resolve(Response.json({ messages: [f.message(7)], cursor: f.message(9).seq, hasMore: true }));
+    await current;
+    assert.deepEqual(f.state.messages, [f.message(7), f.message(8), f.message(9)]);
+  });
+}

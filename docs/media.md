@@ -106,6 +106,15 @@ storage; drafts/pending sends survive reconnects but not closing/reloading a tab
 Guests reuse their saved identity; signed-in startup obtains a fresh capability
 from the current account session rather than identifying an account by its name.
 
+History opens at the latest 50 messages. Scrolling to the oldest loaded rows
+automatically requests the next 50-message page; the history button remains a
+keyboard-accessible fallback and becomes Retry after a failure. React Virtuoso
+measures variable-height rows and renders only the visible region plus overscan.
+Prepending history preserves the reading position; live arrivals follow the
+bottom only when the reader is already there. Loaded message data stays in tab
+memory; virtualization bounds mounted DOM rows, not the history cache. Reloading
+starts again at the latest page.
+
 The browser immediately shows an optimistic message (without a `Sending…` label) and clears the
 composer. It keeps one outstanding command; a new draft can be typed while it
 waits. HTTP, ordered WebSocket replay, or a history resync replaces that row by
@@ -214,6 +223,14 @@ CI runs this against cluster-mode Valkey 8.1 with one primary owning all hash
 slots. This enforces the multi-key Lua restrictions that standalone mode misses:
 the typing rate counters share the `{caper:chat:v1:typing}` hash tag. It tests
 cluster command compatibility, not multi-node failover or managed-service TLS.
+
+With the web dev server running and `agent-browser` installed, run
+`node scripts/test-chat-history.mjs` for the explicitly mocked 3,000-message
+browser regression. It checks scroll-triggered pages, variable-height prepend
+anchors with concurrent live delivery, bounded DOM rows, retry and end-of-history,
+narrow layout, and optimistic reconciliation. `CHAT_TEST_WEB_URL` may select a
+different loopback preview; `CHAT_TEST_ARTIFACTS` optionally saves screenshots.
+This is browser rendering/interaction coverage, not production delivery evidence.
 
 The proposed healthy same-region target remains p95 below 250ms and p99 below one
 second commit-to-client, including routine rolls. Orb handoff timing is **not** a
