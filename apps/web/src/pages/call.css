@@ -75,8 +75,8 @@
 .mic-level { min-width: 0; }
 .mic-meter-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text-muted); font-size: .7rem; font-weight: 750; }
 .mic-meter-label small { font-size: .65rem; font-weight: 500; }
-.mic-meter { height: 48px; display: flex; align-items: center; gap: 5px; margin-top: 7px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
-.mic-meter i { height: 8px; min-width: 3px; flex: 1; border-radius: 999px; background: var(--border); transition: height 80ms linear, background-color 80ms linear; }
+.mic-meter { height: 48px; display: flex; align-items: center; gap: 2px; margin-top: 7px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); }
+.mic-meter i { height: 8px; min-width: 0; flex: 1; border-radius: 999px; background: var(--border); transition: height 80ms linear, background-color 80ms linear; }
 .mic-meter i.lit { height: 28px; background: var(--caper); }
 .mic-test-button { width: 160px; height: 48px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .mic-test-button:disabled { opacity: .55; cursor: wait; }
@@ -146,7 +146,6 @@
   .mic-meter-label { gap: 4px; }
   .mic-meter-label small { font-size: .6rem; }
   .mic-comparison { grid-template-columns: 1fr; }
-  .mic-meter { gap: 3px; }
   .call-diagnostics dl { grid-template-columns: 1fr; }
   .call-controls { grid-column: auto; align-items: stretch; flex-direction: column; }
   .voice-action-group { width: 100%; }
