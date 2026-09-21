@@ -6,6 +6,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/api-image.yml
+      - tests/api-image-notifications.sh
   push:
     branches: [main]
     paths:
@@ -13,6 +14,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/api-image.yml
+      - tests/api-image-notifications.sh
 permissions:
   contents: read
 jobs:
@@ -63,6 +65,8 @@ jobs:
           done
           test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3002/health)" = 204
           test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:3002/readyz)" = 503
+      - name: Verify deployment notification payloads
+        run: tests/api-image-notifications.sh
       - name: Configure AWS credentials
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v6.2.3
@@ -123,36 +127,50 @@ jobs:
             commit_body="$(jq -r '.body // ""' <<< "$pull_request")"
           fi
 
-          payload="$(jq -cn \
-            --arg git_sha "$GITHUB_SHA" \
-            --arg digest "$IMAGE_DIGEST" \
-            --arg deploy_url "$DEPLOY_WORKFLOW_URL" \
-            --arg commit_title "$commit_title" \
-            --arg commit_body "$commit_body" \
-            'def truncate_field:
-              if length > 1024 then .[:1021] + "..." else . end;
-            ($commit_title | rtrimstr("\r") | truncate_field) as $title |
-            ($commit_body | split("\n") | map(rtrimstr("\r")) | join("\n")
-              | sub("^([ \\t]*\\n)+"; "")
-              | sub("(\\n[ \\t]*)+$"; "")) as $body |
-            {
-              username: "Production deploys",
-              embeds: [{
-                author: {name: "Caper API image is ready"},
-                title: $title,
-                color: 11947296,
-                fields: ((if $body | test("[^[:space:]]") then
-                  [{name: "Description", value: ($body | truncate_field), inline: false}]
-                else [] end) + [
-                  {name: "Git SHA", value: ("`" + $git_sha + "`"), inline: false},
-                  {name: "Digest", value: ("`" + $digest + "`"), inline: false}
-                ])
-              }],
-              components: [{type: 1, components: [
-                {type: 2, style: 3, label: "Deploy Caper API", custom_id: ("production-deploy:v1:caper-api:" + $git_sha)},
-                {type: 2, style: 5, label: "Open GitHub", url: $deploy_url}
-              ]}]
-            }')"
-          curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 10 \
-            --header 'Content-Type: application/json' --data "$payload" \
-            "${DEPLOY_NOTIFICATION_WEBHOOK_URL}?wait=false&with_components=true"
+          notify_deployment() {
+            local application="$1"
+            local display_name="$2"
+            local deploy_url="$3"
+            local payload
+            payload="$(jq -cn \
+              --arg application "$application" \
+              --arg display_name "$display_name" \
+              --arg git_sha "$GITHUB_SHA" \
+              --arg digest "$IMAGE_DIGEST" \
+              --arg deploy_url "$deploy_url" \
+              --arg commit_title "$commit_title" \
+              --arg commit_body "$commit_body" \
+              'def truncate_field:
+                if length > 1024 then .[:1021] + "..." else . end;
+              ($commit_title | rtrimstr("\r") | truncate_field) as $title |
+              ($commit_body | split("\n") | map(rtrimstr("\r")) | join("\n")
+                | sub("^([ \\t]*\\n)+"; "")
+                | sub("(\\n[ \\t]*)+$"; "")) as $body |
+              {
+                username: "Production deploys",
+                embeds: [{
+                  author: {name: ($display_name + " image is ready")},
+                  title: $title,
+                  color: 11947296,
+                  fields: ((if $application == "caper-gateway" then
+                    [{name: "Deploy API first", value: "Deploy the matching Caper API image successfully first. Gateway deployment verifies the live API rollout before changing its image.", inline: false}]
+                  else [] end) + (if $body | test("[^[:space:]]") then
+                    [{name: "Description", value: ($body | truncate_field), inline: false}]
+                  else [] end) + [
+                    {name: "Git SHA", value: ("`" + $git_sha + "`"), inline: false},
+                    {name: "Digest", value: ("`" + $digest + "`"), inline: false}
+                  ])
+                }],
+                components: [{type: 1, components: [
+                  {type: 2, style: 3, label: ("Deploy " + $display_name), custom_id: ("production-deploy:v1:" + $application + ":" + $git_sha)},
+                  {type: 2, style: 5, label: "Open GitHub", url: $deploy_url}
+                ]}]
+              }')"
+            curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 10 \
+              --header 'Content-Type: application/json' --data "$payload" \
+              "${DEPLOY_NOTIFICATION_WEBHOOK_URL}?wait=false&with_components=true"
+          }
+
+          notify_deployment "caper-api" "Caper API" "$DEPLOY_WORKFLOW_URL"
+          notify_deployment "caper-gateway" "Caper chat gateway" \
+            "https://github.com/joswayski/infrastructure/actions/workflows/deploy-caper-gateway.yml"
