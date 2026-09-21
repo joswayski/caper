@@ -7,6 +7,8 @@ const SESSION_KEY = "caper.chat.session";
 export interface PendingChatMessage {
   clientMessageId: string;
   text: string;
+  author?: ChatAuthor;
+  createdAt: string;
 }
 
 export interface ChatViewState {
@@ -21,6 +23,7 @@ export interface ChatViewState {
   author?: ChatAuthor;
   sessionError?: string;
   sendError?: string;
+  sendRejected?: boolean;
   pendingSend?: PendingChatMessage;
   error?: string;
 }
@@ -64,6 +67,7 @@ export class ChatClient {
   private name = "Guest";
   private session?: ChatSession;
   private sending = false;
+  private confirmSend?: (message: ChatMessage) => void;
   private readonly changed: (state: ChatViewState) => void;
 
   constructor(changed: (state: ChatViewState) => void) { this.changed = changed; }
@@ -93,6 +97,13 @@ export class ChatClient {
 
   retrySession() { void this.createSession(); }
 
+  discardRejected(): string | undefined {
+    if (this.sending || !this.state.sendRejected) return;
+    const text = this.state.pendingSend?.text;
+    this.update({ pendingSend: undefined, sendError: undefined, sendRejected: undefined });
+    return text;
+  }
+
   async loadOlder() {
     if (!this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length) return;
     this.update({ loadingOlder: true, error: undefined });
@@ -112,49 +123,64 @@ export class ChatClient {
   }
 
   async send(text: string): Promise<boolean> {
-    if (this.sending) return false;
+    if (this.sending || this.state.sendRejected) return false;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
-    const pending = this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text };
+    const pending = {
+      ...(this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString() }),
+      author: this.session?.author,
+    };
     const count = Array.from(pending.text).length;
     if (!pending.text.trim() || count > 4_000) throw new Error(count > 4_000 ? "Messages can be at most 4,000 characters." : "Write a message first.");
     if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(pending.text)) throw new Error("Messages cannot contain control characters.");
-    if (!this.state.channelId) throw new Error("Chat is not ready yet.");
+    const channelId = this.state.channelId;
+    if (!channelId) throw new Error("Chat is not ready yet.");
     const session = this.session;
     if (!session) {
       this.update({ pendingSend: pending, sendError: "Your guest session is unavailable. Retry the session, then send again." });
       return false;
     }
     this.sending = true;
-    this.update({ pendingSend: pending, sendError: undefined });
+    const confirmation = new Promise<ChatMessage>((resolve) => { this.confirmSend = resolve; });
+    this.update({ pendingSend: pending, sendError: undefined, sendRejected: undefined });
     let rejected = false;
     try {
-      const response = await fetch(`/api/chat/channels/${encodeURIComponent(this.state.channelId)}/messages`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-        body: JSON.stringify(pending),
-        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
-      });
-      if (!response.ok) {
-        rejected = [400, 404, 409, 413, 422].includes(response.status);
-        if (response.status === 401 || response.status === 403) {
-          try { localStorage.removeItem(SESSION_KEY); } catch { /* Storage is optional. */ }
-          this.session = undefined;
-          void this.createSession();
+      // Either transport can prove acceptance. A late HTTP failure must not
+      // undo an ordered WebSocket/history confirmation or block the next send.
+      const request = (async () => {
+        const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+          body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        });
+        if (!response.ok) {
+          rejected = [400, 404, 409, 413, 422].includes(response.status);
+          if ((response.status === 401 || response.status === 403) && this.state.pendingSend?.clientMessageId === pending.clientMessageId) {
+            try { localStorage.removeItem(SESSION_KEY); } catch { /* Storage is optional. */ }
+            this.session = undefined;
+            void this.createSession();
+          }
+          throw await apiError(response, "Message could not be sent.");
         }
-        throw await apiError(response, "Message could not be sent.");
-      }
-      const message: unknown = await response.json();
-      if (!isChatMessage(message)) throw new Error("The chat service returned an invalid message.");
-      if (message.channelId !== this.state.channelId || message.clientMessageId !== pending.clientMessageId) throw new Error("The chat service returned an invalid message.");
+        const message: unknown = await response.json();
+        if (!isChatMessage(message) || message.channelId !== channelId
+          || message.clientMessageId !== pending.clientMessageId || message.author.id !== session.author.id) throw new Error("The chat service returned an invalid message.");
+        return message;
+      })();
+      const message = await Promise.race([request, confirmation]);
       this.timeline.mergeSent(message);
-      this.update({ messages: this.timeline.messages, pendingSend: undefined, sendError: undefined });
+      this.update({ messages: this.timeline.messages, pendingSend: undefined, sendError: undefined, sendRejected: undefined });
       return true;
     } catch (error) {
-      if (!this.controller.signal.aborted) this.update({ pendingSend: rejected ? undefined : pending, sendError: error instanceof Error ? error.message : "Message could not be sent." });
+      // Confirmation can clear the command while an HTTP rejection is already
+      // propagating through Promise.race, before this continuation runs.
+      if (!this.state.pendingSend) return true;
+      if (!this.controller.signal.aborted) this.update({ pendingSend: pending, sendRejected: rejected, sendError: error instanceof Error ? error.message : "Message could not be sent." });
       return false;
     } finally {
       this.sending = false;
+      this.confirmSend = undefined;
     }
   }
 
@@ -212,6 +238,15 @@ export class ChatClient {
 
   private update(change: Partial<ChatViewState>) {
     this.state = { ...this.state, ...change };
+    const pending = this.state.pendingSend;
+    if (pending && change.messages) {
+      const accepted = change.messages.find((message) => message.channelId === this.state.channelId
+        && message.clientMessageId === pending.clientMessageId && message.author.id === pending.author?.id);
+      if (accepted) {
+        this.confirmSend?.(accepted);
+        this.state = { ...this.state, pendingSend: undefined, sendError: undefined, sendRejected: undefined };
+      }
+    }
     this.changed(this.state);
   }
 }

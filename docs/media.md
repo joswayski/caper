@@ -84,7 +84,7 @@ HTTP contract (same origin, no cache):
   Account-linked chat tokens also stop working after parent logout/expiry.
 - `POST /api/chat/channels/{id}/messages {clientMessageId,text}` with
   `X-Caper-Chat-Token`: returns the committed message. The browser retries the
-  same UUID and original text after ambiguous errors, including Enter/Send.
+  same UUID and original text after ambiguous errors, using Enter or Retry send.
   A reused key with different text or a different sender returns conflict.
 - `GET /api/chat/channels/{id}/messages?before={seq}`: earlier history, up to
   50 messages. Only the demo's General channel is accessible through these APIs.
@@ -100,6 +100,14 @@ there is no automatic retention purge in this demo. Browser tokens use local
 storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
 Guests reuse their saved identity; signed-in startup obtains a fresh capability
 from the current account session rather than identifying an account by its name.
+
+The browser immediately shows an optimistic `Sending…` row and clears the
+composer. It keeps one outstanding command; a new draft can be typed while it
+waits. HTTP, ordered WebSocket replay, or a history resync replaces that row by
+matching its client UUID and sender, using the server's text, timestamp, and
+sequence. Provisional rows never advance the replay cursor. Ambiguous failures
+retain the exact command for retry; definitive rejections retain the text for
+Edit/Dismiss. A late HTTP failure cannot undo WebSocket confirmation.
 
 Delivery and recovery:
 

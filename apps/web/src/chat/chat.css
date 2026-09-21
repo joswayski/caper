@@ -16,6 +16,11 @@
 .chat-message header span { padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted); font-size: .58rem; font-weight: 750; text-transform: uppercase; }
 .chat-message time { color: var(--text-muted); font-size: .65rem; }
 .chat-message p { margin: 4px 0 0; overflow-wrap: anywhere; color: #dedfe0; font-size: .86rem; line-height: 1.5; white-space: pre-wrap; }
+.chat-message-pending p { color: var(--text-muted); }
+.chat-send-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 5px; color: var(--text-muted); font-size: .7rem; }
+.chat-send-error { color: #ff9b82; }
+.chat-send-status button { padding: 3px 7px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font: inherit; font-weight: 700; cursor: pointer; }
+.chat-send-status button:disabled { opacity: .5; cursor: not-allowed; }
 .chat-composer { padding: 12px 18px 16px; border-top: 1px solid var(--border); background: var(--surface-conversation); }
 .chat-inline-error { margin: 0 0 8px; color: #ff9b82; font-size: .72rem; line-height: 1.4; }
 .chat-inline-error button { margin: 0 0 0 5px; }

@@ -19,10 +19,20 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const [validationError, setValidationError] = useState<string>();
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const listRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
 
   useEffect(() => {
-    const client = new ChatClient(setState);
+    let pendingId: string | undefined;
+    const client = new ChatClient((next) => {
+      const pending = next.pendingSend;
+      if (pending && pending.clientMessageId !== pendingId) {
+        setDraft((current) => current === pending.text ? "" : current);
+        followLatest.current = true;
+      }
+      pendingId = pending?.clientMessageId;
+      setState(next);
+    });
     clientRef.current = client;
     client.start();
     return () => { client.stop(); clientRef.current = undefined; };
@@ -39,7 +49,7 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   useEffect(() => {
     const list = listRef.current;
     if (list && followLatest.current) list.scrollTop = list.scrollHeight;
-  }, [state.messages.length]);
+  }, [state.messages.length, state.pendingSend?.clientMessageId, state.sendError]);
 
   const loadOlder = async () => {
     const list = listRef.current;
@@ -55,13 +65,13 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const channelName = state.channelName.toLowerCase();
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
+  const messages = state.pendingSend ? [...state.messages, state.pendingSend] : state.messages;
   const submit = async () => {
-    if (!identityReady) return;
+    if (!identityReady || sending || state.sendRejected) return;
     setValidationError(undefined);
     const submitted = state.pendingSend?.text ?? draft;
     try {
-      const sent = await clientRef.current?.send(submitted);
-      if (sent) setDraft((current) => current === submitted ? "" : current);
+      await clientRef.current?.send(submitted);
     } catch (error) {
       setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
     }
@@ -81,23 +91,42 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
       {state.hasMore && <button className="chat-history-button" type="button" disabled={state.loadingOlder} onClick={() => void loadOlder()}>{state.loadingOlder ? "Loading…" : "Load older messages"}</button>}
       {state.phase === "loading" && !state.messages.length && <p className="chat-state" role="status">Loading messages…</p>}
       {state.phase === "error" && <div className="chat-state" role="alert"><p>{state.error}</p><button type="button" onClick={() => clientRef.current?.retryLoad()}>Try again</button></div>}
-      {state.phase === "ready" && !state.messages.length && <div className="chat-state"><p>No messages yet.</p><small>Start the conversation in #{channelName}.</small></div>}
-      {state.messages.map((message) => <article className="chat-message" key={message.id}>
-        <div className="chat-avatar" aria-hidden="true">{message.author.name.slice(0, 1).toUpperCase()}</div>
-        <div><header><strong>{message.author.name}</strong>{message.author.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header><p>{message.content.text}</p></div>
-      </article>)}
+      {state.phase === "ready" && !messages.length && <div className="chat-state"><p>No messages yet.</p><small>Start the conversation in #{channelName}.</small></div>}
+      {messages.map((message) => {
+        const pending = !("content" in message);
+        const author = message.author;
+        return <article className={`chat-message${pending ? " chat-message-pending" : ""}`} key={`${author?.id ?? "pending"}:${message.clientMessageId}`}>
+          <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
+          <div>
+            <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header>
+            <p>{"content" in message ? message.content.text : message.text}</p>
+            {pending && <div className={`chat-send-status${state.sendError ? " chat-send-error" : ""}`} role={state.sendError ? "alert" : "status"}>
+              {state.sendError ? <>
+                <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
+                {state.sendRejected ? <>
+                  <button type="button" disabled={!!draft} title={draft ? "Clear your current draft to edit this message." : undefined} onClick={() => {
+                    const text = clientRef.current?.discardRejected();
+                    if (text !== undefined) { setDraft(text); composerRef.current?.focus(); }
+                  }}>Edit</button>
+                  <button type="button" onClick={() => clientRef.current?.discardRejected()}>Dismiss</button>
+                </> : <button type="button" onClick={() => void submit()}>Retry send</button>}
+              </> : "Sending…"}
+            </div>}
+          </div>
+        </article>;
+      })}
     </div>
 
     <div className="chat-composer">
       {state.phase === "ready" && state.error && <p className="chat-inline-error" role="alert">{state.error}</p>}
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
-      {(state.sendError || validationError) && <p className="chat-inline-error" role="alert">{state.sendError || validationError} {state.sendError && state.pendingSend && <button type="button" onClick={() => void submit()}>Retry send</button>}</p>}
+      {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
-        <textarea id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
+        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); }} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
-        <button type="submit" disabled={!identityReady || state.phase !== "ready" || sending || !draft.trim() || characterCount > 4_000}>{sending ? "Sending…" : "Send"}</button>
+        <button type="submit" disabled={!identityReady || state.phase !== "ready" || !!state.pendingSend || !draft.trim() || characterCount > 4_000}>Send</button>
         {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
     </div>
