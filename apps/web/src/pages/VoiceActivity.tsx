@@ -1,20 +1,14 @@
 import { useEffect, useRef } from "react";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
+import { hasVoiceActivity } from "../media/voice-activity";
 
 const SAMPLE_INTERVAL_MS = 32;
-const ACTIVITY_THRESHOLD = 0.018;
 const RELEASE_DELAY_MS = 180;
 
 interface VoiceActivityProps {
   stream?: MediaStream;
   muted: boolean;
   onActivityChange(active: boolean): void;
-}
-
-function level(samples: Float32Array) {
-  let sum = 0;
-  for (const sample of samples) sum += sample * sample;
-  return Math.sqrt(sum / samples.length);
 }
 
 export default function VoiceActivity({ stream, muted, onActivityChange }: VoiceActivityProps) {
@@ -49,14 +43,14 @@ export default function VoiceActivity({ stream, muted, onActivityChange }: Voice
 
     const sample = (now: number) => {
       if (now - lastSample >= SAMPLE_INTERVAL_MS) {
-        let rms = 0;
+        let loud = false;
         if (analyser && samples) {
           analyser.getFloatTimeDomainData(samples);
-          rms = level(samples);
+          loud = hasVoiceActivity(samples);
         }
         lastSample = now;
 
-        if (rms >= ACTIVITY_THRESHOLD) lastLoudAt = now;
+        if (loud) lastLoudAt = now;
         const nextActive = now - lastLoudAt < RELEASE_DELAY_MS;
         if (nextActive !== active) {
           active = nextActive;
