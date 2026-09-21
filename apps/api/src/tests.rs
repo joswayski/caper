@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tower::ServiceExt;
 
 mod reliability;
+mod renewal;
 mod shared;
 
 struct Mock {
@@ -21,6 +22,10 @@ struct Mock {
     block_subscription: AtomicBool,
     subscription_started: tokio::sync::Notify,
     subscription_resume: tokio::sync::Notify,
+    block_restart: AtomicBool,
+    restart_started: tokio::sync::Notify,
+    restart_resume: tokio::sync::Notify,
+    restart_unauthorized: AtomicBool,
 }
 impl Mock {
     fn new() -> Self {
@@ -35,6 +40,10 @@ impl Mock {
             block_subscription: AtomicBool::new(false),
             subscription_started: tokio::sync::Notify::new(),
             subscription_resume: tokio::sync::Notify::new(),
+            block_restart: AtomicBool::new(false),
+            restart_started: tokio::sync::Notify::new(),
+            restart_resume: tokio::sync::Notify::new(),
+            restart_unauthorized: AtomicBool::new(false),
         }
     }
 }
@@ -93,6 +102,25 @@ impl Provider for Mock {
             )
         }
     }
+    async fn restart_ice(&self, _: &Config, _: &str, body: Value) -> Result<Value, ProviderError> {
+        assert_eq!(body["autoDiscover"], true);
+        if self.block_restart.load(Ordering::SeqCst) {
+            self.restart_started.notify_one();
+            self.restart_resume.notified().await;
+        }
+        if self.restart_unauthorized.load(Ordering::SeqCst) {
+            return Err(ProviderError::Request(Box::new(ProviderFailure {
+                id: Uuid::new_v4(),
+                operation: "restart_ice",
+                kind: "http",
+                status: Some(401),
+                ray: None,
+                code: None,
+                elapsed_ms: None,
+            })));
+        }
+        Ok(json!({"tracks":[],"sessionDescription":{"type":"answer","sdp":"answer"}}))
+    }
     async fn negotiate(&self, _: &Config, _: &str, _: Value) -> Result<Value, ProviderError> {
         Ok(json!({}))
     }
@@ -146,6 +174,105 @@ async fn joined(s: &AppState, name: &str) -> Value {
     .await
     .expect("session and TURN provisioning should run concurrently")
     .1
+}
+
+#[tokio::test]
+async fn turn_cache_and_restart_replay_preserve_session_until_ack() {
+    let (state, mock) = state();
+    let joined = joined(&state, "renewing").await;
+    let token = joined["token"].as_str().unwrap();
+    let generation = joined["turn"]["generation"].clone();
+    assert!(joined["turn"]["refreshAfterMs"].as_u64().unwrap() > 0);
+
+    let (status, cached) = call(
+        app(state.clone()),
+        "POST",
+        "/api/media/turn",
+        Some(token),
+        json!({"generation":generation}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cached["turn"]["generation"], generation);
+    assert_eq!(
+        mock.next_turn.load(Ordering::SeqCst),
+        2,
+        "cache hit must not mint"
+    );
+
+    let sdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:historic\r\na=recvonly\r\n";
+    let request = json!({"generation":generation,"sequence":1,"sessionDescription":{"type":"offer","sdp":sdp}});
+    let (status, answer) = call(
+        app(state.clone()),
+        "POST",
+        "/api/media/restart-ice",
+        Some(token),
+        request.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(answer["tracks"], json!([]));
+    let (status, replay) = call(
+        app(state.clone()),
+        "POST",
+        "/api/media/restart-ice",
+        Some(token),
+        request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay, answer);
+    let (status, _) = call(
+        app(state.clone()),
+        "POST",
+        "/api/media/snapshot",
+        Some(token),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "heartbeats remain available while restart awaits ACK"
+    );
+    let (status, _) = call(
+        app(state.clone()),
+        "POST",
+        "/api/media/restart-ice-ack",
+        Some(token),
+        json!({"generation":generation,"sequence":1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(
+        app(state),
+        "POST",
+        "/api/media/restart-ice-ack",
+        Some(token),
+        json!({"generation":generation,"sequence":1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn restart_rejects_unsafe_sdp_and_mismatched_replays() {
+    let (state, _) = state();
+    let joined = joined(&state, "safe").await;
+    let token = joined["token"].as_str().unwrap();
+    let generation = joined["turn"]["generation"].clone();
+    for sdp in [
+        "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:v\r\na=recvonly\r\n",
+        "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:new\r\na=sendonly\r\n",
+        "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:x\r\n",
+    ] {
+        let (status, _) = call(app(state.clone()), "POST", "/api/media/restart-ice", Some(token), json!({"generation":generation,"sequence":1,"sessionDescription":{"type":"offer","sdp":sdp}})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let good = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:old\r\na=inactive\r\n";
+    assert_eq!(call(app(state.clone()), "POST", "/api/media/restart-ice", Some(token), json!({"generation":generation,"sequence":1,"sessionDescription":{"type":"offer","sdp":good}})).await.0, StatusCode::OK);
+    let changed = good.replace("inactive", "recvonly");
+    assert_eq!(call(app(state), "POST", "/api/media/restart-ice", Some(token), json!({"generation":generation,"sequence":1,"sessionDescription":{"type":"offer","sdp":changed}})).await.0, StatusCode::CONFLICT);
 }
 
 #[tokio::test]

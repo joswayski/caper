@@ -4,6 +4,7 @@ import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
 import { CallEvents } from "./events.ts";
 import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
+import { TurnRenewal } from "./turn-renewal.ts";
 import { clampVoiceProcessingStrength, DEFAULT_VOICE_PROCESSING_STRENGTH } from "./voice-processing.ts";
 export { waitFor } from "./rtc.ts";
 import type {
@@ -57,6 +58,7 @@ export class PublicCallClient {
   private pollTimer?: number;
   private reconnectTimer?: number;
   private disconnectTimer?: number;
+  private turnRenewal?: TurnRenewal;
   private pollRetryTimer?: number;
   private eventRetryTimer?: number;
   private eventRetryAttempts = 0;
@@ -162,10 +164,12 @@ export class PublicCallClient {
     return result;
   }
 
-  private async api<T = void>(operation: string, body: object = {}, token = this.token, timeout = FETCH_TIMEOUT_MS): Promise<T> {
+  private async api<T = void>(operation: string, body: object = {}, token = this.token, timeout = FETCH_TIMEOUT_MS, ownerSignal?: AbortSignal): Promise<T> {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeout);
-    const signal = operation === "join" || operation === "leave" ? controller.signal : AbortSignal.any([controller.signal, this.captureController.signal]);
+    const owned = operation === "join" || operation === "leave" ? [controller.signal] : [controller.signal, this.captureController.signal];
+    if (ownerSignal) owned.push(ownerSignal);
+    const signal = owned.length === 1 ? owned[0] : AbortSignal.any(owned);
     try {
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted();
@@ -208,6 +212,7 @@ export class PublicCallClient {
 
   private async prepareJoin() {
     const capture = this.openMicrophone(this.microphoneDeviceId);
+    const issuedAt = performance.now();
     const joining = this.api<JoinResponse>("join", { name: this.name }, undefined);
     const [captureResult, joinResult] = await Promise.allSettled([capture, joining]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
@@ -215,7 +220,7 @@ export class PublicCallClient {
       if (joinResult.status === "fulfilled") void this.api("leave", {}, joinResult.value.token).catch(() => undefined);
       throw captureResult.status === "rejected" ? captureResult.reason : joinResult.status === "rejected" ? joinResult.reason : new Error("Join preparation failed.");
     }
-    return { microphone: captureResult.value, joined: joinResult.value };
+    return { microphone: captureResult.value, joined: joinResult.value, issuedAt };
   }
 
   async join(name = "Guest", microphoneDeviceId?: string) {
@@ -228,14 +233,14 @@ export class PublicCallClient {
     const generation = ++this.generation;
     let capturedMicrophone: MediaStreamTrack | undefined;
     try {
-      const { microphone, joined } = await this.prepareJoin();
+      const { microphone, joined, issuedAt } = await this.prepareJoin();
       capturedMicrophone = microphone;
       if (generation !== this.generation || this.phase !== "joining") {
         this.stopMicrophone(microphone);
         void this.api("leave", {}, joined.token).catch(() => undefined);
         return;
       }
-      await this.connectPrepared(microphone, joined, generation, started, "Joined");
+      await this.connectPrepared(microphone, joined, generation, started, "Joined", issuedAt);
       this.reconnects = 0;
     } catch (error) {
       if (capturedMicrophone && !this.senders.has("microphone")) this.stopMicrophone(capturedMicrophone);
@@ -249,7 +254,7 @@ export class PublicCallClient {
     }
   }
 
-  private async connectPrepared(microphone: MediaStreamTrack, joined: JoinResponse, generation: number, started: number, label: string) {
+  private async connectPrepared(microphone: MediaStreamTrack, joined: JoinResponse, generation: number, started: number, label: string, issuedAt: number) {
     const prepared = performance.now();
     const signal = this.captureController.signal;
     this.token = joined.token;
@@ -290,6 +295,13 @@ export class PublicCallClient {
     };
     this.emit();
     this.startPolling();
+    if (joined.turn) {
+      this.turnRenewal = new TurnRenewal(pc, joined.token, joined.turn,
+        (operation, body, token, owner) => this.api(operation, body, token, FETCH_TIMEOUT_MS, owner),
+        (operation) => this.serialize(operation, generation),
+        () => generation === this.generation && pc === this.pc,
+        () => { if (generation === this.generation) this.scheduleReconnect(); }, issuedAt);
+    }
   }
 
   private async openEvents(generation: number) {
@@ -905,10 +917,10 @@ export class PublicCallClient {
     const started = performance.now();
     let captured: MediaStreamTrack | undefined;
     try {
-      const { microphone: track, joined } = await this.prepareJoin();
+      const { microphone: track, joined, issuedAt } = await this.prepareJoin();
       captured = track;
       if (generation !== this.generation) { this.stopMicrophone(track); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
-      await this.connectPrepared(track, joined, generation, started, "Rejoined");
+      await this.connectPrepared(track, joined, generation, started, "Rejoined", issuedAt);
       this.reconnects = 0;
       if (this.monitoring) await this.startReceivedMonitor().catch(() => undefined);
     } catch {
@@ -950,6 +962,8 @@ export class PublicCallClient {
   }
 
   private stopEverything(preserve?: MediaStreamTrack) {
+    this.turnRenewal?.stop();
+    this.turnRenewal = undefined;
     window.clearTimeout(this.disconnectTimer);
     this.disconnectTimer = undefined;
     window.clearTimeout(this.pollRetryTimer);

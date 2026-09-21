@@ -1,7 +1,9 @@
 import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
+import { TurnRenewal } from "./turn-renewal.ts";
 import type { JoinResponse, SessionDescriptionResponse } from "./types";
 
-type Request = <T = void>(operation: string, body: object, token: string) => Promise<T>;
+type Request = <T = void>(operation: string, body: object, token: string, timeout?: number, signal?: AbortSignal) => Promise<T>;
+const DISCONNECT_GRACE_MS = 10_000;
 
 /** Owns two private SFU sessions. Borrows capture and silently drains the received track. */
 export class ReceivedMonitor {
@@ -12,6 +14,8 @@ export class ReceivedMonitor {
   private receiver?: HTMLAudioElement;
   private receiverReady?: Promise<void>;
   private heartbeat?: number;
+  private readonly renewals: TurnRenewal[] = [];
+  private readonly disconnectTimers = new Map<RTCPeerConnection, number>();
   private stopped = false;
   private readonly request: Request;
   private readonly parent: string;
@@ -26,6 +30,7 @@ export class ReceivedMonitor {
   private check() { if (this.stopped) throw new Error("Mic test cancelled."); }
 
   private async join(monitor: "sender" | "receiver") {
+    const issuedAt = performance.now();
     const joined = await this.request<JoinResponse>("join", { name: "Microphone test", monitor }, this.parent);
     if (this.stopped) {
       void this.request("leave", {}, joined.token).catch(() => undefined);
@@ -38,14 +43,24 @@ export class ReceivedMonitor {
           .catch(() => { if (!this.stopped) this.failed(); });
       }, 10_000);
     }
-    return joined;
+    return { joined, issuedAt };
   }
 
   private peer(iceServers: RTCIceServer[]) {
     const pc = new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
     this.peers.push(pc);
     pc.onconnectionstatechange = () => {
-      if (!this.stopped && ["failed", "disconnected"].includes(pc.connectionState)) this.failed();
+      if (this.stopped) return;
+      if (pc.connectionState === "connected") {
+        window.clearTimeout(this.disconnectTimers.get(pc));
+        this.disconnectTimers.delete(pc);
+      } else if (pc.connectionState === "failed") this.failed();
+      else if (pc.connectionState === "disconnected" && !this.disconnectTimers.has(pc)) {
+        this.disconnectTimers.set(pc, window.setTimeout(() => {
+          this.disconnectTimers.delete(pc);
+          if (!this.stopped && pc.connectionState !== "connected") this.failed();
+        }, DISCONNECT_GRACE_MS));
+      }
     };
     return pc;
   }
@@ -55,7 +70,7 @@ export class ReceivedMonitor {
       // Register each successful capability immediately so partial failure/late joins clean up.
       const joined = await Promise.all([this.join("sender"), this.join("receiver")]);
       this.check();
-      const tx = this.peer(joined[0].iceServers);
+      const tx = this.peer(joined[0].joined.iceServers);
       const transceiver = tx.addTransceiver(track, { direction: "sendonly", streams: [new MediaStream([track])] });
       preferOpus(transceiver);
       this.sender = transceiver.sender;
@@ -64,12 +79,12 @@ export class ReceivedMonitor {
       if (!transceiver.mid) throw new Error("Mic test did not assign a media identifier.");
       const publication = await this.request<SessionDescriptionResponse & { trackId: string }>("publish", {
         kind: "microphone", mid: transceiver.mid, sessionDescription: await localDescription(tx),
-      }, joined[0].token);
+      }, joined[0].joined.token);
       this.check();
       if (!publication.sessionDescription || !publication.trackId) throw new Error("Mic test publication failed.");
       await tx.setRemoteDescription(withOpusDtx(publication.sessionDescription));
       this.check();
-      const rx = this.peer(joined[1].iceServers);
+      const rx = this.peer(joined[1].joined.iceServers);
       rx.ontrack = ({ track: received }) => {
         if (this.stopped) { received.stop(); return; }
         this.stream = new MediaStream([received]);
@@ -83,18 +98,27 @@ export class ReceivedMonitor {
         void this.receiverReady.catch(() => undefined);
         received.onended = () => { if (!this.stopped) this.failed(); };
       };
-      const subscription = await this.request<SessionDescriptionResponse>("subscribe", { trackId: publication.trackId }, joined[1].token);
+      const subscription = await this.request<SessionDescriptionResponse>("subscribe", { trackId: publication.trackId }, joined[1].joined.token);
       this.check();
       if (subscription.sessionDescription?.type !== "offer") throw new Error("Mic test receive negotiation failed.");
       await rx.setRemoteDescription(subscription.sessionDescription);
       await rx.setLocalDescription(await rx.createAnswer());
       this.check();
-      await this.request("negotiate", { sessionDescription: await localDescription(rx) }, joined[1].token);
+      await this.request("negotiate", { sessionDescription: await localDescription(rx) }, joined[1].joined.token);
       await Promise.all(this.peers.map((pc) => waitFor(pc, "connectionstatechange", 12_000, () => this.stopped || pc.connectionState === "connected")));
       this.check();
       if (!this.stream) throw new Error("No received microphone audio.");
       await this.receiverReady;
       this.check();
+      for (const [index, pc] of [tx, rx].entries()) {
+        const session = joined[index];
+        if (!session.joined.turn) continue;
+        this.renewals.push(new TurnRenewal(pc, session.joined.token, session.joined.turn,
+          (operation, body, token, signal) => this.request(operation, body, token, 25_000, signal),
+          // These independent peers do no other SDP negotiation after setup.
+          (operation) => operation(),
+          () => !this.stopped && this.peers.includes(pc), this.failed, session.issuedAt));
+      }
       return this.stream;
     } catch (error) {
       this.stop();
@@ -112,6 +136,10 @@ export class ReceivedMonitor {
   stop() {
     if (this.stopped) return;
     this.stopped = true;
+    for (const renewal of this.renewals) renewal.stop();
+    this.renewals.length = 0;
+    for (const timer of this.disconnectTimers.values()) window.clearTimeout(timer);
+    this.disconnectTimers.clear();
     window.clearInterval(this.heartbeat);
     this.receiver?.pause();
     if (this.receiver) this.receiver.srcObject = null;
