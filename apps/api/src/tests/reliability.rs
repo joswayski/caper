@@ -1,6 +1,36 @@
 use super::*;
 
 #[tokio::test(start_paused = true)]
+async fn handoff_is_opt_in_and_bounded_even_without_replacement() {
+    for handoff in [false, true] {
+        let (s, _) = state();
+        let mut stream = event_stream(s.clone(), None, true, handoff)
+            .await
+            .unwrap()
+            .into_body()
+            .into_data_stream();
+        next_event(&mut stream).await;
+        presence_snapshot_event(&mut stream).await;
+        s.begin_shutdown();
+        let frame = next_event(&mut stream).await.unwrap();
+        assert!(frame.starts_with(if handoff {
+            "event: migrating"
+        } else {
+            "event: draining"
+        }));
+        if handoff {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(9), stream.next())
+                    .await
+                    .is_err()
+            );
+            tokio::time::advance(Duration::from_secs(1)).await;
+        }
+        assert!(stream.next().await.is_none());
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn unrelated_notifications_cannot_starve_sse_heartbeats() {
     let (s, _) = state();
     let mut stream = presence_response(&s).await.into_body().into_data_stream();

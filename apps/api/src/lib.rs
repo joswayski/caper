@@ -1236,11 +1236,14 @@ struct EventStreamState {
     initial_snapshot: bool,
     done: bool,
     revision: Option<u64>,
+    handoff: bool,
+    handoff_deadline: Option<tokio::time::Instant>,
 }
 
 #[derive(Deserialize, Default)]
 struct EventQuery {
     snapshots: Option<u8>,
+    handoff: Option<u8>,
 }
 
 async fn events(
@@ -1253,19 +1256,24 @@ async fn events(
         s,
         Some(bearer(&headers)?.to_owned()),
         query.snapshots == Some(1),
+        query.handoff == Some(1) && query.snapshots == Some(1),
     )
     .await
 }
 
-async fn presence_events(State(s): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+async fn presence_events(
+    State(s): State<AppState>,
+    Query(query): Query<EventQuery>,
+) -> Result<impl IntoResponse, ApiError> {
     ensure_enabled(&s)?;
-    event_stream(s, None, true).await
+    event_stream(s, None, true, query.handoff == Some(1)).await
 }
 
 async fn event_stream(
     s: AppState,
     token: Option<String>,
     snapshots: bool,
+    handoff: bool,
 ) -> Result<Response, ApiError> {
     let shutdown = s.shutting_down.subscribe();
     if *shutdown.borrow() {
@@ -1317,13 +1325,15 @@ async fn event_stream(
             initial_snapshot: snapshots,
             done: false,
             revision: None,
+            handoff,
+            handoff_deadline: None,
         },
         |mut stream| async move {
             loop {
                 if stream.done {
                     return None;
                 }
-                let event = if *stream.shutdown.borrow() {
+                let event = if *stream.shutdown.borrow() && stream.handoff_deadline.is_none() {
                     "draining"
                 } else if stream.first {
                     stream.first = false;
@@ -1333,7 +1343,8 @@ async fn event_stream(
                     "snapshot"
                 } else {
                     tokio::select! {
-                        _ = stream.shutdown.changed() => "draining",
+                        _ = stream.shutdown.changed(), if stream.handoff_deadline.is_none() => "draining",
+                        () = tokio::time::sleep_until(stream.handoff_deadline.unwrap_or_else(tokio::time::Instant::now)), if stream.handoff_deadline.is_some() => return None,
                         changed = stream.updates.changed() => {
                             if changed.is_err() { return None; }
                             "changed"
@@ -1341,15 +1352,30 @@ async fn event_stream(
                         _ = stream.heartbeat.tick() => "heartbeat",
                     }
                 };
+                // A heartbeat/update can become ready at the same time as the
+                // deadline. Do not let select's branch order extend the overlap.
+                if stream
+                    .handoff_deadline
+                    .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                {
+                    return None;
+                }
                 if event == "draining" {
                     if !stream.snapshots || stream.first {
                         return None;
                     }
-                    stream.done = true;
+                    let event = if stream.handoff {
+                        // Keep forwarding shared-state updates while the client opens
+                        // its replacement. This fits inside the 30s HTTP drain budget.
+                        stream.handoff_deadline =
+                            Some(tokio::time::Instant::now() + Duration::from_secs(10));
+                        "migrating"
+                    } else {
+                        stream.done = true;
+                        "draining"
+                    };
                     return Some((
-                        Ok::<_, std::convert::Infallible>(
-                            Event::default().event("draining").data("{}"),
-                        ),
+                        Ok::<_, std::convert::Infallible>(Event::default().event(event).data("{}")),
                         stream,
                     ));
                 }
@@ -1360,8 +1386,12 @@ async fn event_stream(
                     .read(|r| {
                         if let Some(token) = &stream.token {
                             let id = authenticate(r, token)?;
-                            if r.participants.get(&id).and_then(|p| p.events)
-                                != Some(stream.connection)
+                            // During bounded shutdown overlap, replacement registration
+                            // must not retire this stream before its snapshot arrives.
+                            // The capability is still authenticated on every emission.
+                            if stream.handoff_deadline.is_none()
+                                && r.participants.get(&id).and_then(|p| p.events)
+                                    != Some(stream.connection)
                             {
                                 return Err(ApiError::new(
                                     StatusCode::UNAUTHORIZED,

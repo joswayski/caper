@@ -72,6 +72,162 @@ async fn delete(url: &str, key: &str) {
 
 #[tokio::test]
 #[ignore = "requires disposable TEST_VALKEY_URL"]
+async fn retiring_streams_keep_pushing_after_replacement_registration() {
+    fn http_events(response: reqwest::Response) -> axum::body::BodyDataStream {
+        // HTTP chunks need not align with SSE frames.
+        let frames = stream::unfold(
+            (response, Vec::<u8>::new()),
+            |(mut response, mut buffer)| async move {
+                loop {
+                    if let Some(end) = buffer.windows(2).position(|pair| pair == b"\n\n") {
+                        let frame =
+                            axum::body::Bytes::from(buffer.drain(..end + 2).collect::<Vec<_>>());
+                        return Some((
+                            Ok::<_, std::convert::Infallible>(frame),
+                            (response, buffer),
+                        ));
+                    }
+                    buffer.extend(response.chunk().await.unwrap()?);
+                }
+            },
+        );
+        Body::from_stream(frames).into_data_stream()
+    }
+    async fn serve(
+        s: AppState,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(s.clone()))
+                .with_graceful_shutdown(async move {
+                    stopped.await.unwrap();
+                    s.begin_shutdown();
+                })
+                .await
+                .unwrap();
+        });
+        (url, stop, server)
+    }
+    let (a, b, provider, url, key) = shared().await;
+    let person = joined(&a, "phone").await;
+    let token = person["token"].as_str().unwrap();
+    let (old_url, stop_old, old_server) = serve(a.clone()).await;
+    let (new_url, stop_new, new_server) = serve(b.clone()).await;
+    let http = reqwest::Client::new();
+    let response = http
+        .get(format!("{old_url}/api/media/events?snapshots=1&handoff=1"))
+        .header("x-caper-media-token", token)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let mut old = http_events(response);
+    let response = http
+        .get(format!("{old_url}/api/media/presence/events?handoff=1"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let mut spectator = http_events(response);
+    for stream in [&mut old, &mut spectator] {
+        event(stream, "ready").await;
+        event(stream, "snapshot").await;
+    }
+    stop_old.send(()).unwrap();
+    event(&mut old, "migrating").await;
+    event(&mut spectator, "migrating").await;
+    // Registration replaces the shared connection ID before a new snapshot is
+    // delivered. Deliberately leave its body unread while old streams carry updates.
+    let response = http
+        .get(format!("{new_url}/api/media/events?snapshots=1&handoff=1"))
+        .header("x-caper-media-token", token)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let mut replacement = http_events(response);
+    for (muted, deafened) in [(true, false), (true, true), (false, false), (false, true)] {
+        assert_eq!(
+            call(
+                app(b.clone()),
+                "POST",
+                "/api/media/state",
+                Some(token),
+                json!({"muted":muted,"deafened":deafened})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        for stream in [&mut old, &mut spectator] {
+            let snapshot = event(stream, "snapshot").await;
+            assert_eq!(snapshot["participants"][0]["muted"], muted);
+            assert_eq!(snapshot["participants"][0]["deafened"], deafened);
+        }
+    }
+    event(&mut replacement, "ready").await;
+    let snapshot = event(&mut replacement, "snapshot").await;
+    // Read all real HTTP frames queued while the replacement was unread.
+    let mut snapshot = snapshot;
+    while snapshot["participants"][0]["muted"] != false
+        || snapshot["participants"][0]["deafened"] != true
+    {
+        snapshot = event(&mut replacement, "snapshot").await;
+    }
+    assert_eq!(snapshot["participants"][0]["muted"], false);
+    assert_eq!(snapshot["participants"][0]["deafened"], true);
+    assert!(provider.closes.lock().await.is_empty());
+    assert_eq!(
+        call(
+            app(b.clone()),
+            "POST",
+            "/api/media/leave",
+            Some(token),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    // Overlap never bypasses capability revocation.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), old.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        event(&mut spectator, "snapshot").await["participants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    drop(old);
+    drop(spectator);
+    drop(replacement);
+    stop_new.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), old_server)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), new_server)
+        .await
+        .unwrap()
+        .unwrap();
+    delete(&url, &key).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable TEST_VALKEY_URL"]
 async fn stale_state_writes_cannot_win_across_pods() {
     let (a, b, _, url, key) = shared().await;
     reliability::exercise_state_ordering(&a, &b).await;

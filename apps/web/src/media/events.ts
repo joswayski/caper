@@ -15,11 +15,13 @@ export class CallEvents {
   private readonly lost: (error: Error, draining: boolean) => void;
   private readonly snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void;
   private readonly draining?: () => void;
-  constructor(changed: () => void, lost: (error: Error, draining: boolean) => void, snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void, draining?: () => void) {
+  private readonly migrating?: () => void;
+  constructor(changed: () => void, lost: (error: Error, draining: boolean) => void, snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void, draining?: () => void, migrating?: () => void) {
     this.changed = changed;
     this.lost = lost;
     this.snapshot = snapshot;
     this.draining = draining;
+    this.migrating = migrating;
   }
 
   open(token: string, signal: AbortSignal): Promise<void> {
@@ -43,7 +45,8 @@ export class CallEvents {
       };
       watchdog(START_TIMEOUT_MS);
       const run = async () => {
-        const response = await fetch(token === undefined ? "/api/media/presence/events" : "/api/media/events?snapshots=1", {
+        const path = token === undefined ? "/api/media/presence/events" : "/api/media/events?snapshots=1";
+        const response = await fetch(path + (this.migrating ? `${token === undefined ? "?" : "&"}handoff=1` : ""), {
           headers: { accept: "text/event-stream", ...(token === undefined ? {} : { "x-caper-media-token": token }) },
           signal: this.controller.signal,
           cache: "no-store",
@@ -75,7 +78,7 @@ export class CallEvents {
               buffer = buffer.slice(boundary.index + boundary[0].length);
               const event = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
               const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
-              if (!["ready", "changed", "heartbeat", "snapshot", "draining"].includes(event ?? "")) continue;
+              if (!["ready", "changed", "heartbeat", "snapshot", "draining", "migrating"].includes(event ?? "")) continue;
               if (!this.connected && event !== "ready") throw new Error("Invalid live update handshake.");
               if (event !== "snapshot" && data !== "{}") throw new Error("Invalid live update handshake.");
               watchdog(HEARTBEAT_TIMEOUT_MS);
@@ -101,6 +104,9 @@ export class CallEvents {
                 this.snapshot?.(token === undefined
                   ? { ...snapshot, participants: snapshot.participants.map((p) => ({ ...p, tracks: [] })) }
                   : snapshot);
+              } else if (event === "migrating") {
+                // Unlike legacy draining, keep receiving while a replacement opens.
+                this.migrating?.();
               } else if (event === "draining") {
                 // Stop here: the following EOF must not replace the fast planned
                 // reconnect with the ordinary connection-failure backoff.
