@@ -138,6 +138,10 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
       })}
     </div>
 
+    <p className="chat-typing" role="status" aria-atomic="true">
+      {typingLabel && <><span aria-hidden="true">•••</span><span>{typingLabel}</span></>}
+    </p>
+
     <div className="chat-composer">
       {state.phase === "ready" && state.error && <p className="chat-inline-error" role="alert">{state.error}</p>}
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
@@ -150,9 +154,6 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
         <button type="submit" disabled={!identityReady || state.phase !== "ready" || !!state.pendingSend || !draft.trim() || characterCount > 4_000}>Send</button>
         {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
-      <p className="chat-typing" role="status" aria-atomic="true">
-        {typingLabel && <><span aria-hidden="true">•••</span><span>{typingLabel}</span></>}
-      </p>
     </div>
   </section>;
 }

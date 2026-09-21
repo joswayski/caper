@@ -318,9 +318,11 @@ async fn publish_typing(
     );
     let published = tokio::time::timeout(Duration::from_secs(2), async {
         let mut connection = chat.broker.get_multiplexed_async_connection().await?;
+        // Both counters must share a hash slot for Lua on ElastiCache Serverless.
+        // Keep the Pub/Sub topic unchanged so existing gateways still receive it.
         script
-            .key(format!("{TYPING_TOPIC}:rate:{channel}:{author_id}"))
-            .key(format!("{TYPING_TOPIC}:rate:global"))
+            .key(format!("{{{TYPING_TOPIC}}}:rate:{channel}:{author_id}"))
+            .key(format!("{{{TYPING_TOPIC}}}:rate:global"))
             .arg(TYPING_TOPIC)
             .arg(event.to_string())
             .invoke_async::<i64>(&mut connection)

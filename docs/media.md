@@ -210,6 +210,11 @@ loopback Postgres (test role can create/drop test databases) and
 cargo test -p caper-api chat::tests::durable_guest_delivery_replay_and_handoff -- --ignored
 ```
 
+CI runs this against cluster-mode Valkey 8.1 with one primary owning all hash
+slots. This enforces the multi-key Lua restrictions that standalone mode misses:
+the typing rate counters share the `{caper:chat:v1:typing}` hash tag. It tests
+cluster command compatibility, not multi-node failover or managed-service TLS.
+
 The proposed healthy same-region target remains p95 below 250ms and p99 below one
 second commit-to-client, including routine rolls. Orb handoff timing is **not** a
 measurement of that production SLO. Database durability depends on the provider's
