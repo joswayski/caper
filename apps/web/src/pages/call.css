@@ -8,7 +8,6 @@
 .voice-channel { display: flex; align-items: center; gap: 10px; margin-top: 28px; padding: 12px; border-radius: 8px; background: var(--surface-raised); font-weight: 700; }
 .voice-channel > span { color: var(--terracotta-bright); }
 .voice-channel small { margin-left: auto; color: var(--text-muted); font-size: .6rem; letter-spacing: .06em; }
-.roster-note { color: var(--text-muted); margin: 16px 12px; font-size: .8rem; }
 .people-panel ul { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
 .participant { position: relative; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: 8px; }
 .participant-avatar { position: relative; flex: 0 0 auto; }

@@ -141,7 +141,6 @@ export default function Call() {
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
-  const [presenceLive, setPresenceLive] = useState(false);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
@@ -175,7 +174,7 @@ export default function Call() {
 
   useEffect(() => {
     if (!idle || available !== true) return;
-    return watchPresence((snapshot) => setPublicParticipants(snapshot.participants), setPresenceLive);
+    return watchPresence((snapshot) => setPublicParticipants(snapshot.participants), () => undefined);
   }, [idle, available]);
 
   useEffect(() => {
@@ -261,7 +260,6 @@ export default function Call() {
               </li>;
             })}
           </ul>
-          {idle && available === true && !presenceLive && <p role="status">Updating live roster…</p>}
         </aside>
         <div className="stage">
           <div className="stage-title"><div><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>
@@ -279,7 +277,6 @@ export default function Call() {
             : <div className="stage-placeholder"><span aria-hidden="true">◖))</span><h3>{state.monitoring ? "Starting microphone test…" : connected ? "You’re in General." : "Connecting to voice…"}</h3><p>{state.monitoring ? "Getting your private test ready." : connected ? "Say hello, or run a mic test to hear yourself first." : "Getting everything ready."}</p>{state.monitorStatus && <p role="status">{state.monitorStatus}</p>}{state.phase === "joining" && <button onClick={leave}>Cancel</button>}</div>}
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={participantVolumes[media.participantId] ?? 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {connected && actionPending && <p className="noise-status" role="status">Applying microphone settings… Record a new test once ready.</p>}
-          {connected && state.stateSyncPending && <p className="noise-status" role="status">Syncing mute and deafen status… Your local audio controls are already applied.</p>}
           {connected && state.liveUpdatesPending && <p className="noise-status" role="status">Reconnecting live updates… Participant status may be delayed; your voice connection is being kept open.</p>}
           {(state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
           {state.diagnostics && <ConnectionDiagnostics diagnostics={state.diagnostics} />}
