@@ -12,6 +12,9 @@ use uuid::Uuid;
 const CODE_LIFETIME: Duration = Duration::minutes(10);
 const SESSION_LIFETIME: Duration = Duration::days(30);
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const EXTERNAL_ID_ALPHABET: &[u8] =
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const EXTERNAL_ID_LENGTH: usize = 12;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -312,7 +315,7 @@ impl AuthVerifier {
             .execute(&mut *transaction)
             .await
             .map_err(database_unavailable)?;
-        let external_id = Uuid::new_v4().simple().to_string();
+        let external_id = random_external_id();
         let user: Option<accounts::User> = sqlx::query_as(
             "INSERT INTO public.users (external_id, email, email_verified_at)
              VALUES ($1, $2, now())
@@ -433,6 +436,13 @@ fn random_code() -> String {
         .collect()
 }
 
+fn random_external_id() -> String {
+    let mut rng = rand::rng();
+    (0..EXTERNAL_ID_LENGTH)
+        .map(|_| EXTERNAL_ID_ALPHABET[rng.random_range(0..EXTERNAL_ID_ALPHABET.len())] as char)
+        .collect()
+}
+
 fn parse_limit(
     environment: &RuntimeEnvironment,
     name: &'static str,
@@ -528,6 +538,15 @@ mod tests {
                 code.bytes()
                     .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
             );
+        }
+    }
+
+    #[test]
+    fn generated_external_ids_are_twelve_alphanumeric_characters() {
+        for _ in 0..100 {
+            let external_id = random_external_id();
+            assert_eq!(external_id.len(), EXTERNAL_ID_LENGTH);
+            assert!(external_id.bytes().all(|byte| byte.is_ascii_alphanumeric()));
         }
     }
 
