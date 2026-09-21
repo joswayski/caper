@@ -461,7 +461,7 @@ export class PublicCallClient {
   async setDeafened(deafened: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
-    if (deafened) this.muted = true;
+    if (deafened || this.deafened) this.muted = deafened;
     this.deafened = deafened;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !this.muted;
