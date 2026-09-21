@@ -272,7 +272,7 @@ export default function Call() {
           </ul>
         </aside>
         <div className="stage">
-          <div className="stage-title"><div><p className="eyebrow">One channel, open to everyone</p><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>
+          <div className="stage-title"><div><h2>General</h2></div>{!idle && !connected && <p role="status">{state.phase === "joining" ? "Joining…" : state.phase === "reconnecting" ? "Reconnecting…" : "Leaving…"}</p>}</div>
           {idle ? <div className="join-card">
             <span className="voice-symbol" aria-hidden="true">◖))</span>
             <h1>Drop in. Talk. Head out.</h1>
