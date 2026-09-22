@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { ChevronDown, Hash, Headphones, Mic, MicOff, Speech, Settings2, VolumeX, X } from "lucide-react";
+import { ChevronDown, Hash, Headphones, Mic, MicOff, Settings, Speech, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import Chat from "../chat/Chat";
@@ -65,7 +65,7 @@ function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: {
   return <details ref={menuRef} open={open} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
     if (event.key === "Escape") { onOpenChange(false); event.currentTarget.querySelector("summary")?.focus(); }
   }}>
-    <summary aria-label={label} title={label} onClick={(event) => { event.preventDefault(); onOpenChange(!open); }}>{settings ? <Settings2 aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary>
+    <summary aria-label={label} title={label} onClick={(event) => { event.preventDefault(); onOpenChange(!open); }}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary>
     <div className="call-settings-panel">{children}</div>
   </details>;
 }
@@ -345,7 +345,7 @@ export default function Call() {
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className="voice-action-group">
-              <button type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-disabled={!connected || state.monitoring} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} title={!connected ? "Join voice to use your microphone" : state.muted ? "Unmute" : "Mute"} onClick={() => { if (!connected || state.monitoring) return; setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
+              <button type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-disabled={!connected || state.monitoring} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} title={state.muted ? "Unmute" : "Mute"} onClick={() => { if (!connected || state.monitoring) return; setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
               <AudioMenu label="Input options" open={audioMenu === "input"} onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)} menuRef={audioMenu === "input" ? audioMenuRef : undefined}>
                 <fieldset className="device-options" disabled={controlsDisabled}>
                   <legend>Microphone</legend>
@@ -356,7 +356,7 @@ export default function Call() {
               </AudioMenu>
             </div>
             <div className="voice-action-group">
-              <button type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-disabled={!connected || state.monitoring} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={!connected ? "Join voice to control its audio" : state.deafened ? "Listen" : "Deafen"} onClick={() => { if (!connected || state.monitoring) return; setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
+              <button type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-disabled={!connected || state.monitoring} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={state.deafened ? "Undeafen" : "Deafen"} onClick={() => { if (!connected || state.monitoring) return; setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
               <AudioMenu label="Output options" open={audioMenu === "output"} onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)} menuRef={audioMenu === "output" ? audioMenuRef : undefined}>
                 {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <fieldset className="device-options">
                   <legend>Audio output</legend>
@@ -366,7 +366,7 @@ export default function Call() {
                 <div className="volume-control output-volume"><span>Output volume <output>{outputVolume}%</output></span><Slider label="Output volume" value={outputVolume} max={200} onChange={setOutputVolume} /></div>
               </AudioMenu>
             </div>
-            <AudioMenu label="Settings" settings open={audioMenu === "settings"} onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)} menuRef={audioMenu === "settings" ? audioMenuRef : undefined}>
+            <AudioMenu label="User settings" settings open={audioMenu === "settings"} onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)} menuRef={audioMenu === "settings" ? audioMenuRef : undefined}>
               <strong>Audio settings</strong>
               <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
               {state.diagnostics && <button type="button" onClick={() => setAudioPanel("connection")}>Connection details</button>}

@@ -127,7 +127,6 @@
 .call-diagnostics dd { margin: 0; color: var(--text); font-size: .78rem; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .call-diagnostics > p { margin: 12px 0 0; font-size: .7rem; line-height: 1.45; }
 .voice-action-group { display: flex; flex: 0 0 auto; align-items: center; border-radius: 5px; }
-.voice-action-group:is(:hover, :focus-within, :has(details[open])) .device-menu summary { background: color-mix(in srgb, var(--surface-composer) 65%, transparent); }
 .call-account .voice-icon-button.active { color: var(--terracotta-bright); }
 .voice-action-group .device-menu summary:is(:hover, :focus-visible), .voice-action-group .device-menu[open] summary { background: var(--border); color: #fff; }
 .call-account .voice-icon-button[aria-disabled="true"] { opacity: .5; }
