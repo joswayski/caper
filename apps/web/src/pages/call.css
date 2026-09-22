@@ -11,6 +11,9 @@
 .call-settings summary::-webkit-details-marker { display: none; }
 .call-settings summary:is(:hover, :focus-visible), .call-settings[open] summary { background: var(--surface-composer); color: #fff; }
 .call-settings summary svg { width: 19px; height: 19px; }
+.call-account :is(.voice-icon-button, .call-settings summary) { position: relative; }
+.call-account :is(.voice-icon-button, .call-settings summary)::after { position: absolute; z-index: 6; bottom: calc(100% + 10px); left: 50%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--blackout); box-shadow: 0 8px 20px rgb(0 0 0 / .35); content: attr(data-tooltip); font-size: .7rem; font-weight: 700; line-height: 1; white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, 3px); transition: opacity 150ms ease-in-out, transform 150ms ease-in-out; }
+.call-account .voice-icon-button:is(:hover, :focus-visible)::after, .call-account .call-settings summary:is(:hover, :focus-visible)::after { opacity: 1; transform: translate(-50%, 0); }
 .call-settings-panel { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 0; width: 100%; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
 .device-menu summary { width: 16px; border-radius: 0 4px 4px 0; }
 .device-menu summary svg { width: 12px; height: 12px; }
