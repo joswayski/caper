@@ -373,7 +373,7 @@ test("typing pulses are throttled, stop after inactivity, and failures stay out 
   assert.equal(f.typingPosts.length, 2);
   f.typingPosts[1].reject(new TypeError("broker unavailable"));
   await tick();
-  t.mock.timers.tick(249);
+  t.mock.timers.tick(499);
   assert.deepEqual(f.typingPosts.map((post) => post.active), [true, true]);
   t.mock.timers.tick(1);
   assert.deepEqual(f.typingPosts.map((post) => post.active), [true, true, false]);
