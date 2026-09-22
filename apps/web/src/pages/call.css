@@ -4,7 +4,7 @@
 .account-profile { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .account-profile:hover { background: var(--surface-composer); }
 .account-avatar { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
-.account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 20px; transform: translateY(-2px); }
+.account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 20px; }
 .call-account .voice-icon-button { width: 28px; height: 30px; border: 0; border-radius: 4px 0 0 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .call-settings { flex: 0 0 auto; }
 .call-settings summary { width: 28px; height: 30px; display: grid; place-items: center; border-radius: 4px; color: var(--text-muted); cursor: pointer; list-style: none; }
@@ -128,14 +128,13 @@
 .call-diagnostics > p { margin: 12px 0 0; font-size: .7rem; line-height: 1.45; }
 .voice-action-group { display: flex; flex: 0 0 auto; align-items: center; border-radius: 5px; }
 .voice-action-group:is(:hover, :focus-within, :has(details[open])) .device-menu summary { background: color-mix(in srgb, var(--surface-composer) 65%, transparent); }
-.call-account .voice-icon-button:is(:hover, :focus-visible):not(:disabled) { color: #fff; background: var(--surface-composer); }
 .call-account .voice-icon-button.active { color: var(--terracotta-bright); }
 .voice-action-group .device-menu summary:is(:hover, :focus-visible), .voice-action-group .device-menu[open] summary { background: var(--border); color: #fff; }
-.call-account .voice-icon-button:disabled { cursor: pointer; }
+.call-account .voice-icon-button[aria-disabled="true"] { opacity: .5; }
 .voice-icon-button { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); cursor: pointer; }
 .voice-icon-button svg { width: 19px; height: 19px; stroke-width: 2.25; }
 .voice-icon-button:hover:not(:disabled), .voice-icon-button.active { border-color: #805143; color: #fff; background: #39231e; }
-.voice-icon-button:disabled { opacity: .5; cursor: pointer; }
+.call-account .voice-icon-button:is(:hover, :focus-visible) { color: #fff; background: var(--surface-composer); opacity: 1; }
 .device-options { min-width: 0; margin: 0; padding: 0; border: 0; }
 .device-options legend { margin-bottom: 8px; color: var(--text-muted); font-size: .72rem; font-weight: 700; }
 .device-options label { display: flex; align-items: center; gap: 8px; padding: 9px 8px; border-radius: 6px; color: var(--text); font-size: .8rem; cursor: pointer; }
