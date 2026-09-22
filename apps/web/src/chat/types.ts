@@ -38,8 +38,15 @@ export interface ChatTypingEvent {
   revision: string;
 }
 
+export interface ChatPresenceEvent {
+  type: "presence.updated";
+  author: ChatAuthor;
+  revision: string;
+}
+
 export type ChatEvent =
   | ChatTypingEvent
+  | ChatPresenceEvent
   | { type: "message.created"; channelId: string; seq: string; message: ChatMessage }
   | { type: "ready"; cursor: string }
   | { type: "migrating" }

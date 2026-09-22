@@ -3,7 +3,9 @@
 .call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; margin: auto 8px 8px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
 .account-profile { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .account-profile:hover { background: var(--surface-composer); }
-.account-avatar { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
+.account-avatar-wrap { position: relative; width: 30px; height: 30px; flex: 0 0 auto; }
+.account-avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
+.account-avatar-wrap .presence-indicator { border-color: var(--surface-raised); }
 .account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 20px; }
 .call-account .voice-icon-button { width: 28px; height: 30px; border: 0; border-radius: 4px 0 0 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .call-settings { flex: 0 0 auto; }
@@ -52,6 +54,7 @@
 .participant-avatar { position: relative; flex: 0 0 auto; }
 .avatar { flex: 0 0 auto; width: 38px; height: 38px; display: grid; place-items: center; border: 2px solid var(--border); border-radius: 50%; color: #fff; background: #354027; font-weight: 900; }
 .avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 3px rgb(99 122 67 / .2); }
+.presence-indicator { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; border: 2px solid var(--surface-sidebar); border-radius: 50%; background: var(--caper); box-shadow: 0 0 0 1px rgb(0 0 0 / .2); }
 .participant-name { min-width: 0; display: grid; grid-template-rows: 1.3em 1.2em; flex: 1; }
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
 .participant-country { position: absolute; right: -3px; bottom: -1px; width: 16px; height: 12px; border: 1px solid var(--surface); border-radius: 3px; box-shadow: 0 0 0 1px rgb(0 0 0 / .2); }
