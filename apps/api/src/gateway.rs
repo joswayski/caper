@@ -35,6 +35,7 @@ pub struct Gateway {
     chat: Chat,
     events: broadcast::Sender<Value>,
     typing: broadcast::Sender<Value>,
+    presence: broadcast::Sender<Value>,
     head: watch::Sender<i64>,
     drain: watch::Sender<bool>,
     slots: Arc<Semaphore>,
@@ -55,12 +56,14 @@ impl Gateway {
     pub(crate) fn new(chat: Chat) -> Self {
         let (events, _) = broadcast::channel(256);
         let (typing, _) = broadcast::channel(64);
+        let (presence, _) = broadcast::channel(64);
         let (head, _) = watch::channel(0);
         let (drain, _) = watch::channel(false);
         Self {
             chat,
             events,
             typing,
+            presence,
             head,
             drain,
             slots: Arc::new(Semaphore::new(128)),
@@ -84,7 +87,11 @@ impl Gateway {
                     && matches!(
                         tokio::time::timeout(
                             Duration::from_secs(3),
-                            pubsub.subscribe(&[chat::TOPIC, chat::TYPING_TOPIC])
+                            pubsub.subscribe(&[
+                                chat::TOPIC,
+                                chat::TYPING_TOPIC,
+                                chat::PRESENCE_TOPIC
+                            ])
                         )
                         .await,
                         Ok(Ok(()))
@@ -98,6 +105,8 @@ impl Gateway {
                         {
                             let sender = if message.get_channel_name() == chat::TYPING_TOPIC {
                                 &state.typing
+                            } else if message.get_channel_name() == chat::PRESENCE_TOPIC {
+                                &state.presence
                             } else {
                                 &state.events
                             };
@@ -159,6 +168,8 @@ struct Subscription {
     // Older browser parsers reject unknown events. Typing is explicitly opt-in.
     #[serde(default)]
     typing: bool,
+    #[serde(default)]
+    presence: bool,
 }
 
 async fn upgrade(
@@ -214,6 +225,7 @@ async fn upgrade(
                 query.channel_id,
                 after,
                 query.typing,
+                query.presence,
             )
             .await;
         })
@@ -271,6 +283,7 @@ async fn serve(
     external_id: String,
     mut after: i64,
     with_typing: bool,
+    with_presence: bool,
 ) -> Result<(), ()> {
     // Buffer live before capturing a DB high-water mark. Replay then merge by
     // sequence. Lagging bounded buffers trigger another replay, never a skip.
@@ -290,6 +303,7 @@ async fn serve(
     // No replay or initial buffer for ephemeral presence; dropping it must
     // never consume durable buffer space or alter the delivery cursor.
     let mut typing = state.typing.subscribe();
+    let mut presence = state.presence.subscribe();
     if *drain.borrow_and_update() {
         write(&mut socket, json!({"type":"migrating"})).await?;
         deadline = Some(tokio::time::Instant::now() + HANDOFF_WINDOW);
@@ -317,6 +331,11 @@ async fn serve(
                 if let Ok(event) = event
                     && event["channelId"].as_str() == Some(&external_id)
                 {
+                    write(&mut socket, event).await?;
+                }
+            }
+            event = presence.recv(), if with_presence => {
+                if let Ok(event) = event {
                     write(&mut socket, event).await?;
                 }
             }

@@ -8,7 +8,7 @@ import "./chat.css";
 const INITIAL_ITEM_INDEX = 1_000_000_000;
 const initialView: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "General",
-  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
+  messages: [], typingAuthors: [], activeAuthorIds: [], hasMore: false, loadingOlder: false,
 };
 
 function timeLabel(value: string) {
@@ -33,7 +33,7 @@ function HistoryHeader({ context }: { context?: HistoryContext }) {
 
 const listComponents = { Header: HistoryHeader };
 
-export default function Chat({ name, signedIn, identityReady, headerActions, onAuthorChange }: { name: string; signedIn: boolean; identityReady: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void }) {
+export default function Chat({ name, signedIn, identityReady, headerActions, onAuthorChange, onPresenceChange }: { name: string; signedIn: boolean; identityReady: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onPresenceChange?: (authorIds: string[]) => void }) {
   const [state, setState] = useState(initialView);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   const [draft, setDraft] = useState("");
@@ -95,6 +95,10 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   useEffect(() => {
     if (state.author) onAuthorChange?.(state.author);
   }, [state.author, onAuthorChange]);
+
+  useEffect(() => {
+    onPresenceChange?.(state.activeAuthorIds);
+  }, [state.activeAuthorIds, onPresenceChange]);
 
   useEffect(() => {
     if (followLatest.current) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
@@ -170,7 +174,10 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
           const pending = !("content" in message);
           const author = message.author;
           return <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId}>
-            <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
+            <div className="chat-avatar-wrap">
+              <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
+              {author && state.activeAuthorIds.includes(author.id) && <span className="chat-presence-indicator" role="img" aria-label="Online" />}
+            </div>
             <div>
               <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header>
               <p>{"content" in message ? message.content.text : message.text}</p>

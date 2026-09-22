@@ -1,6 +1,6 @@
 import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
-import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChatAuthor, isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory, type ChatPresenceEvent } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -19,6 +19,7 @@ export interface ChatViewState {
   channelName: string;
   messages: ChatMessage[];
   typingAuthors: ChatAuthor[];
+  activeAuthorIds: string[];
   hasMore: boolean;
   loadingOlder: boolean;
   olderError?: string;
@@ -32,7 +33,7 @@ export interface ChatViewState {
 
 const initialState: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "General",
-  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
+  messages: [], typingAuthors: [], activeAuthorIds: [], hasMore: false, loadingOlder: false,
 };
 
 function apiError(response: Response, fallback: string) {
@@ -49,6 +50,13 @@ function validHistory(value: unknown, general: boolean): value is ChatHistory | 
   return Array.isArray(history.messages) && history.messages.every(isChatMessage) && typeof history.hasMore === "boolean"
     && (!general || (!!history.space && typeof history.space.id === "string" && typeof history.space.name === "string"
       && !!history.channel && typeof history.channel.id === "string" && typeof history.channel.name === "string"));
+}
+
+function isPresenceEvent(value: unknown): value is ChatPresenceEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<ChatPresenceEvent>;
+  try { sequence(event.revision ?? ""); } catch { return false; }
+  return event.type === "presence.updated" && isChatAuthor(event.author);
 }
 
 function storedSession(): ChatSession | undefined {
@@ -76,12 +84,19 @@ export class ChatClient {
   private typingRequest?: Promise<void>;
   private typingIdleTimer?: ReturnType<typeof setTimeout>;
   private typingExpiryTimer?: ReturnType<typeof setTimeout>;
+  private presenceTimer?: ReturnType<typeof setTimeout>;
+  private presenceExpiryTimer?: ReturnType<typeof setTimeout>;
   private readonly typers = new Map<string, { author: ChatAuthor; typing: boolean; revision: bigint; expires: number }>();
+  private readonly activeAuthors = new Map<string, { revision: bigint; expires: number }>();
   private readonly changed: (state: ChatViewState) => void;
 
   constructor(changed: (state: ChatViewState) => void) { this.changed = changed; }
 
   start() {
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this.refreshPresence);
+      window.addEventListener("focus", this.refreshPresence);
+    }
     void this.loadInitial();
   }
 
@@ -101,6 +116,12 @@ export class ChatClient {
     this.controller.abort();
     clearTimeout(this.typingIdleTimer);
     clearTimeout(this.typingExpiryTimer);
+    clearTimeout(this.presenceTimer);
+    clearTimeout(this.presenceExpiryTimer);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.refreshPresence);
+      window.removeEventListener("focus", this.refreshPresence);
+    }
     this.connection?.stop();
   }
 
@@ -151,6 +172,37 @@ export class ChatClient {
     const entries = [...this.typers.values()];
     this.update({ typingAuthors: entries.filter((entry) => entry.typing && entry.author.id !== this.state.author?.id).map((entry) => entry.author) });
     if (entries.length) this.typingExpiryTimer = setTimeout(() => this.refreshTypers(), Math.min(...entries.map((entry) => entry.expires)) - now);
+  }
+
+  private refreshPresence = () => {
+    clearTimeout(this.presenceTimer);
+    if (typeof document === "undefined" || document.visibilityState === "hidden" || !document.hasFocus()) return;
+    const session = this.session;
+    if (!session || this.controller.signal.aborted) return;
+    void fetch("/api/chat/presence", {
+      method: "POST", headers: { "content-type": "application/json", "x-caper-chat-token": session.token }, body: "{}",
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(2_000)]),
+    }).catch(() => undefined);
+    this.presenceTimer = setTimeout(this.refreshPresence, 30_000);
+  };
+
+  private receivePresence(event: ChatPresenceEvent) {
+    const revision = sequence(event.revision);
+    const previous = this.activeAuthors.get(event.author.id);
+    if (previous && revision <= previous.revision) return;
+    const expiresAt = (event as ChatPresenceEvent & { expiresAt?: unknown }).expiresAt;
+    const expires = typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : Date.now() + 120_000;
+    this.activeAuthors.set(event.author.id, { revision, expires });
+    this.refreshActiveAuthors();
+  }
+
+  private refreshActiveAuthors() {
+    clearTimeout(this.presenceExpiryTimer);
+    const now = Date.now();
+    for (const [id, entry] of this.activeAuthors) if (entry.expires <= now) this.activeAuthors.delete(id);
+    this.update({ activeAuthorIds: [...this.activeAuthors.keys()] });
+    const expires = [...this.activeAuthors.values()].map((entry) => entry.expires);
+    if (expires.length) this.presenceExpiryTimer = setTimeout(() => this.refreshActiveAuthors(), Math.min(...expires) - now);
   }
 
   retryLoad() { void this.loadInitial(); }
@@ -265,6 +317,7 @@ export class ChatClient {
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
         channelName: history.channel.name, messages: this.timeline.messages, hasMore: history.hasMore,
       });
+      void this.loadPresence(generation);
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
         message: (message) => {
@@ -279,6 +332,7 @@ export class ChatClient {
           this.update({ online });
         },
         typing: (event) => this.receiveTyping(event),
+        presence: (event) => this.receivePresence(event),
         resync: () => { if (generation === this.generation) void this.loadInitial(); },
       });
       this.connection.start();
@@ -287,6 +341,17 @@ export class ChatClient {
         phase: "error", online: false, error: error instanceof Error ? error.message : "Messages are unavailable.",
       });
     }
+  }
+
+  private async loadPresence(generation: number) {
+    try {
+      const response = await fetch("/api/chat/presence", {
+        cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(5_000)]),
+      });
+      const value: unknown = response.ok ? await response.json() : undefined;
+      if (generation !== this.generation || !value || typeof value !== "object" || !Array.isArray((value as { presence?: unknown }).presence)) return;
+      for (const event of (value as { presence: unknown[] }).presence) if (isPresenceEvent(event)) this.receivePresence(event);
+    } catch { /* Presence must not block chat history. */ }
   }
 
   private async createSession() {
@@ -302,6 +367,7 @@ export class ChatClient {
       this.session = session as ChatSession;
       try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* The in-memory response still permits this page to render. */ }
       this.update({ author: session.author, sessionError: undefined });
+      this.refreshPresence();
     } catch (error) {
       if (!this.controller.signal.aborted) this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
     }

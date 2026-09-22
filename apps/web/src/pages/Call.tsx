@@ -168,6 +168,7 @@ export default function Call() {
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
+  const [activeAuthorIds, setActiveAuthorIds] = useState<string[]>([]);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
   const connected = state.phase === "connected";
@@ -341,7 +342,10 @@ export default function Call() {
           </div>
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
-              <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
+              <span className="account-avatar-wrap">
+                <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
+                {chatAuthor && activeAuthorIds.includes(chatAuthor.id) && <span className="presence-indicator" role="img" aria-label="Online" />}
+              </span>
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className="voice-action-group">
@@ -377,7 +381,7 @@ export default function Call() {
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {!audioPanel && (state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          <Chat name={name} signedIn={!!account} identityReady={identityReady} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
+          <Chat name={name} signedIn={!!account} identityReady={identityReady} onAuthorChange={setChatAuthor} onPresenceChange={setActiveAuthorIds} headerActions={<div className="voice-actions">
             <span className="voice-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
               if (event.key === "Escape") setJoinTooltipDismissed(true);
             }}>
