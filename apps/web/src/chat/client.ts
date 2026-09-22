@@ -108,7 +108,7 @@ export class ChatClient {
     if (this.controller.signal.aborted) return;
     clearTimeout(this.typingIdleTimer);
     this.typingActive = active;
-    if (active) this.typingIdleTimer = setTimeout(() => this.setTyping(false), 250);
+    if (active) this.typingIdleTimer = setTimeout(() => this.setTyping(false), 500);
     this.flushTyping();
   }
 

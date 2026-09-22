@@ -110,6 +110,15 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const typingNames = state.typingAuthors.map((author) => author.name);
   const typingLabel = typingNames.length > 2 ? "Several people are typing…"
     : typingNames.length ? `${typingNames.join(" and ")} ${typingNames.length === 1 ? "is" : "are"} typing…` : "";
+  const [displayedTypingLabel, setDisplayedTypingLabel] = useState("");
+  useEffect(() => {
+    if (typingLabel) {
+      setDisplayedTypingLabel(typingLabel);
+      return;
+    }
+    const timer = setTimeout(() => setDisplayedTypingLabel(""), 180);
+    return () => clearTimeout(timer);
+  }, [typingLabel]);
   const submit = async () => {
     if (!identityReady || sending || state.sendRejected) return;
     setValidationError(undefined);
@@ -182,7 +191,9 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
     </div>
 
     <p className="chat-typing" role="status" aria-atomic="true">
-      {typingLabel && <><span className="chat-typing-dots" aria-hidden="true"><i /><i /><i /></span><span>{typingLabel}</span></>}
+      <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
+        {displayedTypingLabel && <><span className="chat-typing-dots" aria-hidden="true"><i /><i /><i /></span><span>{displayedTypingLabel}</span></>}
+      </span>
     </p>
 
     <div className="chat-composer">

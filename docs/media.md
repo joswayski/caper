@@ -144,7 +144,7 @@ no configuration or infrastructure change is needed for typing.
 
 Typing publications are limited across API replicas to four per author/channel
 per second and 120 globally per second. The browser pulses at most every 500ms
-while editing, stops on clear/blur/send or 250ms of inactivity,
+while editing, stops on clear/blur/send or 500ms of inactivity,
 and expires peer indicators after six seconds without a newer signal. Broker
 microsecond `revision` strings deduplicate overlapping socket events independently
 of message cursors; a brief stop tombstone prevents delayed starts from reviving
