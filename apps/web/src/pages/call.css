@@ -25,12 +25,16 @@
 .call-settings-panel button:disabled { opacity: .5; cursor: default; }
 .output-volume { padding-top: 12px; border-top: 1px solid var(--border); }
 .eyebrow { margin: 0 0 8px; color: var(--text-muted); font-size: .7rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: minmax(0, 1fr) / 280px minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
-.people-panel { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface-sidebar); }
+.call-room { width: min(1400px, calc(100% - 56px)); min-height: calc(100vh - 104px); margin: 0 auto 24px; display: grid; grid-template: minmax(0, 1fr) / auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.people-panel { position: relative; min-height: 0; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface-sidebar); }
+.channel-sidebar-resize { position: absolute; z-index: 7; top: 0; bottom: 0; right: -4px; width: 8px; touch-action: none; cursor: col-resize; }
+.channel-sidebar-resize::after { position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; content: ""; }
+.channel-sidebar-resize:is(:hover, :focus-visible, :active)::after { background: var(--terracotta); }
+.channel-sidebar-resize:focus-visible { outline: none; }
 .sidebar-channels { flex: 1; min-height: 0; padding: 20px 16px; overflow-y: auto; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .panel-heading h1 { margin: 0; letter-spacing: -.04em; font-size: 1.3rem; }
-.channel-link { display: flex; align-items: center; gap: 10px; margin-top: 20px; padding: 10px 12px; border-radius: 6px; color: var(--text); background: rgb(182 77 50 / .14); font-weight: 700; line-height: 20px; text-decoration: none; }
+.channel-link { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 6px; color: var(--text); background: rgb(182 77 50 / .14); font-weight: 700; line-height: 20px; text-decoration: none; }
 .channel-link > svg { display: block; flex: 0 0 20px; width: 20px; height: 20px; color: var(--terracotta-bright); }
 /* Center Satoshi's visible lowercase glyphs, not just their line box. */
 .channel-link > span { transform: translateY(-2px); }
@@ -160,12 +164,12 @@
   .call-header, .call-room { width: calc(100% - 24px); }
   .call-header { height: 64px; }
   .call-room { grid-template: auto minmax(0, 1fr) / 1fr; }
-  .people-panel { border-right: 0; border-bottom: 1px solid var(--border); }
+  .people-panel { width: auto !important; border-right: 0; border-bottom: 1px solid var(--border); }
+  .channel-sidebar-resize { display: none; }
   .sidebar-channels { padding: 16px; }
   .people-panel ul { max-height: 240px; overflow-y: auto; }
   .people-panel ul.volume-menu-open { max-height: 420px; }
   .participant.volume-open { padding-bottom: 161px; }
-  .channel-link { margin-top: 16px; }
   .mic-test-heading { align-items: flex-start; }
   .mic-test-action-row { grid-template-columns: 120px minmax(0, 1fr); gap: 10px; }
   .mic-test-button { width: 120px; }

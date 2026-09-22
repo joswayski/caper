@@ -5,9 +5,18 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
-import { Hash, LockKeyhole, Plus, Settings2, X } from "lucide-react";
+import {
+  ChevronDown,
+  Hash,
+  LockKeyhole,
+  LogOut,
+  Plus,
+  Settings,
+  X,
+} from "lucide-react";
 import { getAccount, type Account } from "../account/client";
 import Call from "../pages/Call";
+import ChannelSidebar from "../pages/ChannelSidebar";
 import {
   addChannelMember,
   addSpaceMember,
@@ -679,8 +688,22 @@ export default function Spaces() {
   >();
   const [manageChannel, setManageChannel] = useState<Channel>();
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const spaceMenu = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      if (
+        spaceMenu.current &&
+        !spaceMenu.current.contains(event.target as Node)
+      )
+        spaceMenu.current.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, []);
 
   const choose = (spaceId?: string, channelId?: string, replace = false) => {
+    if (spaceMenu.current) spaceMenu.current.open = false;
     const query = new URLSearchParams();
     if (spaceId) query.set("space", spaceId);
     if (channelId) query.set("channel", channelId);
@@ -841,16 +864,21 @@ export default function Spaces() {
         G
       </a>
       {spaces.map((space) => (
-        <button
+        <div
+          className="space-rail-item"
           key={space.id}
-          type="button"
-          title={space.name}
-          aria-label={space.name}
-          aria-current={space.id === detail.space.id ? "page" : undefined}
-          onClick={() => choose(space.id)}
+          data-active={space.id === detail.space.id}
         >
-          <span>{space.name.slice(0, 1).toUpperCase()}</span>
-        </button>
+          <button
+            type="button"
+            title={space.name}
+            aria-label={space.name}
+            aria-current={space.id === detail.space.id ? "page" : undefined}
+            onClick={() => choose(space.id)}
+          >
+            <span>{space.name.slice(0, 1).toUpperCase()}</span>
+          </button>
+        </div>
       ))}
       <button
         className="add-space"
@@ -874,10 +902,69 @@ export default function Spaces() {
       aria-label={`${detail.space.name} channels`}
     >
       <header>
-        <div>
-          <span>Space</span>
-          <h1>{detail.space.name}</h1>
-        </div>
+        <details
+          ref={spaceMenu}
+          className="space-menu"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }
+          }}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget))
+              event.currentTarget.open = false;
+          }}
+        >
+          <summary aria-label={`${detail.space.name} actions`}>
+            <h1 title={detail.space.name}>{detail.space.name}</h1>
+            <ChevronDown aria-hidden="true" />
+          </summary>
+          <div className="space-actions">
+            {owner ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    spaceMenu.current!.open = false;
+                    setDialog("manage-space");
+                  }}
+                >
+                  <Settings aria-hidden="true" />
+                  Space settings
+                </button>
+                <button
+                  type="button"
+                  disabled={!canCreateChannel}
+                  title={
+                    !canCreateChannel
+                      ? `Channel limit reached (${limits?.channelsPerSpace ?? 100})`
+                      : undefined
+                  }
+                  onClick={() => {
+                    spaceMenu.current!.open = false;
+                    setDialog("channel");
+                  }}
+                >
+                  <Plus aria-hidden="true" />
+                  Create channel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="leave-space"
+                onClick={() => {
+                  spaceMenu.current!.open = false;
+                  setDialog("leave-space");
+                }}
+              >
+                <LogOut aria-hidden="true" />
+                Leave space…
+              </button>
+            )}
+          </div>
+        </details>
         {navigationOpen && (
           <button
             type="button"
@@ -887,34 +974,7 @@ export default function Spaces() {
             <X aria-hidden="true" />
           </button>
         )}
-        {owner && (
-          <button
-            type="button"
-            aria-label={`Manage ${detail.space.name}`}
-            onClick={() => setDialog("manage-space")}
-          >
-            <Settings2 aria-hidden="true" />
-          </button>
-        )}
       </header>
-      <div className="channel-section-heading">
-        <span>Channels</span>
-        {owner && (
-          <button
-            type="button"
-            disabled={!canCreateChannel}
-            title={
-              canCreateChannel
-                ? "Create channel"
-                : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`
-            }
-            aria-label="Create channel"
-            onClick={() => setDialog("channel")}
-          >
-            <Plus aria-hidden="true" />
-          </button>
-        )}
-      </div>
       <ul>
         {detail.channels.map((item) => (
           <li key={item.id}>
@@ -938,21 +998,12 @@ export default function Spaces() {
                 aria-label={`Manage ${item.name}`}
                 onClick={() => setManageChannel(item)}
               >
-                <Settings2 aria-hidden="true" />
+                <Settings aria-hidden="true" />
               </button>
             )}
           </li>
         ))}
       </ul>
-      {!owner && (
-        <button
-          className="leave-space"
-          type="button"
-          onClick={() => setDialog("leave-space")}
-        >
-          Leave space…
-        </button>
-      )}
       {error && (
         <p className="space-sidebar-error" role="alert">
           {error}
@@ -977,7 +1028,7 @@ export default function Spaces() {
             className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
           >
             {rail}
-            <aside className="people-panel">
+            <ChannelSidebar>
               <div className="sidebar-channels">{channelNavigation}</div>
               <div className="empty-channel-account">
                 <span className="account-avatar" aria-hidden="true">
@@ -985,7 +1036,7 @@ export default function Spaces() {
                 </span>
                 <strong>{account.displayName}</strong>
               </div>
-            </aside>
+            </ChannelSidebar>
             <div className="stage empty-channel">
               <button
                 className="navigation-toggle"
