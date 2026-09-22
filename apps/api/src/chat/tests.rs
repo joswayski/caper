@@ -5,6 +5,7 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 use std::{future::IntoFuture, str::FromStr};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 
 #[test]
@@ -55,6 +56,26 @@ async fn event(socket: &mut Socket) -> Value {
     })
     .await
     .expect("event timeout")
+}
+
+async fn wait_closed(socket: &mut Socket) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match socket.next().await {
+                None | Some(Err(_)) => return,
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => return,
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(bytes))) => {
+                    socket
+                        .send(tokio_tungstenite::tungstenite::Message::Pong(bytes))
+                        .await
+                        .unwrap();
+                }
+                Some(Ok(frame)) => panic!("unexpected frame before close: {frame:?}"),
+            }
+        }
+    })
+    .await
+    .expect("socket was not revoked");
 }
 
 async fn typing_command(
@@ -151,7 +172,7 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .await
         .unwrap();
     assert_eq!(
-        history_page(&pool, &channel, None).await.unwrap()["cursor"],
+        history_page(&pool, &channel, None, None).await.unwrap()["cursor"],
         "1"
     );
     let (two, three) = tokio::join!(
@@ -164,7 +185,7 @@ async fn durable_guest_delivery_replay_and_handoff() {
     ];
     positions.sort();
     assert_eq!(positions, ["2", "3"]);
-    let history = history_page(&pool, &channel, Some(3)).await.unwrap();
+    let history = history_page(&pool, &channel, Some(3), None).await.unwrap();
     assert_eq!(history["messages"].as_array().unwrap().len(), 2);
     assert_eq!(history["messages"][0]["seq"], "1");
     assert_eq!(history["messages"][1]["seq"], "2");
@@ -300,7 +321,7 @@ async fn durable_guest_delivery_replay_and_handoff() {
         StatusCode::TOO_MANY_REQUESTS
     );
     assert_eq!(
-        history_page(&pool, &channel, None).await.unwrap()["cursor"],
+        history_page(&pool, &channel, None, None).await.unwrap()["cursor"],
         "3"
     );
     assert_eq!(
@@ -450,19 +471,21 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .await
         .unwrap();
     }
-    let latest = history_page(&pool, &channel, None).await.unwrap();
+    let latest = history_page(&pool, &channel, None, None).await.unwrap();
     assert_eq!(latest["messages"].as_array().unwrap().len(), 50);
     assert_eq!(latest["messages"][0]["seq"], "4");
     assert_eq!(latest["cursor"], "53");
     assert_eq!(latest["hasMore"], true);
-    let older = history_page(&pool, &channel, Some(4)).await.unwrap();
+    let older = history_page(&pool, &channel, Some(4), None).await.unwrap();
     assert_eq!(older["messages"].as_array().unwrap().len(), 3);
     assert_eq!(older["hasMore"], false);
     // Existing non-demo channels must be denied, not just unknown identifiers.
+    let owner: i64 = sqlx::query_scalar("INSERT INTO public.users (external_id,username,display_name) VALUES($1,'private_owner','Private Owner') RETURNING id")
+    .bind(random_id(12)).fetch_one(&pool).await.unwrap();
     let private_space: i64 = sqlx::query_scalar(
-        "INSERT INTO public.spaces (external_id,name) VALUES ($1,'Private') RETURNING id",
+        "INSERT INTO public.spaces (external_id,name,owner_id) VALUES ($1,'Private',$2) RETURNING id",
     )
-    .bind(random_id(12))
+    .bind(random_id(12)).bind(owner)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -474,7 +497,7 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .await
         .unwrap();
     assert_eq!(
-        public_channel(&pool, &private_channel)
+        channel_access(&pool, &private_channel, None)
             .await
             .unwrap_err()
             .status,
@@ -490,6 +513,240 @@ async fn durable_guest_delivery_replay_and_handoff() {
         typing_command(&app, &channel, Some(token), json!({"typing":true})).await,
         StatusCode::UNAUTHORIZED
     );
+    pool.close().await;
+    admin
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
+    let url = std::env::var("CHAT_TEST_DATABASE_URL").expect("disposable test database required");
+    let options = PgConnectOptions::from_str(&url).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("chat_auth_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    seed(&pool).await.unwrap();
+
+    let owner: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,'owner','Owner') RETURNING id")
+        .bind(random_id(12)).fetch_one(&pool).await.unwrap();
+    let member_external = random_id(12);
+    let member: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,'member','Member') RETURNING id")
+        .bind(&member_external).fetch_one(&pool).await.unwrap();
+    let outsider: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,'outsider','Outsider') RETURNING id")
+        .bind(random_id(12)).fetch_one(&pool).await.unwrap();
+    let space = random_id(12);
+    let space_id: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Account space',$2) RETURNING id")
+        .bind(&space).bind(owner).fetch_one(&pool).await.unwrap();
+    for user in [owner, member, outsider] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space_id)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let first = random_id(12);
+    let second = random_id(12);
+    let public = random_id(12);
+    let first_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,private) VALUES($1,$2,'first',true) RETURNING id")
+        .bind(&first).bind(space_id).fetch_one(&pool).await.unwrap();
+    let second_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,private) VALUES($1,$2,'second',true) RETURNING id")
+        .bind(&second).bind(space_id).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'public')")
+        .bind(&public)
+        .bind(space_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for channel in [first_id, second_id] {
+        sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(member)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let cookie = "member-account-cookie";
+    let account_hash = Sha256::digest(cookie.as_bytes()).to_vec();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+        .bind(&account_hash).bind(member).execute(&pool).await.unwrap();
+    let chat_token = "member-chat-token";
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Member',$4)")
+        .bind(random_id(12)).bind(Sha256::digest(chat_token.as_bytes()).as_slice()).bind(member).bind(&account_hash).execute(&pool).await.unwrap();
+    let outsider_cookie = "outsider-account-cookie";
+    let outsider_hash = Sha256::digest(outsider_cookie.as_bytes()).to_vec();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+        .bind(&outsider_hash).bind(outsider).execute(&pool).await.unwrap();
+    let outsider_chat = "outsider-chat-token";
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Outsider',$4)")
+        .bind(random_id(12)).bind(Sha256::digest(outsider_chat.as_bytes()).as_slice()).bind(outsider).bind(&outsider_hash).execute(&pool).await.unwrap();
+    let guest = "non-demo-guest";
+    sqlx::query(
+        "INSERT INTO public.chat_sessions(external_id,token_hash,name) VALUES($1,$2,'Guest')",
+    )
+    .bind(random_id(12))
+    .bind(Sha256::digest(guest.as_bytes()).as_slice())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let first_message = persist(&pool, &first, chat_token, Uuid::new_v4(), "first channel")
+        .await
+        .unwrap();
+    let second_message = persist(&pool, &second, chat_token, Uuid::new_v4(), "second channel")
+        .await
+        .unwrap();
+    assert_eq!(first_message["seq"], "1");
+    assert_eq!(second_message["seq"], "1");
+    assert_eq!(
+        persist(&pool, &first, outsider_chat, Uuid::new_v4(), "denied")
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        persist(&pool, &public, guest, Uuid::new_v4(), "denied")
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let history = history_page(&pool, &first, None, Some(member))
+        .await
+        .unwrap();
+    assert_eq!(history["space"], json!({"id":space,"name":"Account space"}));
+    assert_eq!(history["channel"], json!({"id":first,"name":"first"}));
+    assert_eq!(
+        history_page(&pool, &first, None, None)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // A send waiting behind grant removal must authorize against a fresh
+    // snapshot after it acquires the space lock, not the pre-wait snapshot.
+    let mut removal = pool.begin().await.unwrap();
+    let blocker: i32 =
+        sqlx::query_scalar("SELECT pg_backend_pid() FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(space_id)
+            .fetch_one(&mut *removal)
+            .await
+            .unwrap();
+    sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+        .bind(first_id)
+        .bind(member)
+        .execute(&mut *removal)
+        .await
+        .unwrap();
+    let sending_pool = pool.clone();
+    let sending_channel = first.clone();
+    let sending = tokio::spawn(async move {
+        persist(
+            &sending_pool,
+            &sending_channel,
+            chat_token,
+            Uuid::new_v4(),
+            "racing removal",
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))")
+                .bind(blocker).fetch_one(&pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("send should wait behind membership mutation");
+    removal.commit().await.unwrap();
+    assert_eq!(
+        sending.await.unwrap().unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) VALUES($1,$2)")
+        .bind(first_id)
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let broker = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap()).unwrap();
+    let chat = Chat {
+        pool: pool.clone(),
+        broker,
+        wake: Arc::new(Notify::new()),
+    };
+    let gateway = crate::gateway::Gateway::new(chat);
+    gateway.start();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(axum::serve(listener, crate::gateway::router(gateway)).into_future());
+    let mut request = format!("ws://{address}/api/chat/events?channelId={first}&after=0")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("cookie", format!("caper_session={cookie}").parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(event(&mut socket).await["message"], first_message);
+    assert_eq!(
+        event(&mut socket).await,
+        json!({"type":"ready","cursor":"1"})
+    );
+
+    // Removing the private grant closes an already-established subscription on
+    // the next periodic authorization tick, without requiring another event.
+    sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+        .bind(first_id)
+        .bind(member)
+        .execute(&pool)
+        .await
+        .unwrap();
+    wait_closed(&mut socket).await;
+    let mut denied = format!("ws://{address}/api/chat/events?channelId={first}&after=1")
+        .into_client_request()
+        .unwrap();
+    denied
+        .headers_mut()
+        .insert("cookie", format!("caper_session={cookie}").parse().unwrap());
+    assert!(tokio_tungstenite::connect_async(denied).await.is_err());
+
+    // A privacy conversion similarly invalidates a member without a grant.
+    let mut public_request = format!("ws://{address}/api/chat/events?channelId={public}&after=0")
+        .into_client_request()
+        .unwrap();
+    public_request.headers_mut().insert(
+        "cookie",
+        format!("caper_session={outsider_cookie}").parse().unwrap(),
+    );
+    let (mut public_socket, _) = tokio_tungstenite::connect_async(public_request)
+        .await
+        .unwrap();
+    assert_eq!(event(&mut public_socket).await["cursor"], "0");
+    sqlx::query("UPDATE public.channels SET private=true WHERE external_id=$1")
+        .bind(&public)
+        .execute(&pool)
+        .await
+        .unwrap();
+    wait_closed(&mut public_socket).await;
+
+    server.abort();
     pool.close().await;
     admin
         .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())

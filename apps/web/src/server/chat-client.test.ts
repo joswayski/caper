@@ -7,10 +7,11 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 class TestSocket extends EventTarget {
   url: string;
+  closed = false;
   constructor(url: string) { super(); this.url = url; }
   frame(event: ChatEvent) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(event) })); }
   message(message: ChatMessage) { this.frame({ type: "message.created", channelId: message.channelId, seq: message.seq, message }); }
-  close() {}
+  close() { this.closed = true; }
 }
 
 function installBrowser(t: TestContext) {
@@ -478,3 +479,43 @@ for (const status of [200, 503]) {
     assert.deepEqual(f.state.messages, [f.message(7), f.message(8), f.message(9)]);
   });
 }
+
+test("channel clients isolate history, websocket URLs, and late events across a switch", async (t) => {
+  const sockets = installBrowser(t);
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input);
+    requests.push(url);
+    const channelId = url.includes("alpha") ? "alphaChannel" : "bravoChannel";
+    return Response.json({
+      space: { id: "space1234567", name: "Studio" },
+      channel: { id: channelId, name: channelId === "alphaChannel" ? "alpha" : "bravo" },
+      messages: [], cursor: "0", hasMore: false,
+    });
+  });
+
+  let alpha!: ChatViewState;
+  const first = new ChatClient((state) => { alpha = state; }, "alphaChannel");
+  first.start();
+  await tick();
+  assert.equal(requests[0], "/api/chat/channels/alphaChannel/messages");
+  assert.equal(new URL(sockets[0].url).searchParams.get("channelId"), "alphaChannel");
+  first.stop();
+  assert.equal(sockets[0].closed, true);
+
+  let bravo!: ChatViewState;
+  const second = new ChatClient((state) => { bravo = state; }, "bravoChannel");
+  t.after(() => second.stop());
+  second.start();
+  await tick();
+  assert.equal(requests[1], "/api/chat/channels/bravoChannel/messages");
+  assert.equal(new URL(sockets[1].url).searchParams.get("channelId"), "bravoChannel");
+
+  const stale: ChatMessage = {
+    id: "stale", channelId: "alphaChannel", seq: "1", author: { id: "peer", name: "Peer", isGuest: false },
+    content: { version: 1, type: "text", text: "wrong room" }, createdAt: "2026-09-22T12:00:00Z", clientMessageId: "stale-command",
+  };
+  sockets[0].message(stale);
+  assert.deepEqual(alpha.messages, []);
+  assert.deepEqual(bravo.messages, [], "an old channel cannot leak messages into the replacement client");
+});

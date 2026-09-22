@@ -1,0 +1,1164 @@
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import { Hash, LockKeyhole, Plus, Settings2, X } from "lucide-react";
+import { getAccount, type Account } from "../account/client";
+import Call from "../pages/Call";
+import {
+  addChannelMember,
+  addSpaceMember,
+  channelNameError,
+  createChannel,
+  createSpace,
+  deleteChannel,
+  deleteSpace,
+  getSpace,
+  listChannelMembers,
+  listSpaces,
+  removeChannelMember,
+  removeSpaceMember,
+  spaceNameError,
+  updateChannel,
+  updateSpace,
+  type Channel,
+  type Member,
+  type Space,
+  type SpaceDetail,
+  type SpaceLimits,
+} from "./client";
+import "./spaces.css";
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "That request did not work.";
+}
+
+function selectedFromUrl() {
+  if (typeof window === "undefined") return {};
+  const query = new URLSearchParams(window.location.search);
+  return {
+    spaceId: query.get("space") ?? undefined,
+    channelId: query.get("channel") ?? undefined,
+  };
+}
+
+function Dialog({
+  title,
+  description,
+  onClose,
+  children,
+  width = "standard",
+}: {
+  title: string;
+  description?: string;
+  onClose: () => void;
+  children: ReactNode;
+  width?: "standard" | "wide";
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    ref.current?.showModal();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      className={`space-dialog ${width === "wide" ? "space-dialog-wide" : ""}`}
+      aria-labelledby="space-dialog-title"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+    >
+      <header>
+        <div>
+          <h2 id="space-dialog-title">{title}</h2>
+          {description && <p>{description}</p>}
+        </div>
+        <button type="button" aria-label={`Close ${title}`} onClick={onClose}>
+          <X aria-hidden="true" />
+        </button>
+      </header>
+      {children}
+    </dialog>
+  );
+}
+
+function NameField({
+  label,
+  value,
+  onChange,
+  channel = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  channel?: boolean;
+}) {
+  return (
+    <label className="space-field">
+      <span>{label}</span>
+      <input
+        autoFocus
+        value={value}
+        maxLength={80}
+        autoComplete="off"
+        spellCheck={!channel}
+        placeholder={channel ? "project-updates" : "Studio"}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {channel && <small>Lowercase letters and single dashes only.</small>}
+    </label>
+  );
+}
+
+function SubmitRow({
+  pending,
+  label,
+  onCancel,
+  destructive = false,
+}: {
+  pending: boolean;
+  label: string;
+  onCancel: () => void;
+  destructive?: boolean;
+}) {
+  return (
+    <div className="space-dialog-actions">
+      <button type="button" className="secondary" onClick={onCancel}>
+        Cancel
+      </button>
+      <button
+        type="submit"
+        className={destructive ? "danger" : "primary"}
+        disabled={pending}
+      >
+        {pending ? "Saving…" : label}
+      </button>
+    </div>
+  );
+}
+
+function CreateSpaceDialog({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (space: Space) => void;
+}) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const invalid = spaceNameError(name);
+    if (invalid) return setError(invalid);
+    setPending(true);
+    setError(undefined);
+    try {
+      onCreated(await createSpace(name));
+    } catch (reason) {
+      setError(errorMessage(reason));
+      setPending(false);
+    }
+  };
+  return (
+    <Dialog
+      title="Create a space"
+      description="A general channel is created automatically."
+      onClose={onClose}
+    >
+      <form onSubmit={(event) => void submit(event)}>
+        <NameField label="Space name" value={name} onChange={setName} />
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <SubmitRow pending={pending} label="Create space" onCancel={onClose} />
+      </form>
+    </Dialog>
+  );
+}
+
+function CreateChannelDialog({
+  space,
+  onClose,
+  onCreated,
+}: {
+  space: SpaceDetail;
+  onClose: () => void;
+  onCreated: (channel: Channel) => void;
+}) {
+  const [name, setName] = useState("");
+  const [privateChannel, setPrivateChannel] = useState(false);
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const invalid = channelNameError(name);
+    if (invalid) return setError(invalid);
+    setPending(true);
+    setError(undefined);
+    try {
+      onCreated(await createChannel(space.space.id, name, privateChannel));
+    } catch (reason) {
+      setError(errorMessage(reason));
+      setPending(false);
+    }
+  };
+  return (
+    <Dialog
+      title="Create a channel"
+      description={`Channels in ${space.space.name} combine text and voice.`}
+      onClose={onClose}
+    >
+      <form onSubmit={(event) => void submit(event)}>
+        <NameField
+          channel
+          label="Channel name"
+          value={name}
+          onChange={setName}
+        />
+        <label className="privacy-choice">
+          <input
+            type="checkbox"
+            checked={privateChannel}
+            onChange={(event) => setPrivateChannel(event.target.checked)}
+          />
+          <span>
+            <strong>Private channel</strong>
+            <small>
+              Only the owner and selected space members can access it.
+            </small>
+          </span>
+        </label>
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <SubmitRow
+          pending={pending}
+          label="Create channel"
+          onCancel={onClose}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+function LeaveSpaceDialog({
+  space,
+  account,
+  onClose,
+  onLeft,
+}: {
+  space: Space;
+  account: Account;
+  onClose: () => void;
+  onLeft: () => void;
+}) {
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  return (
+    <Dialog
+      title={`Leave ${space.name}?`}
+      description="You will lose access to its channels and conversations. An owner can add you again later."
+      onClose={onClose}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setPending(true);
+          setError(undefined);
+          void removeSpaceMember(space.id, account.id)
+            .then(onLeft)
+            .catch((reason) => {
+              setError(errorMessage(reason));
+              setPending(false);
+            });
+        }}
+      >
+        {error && (
+          <p className="space-form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <SubmitRow
+          pending={pending}
+          label="Leave space"
+          destructive
+          onCancel={onClose}
+        />
+      </form>
+    </Dialog>
+  );
+}
+
+function MemberManager({
+  members,
+  onAdd,
+  onRemove,
+  pending,
+}: {
+  members: Member[];
+  onAdd: (username: string) => Promise<void>;
+  onRemove: (member: Member) => Promise<void>;
+  pending: boolean;
+}) {
+  const [username, setUsername] = useState("");
+  const [error, setError] = useState<string>();
+  return (
+    <section className="member-manager">
+      <div className="dialog-section-heading">
+        <h3>Members</h3>
+        <span>{members.length}</span>
+      </div>
+      <form
+        className="member-add"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!username) return setError("Enter an exact username.");
+          setError(undefined);
+          void onAdd(username)
+            .then(() => setUsername(""))
+            .catch((reason) => setError(errorMessage(reason)));
+        }}
+      >
+        <label className="sr-only" htmlFor="member-username">
+          Exact username
+        </label>
+        <input
+          id="member-username"
+          value={username}
+          autoComplete="off"
+          placeholder="Exact username"
+          onChange={(event) => setUsername(event.target.value)}
+        />
+        <button type="submit" disabled={pending}>
+          Add
+        </button>
+      </form>
+      {error && (
+        <p className="space-form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <ul>
+        {members.map((member) => (
+          <li key={member.id}>
+            <span className="member-avatar" aria-hidden="true">
+              {member.displayName.slice(0, 1).toUpperCase()}
+            </span>
+            <span>
+              <strong>{member.displayName}</strong>
+              <small>
+                @{member.username}
+                {member.owner ? " · Owner" : ""}
+              </small>
+            </span>
+            {!member.owner && (
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() =>
+                  void onRemove(member).catch((reason) =>
+                    setError(errorMessage(reason)),
+                  )
+                }
+              >
+                Remove
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function ManageSpaceDialog({
+  detail,
+  onClose,
+  onChanged,
+  onDeleted,
+}: {
+  detail: SpaceDetail;
+  onClose: () => void;
+  onChanged: (detail: SpaceDetail) => void;
+  onDeleted: () => void;
+}) {
+  const [name, setName] = useState(detail.space.name);
+  const [members, setMembers] = useState(detail.members);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  const run = async (action: () => Promise<void>) => {
+    setPending(true);
+    setError(undefined);
+    try {
+      await action();
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <Dialog
+      title="Manage space"
+      description="Only the owner can change this space and its membership."
+      onClose={onClose}
+      width="wide"
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          const invalid = spaceNameError(name);
+          if (invalid) return setError(invalid);
+          void run(async () => {
+            const space = await updateSpace(detail.space.id, name);
+            onChanged({ ...detail, space, members });
+          }).catch((reason) => setError(errorMessage(reason)));
+        }}
+      >
+        <NameField label="Space name" value={name} onChange={setName} />
+        <div className="inline-save">
+          <button
+            className="secondary"
+            disabled={pending || name.trim() === detail.space.name}
+            type="submit"
+          >
+            Save name
+          </button>
+        </div>
+      </form>
+      {error && (
+        <p className="space-form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <MemberManager
+        members={members}
+        pending={pending}
+        onAdd={(username) =>
+          run(async () => {
+            const member = await addSpaceMember(detail.space.id, username);
+            const next = [
+              ...members.filter((item) => item.id !== member.id),
+              member,
+            ];
+            setMembers(next);
+            onChanged({ ...detail, members: next });
+          })
+        }
+        onRemove={async (member) =>
+          run(async () => {
+            await removeSpaceMember(detail.space.id, member.id);
+            const next = members.filter((item) => item.id !== member.id);
+            setMembers(next);
+            onChanged({ ...detail, members: next });
+          })
+        }
+      />
+      <section className="danger-zone">
+        <h3>Delete space</h3>
+        <p>
+          This removes access to this space and all of its conversations. There
+          is no undo in Caper.
+        </p>
+        {confirmDelete ? (
+          <div>
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => setConfirmDelete(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="danger"
+              type="button"
+              disabled={pending}
+              onClick={() =>
+                void run(async () => {
+                  await deleteSpace(detail.space.id);
+                  onDeleted();
+                }).catch((reason) => setError(errorMessage(reason)))
+              }
+            >
+              Delete {detail.space.name}
+            </button>
+          </div>
+        ) : (
+          <button
+            className="danger-outline"
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete space…
+          </button>
+        )}
+      </section>
+    </Dialog>
+  );
+}
+
+function ManageChannelDialog({
+  detail,
+  channel,
+  onClose,
+  onChanged,
+  onDeleted,
+}: {
+  detail: SpaceDetail;
+  channel: Channel;
+  onClose: () => void;
+  onChanged: (channel: Channel) => void;
+  onDeleted: () => void;
+}) {
+  const [name, setName] = useState(channel.name);
+  const [privateChannel, setPrivateChannel] = useState(channel.private);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+  const run = async (action: () => Promise<void>) => {
+    setPending(true);
+    setError(undefined);
+    try {
+      await action();
+    } finally {
+      setPending(false);
+    }
+  };
+  useEffect(() => {
+    if (channel.private)
+      void listChannelMembers(detail.space.id, channel.id)
+        .then((value) => setMembers(value.members))
+        .catch((reason) => setError(errorMessage(reason)));
+  }, [channel.id, channel.private, detail.space.id]);
+  return (
+    <Dialog
+      title={`Manage #${channel.name}`}
+      description="Text and voice access always use the same channel membership."
+      onClose={onClose}
+      width="wide"
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          const invalid = channelNameError(name);
+          if (invalid) return setError(invalid);
+          void run(async () => {
+            const updated = await updateChannel(
+              detail.space.id,
+              channel.id,
+              name,
+              privateChannel,
+            );
+            onChanged(updated);
+            if (updated.private)
+              setMembers(
+                (await listChannelMembers(detail.space.id, channel.id)).members,
+              );
+          }).catch((reason) => setError(errorMessage(reason)));
+        }}
+      >
+        <NameField
+          channel
+          label="Channel name"
+          value={name}
+          onChange={setName}
+        />
+        <label className="privacy-choice">
+          <input
+            type="checkbox"
+            checked={privateChannel}
+            onChange={(event) => setPrivateChannel(event.target.checked)}
+          />
+          <span>
+            <strong>Private channel</strong>
+            <small>
+              Only selected space members can access text and voice.
+            </small>
+          </span>
+        </label>
+        <div className="inline-save">
+          <button className="secondary" disabled={pending} type="submit">
+            Save channel
+          </button>
+        </div>
+      </form>
+      {error && (
+        <p className="space-form-error" role="alert">
+          {error}
+        </p>
+      )}
+      {channel.private && (
+        <MemberManager
+          members={members}
+          pending={pending}
+          onAdd={async (username) =>
+            run(async () => {
+              const member = await addChannelMember(
+                detail.space.id,
+                channel.id,
+                username,
+              );
+              setMembers((current) => [
+                ...current.filter((item) => item.id !== member.id),
+                member,
+              ]);
+            })
+          }
+          onRemove={async (member) =>
+            run(async () => {
+              await removeChannelMember(detail.space.id, channel.id, member.id);
+              setMembers((current) =>
+                current.filter((item) => item.id !== member.id),
+              );
+            })
+          }
+        />
+      )}
+      <section className="danger-zone">
+        <h3>Delete channel</h3>
+        <p>
+          This removes access to this channel and its conversation. There is no
+          undo in Caper.
+        </p>
+        {confirmDelete ? (
+          <div>
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => setConfirmDelete(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="danger"
+              type="button"
+              disabled={pending}
+              onClick={() =>
+                void run(async () => {
+                  await deleteChannel(detail.space.id, channel.id);
+                  onDeleted();
+                }).catch((reason) => setError(errorMessage(reason)))
+              }
+            >
+              Delete #{channel.name}
+            </button>
+          </div>
+        ) : (
+          <button
+            className="danger-outline"
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete channel…
+          </button>
+        )}
+      </section>
+    </Dialog>
+  );
+}
+
+export default function Spaces() {
+  const [account, setAccount] = useState<Account>();
+  const [spaces, setSpaces] = useState<Space[]>([]);
+  const [limits, setLimits] = useState<SpaceLimits>();
+  const [detail, setDetail] = useState<SpaceDetail>();
+  const [selected, setSelected] = useState(selectedFromUrl);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const [dialog, setDialog] = useState<
+    "space" | "channel" | "manage-space" | "leave-space"
+  >();
+  const [manageChannel, setManageChannel] = useState<Channel>();
+  const [navigationOpen, setNavigationOpen] = useState(false);
+
+  const choose = (spaceId?: string, channelId?: string, replace = false) => {
+    const query = new URLSearchParams();
+    if (spaceId) query.set("space", spaceId);
+    if (channelId) query.set("channel", channelId);
+    window.history[replace ? "replaceState" : "pushState"](
+      {},
+      "",
+      `/spaces${query.size ? `?${query}` : ""}`,
+    );
+    setSelected({ spaceId, channelId });
+    setNavigationOpen(false);
+  };
+
+  useEffect(() => {
+    const pop = () => setSelected(selectedFromUrl());
+    window.addEventListener("popstate", pop);
+    return () => window.removeEventListener("popstate", pop);
+  }, []);
+
+  useEffect(() => {
+    let current = true;
+    void getAccount()
+      .then(async (nextAccount) => {
+        if (!current) return;
+        if (!nextAccount) return void window.location.assign("/login");
+        if (!nextAccount.username || !nextAccount.displayName)
+          return void window.location.assign("/profile");
+        const result = await listSpaces();
+        if (!current) return;
+        setAccount(nextAccount);
+        setSpaces(result.spaces);
+        setLimits(result.limits);
+        setLoading(false);
+        if (!result.spaces.some((space) => space.id === selected.spaceId))
+          choose(result.spaces[0]?.id, undefined, true);
+      })
+      .catch((reason) => {
+        if (current) {
+          setError(errorMessage(reason));
+          setLoading(false);
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (loading || !selected.spaceId) {
+      setDetail(undefined);
+      return;
+    }
+    let current = true;
+    setError(undefined);
+    void getSpace(selected.spaceId)
+      .then((next) => {
+        if (!current) return;
+        setDetail(next);
+        if (!next.channels.some((channel) => channel.id === selected.channelId))
+          choose(next.space.id, next.channels[0]?.id, true);
+      })
+      .catch((reason) => {
+        if (current) setError(errorMessage(reason));
+      });
+    return () => {
+      current = false;
+    };
+  }, [selected.spaceId, loading]);
+
+  const channel = detail?.channels.find(
+    (item) => item.id === selected.channelId,
+  );
+  const owner = !!account && detail?.space.ownerId === account.id;
+  const ownedCount = account
+    ? spaces.filter((space) => space.ownerId === account.id).length
+    : 0;
+  const canCreateSpace =
+    !!limits &&
+    ownedCount < limits.ownedSpaces &&
+    spaces.length < limits.totalSpaces;
+  const canCreateChannel =
+    !!limits && !!detail && detail.channels.length < limits.channelsPerSpace;
+  const replaceDetail = (next: SpaceDetail) => {
+    setDetail(next);
+    setSpaces((current) =>
+      current.map((space) => (space.id === next.space.id ? next.space : space)),
+    );
+  };
+
+  if (loading)
+    return (
+      <main className="spaces-state">
+        <a className="wordmark" href="/">
+          caper<span className="wordmark-dot">.</span>
+        </a>
+        <p>Loading your spaces…</p>
+      </main>
+    );
+  if (error && !spaces.length)
+    return (
+      <main className="spaces-state">
+        <a className="wordmark" href="/">
+          caper<span className="wordmark-dot">.</span>
+        </a>
+        <h1>Spaces are unavailable.</h1>
+        <p role="alert">{error}</p>
+        <button type="button" onClick={() => window.location.reload()}>
+          Try again
+        </button>
+      </main>
+    );
+  if (!spaces.length)
+    return (
+      <main className="spaces-empty">
+        <a className="wordmark" href="/">
+          caper<span className="wordmark-dot">.</span>
+        </a>
+        <section>
+          <p className="eyebrow">YOUR SPACES</p>
+          <h1>Start a conversation.</h1>
+          <p>
+            Create a space for your people. Every space begins with one unified
+            text and voice channel.
+          </p>
+          <button
+            type="button"
+            disabled={!canCreateSpace}
+            onClick={() => setDialog("space")}
+          >
+            Create your first space
+          </button>
+          {!canCreateSpace && <small>You have reached your space limit.</small>}
+        </section>
+        {dialog === "space" && (
+          <CreateSpaceDialog
+            onClose={() => setDialog(undefined)}
+            onCreated={(space) => {
+              setSpaces([space]);
+              setDialog(undefined);
+              choose(space.id);
+            }}
+          />
+        )}
+      </main>
+    );
+  if (!detail || !account)
+    return (
+      <main className="spaces-state">
+        <a className="wordmark" href="/">
+          caper<span className="wordmark-dot">.</span>
+        </a>
+        <p>{error ?? "Loading channels…"}</p>
+      </main>
+    );
+
+  const rail = (
+    <nav className="space-rail" aria-label="Spaces">
+      <a className="demo-space" href="/live" title="Public General">
+        G
+      </a>
+      {spaces.map((space) => (
+        <button
+          key={space.id}
+          type="button"
+          title={space.name}
+          aria-label={space.name}
+          aria-current={space.id === detail.space.id ? "page" : undefined}
+          onClick={() => choose(space.id)}
+        >
+          <span>{space.name.slice(0, 1).toUpperCase()}</span>
+        </button>
+      ))}
+      <button
+        className="add-space"
+        type="button"
+        title={
+          canCreateSpace
+            ? "Create space"
+            : `Space limit reached (${limits?.ownedSpaces ?? 20} owned, ${limits?.totalSpaces ?? 100} total)`
+        }
+        aria-label="Create space"
+        disabled={!canCreateSpace}
+        onClick={() => setDialog("space")}
+      >
+        <Plus aria-hidden="true" />
+      </button>
+    </nav>
+  );
+  const channelNavigation = (
+    <nav
+      className="channel-navigation"
+      aria-label={`${detail.space.name} channels`}
+    >
+      <header>
+        <div>
+          <span>Space</span>
+          <h1>{detail.space.name}</h1>
+        </div>
+        {navigationOpen && (
+          <button
+            type="button"
+            aria-label="Close navigation"
+            onClick={() => setNavigationOpen(false)}
+          >
+            <X aria-hidden="true" />
+          </button>
+        )}
+        {owner && (
+          <button
+            type="button"
+            aria-label={`Manage ${detail.space.name}`}
+            onClick={() => setDialog("manage-space")}
+          >
+            <Settings2 aria-hidden="true" />
+          </button>
+        )}
+      </header>
+      <div className="channel-section-heading">
+        <span>Channels</span>
+        {owner && (
+          <button
+            type="button"
+            disabled={!canCreateChannel}
+            title={
+              canCreateChannel
+                ? "Create channel"
+                : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`
+            }
+            aria-label="Create channel"
+            onClick={() => setDialog("channel")}
+          >
+            <Plus aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      <ul>
+        {detail.channels.map((item) => (
+          <li key={item.id}>
+            <button
+              className="channel-select"
+              type="button"
+              aria-current={item.id === channel?.id ? "page" : undefined}
+              onClick={() => choose(detail.space.id, item.id)}
+            >
+              {item.private ? (
+                <LockKeyhole aria-hidden="true" />
+              ) : (
+                <Hash aria-hidden="true" />
+              )}
+              <span>{item.name}</span>
+            </button>
+            {owner && (
+              <button
+                className="channel-manage"
+                type="button"
+                aria-label={`Manage ${item.name}`}
+                onClick={() => setManageChannel(item)}
+              >
+                <Settings2 aria-hidden="true" />
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {!owner && (
+        <button
+          className="leave-space"
+          type="button"
+          onClick={() => setDialog("leave-space")}
+        >
+          Leave space…
+        </button>
+      )}
+      {error && (
+        <p className="space-sidebar-error" role="alert">
+          {error}
+        </p>
+      )}
+    </nav>
+  );
+
+  if (!channel)
+    return (
+      <>
+        <main className="call-page">
+          <header className="call-header">
+            <a className="wordmark" href="/">
+              caper<span className="wordmark-dot">.</span>
+            </a>
+            <a className="call-destination" href="/live">
+              General demo
+            </a>
+          </header>
+          <section
+            className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
+          >
+            {rail}
+            <aside className="people-panel">
+              <div className="sidebar-channels">{channelNavigation}</div>
+              <div className="empty-channel-account">
+                <span className="account-avatar" aria-hidden="true">
+                  {account.displayName?.slice(0, 1).toUpperCase()}
+                </span>
+                <strong>{account.displayName}</strong>
+              </div>
+            </aside>
+            <div className="stage empty-channel">
+              <button
+                className="navigation-toggle"
+                type="button"
+                aria-expanded={navigationOpen}
+                onClick={() => setNavigationOpen((open) => !open)}
+              >
+                <Hash aria-hidden="true" />
+                Browse spaces
+              </button>
+              <Hash aria-hidden="true" />
+              <h2>No accessible channels</h2>
+              <p>
+                {owner
+                  ? "Create a channel to start a conversation."
+                  : "The owner has not shared a channel with you yet."}
+              </p>
+              {owner && (
+                <button type="button" onClick={() => setDialog("channel")}>
+                  Create channel
+                </button>
+              )}
+            </div>
+          </section>
+        </main>
+        {dialog === "space" && (
+          <CreateSpaceDialog
+            onClose={() => setDialog(undefined)}
+            onCreated={(space) => {
+              setSpaces((current) => [...current, space]);
+              setDialog(undefined);
+              choose(space.id);
+            }}
+          />
+        )}
+        {dialog === "channel" && (
+          <CreateChannelDialog
+            space={detail}
+            onClose={() => setDialog(undefined)}
+            onCreated={(created) => {
+              replaceDetail({ ...detail, channels: [created] });
+              setDialog(undefined);
+              choose(detail.space.id, created.id);
+            }}
+          />
+        )}
+        {dialog === "manage-space" && (
+          <ManageSpaceDialog
+            detail={detail}
+            onClose={() => setDialog(undefined)}
+            onChanged={replaceDetail}
+            onDeleted={() => {
+              const remaining = spaces.filter(
+                (space) => space.id !== detail.space.id,
+              );
+              setSpaces(remaining);
+              setDialog(undefined);
+              choose(remaining[0]?.id, undefined, true);
+            }}
+          />
+        )}
+        {dialog === "leave-space" && (
+          <LeaveSpaceDialog
+            space={detail.space}
+            account={account}
+            onClose={() => setDialog(undefined)}
+            onLeft={() => {
+              const remaining = spaces.filter(
+                (space) => space.id !== detail.space.id,
+              );
+              setSpaces(remaining);
+              setDialog(undefined);
+              choose(remaining[0]?.id, undefined, true);
+            }}
+          />
+        )}
+      </>
+    );
+
+  return (
+    <>
+      <Call
+        key={channel.id}
+        channel={{
+          id: channel.id,
+          name: channel.name,
+          spaceName: detail.space.name,
+        }}
+        initialAccount={account}
+        spaceRail={rail}
+        channelNavigation={channelNavigation}
+        navigationOpen={navigationOpen}
+        onNavigationToggle={() => setNavigationOpen((open) => !open)}
+      />
+      {dialog === "space" && (
+        <CreateSpaceDialog
+          onClose={() => setDialog(undefined)}
+          onCreated={(space) => {
+            setSpaces((current) => [...current, space]);
+            setDialog(undefined);
+            choose(space.id);
+          }}
+        />
+      )}
+      {dialog === "channel" && (
+        <CreateChannelDialog
+          space={detail}
+          onClose={() => setDialog(undefined)}
+          onCreated={(created) => {
+            replaceDetail({
+              ...detail,
+              channels: [...detail.channels, created],
+            });
+            setDialog(undefined);
+            choose(detail.space.id, created.id);
+            if (created.private) setManageChannel(created);
+          }}
+        />
+      )}
+      {dialog === "manage-space" && (
+        <ManageSpaceDialog
+          detail={detail}
+          onClose={() => setDialog(undefined)}
+          onChanged={replaceDetail}
+          onDeleted={() => {
+            const remaining = spaces.filter(
+              (space) => space.id !== detail.space.id,
+            );
+            setSpaces(remaining);
+            setDialog(undefined);
+            choose(remaining[0]?.id, undefined, true);
+          }}
+        />
+      )}
+      {dialog === "leave-space" && (
+        <LeaveSpaceDialog
+          space={detail.space}
+          account={account}
+          onClose={() => setDialog(undefined)}
+          onLeft={() => {
+            const remaining = spaces.filter(
+              (space) => space.id !== detail.space.id,
+            );
+            setSpaces(remaining);
+            setDialog(undefined);
+            choose(remaining[0]?.id, undefined, true);
+          }}
+        />
+      )}
+      {manageChannel && (
+        <ManageChannelDialog
+          detail={detail}
+          channel={manageChannel}
+          onClose={() => setManageChannel(undefined)}
+          onChanged={(updated) => {
+            replaceDetail({
+              ...detail,
+              channels: detail.channels.map((item) =>
+                item.id === updated.id ? updated : item,
+              ),
+            });
+            setManageChannel(updated);
+          }}
+          onDeleted={() => {
+            const remaining = detail.channels.filter(
+              (item) => item.id !== manageChannel.id,
+            );
+            replaceDetail({ ...detail, channels: remaining });
+            setManageChannel(undefined);
+            choose(detail.space.id, remaining[0]?.id, true);
+          }}
+        />
+      )}
+    </>
+  );
+}

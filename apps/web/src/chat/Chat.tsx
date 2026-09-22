@@ -33,7 +33,7 @@ function HistoryHeader({ context }: { context?: HistoryContext }) {
 
 const listComponents = { Header: HistoryHeader };
 
-export default function Chat({ name, signedIn, identityReady, headerActions, onAuthorChange }: { name: string; signedIn: boolean; identityReady: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, showTitle = false, headerActions, onAuthorChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void }) {
   const [state, setState] = useState(initialView);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   const [draft, setDraft] = useState("");
@@ -82,11 +82,11 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
       }
       pendingId = pending?.clientMessageId;
       setState(next);
-    });
+    }, channelId);
     clientRef.current = client;
     client.start();
     return () => { client.stop(); clientRef.current = undefined; };
-  }, []);
+  }, [channelId]);
 
   useEffect(() => {
     if (identityReady) clientRef.current?.identify(name, signedIn);
@@ -103,7 +103,7 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const loadOlder = () => { void clientRef.current?.loadOlder(); };
 
   const sending = !!state.pendingSend && !state.sendError;
-  const channelName = state.channelName.toLowerCase();
+  const channelName = (expectedChannelName ?? state.channelName).toLowerCase();
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const messages = state.pendingSend ? [...state.messages, state.pendingSend] : state.messages;
@@ -133,7 +133,7 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
 
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
-      <h2 id="chat-heading" className="sr-only"># {channelName}</h2>
+      <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}># {channelName}</h2>
       {headerActions}
       {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
     </header>

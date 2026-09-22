@@ -156,6 +156,9 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
             "GRANT SELECT, INSERT, UPDATE ON public.spaces, public.channels, public.chat_sessions, public.messages, public.channel_events TO {role}"
         ),
         format!(
+            "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members TO {role}"
+        ),
+        format!(
             "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq TO {role}"
         ),
     ] {

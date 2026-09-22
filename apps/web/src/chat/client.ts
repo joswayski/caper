@@ -78,8 +78,12 @@ export class ChatClient {
   private typingExpiryTimer?: ReturnType<typeof setTimeout>;
   private readonly typers = new Map<string, { author: ChatAuthor; typing: boolean; revision: bigint; expires: number }>();
   private readonly changed: (state: ChatViewState) => void;
+  private readonly channelId?: string;
 
-  constructor(changed: (state: ChatViewState) => void) { this.changed = changed; }
+  constructor(changed: (state: ChatViewState) => void, channelId?: string) {
+    this.changed = changed;
+    this.channelId = channelId;
+  }
 
   start() {
     void this.loadInitial();
@@ -255,10 +259,14 @@ export class ChatClient {
     this.refreshTypers();
     this.update({ phase: "loading", online: false, error: undefined, loadingOlder: false, olderError: undefined });
     try {
-      const response = await fetch("/api/chat/general", { cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]) });
+      const historyPath = this.channelId
+        ? `/api/chat/channels/${encodeURIComponent(this.channelId)}/messages`
+        : "/api/chat/general";
+      const response = await fetch(historyPath, { cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]) });
       if (!response.ok) throw await apiError(response, "Messages are unavailable.");
       const history: unknown = await response.json();
       if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
+      if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
       if (generation !== this.generation) return;
       this.timeline.reset(history.messages, history.cursor);
       this.update({

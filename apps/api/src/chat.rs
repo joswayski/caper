@@ -1,6 +1,10 @@
 //! Public demo commands. Persist before publishing; all future content rules
 //! belong on this path, never in a gateway or a delete/recreate bot.
-use crate::{ApiError, AppState, RuntimeEnvironment, account_token, auth::random_id};
+use crate::{
+    ApiError, AppState, RuntimeEnvironment, account_token,
+    auth::random_id,
+    spaces::{channel_access, session_user},
+};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -75,7 +79,7 @@ pub(crate) async fn seed(pool: &PgPool) -> Result<(), sqlx::Error> {
         .await?;
     sqlx::query("INSERT INTO public.spaces (external_id, name, demo) SELECT $1, 'Public demo', true WHERE NOT EXISTS (SELECT 1 FROM public.spaces WHERE demo)")
         .bind(random_id(12)).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO public.channels (external_id, space_id, name) SELECT $1, id, 'General' FROM public.spaces WHERE demo ON CONFLICT (space_id, name) DO NOTHING")
+    sqlx::query("INSERT INTO public.channels (external_id, space_id, name) SELECT $1, id, 'General' FROM public.spaces WHERE demo AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.channels c WHERE c.space_id=spaces.id AND c.name='General' AND c.deleted_at IS NULL)")
         .bind(random_id(12)).execute(&mut *tx).await?;
     tx.commit().await
 }
@@ -95,20 +99,13 @@ fn enabled(state: &AppState) -> Result<&Chat, ApiError> {
     state.chat.as_ref().ok_or_else(unavailable)
 }
 
-// This is deliberately the ONLY authorization policy for this throwaway public
-// demo. Future private channels must change both command and gateway checks.
-pub(crate) async fn public_channel(pool: &PgPool, id: &str) -> Result<(i64, i64), ApiError> {
-    sqlx::query_as("SELECT c.id, c.last_seq FROM public.channels c JOIN public.spaces s ON s.id = c.space_id WHERE c.external_id = $1 AND s.demo AND c.name = 'General'")
-        .bind(id).fetch_optional(pool).await.map_err(database_error)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))
-}
-
 async fn general(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
     let (space, name, channel, channel_name): (String, String, String, String) = sqlx::query_as(
         "SELECT s.external_id, s.name, c.external_id, c.name FROM public.spaces s JOIN public.channels c ON c.space_id = s.id WHERE s.demo AND c.name = 'General'")
         .fetch_one(&chat.pool).await.map_err(database_error)?;
-    let mut result = history_page(&chat.pool, &channel, None).await?;
+    let mut result = history_page(&chat.pool, &channel, None, None).await?;
+    // Keep the original demo endpoint's exact metadata source and shape.
     result["space"] = json!({"id":space,"name":name});
     result["channel"] = json!({"id":channel,"name":channel_name});
     Ok(Json(result))
@@ -122,11 +119,23 @@ async fn history(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     Query(query): Query<HistoryQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
+    let chat = enabled(&state)?;
     let before = query.before.as_deref().map(cursor).transpose()?;
+    let user = request_user(&chat.pool, &headers).await?;
     Ok(Json(
-        history_page(&enabled(&state)?.pool, &channel, before).await?,
+        history_page(&chat.pool, &channel, before, user).await?,
     ))
+}
+
+async fn request_user(pool: &PgPool, headers: &HeaderMap) -> Result<Option<i64>, ApiError> {
+    match account_token(headers) {
+        Some(token) => Ok(Some(
+            session_user(pool, Sha256::digest(token.as_bytes()).as_slice()).await?,
+        )),
+        None => Ok(None),
+    }
 }
 pub(crate) fn cursor(value: &str) -> Result<i64, ApiError> {
     value
@@ -139,15 +148,29 @@ async fn history_page(
     pool: &PgPool,
     channel: &str,
     before: Option<i64>,
+    user: Option<i64>,
 ) -> Result<Value, ApiError> {
-    let (id, head) = public_channel(pool, channel).await?;
+    let access = channel_access(pool, channel, user).await?;
+    let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
+        "SELECT s.external_id,s.name,c.name FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND s.demo=$3 AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
+    )
+    .bind(access.id)
+    .bind(access.space_id)
+    .bind(access.demo)
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     // Bound by the captured committed head. Later commits are replayed by WS.
     let mut rows: Vec<Value> = sqlx::query_scalar("SELECT payload FROM public.messages WHERE channel_id = $1 AND channel_seq <= $2 AND ($3::bigint IS NULL OR channel_seq < $3) ORDER BY channel_seq DESC LIMIT $4")
-        .bind(id).bind(head).bind(before).bind(PAGE + 1).fetch_all(pool).await.map_err(database_error)?;
+        .bind(access.id).bind(access.last_seq).bind(before).bind(PAGE + 1).fetch_all(pool).await.map_err(database_error)?;
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     rows.reverse();
-    Ok(json!({"messages":rows,"cursor":head.to_string(),"hasMore":more}))
+    Ok(
+        json!({"messages":rows,"cursor":access.last_seq.to_string(),"hasMore":more,
+        "space":{"id":space,"name":space_name},"channel":{"id":channel,"name":channel_name}}),
+    )
 }
 
 #[derive(Deserialize)]
@@ -292,11 +315,11 @@ async fn publish_typing(
     token: &str,
     typing: bool,
 ) -> Result<(), ApiError> {
-    public_channel(&chat.pool, channel).await?;
     let (_, author_id, name, user_id) = {
         let mut connection = chat.pool.acquire().await.map_err(database_error)?;
         authorize_sender(&mut connection, token).await?
     };
+    channel_access(&chat.pool, channel, user_id).await?;
     let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none()},"typing":typing});
     // Atomic shared limits and publication. No draft text, DB write, outbox, or
     // sequence allocation. Broker time orders duplicate/overlapping streams;
@@ -348,16 +371,33 @@ async fn persist(
     text: &str,
 ) -> Result<Value, ApiError> {
     let content = prepare_text(text)?;
-    let (channel_id, _) = public_channel(pool, channel).await?;
     let mut tx = pool.begin().await.map_err(database_error)?;
-    // Channel lock serializes commit order, rate checks, and duplicate requests.
-    let head: i64 =
-        sqlx::query_scalar("SELECT last_seq FROM public.channels WHERE id = $1 FOR UPDATE")
-            .bind(channel_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(database_error)?;
     let (session_id, author_id, name, user_id) = authorize_sender(&mut tx, token).await?;
+    // Membership mutations lock the space first. Take that lock in a separate
+    // statement so the access query gets a fresh READ COMMITTED snapshot after
+    // waiting; a predicate in the locking query can see pre-removal grants.
+    sqlx::query("SELECT s.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE c.external_id=$1 FOR UPDATE OF s")
+        .bind(channel)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT c.id,c.last_seq FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
+           AND ((s.demo AND c.name='General') OR
+                ($2::bigint IS NOT NULL
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))))
+         FOR UPDATE OF c",
+    )
+    .bind(channel)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    let (channel_id, head) =
+        row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     let hash = Sha256::digest(text.as_bytes()).to_vec();
     let existing: Option<(i64, Vec<u8>, Value)> = sqlx::query_as("SELECT session_id, request_hash, payload FROM public.messages WHERE channel_id = $1 AND client_message_id = $2")
         .bind(channel_id).bind(client_id).fetch_optional(&mut *tx).await.map_err(database_error)?;

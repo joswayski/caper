@@ -115,6 +115,19 @@ test("an already cancelled join does not open an event stream", async (t) => {
   assert.equal(errors.length, 0);
 });
 
+test("channel media events keep the channel API root on authenticated streams", async (t) => {
+  let requested = "";
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    requested = String(input);
+    return new Response(null, { status: 503 });
+  });
+  const owner = new AbortController();
+  const events = new CallEvents(() => undefined, () => undefined, undefined, undefined, undefined, "/api/channels/channel12345/media");
+  t.after(() => { owner.abort(); events.stop(); });
+  await assert.rejects(events.open("token", owner.signal), /unavailable/);
+  assert.equal(requested, "/api/channels/channel12345/media/events?snapshots=1");
+});
+
 test("changed before ready and oversized partial frames are rejected", async (t) => {
   for (const input of ["event: changed\ndata: {}\n\n", "x".repeat(65_537)]) {
     await t.test(input.length > 100 ? "oversized" : "missing handshake", async (t) => {

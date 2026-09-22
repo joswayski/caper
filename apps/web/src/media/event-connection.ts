@@ -17,17 +17,20 @@ export class EventConnection {
   private readonly lost: (error: Error, draining: boolean) => void;
   private readonly snapshot: (value: CallSnapshot & { revision?: number }) => void;
   private readonly draining: () => void;
+  private readonly apiRoot: string;
 
   constructor(
     changed: () => void,
     lost: (error: Error, draining: boolean) => void,
     snapshot: (value: CallSnapshot & { revision?: number }) => void,
     draining: () => void,
+    apiRoot = "/api/media",
   ) {
     this.changed = changed;
     this.lost = lost;
     this.snapshot = snapshot;
     this.draining = draining;
+    this.apiRoot = apiRoot;
   }
 
   get connected() { return this.active?.connected ?? false; }
@@ -76,6 +79,7 @@ export class EventConnection {
           this.replace();
         }
       },
+      this.apiRoot,
     );
     return current;
   }

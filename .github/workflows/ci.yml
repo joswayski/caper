@@ -75,7 +75,7 @@ jobs:
             sleep 1
           done
           docker exec chat-valkey valkey-cli cluster info | grep -q 'cluster_state:ok'
-      - run: CHAT_TEST_DATABASE_URL="$DATABASE_URL" CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 cargo test --locked -p caper-api -- --ignored --skip tests::shared
+      - run: CHAT_TEST_DATABASE_URL="$DATABASE_URL" CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 TEST_VALKEY_URL=redis://127.0.0.1:6379 cargo test --locked -p caper-api -- --ignored --skip tests::shared
 
   shared-media:
     name: Cross-pod media (Valkey)
