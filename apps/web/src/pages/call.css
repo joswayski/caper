@@ -1,6 +1,6 @@
 .call-page { min-height: 100vh; background: var(--blackout); }
 .call-header { width: min(1400px, calc(100% - 56px)); height: 80px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
-.call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; margin: auto 12px 12px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
+.call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; margin: auto 8px 8px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
 .account-profile { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .account-profile:hover { background: var(--surface-composer); }
 .account-avatar { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
