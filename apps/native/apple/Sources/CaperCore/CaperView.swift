@@ -541,7 +541,10 @@ private struct ChatView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 if narrow {
-                    Button(action: browse) { Label("Browse", systemImage: "line.3.horizontal") }.buttonStyle(.bordered).controlSize(.small)
+                    Button(action: browse) {
+                        Image(systemName: "line.3.horizontal").font(.system(size: 18))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Open navigation")
                     VoiceHeaderButton(model: model, voice: voice)
                     Button(action: toggleMembers) { Image(systemName: "person.2.fill") }
                         .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")

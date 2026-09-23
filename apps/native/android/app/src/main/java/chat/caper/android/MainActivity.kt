@@ -377,7 +377,9 @@ internal data class VoiceJoinIntent(
     val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
         Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (narrow) OutlinedButton(openNavigation, contentPadding = PaddingValues(horizontal = 9.dp), border = BorderStroke(1.dp, Border)) { Icon(Icons.Default.Menu, null, Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text("Browse", fontSize = 11.sp) }
+            if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
+                Icon(Icons.Default.Menu, "Open navigation", Modifier.size(24.dp))
+            }
             Text("# ${channel.name}", Modifier.weight(1f).padding(start = if (narrow) 10.dp else 0.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (state.gateway != GatewayStatus.LIVE) Text(if (state.gateway == GatewayStatus.ERROR) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp)
             Spacer(Modifier.width(10.dp))

@@ -279,9 +279,10 @@ def main() -> None:
 
     viewport(390, 844)
     launch()
-    narrow = capture("caper-android-narrow", "Browse")
+    narrow = capture("caper-android-narrow", "Open navigation")
+    assert find(narrow, text="Browse") is None, "Mobile navigation must be icon-only"
     assert find(narrow, contains="Message #general") is not None
-    tap(text="Browse")
+    tap(description="Open navigation")
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")
     browse = capture("caper-android-browse", "Fixture Studio")

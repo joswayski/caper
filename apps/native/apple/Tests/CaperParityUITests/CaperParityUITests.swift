@@ -172,7 +172,7 @@ final class CaperParityUITests: XCTestCase {
         let app = launch(experimentalVoice: true)
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         #if os(iOS)
-        app.buttons["Browse"].tap()
+        app.buttons["Open navigation"].tap()
         #endif
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
@@ -249,9 +249,11 @@ final class CaperParityUITests: XCTestCase {
     #if os(iOS)
     func testNarrowConversationAndBrowse() {
         let app = launch()
-        XCTAssertTrue(app.buttons["Browse"].waitForExistence(timeout: 10))
+        let navigation = app.buttons["Open navigation"]
+        XCTAssertTrue(navigation.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["Browse"].exists)
         capture("narrow-conversation", app: app)
-        app.buttons["Browse"].tap()
+        navigation.tap()
         assertElement("selected-space-name", label: "Fixture Studio", in: app, timeout: 5)
         capture("narrow-browse", app: app)
     }
