@@ -107,18 +107,30 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
 }
 
 function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
+  const tooltip = useRef<HTMLSpanElement>(null);
+  const show = (button: HTMLButtonElement) => {
+    const element = tooltip.current;
+    if (!element) return;
+    element.showPopover();
+    const anchor = button.getBoundingClientRect();
+    const bounds = element.getBoundingClientRect();
+    element.style.left = `${Math.max(8, Math.min(anchor.right - bounds.width, window.innerWidth - bounds.width - 8))}px`;
+    element.style.top = `${anchor.top >= bounds.height + 8 ? anchor.top - bounds.height - 8 : anchor.bottom + 8}px`;
+  };
+  const hide = () => tooltip.current?.hidePopover();
   return <span className="processing-detail">
     {label}
-    <button type="button" aria-label={`About ${label}`} aria-describedby={id}>?</button>
-    <span id={id} role="tooltip">{children}</span>
+    <button type="button" aria-label={`About ${label}`} aria-describedby={id} popoverTarget={id} popoverTargetAction="show" onMouseEnter={(event) => show(event.currentTarget)} onMouseLeave={(event) => { if (document.activeElement !== event.currentTarget) hide(); }} onFocus={(event) => show(event.currentTarget)} onBlur={hide} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); hide(); } }}>?</button>
+    <span ref={tooltip} id={id} role="tooltip" popover="auto">{children}</span>
   </span>;
 }
 
-export default function MicPlayback({ stream, output, volume = 100, processingStrength, onProcessingStrengthChange }: {
+export default function MicPlayback({ stream, output, volume = 100, processingStrength, noiseStatus, onProcessingStrengthChange }: {
   stream: MediaStream;
   output: string;
   volume?: number;
   processingStrength: number;
+  noiseStatus?: string;
   onProcessingStrengthChange(strength: number): void;
 }) {
   const urlsRef = useRef<{ natural?: string; processed?: string }>({});
@@ -232,7 +244,8 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
       </div>
       {recording && <p className="recording-clock"><i aria-hidden="true" />{elapsed.toFixed(1)}s</p>}
     </div>
-    <p className="mic-test-copy">Record once to compare the same sample with and without voice enhancement.</p>
+    <p className="mic-test-copy">Both samples use the current noise cancellation. Enhanced adds voice EQ and compression, not extra noise removal.</p>
+    <p className="noise-status" role="status">{noiseStatus ?? "Noise cancellation status unavailable"}</p>
     <div className="voice-processing-control">
       <div className="voice-processing-heading"><ProcessingDetail label="Voice processing" id="voice-processing-detail">Adds high-pass filtering, warmth and presence EQ, compression, makeup gain, and peak limiting. The slider controls the strength.</ProcessingDetail><output>{processingStrength}%</output></div>
       <Slider label="Voice processing" value={processingStrength} disabled={recording} onChange={onProcessingStrengthChange} />
@@ -265,7 +278,7 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
       </article>
     </div>
     <div className="processing-details" aria-label="Audio processing details">
-      <ProcessingDetail label="On-device noise cancellation" id="noise-cancellation-detail">DPDFNet-8 HR removes background noise locally before your voice is sent.</ProcessingDetail>
+      <ProcessingDetail label="On-device noise cancellation" id="noise-cancellation-detail">Noise cancellation runs locally before recording either sample or sending your voice. If DPDFNet cannot keep up, RNNoise takes over. Check the status above for the active filter.</ProcessingDetail>
     </div>
   </section>;
 }

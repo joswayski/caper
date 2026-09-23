@@ -1,0 +1,4 @@
+.presence-dot { position: absolute; right: 0; bottom: 0; width: 11px; height: 11px; border: 2px solid var(--surface); border-radius: 50%; background: var(--border); }
+.presence-dot[data-status="online"] { background: var(--caper-green, #637A43); }
+.presence-dot[data-status="idle"] { background: #c58b3c; }
+.presence-dot[data-status="unknown"] { background: var(--surface); }

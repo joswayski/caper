@@ -5,7 +5,7 @@
 .call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; margin: auto 12px 12px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
 .account-profile { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .account-profile:hover { background: var(--surface-composer); }
-.account-avatar { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
+.account-avatar { position: relative; width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
 .account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 20px; }
 .call-account .voice-icon-button { width: 28px; height: 30px; border: 0; border-radius: 4px 0 0 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .call-settings { flex: 0 0 auto; }
@@ -126,9 +126,7 @@
 .processing-details { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 16px; color: var(--text-muted); font-size: .68rem; }
 .processing-detail { position: relative; display: inline-flex; align-items: center; gap: 5px; }
 .processing-detail > button { width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-muted); background: transparent; font-size: .6rem; font-weight: 800; cursor: help; }
-.processing-detail > [role="tooltip"] { position: absolute; z-index: 3; left: 0; bottom: calc(100% + 8px); width: min(280px, 75vw); padding: 9px 10px; visibility: hidden; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--blackout); box-shadow: 0 8px 24px rgb(0 0 0 / .35); font-size: .7rem; line-height: 1.45; opacity: 0; transform: translateY(3px); transition: opacity 150ms ease-in-out, transform 150ms ease-in-out, visibility 150ms ease-in-out; }
-.processing-detail:last-child > [role="tooltip"] { right: 0; left: auto; }
-.processing-detail:hover > [role="tooltip"], .processing-detail:focus-within > [role="tooltip"] { visibility: visible; opacity: 1; transform: translateY(0); }
+.processing-detail > [role="tooltip"] { position: fixed; inset: auto; margin: 0; width: min(280px, calc(100vw - 16px)); padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--blackout); box-shadow: 0 8px 24px rgb(0 0 0 / .35); font-size: .7rem; line-height: 1.45; }
 .call-diagnostics { color: var(--text-muted); }
 .call-diagnostics dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; margin: 12px 0 0; }
 .call-diagnostics dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; padding: 7px 0; border-top: 1px solid var(--border); }

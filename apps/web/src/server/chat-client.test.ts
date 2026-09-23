@@ -236,6 +236,39 @@ async function sendingFixture(t: TestContext) {
   };
 }
 
+test("message sounds exclude history, own messages, and duplicate replay", async (t) => {
+  const sounds: string[] = [];
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Audio");
+  Object.defineProperty(globalThis, "Audio", { configurable: true, value: class extends EventTarget {
+    constructor(src: string) { super(); sounds.push(src); }
+    play() { queueMicrotask(() => this.dispatchEvent(new Event("ended"))); return Promise.resolve(); }
+    pause() {}
+  } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, "Audio", descriptor);
+    else Reflect.deleteProperty(globalThis, "Audio");
+  });
+  const f = await sendingFixture(t);
+  const message = (seq: string, own = false) => ({
+    ...committed({ clientMessageId: `command-${seq}`, text: "Hello" }, seq),
+    author: { id: own ? "guest" : "other", name: "Sender", isGuest: true },
+  });
+  f.history.push(message("5"));
+  f.client.retryLoad();
+  await tick();
+  f.sockets[0].frame({ type: "ready", cursor: "5" });
+  assert.equal(sounds.length, 0);
+  f.sockets[0].message(message("6"));
+  assert.deepEqual(sounds, ["/audio/effects/new-message.wav"]);
+  f.sockets[0].message(message("7", true));
+  f.sockets[0].message(message("6"));
+  f.sockets[0].message(message("4"));
+  assert.equal(sounds.length, 1, "own, duplicate and older replay events are silent");
+  f.sockets[0].message(message("8"));
+  assert.equal(sounds.length, 2, "the next genuinely new incoming message should notify");
+  await tick();
+});
+
 test("optimistic send is immediate; HTTP-first confirmation uses server content/order without skipping replay", async (t) => {
   const f = await sendingFixture(t);
   const sending = f.client.send("local text");

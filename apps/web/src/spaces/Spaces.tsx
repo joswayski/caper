@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { getAccount, type Account } from "../account/client";
+import { playSound } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import Call from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
@@ -134,6 +135,13 @@ function DeleteConfirmation({ kind, name, onClose, onDelete }: {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
+  const warned = useRef(false);
+  useEffect(() => {
+    if (!warned.current) {
+      warned.current = true;
+      playSound("warning");
+    }
+  }, []);
   return (
     <Dialog title={`Delete ${kind}`} dismissOnBackdrop onClose={() => { if (!submitting.current) onClose(); }}>
       <div className="delete-confirmation">

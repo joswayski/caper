@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { ChevronDown, Hash, Headphones, Menu, Mic, MicOff, Speech, Settings, VolumeX, X } from "lucide-react";
+import { ChevronDown, Hash, Headphones, Menu, Mic, MicOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
+import { playSound } from "../audio/effects";
 import Chat from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import Slider from "../components/Slider";
+import PresenceDot from "../components/PresenceDot";
+import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import { watchPresence } from "../media/presence";
@@ -175,6 +178,9 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const [deviceId, setDeviceId] = useState("");
   const [output, setOutput] = useState("");
   const [outputVolume, setOutputVolume] = useState(100);
+  const [membersVisible, setMembersVisible] = useState(true);
+  const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
+  const [presenceLive, setPresenceLive] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
   const actionGeneration = useRef(0);
@@ -203,6 +209,27 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const controlsDisabled = (!idle && !connected) || actionPending;
   const roster = idle ? publicParticipants[mediaRoot] ?? [] : state.participants;
   const identityName = account?.displayName || chatAuthor?.name || name;
+  const joined = useRef(false);
+
+  useEffect(() => {
+    if (window.matchMedia("(max-width: 760px)").matches) setMembersVisible(false);
+  }, []);
+
+  useEffect(() => {
+    setSelfPresence(undefined);
+    setPresenceLive(false);
+    if (!account || !channel?.spaceId || channel.demo) return;
+    return watchAccountPresence(channel.spaceId, [account.id], (members) => {
+      setSelfPresence(members.find((member) => member.userId === account.id)?.status);
+    }, setPresenceLive);
+  }, [account?.id, channel?.spaceId, channel?.demo]);
+
+  useEffect(() => {
+    if (connected && !joined.current) {
+      joined.current = true;
+      playSound("channel-join");
+    } else if (idle) joined.current = false;
+  }, [connected, idle]);
 
   useEffect(() => {
     let current = true;
@@ -286,7 +313,10 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
       if (generation === actionGeneration.current) setActionError(error instanceof Error ? error.message : "That action did not work.");
     } finally { if (generation === actionGeneration.current) setActionPending(false); }
   };
-  const leave = () => void act(() => clientRef.current!.leave());
+  const leave = () => {
+    const wasConnected = connected;
+    void act(() => clientRef.current!.leave(), () => { if (wasConnected) playSound("channel-leave"); });
+  };
   const closeAudioPanel = () => {
     if (audioPanel === "mic") {
       ++actionGeneration.current;
@@ -379,11 +409,11 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
           </div>}
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
-              <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
+              <span className="account-avatar"><span aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span><PresenceDot status={selfPresence} live={presenceLive} /></span>
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className={`voice-action-group${state.muted ? " active" : ""}`}>
-              <button type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-disabled={state.monitoring} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} data-tooltip={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"} onClick={() => { if (state.monitoring) return; setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
+              <button type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-disabled={state.monitoring} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} data-tooltip={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"} onClick={() => { if (state.monitoring) return; const muted = !state.muted; setActionError(undefined); void clientRef.current!.setMuted(muted).then(() => playSound(muted ? "toggle-off" : "toggle-on")).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
               <AudioMenu label="Input Options" open={audioMenu === "input"} onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)} menuRef={audioMenu === "input" ? audioMenuRef : undefined}>
                 <fieldset className="device-options" disabled={controlsDisabled}>
                   <legend>Microphone</legend>
@@ -394,7 +424,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
               </AudioMenu>
             </div>
             <div className={`voice-action-group${state.deafened ? " active" : ""}`}>
-              <button type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-disabled={state.monitoring} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} data-tooltip={state.monitoring ? "Stop mic test to change deafen" : state.deafened ? "Undeafen" : "Deafen"} onClick={() => { if (state.monitoring) return; setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
+              <button type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-disabled={state.monitoring} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} data-tooltip={state.monitoring ? "Stop mic test to change deafen" : state.deafened ? "Undeafen" : "Deafen"} onClick={() => { if (state.monitoring) return; const deafened = !state.deafened; setActionError(undefined); void clientRef.current!.setDeafened(deafened).then(() => playSound(deafened ? "toggle-off" : "toggle-on")).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
               <AudioMenu label="Output Options" open={audioMenu === "output"} onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)} menuRef={audioMenu === "output" ? audioMenuRef : undefined}>
                 {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <fieldset className="device-options">
                   <legend>Audio output</legend>
@@ -436,9 +466,10 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
               {joinUnavailable && <span id="voice-availability" className="voice-tooltip" role="tooltip">{available === false ? "Joining is not available at this time." : "Checking voice availability…"}</span>}
             </span>
             {!idle && viewingVoice && <span className="voice-status" role="status">{connected ? "Voice connected" : state.phase === "joining" ? "Joining…" : "Reconnecting…"}</span>}
+            {membersPanel && <button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} title={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button>}
           </div>} />
         </div>
-        {membersPanel}
+        {membersVisible && membersPanel}
       </section>
       <dialog ref={profileDialog} className="audio-dialog profile-dialog" aria-labelledby="profile-dialog-title" onCancel={(event) => { event.preventDefault(); setProfileOpen(false); }}>
         <div className="audio-dialog-heading">
@@ -458,7 +489,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
           {actionPending && <p className="noise-status" role="status">Preparing microphone…</p>}
           {actionPending && <p className="noise-status">Allow microphone access if your browser asks. You can close this window to cancel.</p>}
           {!actionPending && actionError && !state.monitorStream && <button type="button" className="voice-button" onClick={openMicTest}>Try again</button>}
-          {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} volume={outputVolume} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />}
+          {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} volume={outputVolume} noiseStatus={state.noiseSuppressionStatus} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />}
         </>}
         {audioPanel === "connection" && (state.diagnostics ? <ConnectionDiagnostics diagnostics={state.diagnostics} /> : <p className="noise-status">Join voice to see connection details.</p>)}
       </dialog>

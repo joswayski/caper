@@ -172,7 +172,8 @@ for (const browserSuppression of [true, false]) test(`DPDFNet runtime overload k
   assert.equal(microphone.track, Context.latest!.processed);
   assert.ok(microphone.status.startsWith("DPDFNet-8 HR active"));
   microphone.track.enabled = false;
-  WorkletNode.latest!.port.emit("bypassed");
+  const original = WorkletNode.latest!;
+  original.port.emit("bypassed");
   await tick();
   assert.equal(microphone.track, Context.latest!.processed);
   assert.equal(microphone.track.enabled, false);
@@ -181,6 +182,20 @@ for (const browserSuppression of [true, false]) test(`DPDFNet runtime overload k
   assert.equal(microphone.track.readyState, "live");
   assert.equal(worker.terminated, true);
   assert.equal(changes, 2);
+  const replacement = WorkletNode.latest!;
+  assert.notEqual(replacement, original);
+  assert.equal(replacement.options.processorOptions.engine, "rnnoise");
+  replacement.port.emit("ready");
+  await tick();
+  assert.match(microphone.status, /DPDFNet-8 HR unavailable · RNNoise active/);
+  assert.equal(microphone.track, Context.latest!.processed);
+  assert.equal(microphone.naturalTrack, Context.latest!.natural);
+  assert.equal(microphone.track.enabled, false, "fallback must not unmute outgoing audio");
+  assert.equal(raw.getSettings().noiseSuppression, false);
+  assert.deepEqual(Context.latest!.gain.connections, [replacement]);
+  assert.deepEqual(replacement.connections, [Context.latest!.naturalDestination, Context.latest!.voiceInput]);
+  assert.equal(original.port.closed, true);
+  assert.equal(changes, 3);
   microphone.stop();
 });
 
@@ -197,6 +212,34 @@ function preparedDpdfnet(t: TestContext) {
   t.after(() => preparation.stop());
   return { preparation, workers, raw };
 }
+
+for (const end of ["cancel", "failed", "timeout"] as const) test(`RNNoise fallback ${end} never reconnects stale audio`, async (t) => {
+  const { preparation, workers } = preparedDpdfnet(t);
+  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "headphones", undefined, preparation);
+  await tick();
+  workers[0].onmessage!({ data: { type: "ready" } });
+  const microphone = await capturing;
+  const original = WorkletNode.latest!;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  original.port.emit("bypassed");
+  await tick();
+  const replacement = WorkletNode.latest!;
+  assert.notEqual(replacement, original);
+  if (end === "cancel") microphone.stop();
+  else if (end === "failed") replacement.port.emit("failed");
+  else t.mock.timers.tick(15_000);
+  await tick();
+  replacement.port.emit("ready");
+  await tick();
+  assert.equal(replacement.port.closed, true);
+  assert.ok(!Context.latest!.gain.connections.includes(replacement));
+  if (end === "cancel") assert.equal(microphone.track.readyState, "ended");
+  else {
+    assert.equal(microphone.track.readyState, "live");
+    assert.match(microphone.status, /browser suppression active/);
+  }
+  microphone.stop();
+});
 
 for (const warmed of [false, true]) test(`capture exclusively consumes DPDFNet preparation (already ready: ${warmed})`, async (t) => {
   const { preparation, workers } = preparedDpdfnet(t);
