@@ -147,8 +147,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - name: Install pinned Android SDK packages
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+        with:
+          cmdline-tools-version: '13114758'
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
       - name: Test, lint, build and package Android
         run: bash apps/native/android/build.sh
       - name: Record exact checked-out revision and checksums

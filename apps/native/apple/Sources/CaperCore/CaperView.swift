@@ -9,9 +9,9 @@ public enum CaperTheme {
     public static let green = Color(red: 99/255, green: 122/255, blue: 67/255)
 }
 
-public struct CaperRootView: View {
+@MainActor public struct CaperRootView: View {
     @State private var model: AppModel
-    public init(model: AppModel = AppModel()) { _model = State(initialValue: model) }
+    public init(model: AppModel? = nil) { _model = State(initialValue: model ?? AppModel()) }
 
     public var body: some View {
         Group {

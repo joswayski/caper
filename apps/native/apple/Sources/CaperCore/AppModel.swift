@@ -140,7 +140,7 @@ public final class ChatModel {
     private var subscriptionID: String?
     private var generation = 0
     private var delivery = ChatDeliveryState()
-    private lazy var gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
+    @ObservationIgnored private lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
         self?.liveState = state
         if let error { self?.error = error }
     }
