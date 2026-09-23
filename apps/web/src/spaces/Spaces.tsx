@@ -10,6 +10,7 @@ import {
   Hash,
   LockKeyhole,
   LogOut,
+  MoreHorizontal,
   Plus,
   Settings,
   X,
@@ -29,6 +30,7 @@ import {
   deleteSpace,
   listChannelMembers,
   listSpaces,
+  normalizeChannelName,
   removeChannelMember,
   removeSpaceMember,
   spaceNameError,
@@ -103,18 +105,20 @@ function NameField({
   onChange,
   channel = false,
   privateChannel = false,
+  showIcon = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   channel?: boolean;
   privateChannel?: boolean;
+  showIcon?: boolean;
 }) {
   return (
     <label className="space-field">
       <span>{label}</span>
-      <span className={channel ? "channel-name-input" : undefined}>
-        {channel && (privateChannel ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />)}
+      <span className={showIcon ? "channel-name-input" : undefined}>
+        {showIcon && (privateChannel ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />)}
         <input
           autoFocus
           value={value}
@@ -122,11 +126,33 @@ function NameField({
           autoComplete="off"
           spellCheck={!channel}
           placeholder={channel ? "project-updates" : "Studio"}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            const input = event.currentTarget;
+            if (!channel) return onChange(input.value);
+            const caret = normalizeChannelName(input.value.slice(0, input.selectionStart ?? input.value.length)).length;
+            onChange(normalizeChannelName(input.value));
+            requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+          }}
+          onBlur={() => { if (channel) onChange(value.replace(/-$/, "")); }}
         />
       </span>
-      {channel && <small>Lowercase letters and single dashes only.</small>}
     </label>
+  );
+}
+
+function ChannelPrivacy({ spaceName, checked, onChange }: {
+  spaceName: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="channel-privacy">
+      <label>
+        <span><LockKeyhole aria-hidden="true" />Private channel</span>
+        <input type="checkbox" role="switch" checked={checked} onChange={(event) => onChange(event.target.checked)} aria-describedby="channel-privacy-help" />
+      </label>
+      <p id="channel-privacy-help">{checked ? "Only you and the people you add can view or join." : <>Anyone in <strong>{spaceName}</strong> can view or join this channel.</>}</p>
+    </div>
   );
 }
 
@@ -213,12 +239,13 @@ function CreateChannelDialog({
   const [pending, setPending] = useState(false);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    const invalid = channelNameError(name);
+    const channelName = name.replace(/-$/, "");
+    const invalid = channelNameError(channelName);
     if (invalid) return setError(invalid);
     setPending(true);
     setError(undefined);
     try {
-      onCreated(await createChannel(space.space.id, name, privateChannel));
+      onCreated(await createChannel(space.space.id, channelName, privateChannel));
     } catch (reason) {
       setError(errorMessage(reason));
       setPending(false);
@@ -232,19 +259,14 @@ function CreateChannelDialog({
       <form onSubmit={(event) => void submit(event)}>
         <NameField
           channel
+          showIcon
           privateChannel={privateChannel}
           label="Channel name"
           value={name}
           onChange={setName}
         />
         <p className="channel-name-guidance">Channels are where conversations happen around a topic. Use a name that is easy to find and understand.</p>
-        <div className="channel-privacy">
-          <label>
-            <span><LockKeyhole aria-hidden="true" />Private channel</span>
-            <input type="checkbox" role="switch" checked={privateChannel} onChange={(event) => setPrivateChannel(event.target.checked)} aria-describedby="channel-privacy-help" />
-          </label>
-          <p id="channel-privacy-help">{privateChannel ? "Only you and the people you add can view or join." : `Anyone in ${space.space.name} can view or join this channel.`}</p>
-        </div>
+        <ChannelPrivacy spaceName={space.space.name} checked={privateChannel} onChange={setPrivateChannel} />
         {error && (
           <p className="space-form-error" role="alert">
             {error}
@@ -534,6 +556,7 @@ function ManageChannelDialog({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const dirty = name !== channel.name || privateChannel !== channel.private;
   const run = async (action: () => Promise<void>) => {
     setPending(true);
     setError(undefined);
@@ -551,56 +574,39 @@ function ManageChannelDialog({
   }, [channel.id, channel.private, detail.space.id]);
   return (
     <Dialog
-      title={`Manage #${channel.name}`}
-      description="Text and voice access always use the same channel membership."
+      title="Overview"
       onClose={onClose}
       width="wide"
     >
       <form
+        id="channel-overview"
         onSubmit={(event) => {
           event.preventDefault();
-          const invalid = channelNameError(name);
+          if (pending || !dirty) return;
+          const channelName = name.replace(/-$/, "");
+          const invalid = channelNameError(channelName);
           if (invalid) return setError(invalid);
           void run(async () => {
             const updated = await updateChannel(
               detail.space.id,
               channel.id,
-              name,
+              channelName,
               privateChannel,
             );
+            setName(updated.name);
             onChanged(updated);
-            if (updated.private)
-              setMembers(
-                (await listChannelMembers(detail.space.id, channel.id)).members,
-              );
           }).catch((reason) => setError(errorMessage(reason)));
         }}
       >
-        <NameField
-          channel
-          privateChannel={privateChannel}
-          label="Channel name"
-          value={name}
-          onChange={setName}
-        />
-        <label className="privacy-choice">
-          <input
-            type="checkbox"
-            checked={privateChannel}
-            onChange={(event) => setPrivateChannel(event.target.checked)}
+        <fieldset disabled={pending}>
+          <NameField
+            channel
+            label="Channel name"
+            value={name}
+            onChange={setName}
           />
-          <span>
-            <strong>Private channel</strong>
-            <small>
-              Only selected space members can access text and voice.
-            </small>
-          </span>
-        </label>
-        <div className="inline-save">
-          <button className="secondary" disabled={pending} type="submit">
-            Save channel
-          </button>
-        </div>
+          <ChannelPrivacy spaceName={detail.space.name} checked={privateChannel} onChange={setPrivateChannel} />
+        </fieldset>
       </form>
       {error && (
         <p className="space-form-error" role="alert">
@@ -667,12 +673,26 @@ function ManageChannelDialog({
           <button
             className="danger-outline"
             type="button"
+            disabled={pending}
             onClick={() => setConfirmDelete(true)}
           >
-            Delete channel…
+            Delete channel
           </button>
         )}
       </section>
+      {dirty && (
+        <footer className="channel-save-bar">
+          <span role="status">You have unsaved changes.</span>
+          <div>
+            <button type="button" className="secondary" disabled={pending} onClick={() => {
+              setName(channel.name);
+              setPrivateChannel(channel.private);
+              setError(undefined);
+            }}>Reset</button>
+            <button type="submit" form="channel-overview" className="primary" disabled={pending}>{pending ? "Saving…" : "Save changes"}</button>
+          </div>
+        </footer>
+      )}
     </Dialog>
   );
 }
@@ -707,14 +727,14 @@ export default function Spaces() {
   const [manageChannel, setManageChannel] = useState<Channel>();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
+  const channelMenu = useRef<HTMLDetailsElement>(null);
+  const [channelsExpanded, setChannelsExpanded] = useState(true);
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      if (
-        spaceMenu.current &&
-        !spaceMenu.current.contains(event.target as Node)
-      )
-        spaceMenu.current.open = false;
+      for (const menu of [spaceMenu.current, channelMenu.current]) {
+        if (menu && !menu.contains(event.target as Node)) menu.open = false;
+      }
     };
     document.addEventListener("pointerdown", dismiss);
     return () => document.removeEventListener("pointerdown", dismiss);
@@ -722,6 +742,7 @@ export default function Spaces() {
 
   const choose = (spaceId?: string, channelId?: string, replace = false) => {
     if (spaceMenu.current) spaceMenu.current.open = false;
+    if (channelMenu.current) channelMenu.current.open = false;
     const query = new URLSearchParams();
     if (spaceId) query.set("space", spaceId);
     if (channelId) query.set("channel", channelId);
@@ -988,22 +1009,6 @@ export default function Spaces() {
                   <Settings aria-hidden="true" />
                   Space settings
                 </button>
-                <button
-                  type="button"
-                  disabled={!canCreateChannel}
-                  title={
-                    !canCreateChannel
-                      ? `Channel limit reached (${limits?.channelsPerSpace ?? 100})`
-                      : undefined
-                  }
-                  onClick={() => {
-                    spaceMenu.current!.open = false;
-                    setDialog("channel");
-                  }}
-                >
-                  <Plus aria-hidden="true" />
-                  Create channel
-                </button>
               </>
             ) : (
               <button
@@ -1030,7 +1035,35 @@ export default function Spaces() {
           </button>
         )}
       </header>
-      <ul>
+      <div className="channel-section-heading">
+        <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded((value) => !value)}>
+          <ChevronDown aria-hidden="true" />Channels
+        </button>
+        {owner && <div className="channel-section-actions">
+          <button type="button" aria-label="Create channel" title={canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`} disabled={!canCreateChannel} onClick={() => setDialog("channel")}><Plus aria-hidden="true" /></button>
+          <details ref={channelMenu} className="channel-section-menu" onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }
+          }} onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+          }}>
+            <summary aria-label="Channel options" title="Channel options"><MoreHorizontal aria-hidden="true" /></summary>
+            <div className="space-actions">
+              <button type="button" disabled={!canCreateChannel} onClick={() => {
+                channelMenu.current!.open = false;
+                setDialog("channel");
+              }}><Plus aria-hidden="true" />Create channel</button>
+              <button type="button" onClick={() => {
+                channelMenu.current!.open = false;
+                setChannelsExpanded((value) => !value);
+              }}>{channelsExpanded ? "Collapse" : "Expand"} channels</button>
+            </div>
+          </details>
+        </div>}
+      </div>
+      <ul id="space-channel-list" hidden={!channelsExpanded}>
         {detail.channels.map((item) => (
           <li key={item.id}>
             <button

@@ -27,7 +27,25 @@
 .channel-navigation > header > button { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .channel-navigation > header > button:hover { color: var(--text); background: var(--border); }
 .channel-navigation > header > button svg { width: 16px; }
-.spaces-room .channel-navigation ul { display: grid; gap: 3px; margin: 12px 0 0; padding: 0; list-style: none; }
+.channel-section-heading { position: relative; z-index: 2; display: flex; align-items: center; gap: 6px; margin-top: 12px; min-height: 32px; }
+.channel-section-heading button, .channel-section-menu summary { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 4px 6px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .76rem; font-weight: 750; cursor: pointer; }
+.channel-section-heading button:hover, .channel-section-menu summary:hover, .channel-section-menu[open] > summary { color: var(--text); background: var(--surface-raised); }
+.channel-section-heading button:disabled { opacity: .45; cursor: not-allowed; }
+.channel-section-heading .channel-section-toggle { justify-content: flex-start; flex: 1; }
+.channel-section-heading svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.channel-section-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.channel-section-actions { display: flex; gap: 2px; }
+.channel-section-menu { position: relative; }
+.channel-section-menu summary { list-style: none; }
+.channel-section-menu summary::-webkit-details-marker { display: none; }
+.channel-section-menu .space-actions { left: auto; right: 0; width: 190px; }
+.channel-section-menu .space-actions button { justify-content: flex-start; padding: 10px 8px; }
+@media (hover: hover) {
+  .channel-section-actions { opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+  .channel-section-heading:hover .channel-section-actions, .channel-section-heading:focus-within .channel-section-actions, .channel-section-actions:has(details[open]) { opacity: 1; pointer-events: auto; }
+}
+.spaces-room .channel-navigation ul { display: grid; gap: 3px; margin: 4px 0 0; padding: 0; list-style: none; }
+.spaces-room .channel-navigation ul[hidden] { display: none; }
 .channel-navigation li { position: relative; display: flex; align-items: center; }
 .channel-select { min-width: 0; height: 38px; flex: 1; display: flex; align-items: center; gap: 9px; padding: 0 34px 0 9px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .82rem; font-weight: 650; text-align: left; cursor: pointer; }
 .channel-select svg { width: 17px; height: 17px; flex: 0 0 auto; }
@@ -77,21 +95,19 @@
 .channel-name-input { position: relative; }
 .channel-name-input > svg { position: absolute; left: 11px; top: 12px; width: 18px; height: 18px; color: var(--text-muted); pointer-events: none; }
 .channel-name-input > input { padding-left: 37px; }
-.space-field small, .privacy-choice small { color: var(--text-muted); font-size: .68rem; font-weight: 500; line-height: 1.4; }
-.privacy-choice { display: flex; gap: 10px; margin-top: 18px; padding: 12px; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; }
-.privacy-choice input { width: 16px; height: 16px; flex: 0 0 auto; margin: 2px 0 0; accent-color: var(--terracotta); }
-.privacy-choice span { display: grid; gap: 3px; }
-.privacy-choice strong { font-size: .78rem; }
+.space-dialog fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .channel-name-guidance { color: var(--text-muted); font-size: .76rem; line-height: 1.5; }
 .channel-privacy { margin-top: 22px; }
 .channel-privacy label { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }
 .channel-privacy label > span { display: flex; align-items: center; gap: 7px; font-size: .8rem; font-weight: 750; }
 .channel-privacy svg { width: 16px; height: 16px; color: var(--text-muted); }
 .channel-privacy p { min-height: 2.8em; margin: 7px 0 0; color: var(--text-muted); font-size: .72rem; line-height: 1.4; }
-.channel-privacy input { appearance: none; position: relative; flex: 0 0 auto; width: 38px; height: 22px; margin: 0; border: 1px solid var(--border); border-radius: 11px; background: var(--border); cursor: pointer; transition: background-color 150ms ease; }
+.channel-privacy input { appearance: none; position: relative; flex: 0 0 auto; width: 38px; height: 22px; margin: 0; border: 1px solid var(--border); border-radius: 11px; background: var(--border); cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }
 .channel-privacy input::after { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); content: ""; transition: transform 150ms ease; }
 .channel-privacy input:checked { background: var(--terracotta); border-color: var(--terracotta); }
 .channel-privacy input:checked::after { transform: translateX(16px); }
+.channel-privacy label:hover input:not(:disabled) { border-color: var(--text-muted); background: #484d51; box-shadow: 0 0 0 3px rgb(255 255 255 / .06); }
+.channel-privacy label:hover input:checked:not(:disabled) { border-color: var(--terracotta-bright); background: var(--terracotta-bright); box-shadow: 0 0 0 3px rgb(182 77 50 / .18); }
 .channel-privacy input:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) { .channel-privacy input, .channel-privacy input::after { transition: none; } }
 .space-dialog-actions, .inline-save { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
@@ -119,6 +135,9 @@
 .danger-zone { margin-bottom: 5px; }
 .danger-zone > p { margin: 7px 0 12px; color: var(--text-muted); font-size: .72rem; line-height: 1.45; }
 .danger-zone > div { display: flex; gap: 8px; }
+.channel-save-bar { position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; border-top: 1px solid var(--border); background: var(--blackout); }
+.channel-save-bar > span { font-size: .76rem; }
+.channel-save-bar > div { display: flex; gap: 8px; margin-left: auto; }
 
 @media (max-width: 760px) {
   .call-room.spaces-room { position: relative; grid-template: minmax(0, 1fr) / 1fr; }

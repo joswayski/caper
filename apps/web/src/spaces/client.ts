@@ -57,6 +57,12 @@ export function channelNameError(name: string) {
   if (!CHANNEL_NAME.test(name)) return "Use lowercase letters separated by single dashes.";
 }
 
+export function normalizeChannelName(value: string) {
+  // Keep a trailing dash while typing so multi-word names remain editable.
+  return value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z-]/g, "")
+    .replace(/-+/g, "-").replace(/^-/, "").slice(0, 80);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "same-origin",
