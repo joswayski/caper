@@ -68,6 +68,43 @@ The root Rust workspace remains the API. The desktop client's separate Cargo
 workspace/lockfile does not add GUI dependencies to server images. Native builds
 do not require `npm install`; the website build is not an app-bundling step.
 
+## Comparing native screens with the web
+
+Use the existing web UI as the reference, not platform-default widgets with
+roughly similar colors. Both use Satoshi; acquire the official, unmodified native
+fonts with `python3 scripts/native_fonts.py`. See [font licensing and integrity
+checks](../../shared/fonts/README.md). Do not commit or separately publish fonts.
+
+For disposable visual and interaction checks, Node 24 can run the shared fixture:
+
+```sh
+node --test tests/native-parity-fixture.test.mjs
+node scripts/native-parity-fixture.mjs
+```
+
+It listens only on loopback: HTTP on port 3001 and the unified WebSocket on 3002
+(also accepted on 3001). These match the web development proxy defaults. It never
+sends email, calls a production API, or connects to an SFU. Sign in with any
+syntactically valid test email and the code `ABC234`. The deterministic owner
+account opens **Fixture Studio**, containing visibly labeled sample conversations.
+Guest General works without an account. The fixture supports profile edits,
+space/channel/member management, private grants, message history/pagination,
+idempotent sends, gateway replay, typing, and deterministic presence.
+
+`POST /__fixture/control` accepts `{ "reset": true }`, `{ "disconnect": true }`,
+or a one-shot failure such as
+`{ "failure": { "path": "/api/auth/email/request", "method": "POST", "status": 503 } }`.
+It can inject another participant's typing with
+`{ "typing": { "channelId": "chan00000001", "active": true } }`.
+Media operations deliberately return 503. Authentication, authorization and
+presence are simplified; this fixture is not a substitute for real API tests.
+
+Compare signed-out/error, populated conversation, guest, narrow Browse-open, and
+owner-management states. Check actual clicks and keyboard input as well as
+screenshots. Desktop reference size is 1440×900, narrow reference 390×844; browser
+viewport emulation does not prove native mobile or touch behavior. Each platform
+README describes its own preview controls and remaining validation gaps.
+
 ## Release gates
 
 Passing a build or mock protocol test does **not** establish any of these gates:
