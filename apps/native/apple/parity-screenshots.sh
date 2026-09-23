@@ -27,8 +27,17 @@ else
   scheme=CaperIOSParityTests
   destination='platform=iOS Simulator,name=iPhone 16,OS=latest'
 fi
+set +e
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme "$scheme" -configuration Debug \
   -destination "$destination" -derivedDataPath "$ROOT/DerivedData-Parity" \
   -resultBundlePath "$ROOT/ParityResults.xcresult" test
-xcrun xcresulttool export attachments --path "$ROOT/ParityResults.xcresult" --output-path "$ROOT/parity-artifacts"
+xcodebuild_status=$?
+set -e
+if [[ -d "$ROOT/ParityResults.xcresult" ]]; then
+  xcrun xcresulttool export attachments --path "$ROOT/ParityResults.xcresult" --output-path "$ROOT/parity-artifacts" \
+    || echo "warning: could not export parity attachments" >&2
+else
+  echo "warning: xcodebuild did not produce ParityResults.xcresult" >&2
+fi
 echo "$ROOT/parity-artifacts"
+exit "$xcodebuild_status"

@@ -98,8 +98,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (request == accountGeneration) loadHome()
     }
 
-    fun updateProfile(username: String, displayName: String) = launchAction {
+    fun updateProfile(username: String, displayName: String) = launchAction { request ->
         val account = api.profile(requireAccountToken(), username, displayName)
+        if (request != accountGeneration) return@launchAction
         mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
         chatToken = null
         chatAuthor = null
@@ -351,73 +352,99 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createSpace(name: String, done: () -> Unit = {}) = launchAction {
+    fun createSpace(name: String, done: () -> Unit = {}) = launchAction { request ->
         val space = api.createSpace(requireAccountToken(), name)
+        if (request != accountGeneration) return@launchAction
         mutable.value = mutable.value.copy(spaces = mutable.value.spaces + space)
         done(); selectSpace(space.id)
     }
-    fun renameSpace(name: String, done: () -> Unit = {}) = launchAction {
+    fun renameSpace(name: String, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
         val space = api.updateSpace(requireAccountToken(), detail.space.id, name)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(space = space)); done()
     }
-    fun deleteCurrentSpace(done: () -> Unit = {}) = launchAction {
+    fun deleteCurrentSpace(done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
         api.deleteSpace(requireAccountToken(), detail.space.id)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        VoiceCallService.stop(getApplication())
         val remaining = mutable.value.spaces.filter { it.id != detail.space.id }
         mutable.value = mutable.value.copy(spaces = remaining)
         done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
     }
-    fun leaveCurrentSpace(done: () -> Unit = {}) = launchAction {
+    fun leaveCurrentSpace(done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
         val account = requireNotNull(mutable.value.account)
         api.removeSpaceMember(requireAccountToken(), detail.space.id, account.id)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        VoiceCallService.stop(getApplication())
         val remaining = mutable.value.spaces.filter { it.id != detail.space.id }
         mutable.value = mutable.value.copy(spaces = remaining)
         done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
     }
-    fun createChannel(name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction {
+    fun createChannel(name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
         val channel = api.createChannel(requireAccountToken(), detail.space.id, name, privateChannel)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(channels = detail.channels + channel)); done(); selectChannel(channel)
     }
-    fun updateChannel(channel: Channel, name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction {
+    fun updateChannel(channel: Channel, name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id, channel.id)
         val updated = api.updateChannel(requireAccountToken(), detail.space.id, channel.id, name, privateChannel)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(channels = detail.channels.map { if (it.id == channel.id) updated else it }))
         mutable.value = mutable.value.copy(selectedChannel = if (mutable.value.selectedChannel?.id == channel.id) updated else mutable.value.selectedChannel)
         done()
     }
-    fun deleteChannel(channel: Channel, done: () -> Unit = {}) = launchAction {
+    fun deleteChannel(channel: Channel, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id, channel.id)
         api.deleteChannel(requireAccountToken(), detail.space.id, channel.id)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        VoiceCallService.stopIfChannel(getApplication(), channel.id)
         val channels = detail.channels.filter { it.id != channel.id }
         replaceDetail(detail.copy(channels = channels)); done()
         channels.firstOrNull()?.let(::selectChannel) ?: closeChannel(clearPending = true)
     }
-    fun addSpaceMember(username: String) = launchAction {
+    fun addSpaceMember(username: String) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
         val member = api.addSpaceMember(requireAccountToken(), detail.space.id, username)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id } + member))
     }
-    fun removeSpaceMember(member: Member) = launchAction {
+    fun removeSpaceMember(member: Member) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
         api.removeSpaceMember(requireAccountToken(), detail.space.id, member.id)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id }))
     }
-    fun loadChannelGrants(channel: Channel) = launchAction {
+    fun loadChannelGrants(channel: Channel) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id, channel.id)
         val grants = if (channel.private) api.channelMembers(requireAccountToken(), detail.space.id, channel.id).members else emptyList()
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(channelGrants = grants)
     }
-    fun addChannelGrant(channel: Channel, username: String) = launchAction {
+    fun addChannelGrant(channel: Channel, username: String) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id, channel.id)
         val member = api.addChannelMember(requireAccountToken(), detail.space.id, channel.id, username)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id } + member)
     }
-    fun removeChannelGrant(channel: Channel, member: Member) = launchAction {
+    fun removeChannelGrant(channel: Channel, member: Member) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id, channel.id)
         api.removeChannelMember(requireAccountToken(), detail.space.id, channel.id, member.id)
+        if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id })
     }
 
@@ -430,6 +457,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun revokeChannel() {
+        VoiceCallService.stop(getApplication())
         ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(error = "You no longer have access to this channel.")
@@ -460,10 +488,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         finally { if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false) }
     }
-    private fun launchAction(block: suspend () -> Unit) = viewModelScope.launch {
+    private fun launchAction(block: suspend (Long) -> Unit) = viewModelScope.launch {
         val request = accountGeneration
         mutable.value = mutable.value.copy(busy = true, error = null)
-        try { block() } catch (error: Throwable) { if (request == accountGeneration) fail(error) }
+        try { block(request) } catch (error: Throwable) { if (request == accountGeneration) fail(error) }
         finally { if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false) }
     }
 
@@ -476,5 +504,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         else -> "Something went wrong. Please try again."
     }
 
-    private companion object { const val PRESENCE_PAGE_SIZE = 20 }
+    private companion object { const val PRESENCE_PAGE_SIZE = 25 }
+}
+
+internal data class AdminMutationContext(val accountGeneration: Long, val spaceId: String? = null, val channelId: String? = null) {
+    fun isCurrent(currentAccountGeneration: Long, selected: SpaceDetail?): Boolean =
+        accountGeneration == currentAccountGeneration &&
+            (spaceId == null || selected?.space?.id == spaceId) &&
+            (channelId == null || selected?.channels?.any { it.id == channelId } == true)
 }

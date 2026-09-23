@@ -266,6 +266,8 @@ private struct ChannelSidebar: View {
                                 Spacer(); if model.detail?.space.demo != true { Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)) }
                             }.contentShape(Rectangle())
                         }.menuStyle(.borderlessButton).disabled(model.detail?.space.demo == true)
+                            .accessibilityLabel(model.detail?.space.name ?? "Caper")
+                            .accessibilityIdentifier("selected-space-name")
                         if narrow { Button(action: close) { Image(systemName: "xmark") }.buttonStyle(SidebarIconButton()) }
                     }
                     .frame(minHeight: 38).padding(.bottom, 12)
@@ -517,6 +519,8 @@ private struct ChatView: View {
                         .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
                 }
                 Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                    .accessibilityLabel("# \(chat.channelName.lowercased())")
+                    .accessibilityIdentifier("selected-channel-name")
                 Spacer()
                 if !narrow { VoiceHeaderButton(model: model, voice: voice) }
                 if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
@@ -560,13 +564,23 @@ private struct ChatView: View {
             if let error = chat.error, chat.pendingMessage == nil {
                 Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
             }
-            HStack(alignment: .bottom, spacing: 0) {
+            HStack(alignment: .bottom, spacing: 8) {
                 TextField("Message #\(chat.channelName.lowercased())", text: $chat.draft, axis: .vertical)
                     .font(CaperTheme.font(14)).lineLimit(1...8).textFieldStyle(.plain).padding(11)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border))
+                    .accessibilityIdentifier("message-composer")
+                    .accessibilityValue(chat.draft)
+                    .accessibilityHint("Return sends on macOS. Shift-Return adds a new line. Use the Send button when composing with the iPhone keyboard.")
                     .onChange(of: chat.draft) { _, value in chat.setTyping(!value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
                     .onSubmit { Task { await chat.send() } }
+                Button { Task { await chat.send() } } label: {
+                    Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
+                }
+                .buttonStyle(PrimaryIconButton())
+                .disabled(chat.sending || chat.pendingMessage != nil || MessageValidation.error(for: chat.draft) != nil)
+                .accessibilityLabel("Send message")
+                .accessibilityIdentifier("send-message-button")
             }.padding(.horizontal, 18).padding(.vertical, 12)
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).padding(.bottom, 6)
@@ -763,6 +777,7 @@ private struct LoginPage: View {
                          + Text("Join general as a guest.").fontWeight(.bold).foregroundStyle(CaperTheme.text))
                             .font(CaperTheme.font(14)).multilineTextAlignment(.leading)
                     }.buttonStyle(.plain).padding(.top, 22)
+                        .accessibilityIdentifier("guest-general-button")
                 } else {
                     CaperField(title: "Verification code", text: $code)
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
@@ -824,6 +839,8 @@ private struct SpaceEditor: View {
                     if managing {
                         Divider().overlay(CaperTheme.border)
                         Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
+                            .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
+                            .accessibilityIdentifier("space-members-heading")
                         HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()); Button("Add") { run { try await model.addSpaceMember(username: username); username = "" } }.buttonStyle(.bordered) }
                         ForEach(model.detail?.members ?? []) { member in
                             HStack { Avatar(name: member.displayName, size: 30); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { run { try await model.removeSpaceMember(member) } } } }.font(CaperTheme.font(12))

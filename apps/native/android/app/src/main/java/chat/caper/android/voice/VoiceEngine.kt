@@ -127,6 +127,14 @@ class VoiceEngine(
     private suspend fun reconcile(onParticipants: (List<Participant>) -> Unit) {
         val token = mediaToken ?: return
         val snapshot: MediaSnapshot = media("snapshot", mediaToken = token)
+        reconcile(snapshot, onParticipants, token)
+    }
+
+    suspend fun applySnapshot(snapshot: MediaSnapshot, onParticipants: (List<Participant>) -> Unit) = lock.withLock {
+        reconcile(snapshot, onParticipants, mediaToken ?: return@withLock)
+    }
+
+    private suspend fun reconcile(snapshot: MediaSnapshot, onParticipants: (List<Participant>) -> Unit, token: String) {
         onParticipants(snapshot.participants)
         val wanted = snapshot.participants
             .filter { it.id != selfId }
@@ -142,6 +150,8 @@ class VoiceEngine(
         }
         for (track in wanted - subscriptions.keys) subscribe(track, token)
     }
+
+    fun eventToken(): String? = mediaToken
 
     private suspend fun subscribe(trackId: String, token: String) {
         val response: SignalResponse = media(
@@ -201,6 +211,8 @@ class VoiceEngine(
         turn = response.turn
         return response.turn.refreshAfterMs
     }
+
+    fun turnRefreshAfterMs(): Long? = turn?.refreshAfterMs
 
     suspend fun recoverIce() = lock.withLock {
         check(!closed.get()) { "Voice call ended." }

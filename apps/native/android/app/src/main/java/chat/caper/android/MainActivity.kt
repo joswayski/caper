@@ -66,6 +66,8 @@ private sealed interface Overlay {
     data object Audio : Overlay
 }
 
+private data class VoiceJoinIntent(val channelId: String, val channelName: String, val spaceName: String, val displayName: String, val accountId: String?, val demo: Boolean)
+
 @Composable private fun CaperApp(viewModel: CaperViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
@@ -132,19 +134,29 @@ private sealed interface Overlay {
         }
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
+            val medium = maxWidth in 761.dp..1099.dp
+            var membersVisible by remember { mutableStateOf(!narrow) }
+            LaunchedEffect(narrow) { if (narrow) membersVisible = false }
             Surface(
                 Modifier.padding(start = if (narrow) 12.dp else 28.dp, end = if (narrow) 12.dp else 28.dp, bottom = 24.dp).widthIn(max = 1400.dp).fillMaxSize().align(Alignment.TopCenter),
                 color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
             ) {
-                if (narrow && navigationOpen) Row {
-                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                    ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f)) { setNavigationOpen(false) }
-                } else if (narrow) {
-                    Conversation(state, voice, viewModel, show, true) { setNavigationOpen(true) }
+                if (narrow) Box {
+                    if (navigationOpen) Row {
+                        SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f)) { setNavigationOpen(false) }
+                    } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }) { setNavigationOpen(true) }
+                    if (membersVisible && !navigationOpen) MemberPresencePanel(state, viewModel, Modifier.widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd))
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp))
-                    Conversation(state, voice, viewModel, show, false, Modifier.weight(1f)) { setNavigationOpen(true) }
+                    if (medium) Column(Modifier.weight(1f)) {
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.fillMaxWidth().heightIn(max = 240.dp), compact = true)
+                    } else {
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
+                    }
                 }
             }
         }
@@ -209,8 +221,8 @@ private sealed interface Overlay {
                 }
             }
             VoiceRoster(voice)
-            if (detail != null && !detail.space.demo) MemberPresence(state, viewModel)
         }
+        if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED) ConnectedVoiceContext(voice)
         AccountBar(state, voice, viewModel, show)
     }
 }
@@ -232,30 +244,56 @@ private sealed interface Overlay {
     }
 }
 
-@Composable private fun MemberPresence(state: AppUiState, viewModel: CaperViewModel) {
-    val members = state.selectedSpace?.members ?: return
-    if (members.isEmpty()) return
-    val pages = (members.size + 19) / 20
-    val shown = members.drop(state.presencePage * 20).take(20)
-    HorizontalDivider(Modifier.padding(top = 18.dp), color = Border)
-    Text("MEMBERS — ${members.size}", Modifier.padding(horizontal = 8.dp, vertical = 12.dp), color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-    shown.forEach { member ->
-        val status = state.presence[member.id] ?: "unknown"
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box {
-                Avatar(member.displayName, 30.dp)
-                Box(Modifier.size(10.dp).align(Alignment.BottomEnd).clip(CircleShape).background(when (status) { "online" -> CaperGreen; "idle" -> Idle; else -> Border }))
-            }
-            Spacer(Modifier.width(10.dp)); Column {
-                Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                Text(status, color = TextMuted, fontSize = 10.sp)
-            }
+@Composable private fun ConnectedVoiceContext(voice: VoiceState) {
+    Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Text(if (voice.phase == VoiceState.Phase.CONNECTED) "Voice connected" else "Connecting voice…", color = CaperGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Text(listOfNotNull(voice.spaceName, voice.channelName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
         }
     }
-    if (pages > 1) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0) { Text("Previous") }
-        Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp)
-        TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages) { Text("Next") }
+}
+
+@Composable private fun MemberPresencePanel(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, compact: Boolean = false) {
+    val members = state.selectedSpace?.members ?: return
+    val detail = state.selectedSpace ?: return
+    val pages = ((members.size + 24) / 25).coerceAtLeast(1)
+    val shown = members.drop(state.presencePage * 25).take(25)
+    Column(modifier.background(SurfaceSidebar).then(if (compact) Modifier else Modifier)) {
+        Row(Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Members", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            if (!detail.space.demo) Text(members.size.toString(), color = TextMuted, fontSize = 10.sp)
+        }
+        HorizontalDivider(color = Border)
+        if (detail.space.demo) Text("General is open to everyone. People in voice appear in the channel sidebar.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
+        else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
+        else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
+            items(shown, key = { it.id }) { member ->
+                val status = state.presence[member.id] ?: "unknown"
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box {
+                        Avatar(member.displayName, 30.dp)
+                        Box(Modifier.size(9.dp).align(Alignment.BottomEnd).clip(CircleShape).background(when (status) { "online" -> CaperGreen; "idle" -> Idle; else -> Border }))
+                    }
+                    Spacer(Modifier.width(10.dp)); Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+        if (pages > 1) Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0) { Text("Previous", fontSize = 10.sp) }
+            Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp)
+            TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages) { Text("Next", fontSize = 10.sp) }
+        }
+    }
+}
+
+@Composable private fun AccountAvatar(state: AppUiState) {
+    val name = state.account?.displayName ?: "Guest"
+    Box {
+        Avatar(name, 30.dp)
+        state.account?.let { account ->
+            val status = state.presence[account.id]
+            Box(Modifier.size(9.dp).align(Alignment.BottomEnd).clip(CircleShape).background(when (status) { "online" -> CaperGreen; "idle" -> Idle; else -> Border }))
+        }
     }
 }
 
@@ -264,7 +302,7 @@ private sealed interface Overlay {
     Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Row(Modifier.height(42.dp).padding(5.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }, verticalAlignment = Alignment.CenterVertically) {
-                Avatar(state.account?.displayName ?: "Guest", 30.dp); Spacer(Modifier.width(7.dp))
+                AccountAvatar(state); Spacer(Modifier.width(7.dp))
                 Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
             if (voice.phase == VoiceState.Phase.CONNECTED) {
@@ -282,6 +320,8 @@ private sealed interface Overlay {
     viewModel: CaperViewModel,
     show: (Overlay) -> Unit,
     narrow: Boolean,
+    membersVisible: Boolean,
+    toggleMembers: () -> Unit,
     modifier: Modifier = Modifier,
     openNavigation: () -> Unit,
 ) {
@@ -290,8 +330,16 @@ private sealed interface Overlay {
         Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.Tag, null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold); Text("Choose or create a channel.", color = TextMuted) }
     }
     val context = LocalContext.current
+    val latestState by rememberUpdatedState(state)
+    var pendingVoiceJoin by remember { mutableStateOf<VoiceJoinIntent?>(null) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-        if (grants[Manifest.permission.RECORD_AUDIO] == true) VoiceCallService.start(context, channel.id, channel.name, state.account?.displayName ?: "Guest", state.selectedSpace?.space?.demo == true)
+        val requested = pendingVoiceJoin
+        pendingVoiceJoin = null
+        val current = latestState
+        if (grants[Manifest.permission.RECORD_AUDIO] == true && requested != null && current.screen == SessionScreen.Home &&
+            current.selectedChannel?.id == requested.channelId && current.account?.id == requested.accountId &&
+            current.selectedSpace?.space?.demo == requested.demo
+        ) VoiceCallService.start(context, requested.channelId, requested.channelName, requested.spaceName, requested.displayName, requested.demo)
     }
     var draft by remember(channel.id) { mutableStateOf("") }
     val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
@@ -302,12 +350,16 @@ private sealed interface Overlay {
             if (state.gateway != GatewayStatus.LIVE) Text(if (state.gateway == GatewayStatus.ERROR) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp)
             Spacer(Modifier.width(10.dp))
             if (BuildConfig.ENABLE_NATIVE_VOICE) Button({
-                if (inCall) VoiceCallService.stop(context) else permission.launch(buildList {
-                    add(Manifest.permission.RECORD_AUDIO); if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-                }.toTypedArray())
+                if (inCall) VoiceCallService.stop(context) else {
+                    pendingVoiceJoin = VoiceJoinIntent(channel.id, channel.name, state.selectedSpace?.space?.name ?: "Caper", state.account?.displayName ?: "Guest", state.account?.id, state.selectedSpace?.space?.demo == true)
+                    permission.launch(buildList {
+                        add(Manifest.permission.RECORD_AUDIO); if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                    }.toTypedArray())
+                }
             }, colors = ButtonDefaults.buttonColors(containerColor = TerracottaWash, contentColor = TerracottaBright), border = BorderStroke(1.dp, TerracottaBorder), contentPadding = PaddingValues(horizontal = 12.dp)) {
                 Icon(if (inCall) Icons.Default.CallEnd else Icons.Default.RecordVoiceOver, null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text(if (inCall) "Leave" else "Join")
             }
+            IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(Icons.Default.People, if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
         MessageTimeline(state, viewModel, Modifier.weight(1f))

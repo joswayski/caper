@@ -36,9 +36,58 @@ def fixture(body: dict) -> None:
 
 
 def hierarchy() -> ET.Element:
-    adb("shell", "uiautomator", "dump", "/sdcard/caper-ui.xml", timeout=30)
-    xml = adb("exec-out", "cat", "/sdcard/caper-ui.xml", timeout=30)
-    return ET.fromstring(xml)
+    """Read a fresh hierarchy, tolerating transient uiautomator/animation failures.
+
+    `uiautomator dump` writes diagnostics to stdout and can leave an empty or
+    stale destination file when the window is changing. Never parse that
+    command output as XML, and preserve enough evidence to debug a final CI
+    failure rather than surfacing an opaque ElementTree error.
+    """
+    attempts: list[str] = []
+    raw = b""
+    for attempt in range(1, 5):
+        subprocess.run(
+            ["adb", "shell", "rm", "-f", "/sdcard/caper-ui.xml"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+        dumped = subprocess.run(
+            ["adb", "shell", "uiautomator", "dump", "--compressed", "/sdcard/caper-ui.xml"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        fetched = subprocess.run(
+            ["adb", "exec-out", "cat", "/sdcard/caper-ui.xml"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        raw = fetched.stdout
+        start = raw.find(b"<hierarchy")
+        end = raw.rfind(b"</hierarchy>")
+        attempts.append(
+            f"attempt {attempt}: dump={dumped.returncode} cat={fetched.returncode} "
+            f"bytes={len(raw)} stdout={dumped.stdout.decode(errors='replace').strip()!r} "
+            f"stderr={dumped.stderr.decode(errors='replace').strip()!r}"
+        )
+        if dumped.returncode == 0 and fetched.returncode == 0 and start >= 0 and end >= start:
+            try:
+                return ET.fromstring(raw[start : end + len(b"</hierarchy>")])
+            except ET.ParseError as error:
+                attempts[-1] += f" parse={error}"
+        time.sleep(0.5 * attempt)
+
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    (OUTPUT / "hierarchy-failure.txt").write_text("\n".join(attempts) + "\n")
+    (OUTPUT / "hierarchy-failure.xml").write_bytes(raw)
+    with (OUTPUT / "hierarchy-failure.png").open("wb") as image:
+        subprocess.run(["adb", "exec-out", "screencap", "-p"], stdout=image, check=False, timeout=30)
+    raise AssertionError(
+        f"Unable to acquire Android UI hierarchy after 4 attempts; diagnostics written to {OUTPUT}"
+    )
 
 
 def nodes(root: ET.Element):
@@ -139,8 +188,9 @@ def main() -> None:
     tap(text="Continue")
     wait_for(description="Fixture Studio")
     tap(description="Fixture Studio")
+    wait_for(text="design")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
-    for required in ("CHANNELS", "general", "design", "planning", "MEMBERS — 3"):
+    for required in ("CHANNELS", "general", "design", "planning", "Members", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
 
     tap(description="Manage planning")

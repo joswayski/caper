@@ -17,12 +17,15 @@ widgets. Apple and Android have separate native UI implementations. All clients
 talk directly to the same Caper API. No server or Cloudflare credentials belong
 in an app.
 
-The initial usable slice is account sign-in and text conversations. Windows/Linux
-do not implement calling yet. Apple and Android contain experimental native audio
-code, disabled in default builds; neither supports a verified locked-phone call.
-Space/channel administration, presence, typing, notifications, and visual parity
-also remain incomplete. This pipeline is a foundation, not the finished Discord-like
-experience.
+The clients are being aligned with the current website: guest General, account
+sign-in and text conversations, owner space/channel/member management, private
+grants, presence, typing, and the responsive rail/sidebar/conversation layout.
+Implementation checkpoints are not acceptance: check each platform's README and
+the exact revision's CI results before relying on a feature. Windows/Linux do not
+implement calling yet. Apple and Android contain experimental native audio code,
+disabled in default builds; neither supports a verified locked-phone call. Visual
+matching, audio controls, platform lifecycle behavior, and physical-device
+acceptance remain in progress.
 
 ## Build and download
 
@@ -37,11 +40,14 @@ exact checked-out Git revision and development-only distribution status. Artifac
 names on PRs refer to the tested merge commit, not necessarily the PR branch tip.
 Artifacts expire after 14 days and downloading requires repository access.
 
-The mobile jobs also install and launch the packaged app in an iPhone Simulator
-and an Android emulator, uploading signed-out screenshots as separate `caper-ui-*`
-artifacts. Android checks the sign-in accessibility hierarchy too. These startup
-checks do not exercise authenticated conversations, microphones or locked-phone
-calling; inspect the captures rather than treating upload success as visual parity.
+Apple and Android jobs also exercise an explicit loopback-only fixture with native
+UI automation. They check populated conversations, authentication/error states,
+owner management, and narrow Browse layouts, and upload separate `caper-ui-*`
+artifacts. Android uses a separately built fixture APK; that APK is not the normal
+download package. These checks do not contact the production API or exercise
+microphones, Cloudflare audio, or locked-phone calling. A failed UI job does not
+establish parity even if its preceding package build passed; inspect the captures
+as well as the assertions.
 
 | Target | Package | Installation limits |
 | --- | --- | --- |

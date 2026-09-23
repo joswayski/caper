@@ -85,6 +85,7 @@ class GatewayClient(
             runCatching { receive(webSocket, json.parseToJsonElement(text).jsonObject) }
                 .onFailure { fail(webSocket, terminal = false) }
         }
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = fail(webSocket, terminal = false)
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = fail(webSocket, terminal = false)
         override fun onFailure(webSocket: WebSocket, error: Throwable, response: Response?) {
             val denied = response?.code == 401 || response?.code == 403 || response?.code == 404
