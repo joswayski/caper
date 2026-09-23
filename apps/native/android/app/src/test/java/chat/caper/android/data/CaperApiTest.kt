@@ -1,6 +1,7 @@
 package chat.caper.android.data
 
 import chat.caper.android.model.TurnResponse
+import chat.caper.android.model.ChatAuthor
 import java.util.UUID
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -43,7 +44,7 @@ class CaperApiTest {
         server.enqueue(MockResponse().setBody(body)); server.enqueue(MockResponse().setBody(body))
         val api = CaperApi(baseUrl = server.url("/").toString())
         val id = UUID.fromString("00000000-0000-0000-0000-000000000123")
-        repeat(2) { api.sendMessage("account-secret", "chat-secret", "channel00001", "account00001", id, "hello") }
+        repeat(2) { api.sendMessage("account-secret", "chat-secret", "channel00001", ChatAuthor("account00001", "Jose", false), id, "hello") }
 
         val first = server.takeRequest(); val second = server.takeRequest()
         assertEquals(first.body.readUtf8(), second.body.readUtf8())

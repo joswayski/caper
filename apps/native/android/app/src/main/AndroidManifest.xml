@@ -16,7 +16,7 @@
         android:label="Caper (Development)"
         android:supportsRtl="true"
         android:theme="@style/Theme.Caper"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="${usesCleartextTraffic}">
         <activity
             android:name=".MainActivity"
             android:exported="true"

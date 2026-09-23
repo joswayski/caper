@@ -12,15 +12,7 @@ fi
 mkdir -p "$ROOT/dist"
 
 export CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID"
-XCODEGEN_COMMIT=21ac9944b0ab546a07422dbed86f33dd2ebd76f8
-XCODEGEN="$ROOT/.build/xcodegen-$XCODEGEN_COMMIT"
-if [[ ! -d "$XCODEGEN/.git" ]]; then
-  rm -rf "$XCODEGEN"
-  git clone --quiet https://github.com/yonaskolb/XcodeGen.git "$XCODEGEN"
-fi
-git -C "$XCODEGEN" checkout --quiet --detach "$XCODEGEN_COMMIT"
-test "$(git -C "$XCODEGEN" rev-parse HEAD)" = "$XCODEGEN_COMMIT"
-swift run --package-path "$XCODEGEN" xcodegen --spec "$ROOT/project.yml" --project "$ROOT"
+"$ROOT/prepare.sh"
 xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperMacOS -configuration Debug \
   -destination 'platform=macOS' -derivedDataPath "$ROOT/DerivedData-Tests" \
   CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" test
@@ -37,6 +29,10 @@ case "$MODE" in
     test -x "$ROOT/dist/Caper.app/Contents/MacOS/Caper"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC"
     test -f "$ROOT/dist/Caper.app/Contents/Resources/WebRTC-LICENSE.txt"
+    test -f "$ROOT/dist/Caper.app/Contents/Resources/Satoshi-FFL.txt"
+    for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Contents/Resources/Satoshi-$font.otf"; done
+    lipo -archs "$ROOT/dist/Caper.app/Contents/MacOS/Caper" | tr ' ' '\n' | grep -qx "$machine"
+    lipo -archs "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC" | tr ' ' '\n' | grep -qx "$machine"
     otool -l "$ROOT/dist/Caper.app/Contents/MacOS/Caper" | grep -q '@executable_path/../Frameworks'
     codesign --verify --deep --strict "$ROOT/dist/Caper.app"
     rm -f "$ROOT/dist/Caper-macos-$artifact_arch.zip"
@@ -53,6 +49,10 @@ case "$MODE" in
     test -x "$ROOT/dist/Caper.app/Caper"
     test -f "$ROOT/dist/Caper.app/Frameworks/WebRTC.framework/WebRTC"
     test -f "$ROOT/dist/Caper.app/WebRTC-LICENSE.txt"
+    test -f "$ROOT/dist/Caper.app/Satoshi-FFL.txt"
+    for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Satoshi-$font.otf"; done
+    lipo -archs "$ROOT/dist/Caper.app/Caper" | tr ' ' '\n' | grep -qx arm64
+    lipo -archs "$ROOT/dist/Caper.app/Frameworks/WebRTC.framework/WebRTC" | tr ' ' '\n' | grep -qx arm64
     rm -f "$ROOT/dist/Caper-ios-simulator-arm64.zip"
     ditto -c -k --keepParent "$ROOT/dist/Caper.app" "$ROOT/dist/Caper-ios-simulator-arm64.zip"
     echo "$ROOT/dist/Caper-ios-simulator-arm64.zip (simulator only; not installable on a physical device)"

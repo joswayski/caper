@@ -12,4 +12,5 @@
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Caper uses your microphone when you join a voice channel.</string>
+  <key>ATSApplicationFontsPath</key><string>.</string>
 </dict></plist>

@@ -2,6 +2,7 @@ package chat.caper.android.voice
 
 import android.content.Context
 import chat.caper.android.data.CaperApi
+import chat.caper.android.data.ApiException
 import chat.caper.android.model.*
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,9 +28,11 @@ import org.webrtc.SessionDescription as RtcSessionDescription
 class VoiceEngine(
     context: Context,
     private val api: CaperApi,
-    private val accountToken: String,
+    private val accountToken: String?,
     private val channelId: String,
     private val displayName: String,
+    private val demo: Boolean = false,
+    private val onTransportState: (PeerConnection.PeerConnectionState) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val lock = Mutex()
@@ -47,6 +50,7 @@ class VoiceEngine(
     private val connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     private var turn: TurnGeneration? = null
     private var stateSequence = 0L
+    private var restartSequence = 1L
     @Volatile var muted = true
         private set
     @Volatile var deafened = false
@@ -59,8 +63,8 @@ class VoiceEngine(
         val audioModule = JavaAudioDeviceModule.builder(appContext).createAudioDeviceModule()
         factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule).createPeerConnectionFactory()
         audioModule.release()
-        val joined: JoinResponse = api.media(
-            accountToken, channelId, "join",
+        val joined: JoinResponse = media(
+            "join",
             buildJsonObject { put("name", displayName); put("muted", true); put("deafened", false) },
         )
         mediaToken = joined.token
@@ -87,8 +91,8 @@ class VoiceEngine(
             peer!!.awaitIceGathering()
             val mid = transceiver.mid ?: error("WebRTC did not assign a microphone MID.")
             val local = peer!!.localDescription ?: error("WebRTC did not create an offer.")
-            val published: SignalResponse = api.media(
-                accountToken, channelId, "publish",
+            val published: SignalResponse = media(
+                "publish",
                 buildJsonObject {
                     put("kind", "microphone"); put("mid", mid)
                     putJsonObject("sessionDescription") { put("type", "offer"); put("sdp", local.description) }
@@ -122,7 +126,7 @@ class VoiceEngine(
 
     private suspend fun reconcile(onParticipants: (List<Participant>) -> Unit) {
         val token = mediaToken ?: return
-        val snapshot: MediaSnapshot = api.media(accountToken, channelId, "snapshot", mediaToken = token)
+        val snapshot: MediaSnapshot = media("snapshot", mediaToken = token)
         onParticipants(snapshot.participants)
         val wanted = snapshot.participants
             .filter { it.id != selfId }
@@ -132,7 +136,7 @@ class VoiceEngine(
             .toSet()
         for ((track, mid) in subscriptions.toMap()) {
             if (track !in wanted) {
-                runCatching { api.media<Unit>(accountToken, channelId, "close", buildJsonObject { put("mid", mid) }, token) }
+                runCatching { media<Unit>("close", buildJsonObject { put("mid", mid) }, token) }
                 subscriptions.remove(track)
             }
         }
@@ -140,8 +144,8 @@ class VoiceEngine(
     }
 
     private suspend fun subscribe(trackId: String, token: String) {
-        val response: SignalResponse = api.media(
-            accountToken, channelId, "subscribe", buildJsonObject { put("trackId", trackId) }, token,
+        val response: SignalResponse = media(
+            "subscribe", buildJsonObject { put("trackId", trackId) }, token,
         )
         val mid = response.tracks.firstOrNull()?.mid ?: error("Media service did not identify the remote track.")
         subscriptions[trackId] = mid
@@ -150,8 +154,8 @@ class VoiceEngine(
             peer!!.setLocalDescriptionAwait(peer!!.createAnswerAwait())
             peer!!.awaitIceGathering()
             val local = peer!!.localDescription ?: error("WebRTC did not create an answer.")
-            api.media<Unit>(
-                accountToken, channelId, "negotiate",
+            media<Unit>(
+                "negotiate",
                 buildJsonObject { putJsonObject("sessionDescription") { put("type", "answer"); put("sdp", local.description) } }, token,
             )
         }
@@ -176,16 +180,16 @@ class VoiceEngine(
     private suspend fun syncStateLocked() {
         val token = mediaToken ?: return
         val sequence = ++stateSequence
-        api.media<Unit>(
-            accountToken, channelId, "state",
+        media<Unit>(
+            "state",
             buildJsonObject { put("muted", muted); put("deafened", deafened); put("sequence", sequence) }, token,
         )
     }
 
     suspend fun refreshTurn(): Long? = lock.withLock {
         val old = turn ?: return null
-        val response: TurnResponse = api.media(
-            accountToken, channelId, "turn", buildJsonObject { put("generation", old.generation) }, mediaToken ?: return null,
+        val response: TurnResponse = media(
+            "turn", buildJsonObject { put("generation", old.generation) }, mediaToken ?: return null,
         )
         rtcConfiguration.iceServers = response.iceServers.map { server ->
             PeerConnection.IceServer.builder(server.urls)
@@ -193,8 +197,47 @@ class VoiceEngine(
                 .createIceServer()
         }
         check(peer?.setConfiguration(rtcConfiguration) == true) { "Could not refresh TURN credentials." }
+        if (response.turn.generation != old.generation) restartIceLocked(response.turn.generation)
         turn = response.turn
         return response.turn.refreshAfterMs
+    }
+
+    suspend fun recoverIce() = lock.withLock {
+        check(!closed.get()) { "Voice call ended." }
+        restartIceLocked(requireNotNull(turn).generation)
+    }
+
+    private suspend fun restartIceLocked(generation: String) {
+        val current = peer ?: error("Voice transport is unavailable.")
+        val token = mediaToken ?: error("Voice session is unavailable.")
+        current.restartIce()
+        current.setLocalDescriptionAwait(current.createOfferAwait())
+        current.awaitIceGathering()
+        val local = current.localDescription ?: error("WebRTC did not create an ICE restart offer.")
+        val sequence = restartSequence
+        val body = buildJsonObject {
+            put("generation", generation); put("sequence", sequence)
+            putJsonObject("sessionDescription") { put("type", "offer"); put("sdp", local.description) }
+        }
+        val response: SignalResponse = retryIceRequest { media("restart-ice", body, token) }
+        val answer = response.sessionDescription ?: error("Media service did not answer ICE restart.")
+        current.setRemoteDescriptionAwait(RtcSessionDescription(RtcSessionDescription.Type.ANSWER, answer.sdp))
+        retryIceRequest<Unit> { media("restart-ice-ack", buildJsonObject { put("generation", generation); put("sequence", sequence) }, token) }
+        restartSequence++
+    }
+
+    private suspend fun <T> retryIceRequest(block: suspend () -> T): T {
+        val waits = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000, 30_000)
+        var attempt = 0
+        while (true) {
+            try { return block() } catch (error: Throwable) {
+                val retry = error !is ApiException || error.status in setOf(408, 429, 500, 502, 503, 504) ||
+                    (error.status == 409 && error.code == "ice_restart_pending")
+                if (!retry || error is ApiException && error.code == "ice_restart_invalid") throw error
+                delay(waits[attempt.coerceAtMost(waits.lastIndex)])
+                attempt++
+            }
+        }
     }
 
     suspend fun disconnect() {
@@ -218,15 +261,24 @@ class VoiceEngine(
     }
 
     suspend fun leave(token: String?) {
-        if (token != null) runCatching { api.media<Unit>(accountToken, channelId, "leave", mediaToken = token) }
+        if (token != null) runCatching { media<Unit>("leave", mediaToken = token) }
     }
+
+    private suspend inline fun <reified T> media(
+        operation: String,
+        body: kotlinx.serialization.json.JsonObject = buildJsonObject {},
+        mediaToken: String? = null,
+    ): T = api.media(accountToken, channelId, operation, body, mediaToken, demo)
 
     private val observer = object : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState?) = Unit
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) = Unit
         override fun onStandardizedIceConnectionChange(newState: PeerConnection.IceConnectionState?) = Unit
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
-            if (newState != null) connectionState.value = newState
+            if (newState != null) {
+                connectionState.value = newState
+                onTransportState(newState)
+            }
         }
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) = Unit

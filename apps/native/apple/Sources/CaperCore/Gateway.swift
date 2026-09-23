@@ -2,6 +2,13 @@ import Foundation
 
 public enum GatewayState: Equatable, Sendable { case disconnected, connecting, connected, reconnecting }
 
+public struct GatewayFailure: LocalizedError, Equatable, Sendable {
+    public let status: Int
+    public let message: String
+    public let code: String?
+    public var errorDescription: String? { message }
+}
+
 public struct GatewayEvent: Sendable {
     public let subscriptionID: String
     public let value: [String: AnySendable]
@@ -21,6 +28,8 @@ public actor Gateway {
     private let token: @Sendable () async -> String?
     private var socket: URLSessionWebSocketTask?
     private var subscriptions: [String: (frame: [String: Any], handler: Handler)] = [:]
+    private var commands: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    private var commandTimeouts: [String: Task<Void, Never>] = [:]
     private var runTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var attempts = 0
@@ -37,11 +46,68 @@ public actor Gateway {
 
     @discardableResult
     public func subscribeChat(channelID: String, after: String, handler: @escaping Handler) async -> String {
+        await subscribe(frame: ["kind": "chat", "channelId": channelID, "after": after], handler: handler)
+    }
+
+    @discardableResult
+    public func subscribePresence(spaceID: String, userIDs: [String], handler: @escaping Handler) async -> String {
+        await subscribe(frame: ["kind": "presence", "spaceId": spaceID, "userIds": userIDs], handler: handler)
+    }
+
+    @discardableResult
+    public func subscribeMedia(channelID: String?, token: String?, handler: @escaping Handler) async -> String {
+        var frame: [String: Any] = ["kind": "media"]
+        if let channelID { frame["channelId"] = channelID }
+        if let token { frame["token"] = token }
+        return await subscribe(frame: frame, handler: handler)
+    }
+
+    private func subscribe(frame: [String: Any], handler: @escaping Handler) async -> String {
         let id = UUID().uuidString
-        subscriptions[id] = (["type": "subscribe", "id": id, "kind": "chat", "channelId": channelID, "after": after], handler)
+        var request = frame
+        request["type"] = "subscribe"
+        request["id"] = id
+        subscriptions[id] = (request, handler)
         if socket == nil { connect() }
         else if readyEpoch == epoch { try? await send(subscriptions[id]!.frame) }
         return id
+    }
+
+    public func command(
+        method: String,
+        channelID: String? = nil,
+        token capability: String? = nil,
+        chatToken: String? = nil,
+        body: [String: Any] = [:],
+        timeout: Duration = .seconds(2)
+    ) async throws -> [String: Any] {
+        guard readyEpoch == epoch, socket != nil else {
+            throw GatewayFailure(status: 503, message: "Live commands are unavailable while reconnecting.", code: nil)
+        }
+        let id = UUID().uuidString
+        var frame: [String: Any] = [
+            "type": "command", "id": id, "method": method,
+            "issuedAt": Int(Date().timeIntervalSince1970 * 1_000), "body": body,
+        ]
+        if let channelID { frame["channelId"] = channelID }
+        if let capability { frame["token"] = capability }
+        if let chatToken { frame["chatToken"] = chatToken }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                commands[id] = continuation
+                commandTimeouts[id] = Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+                    await self?.finishCommand(id: id, error: CancellationError())
+                }
+                Task { [weak self] in
+                    do { try await self?.send(frame) }
+                    catch { await self?.finishCommand(id: id, error: error) }
+                }
+            }
+        } onCancel: {
+            Task { [weak self] in await self?.finishCommand(id: id, error: CancellationError()) }
+        }
     }
 
     public func unsubscribe(_ id: String) async {
@@ -61,6 +127,7 @@ public actor Gateway {
     public func stop() {
         stopped = true
         subscriptions.removeAll()
+        for id in Array(commands.keys) { finishCommand(id: id, error: CancellationError()) }
         stopSocket()
     }
 
@@ -111,6 +178,16 @@ public actor Gateway {
                     continue
                 } else if type == "event", let id = frame["id"] as? String, let event = frame["event"] as? [String: Any], let handler = subscriptions[id]?.handler {
                     await handler(event)
+                } else if type == "result", let id = frame["id"] as? String, let status = frame["status"] as? Int {
+                    let body = frame["body"] as? [String: Any] ?? [:]
+                    if (200..<300).contains(status) { finishCommand(id: id, value: body) }
+                    else {
+                        finishCommand(id: id, error: GatewayFailure(
+                            status: status,
+                            message: body["error"] as? String ?? "Live command failed.",
+                            code: body["code"] as? String
+                        ))
+                    }
                 } else if type == "error", let id = frame["id"] as? String {
                     let message = frame["error"] as? String ?? "Live updates failed."
                     let status = frame["status"] as? Int ?? 0
@@ -126,6 +203,7 @@ public actor Gateway {
             socket = nil
             readyEpoch = nil
             heartbeatTask?.cancel()
+            for id in Array(commands.keys) { finishCommand(id: id, error: GatewayFailure(status: 503, message: "Live command disconnected.", code: nil)) }
             guard !stopped, !subscriptions.isEmpty else { return }
             attempts += 1
             await state(.reconnecting, "Live updates disconnected. Reconnecting…")
@@ -179,6 +257,13 @@ public actor Gateway {
         let data = try JSONSerialization.data(withJSONObject: value)
         let text = String(decoding: data, as: UTF8.self)
         try await target.send(.string(text))
+    }
+
+    private func finishCommand(id: String, value: [String: Any]? = nil, error: Error? = nil) {
+        guard let continuation = commands.removeValue(forKey: id) else { return }
+        commandTimeouts.removeValue(forKey: id)?.cancel()
+        if let error { continuation.resume(throwing: error) }
+        else { continuation.resume(returning: value ?? [:]) }
     }
 
     private func stopSocket() {

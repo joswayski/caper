@@ -44,6 +44,43 @@ public struct SpaceDetail: Codable, Sendable {
     public let members: [Member]
 }
 
+public enum PresenceStatus: String, Codable, Sendable { case online, idle, offline, unknown }
+
+public struct PresenceMember: Codable, Equatable, Sendable {
+    public let userId: String
+    public let status: PresenceStatus
+}
+
+public enum WorkspaceValidation {
+    public static func spaceNameError(_ value: String) -> String? {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "Enter a space name." }
+        if name.unicodeScalars.count > 80 { return "Space names can be at most 80 characters." }
+        if name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+            return "Space names cannot contain control characters."
+        }
+        return nil
+    }
+
+    public static func normalizeChannelName(_ value: String) -> String {
+        var normalized = value.lowercased().replacingOccurrences(of: " ", with: "-")
+        normalized = String(normalized.filter { $0.isASCII && ($0.isLowercase || $0 == "-") }.prefix(80))
+        while normalized.contains("--") { normalized = normalized.replacingOccurrences(of: "--", with: "-") }
+        while normalized.first == "-" { normalized.removeFirst() }
+        return normalized
+    }
+
+    public static func channelNameError(_ value: String) -> String? {
+        guard !value.isEmpty else { return "Enter a channel name." }
+        guard value.unicodeScalars.count <= 80 else { return "Channel names can be at most 80 characters." }
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard !parts.contains(where: { $0.isEmpty }), parts.allSatisfy({ $0.allSatisfy { $0.isASCII && $0.isLowercase } }) else {
+            return "Use lowercase letters separated by single dashes."
+        }
+        return nil
+    }
+}
+
 public struct ChatAuthor: Codable, Equatable, Sendable {
     public let id: String
     public let name: String

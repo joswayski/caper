@@ -3,16 +3,11 @@ package chat.caper.android
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import chat.caper.android.data.ApiException
-import chat.caper.android.data.CaperApi
-import chat.caper.android.data.GatewayClient
-import chat.caper.android.data.PendingSendTracker
-import chat.caper.android.data.SendFailure
-import chat.caper.android.data.TokenStore
-import chat.caper.android.data.classifySendFailure
+import chat.caper.android.data.*
 import chat.caper.android.model.*
 import chat.caper.android.voice.VoiceCallService
 import java.io.IOException
+import java.time.Instant
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,238 +22,459 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<AppUiState> = mutable.asStateFlow()
     private var accountToken: String? = null
     private var chatToken: String? = null
+    private var chatAuthor: ChatAuthor? = null
     private var gateway: GatewayClient? = null
     private var gatewayStatus: Job? = null
+    private var typingExpiry: Job? = null
+    private val typers = mutableMapOf<String, TypingAuthor>()
     private var generation = 0L
     private var accountGeneration = 0L
     private val pendingSends = PendingSendTracker()
 
-    init { restore() }
+    init { loadHome() }
 
-    private fun restore() = launchBusy { requestAccountGeneration ->
-        val token = tokens.read() ?: return@launchBusy setSignedOut()
-        try {
-            val account = api.me(token)
-            if (requestAccountGeneration != accountGeneration) return@launchBusy
-            accountToken = token
-            showAccount(account, requestAccountGeneration)
-        } catch (error: ApiException) {
-            if (error.status == 401 && requestAccountGeneration == accountGeneration) {
-                tokens.clear()
-                setSignedOut()
-            } else throw error
+    private fun loadHome() {
+        val requestAccountGeneration = accountGeneration
+        mutable.value = AppUiState(screen = SessionScreen.Loading, busy = true)
+        viewModelScope.launch {
+            try {
+                val stored = tokens.read()
+                val account = if (stored == null) null else try {
+                    api.me(stored).also { accountToken = stored }
+                } catch (error: ApiException) {
+                    if (error.status == 401) { tokens.clear(); accountToken = null; null } else throw error
+                }
+                if (requestAccountGeneration != accountGeneration) return@launch
+                if (account != null && (account.username == null || account.displayName == null)) {
+                    mutable.value = AppUiState(screen = SessionScreen.Profile(account), account = account)
+                    return@launch
+                }
+                val general = api.general()
+                val room = requireNotNull(general.space) { "General space is missing." }
+                val channelRoom = requireNotNull(general.channel) { "General channel is missing." }
+                val list = account?.let { api.spaces(requireNotNull(accountToken)) }
+                if (requestAccountGeneration != accountGeneration) return@launch
+                val demo = Space(room.id, room.name, demo = true)
+                val channel = Channel(channelRoom.id, room.id, channelRoom.name, false)
+                val detail = SpaceDetail(demo, listOf(channel), emptyList())
+                mutable.value = AppUiState(
+                    screen = SessionScreen.Home, account = account,
+                    spaces = listOf(demo) + (list?.spaces ?: emptyList()), limits = list?.limits,
+                    selectedSpace = detail, selectedChannel = channel, messages = general.messages,
+                    hasMoreMessages = general.hasMore,
+                )
+                openGateway(channel.id, general.cursor, ++generation)
+                createChatSession(requestAccountGeneration)
+            } catch (error: Throwable) {
+                if (requestAccountGeneration == accountGeneration) {
+                    mutable.value = AppUiState(screen = SessionScreen.Home, error = message(error))
+                }
+            }
         }
     }
 
-    fun requestCode(email: String) = launchBusy { requestAccountGeneration ->
+    fun showLogin() { mutable.value = mutable.value.copy(screen = SessionScreen.SignedOut, error = null) }
+    fun cancelAccountFlow() { if (mutable.value.selectedChannel != null) mutable.value = mutable.value.copy(screen = SessionScreen.Home, error = null) else loadHome() }
+
+    fun requestCode(email: String) = launchAccountAction { request ->
         val challenge = api.requestCode(email)
-        if (requestAccountGeneration == accountGeneration) {
-            mutable.value = mutable.value.copy(screen = SessionScreen.Verify(challenge.challengeId, email))
-        }
+        if (request == accountGeneration) mutable.value = mutable.value.copy(screen = SessionScreen.Verify(challenge.challengeId, email))
     }
 
-    fun verify(challenge: String, code: String) = launchBusy { requestAccountGeneration ->
+    fun verify(challenge: String, code: String) = launchAccountAction { request ->
         val result = api.verifyCode(challenge, code)
-        if (requestAccountGeneration != accountGeneration) return@launchBusy
+        if (request != accountGeneration) return@launchAccountAction
         tokens.write(result.token)
         accountToken = result.token
-        showAccount(result.account, requestAccountGeneration)
+        chatToken = null
+        chatAuthor = null
+        if (result.account.username == null || result.account.displayName == null) {
+            mutable.value = AppUiState(screen = SessionScreen.Profile(result.account), account = result.account)
+        } else loadHome()
     }
 
-    fun saveProfile(username: String, displayName: String) = launchBusy { requestAccountGeneration ->
-        val account = api.profile(requireToken(), username, displayName)
-        if (requestAccountGeneration == accountGeneration) showAccount(account, requestAccountGeneration)
+    fun saveProfile(username: String, displayName: String) = launchAccountAction { request ->
+        val account = api.profile(requireAccountToken(), username, displayName)
+        if (request == accountGeneration) loadHome()
+    }
+
+    fun updateProfile(username: String, displayName: String) = launchAction {
+        val account = api.profile(requireAccountToken(), username, displayName)
+        mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
+        chatToken = null
+        chatAuthor = null
+        createChatSession(accountGeneration)
     }
 
     fun logout() {
         val token = accountToken
-        VoiceCallService.stop(getApplication()) // local mic/peer teardown does not wait for account revocation
+        VoiceCallService.stop(getApplication())
         ++accountGeneration
         invalidate()
         accountToken = null
         chatToken = null
+        chatAuthor = null
         tokens.clear()
-        setSignedOut()
         if (token != null) viewModelScope.launch { runCatching { api.logout(token) } }
+        loadHome()
     }
 
-    fun selectSpace(id: String) = launchBusy { requestAccountGeneration ->
-        val requestGeneration = ++generation
-        closeChannel(clear = true)
-        val detail = api.space(requireToken(), id)
-        if (generation == requestGeneration && accountGeneration == requestAccountGeneration) {
-            mutable.value = mutable.value.copy(selectedSpace = detail)
+    fun selectSpace(id: String) {
+        val existing = mutable.value.spaces.find { it.id == id } ?: return
+        if (existing.demo) return selectDemo()
+        val request = ++generation
+        closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(busy = true, error = null)
+        viewModelScope.launch {
+            try {
+                val detail = api.space(requireAccountToken(), id)
+                if (request != generation) return@launch
+                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
+                detail.channels.firstOrNull()?.let(::selectChannel)
+            } catch (error: Throwable) { if (request == generation) fail(error) }
+        }
+    }
+
+    private fun selectDemo() {
+        val request = ++generation
+        closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(busy = true, error = null)
+        viewModelScope.launch {
+            try {
+                val history = api.general()
+                if (request != generation) return@launch
+                val room = requireNotNull(history.space)
+                val channelRoom = requireNotNull(history.channel)
+                val space = mutable.value.spaces.first { it.demo }
+                val channel = Channel(channelRoom.id, room.id, channelRoom.name, false)
+                mutable.value = mutable.value.copy(
+                    selectedSpace = SpaceDetail(space, listOf(channel), emptyList()), selectedChannel = channel,
+                    messages = history.messages, hasMoreMessages = history.hasMore, busy = false,
+                )
+                openGateway(channel.id, history.cursor, request)
+            } catch (error: Throwable) { if (request == generation) fail(error) }
         }
     }
 
     fun selectChannel(channel: Channel) {
-        val requestGeneration = ++generation
-        closeChannel(clear = true)
-        mutable.value = mutable.value.copy(selectedChannel = channel, busy = true, error = null)
+        val request = ++generation
+        closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(selectedChannel = channel, messages = emptyList(), busy = true, error = null)
         viewModelScope.launch {
             try {
-                val history = api.history(requireToken(), channel.id)
-                if (generation != requestGeneration) return@launch
-                mutable.value = mutable.value.copy(messages = history.messages, busy = false)
-                openGateway(channel.id, history.cursor, requestGeneration)
+                val history = api.history(accountToken, channel.id)
+                if (request != generation) return@launch
+                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false)
+                openGateway(channel.id, history.cursor, request)
             } catch (error: Throwable) {
-                if (generation != requestGeneration) return@launch
-                if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
-                else fail(error)
-            }
-        }
-    }
-
-    fun backToSpaces() {
-        ++generation
-        closeChannel(clear = true)
-        mutable.value = mutable.value.copy(selectedSpace = null)
-    }
-
-    fun backToChannels() {
-        ++generation
-        closeChannel(clear = true)
-    }
-
-    fun reportActivity() { gateway?.reportActivity() }
-
-    fun send(text: String, confirmed: () -> Unit = {}) {
-        if (text.isBlank()) return
-        val selected = mutable.value.selectedChannel ?: return
-        val account = (mutable.value.screen as? SessionScreen.Spaces)?.account ?: return
-        val requestGeneration = generation
-        val operation = pendingSends.begin(selected.id, account.id, text, confirmed)
-        viewModelScope.launch {
-            var sendIssued = false
-            try {
-                val token = requireToken()
-                val capability = chatToken ?: api.chatSession(token, account.displayName ?: account.username ?: "Caper user").let {
-                    if (generation != requestGeneration || accountToken != token) return@launch
-                    require(it.author.id == account.id && !it.author.isGuest) { "Chat session identity mismatch." }
-                    chatToken = it.token
-                    it.token
-                }
-                sendIssued = true
-                val message = retryUnknownSend {
-                    api.sendMessage(token, capability, selected.id, account.id, operation.id, operation.text)
-                }
-                // HTTP confirms persistence but deliberately does not move the replay cursor.
-                if (generation == requestGeneration && mutable.value.selectedChannel?.id == selected.id) {
-                    addMessage(message)
-                    confirmPending(message)
-                }
-            } catch (error: Throwable) {
-                if (generation != requestGeneration) return@launch
-                if (error is ApiException) {
-                    when (classifySendFailure(error.status)) {
-                        SendFailure.REVOKED -> { pendingSends.definitiveFailure(operation.id); revokeChannel() }
-                        SendFailure.DEFINITIVE -> { pendingSends.definitiveFailure(operation.id); fail(error) }
-                        SendFailure.UNKNOWN -> fail(error)
-                    }
-                } else {
-                    if (!sendIssued && error is IllegalArgumentException) pendingSends.definitiveFailure(operation.id)
-                    fail(error)
-                }
-            }
-        }
-    }
-
-    private suspend fun retryUnknownSend(block: suspend () -> ChatMessage): ChatMessage {
-        return try { block() } catch (error: IOException) {
-            if (error is ApiException) throw error
-            delay(250)
-            block() // caller closes over the same UUID and text: server idempotency key is stable
-        }
-    }
-
-    private suspend fun showAccount(account: Account, requestAccountGeneration: Long) {
-        if (requestAccountGeneration != accountGeneration) return
-        if (account.username == null || account.displayName == null) {
-            mutable.value = AppUiState(screen = SessionScreen.Profile(account))
-            return
-        }
-        val spaces = api.spaces(requireToken()).spaces
-        if (requestAccountGeneration != accountGeneration) return
-        mutable.value = AppUiState(screen = SessionScreen.Spaces(account), spaces = spaces)
-    }
-
-    private fun openGateway(channel: String, cursor: String, requestGeneration: Long) {
-        val connection = GatewayClient(
-            api.baseUrl, requireToken(), channel, cursor,
-            onMessage = { message -> viewModelScope.launch { if (generation == requestGeneration) addMessage(message) } },
-            onAccessDenied = { viewModelScope.launch { if (generation == requestGeneration) revokeChannel() } },
-            onResync = { viewModelScope.launch { if (generation == requestGeneration) resyncChannel(channel) } },
-        )
-        gateway = connection
-        gatewayStatus = viewModelScope.launch {
-            connection.status.collect { status ->
-                if (generation == requestGeneration) mutable.value = mutable.value.copy(gateway = status)
-            }
-        }
-        connection.start()
-    }
-
-    private fun addMessage(message: ChatMessage) {
-        val current = mutable.value.messages
-        if (current.none { it.id == message.id }) {
-            mutable.value = mutable.value.copy(messages = (current + message).sortedBy { it.seq.toLongOrNull() ?: Long.MAX_VALUE })
-        }
-        confirmPending(message)
-    }
-
-    private fun confirmPending(message: ChatMessage) {
-        pendingSends.confirm(message)?.confirmed?.invoke()
-    }
-
-    private fun resyncChannel(channelId: String) {
-        val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
-        val requestGeneration = ++generation
-        closeChannel(clear = false, clearPending = false)
-        mutable.value = mutable.value.copy(gateway = GatewayStatus.CONNECTING, busy = true, error = null)
-        viewModelScope.launch {
-            try {
-                val history = api.history(requireToken(), channel.id)
-                if (generation != requestGeneration || mutable.value.selectedChannel?.id != channel.id) return@launch
-                history.messages.forEach(::confirmPending)
-                mutable.value = mutable.value.copy(messages = history.messages, busy = false)
-                openGateway(channel.id, history.cursor, requestGeneration)
-            } catch (error: Throwable) {
-                if (generation != requestGeneration) return@launch
+                if (request != generation) return@launch
                 if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel() else fail(error)
             }
         }
     }
 
-    private fun revokeChannel() {
-        ++generation
-        closeChannel(clear = true)
-        mutable.value = mutable.value.copy(error = "You no longer have access to this channel.")
-    }
-
-    private fun closeChannel(clear: Boolean, clearPending: Boolean = true) {
-        gateway?.close()
-        gateway = null
-        gatewayStatus?.cancel()
-        gatewayStatus = null
-        if (clearPending) pendingSends.clear()
-        if (clear) mutable.value = mutable.value.copy(selectedChannel = null, messages = emptyList(), gateway = GatewayStatus.DISCONNECTED)
-    }
-
-    private fun invalidate() { ++generation; closeChannel(clear = true) }
-    private fun requireToken() = checkNotNull(accountToken) { "Sign in required." }
-    private fun setSignedOut() { mutable.value = AppUiState(screen = SessionScreen.SignedOut) }
-    private fun fail(error: Throwable) { mutable.value = mutable.value.copy(busy = false, error = error.message ?: "That request did not work.") }
-    fun clearError() { mutable.value = mutable.value.copy(error = null) }
-
-    private fun launchBusy(block: suspend (Long) -> Unit) = viewModelScope.launch {
-        val requestAccountGeneration = accountGeneration
-        mutable.value = mutable.value.copy(busy = true, error = null)
-        try { block(requestAccountGeneration) }
-        catch (error: Throwable) { if (requestAccountGeneration == accountGeneration) fail(error) }
-        finally {
-            if (requestAccountGeneration == accountGeneration) mutable.value = mutable.value.copy(busy = false)
+    fun loadOlder() {
+        val channel = mutable.value.selectedChannel ?: return
+        val before = mutable.value.messages.firstOrNull()?.seq ?: return
+        val request = generation
+        if (!mutable.value.hasMoreMessages || mutable.value.loadingOlder) return
+        mutable.value = mutable.value.copy(loadingOlder = true, olderError = null)
+        viewModelScope.launch {
+            try {
+                val history = api.history(accountToken, channel.id, before)
+                if (request != generation) return@launch
+                val newer = mutable.value.messages
+                mutable.value = mutable.value.copy(
+                    messages = (history.messages + newer).distinctBy { it.id }, hasMoreMessages = history.hasMore,
+                    loadingOlder = false,
+                )
+            } catch (error: Throwable) {
+                if (request == generation) mutable.value = mutable.value.copy(loadingOlder = false, olderError = message(error))
+            }
         }
     }
 
+    fun setPresencePage(page: Int) {
+        val members = mutable.value.selectedSpace?.members ?: return
+        val max = ((members.size - 1).coerceAtLeast(0)) / PRESENCE_PAGE_SIZE
+        val next = page.coerceIn(0, max)
+        mutable.value = mutable.value.copy(presencePage = next, presence = emptyMap())
+        watchVisiblePresence()
+    }
+
+    fun reportActivity() { gateway?.reportActivity() }
+    fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
+
+    fun send(text: String, confirmed: () -> Unit = {}) {
+        if (text.isBlank()) return
+        val channel = mutable.value.selectedChannel ?: return
+        val author = chatAuthor ?: return fail(IllegalStateException("Chat session is unavailable."))
+        val request = generation
+        val operation = pendingSends.begin(channel.id, author, text, confirmed)
+        mutable.value = mutable.value.copy(pendingMessage = PendingMessageUi(
+            operation.id.toString(), operation.text, author, Instant.now().toString(),
+        ))
+        viewModelScope.launch {
+            try {
+                val capability = chatToken ?: createChatSession(accountGeneration) ?: return@launch
+                val message = retryUnknownSend {
+                    api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text)
+                }
+                if (request == generation && mutable.value.selectedChannel?.id == channel.id) {
+                    addMessage(message)
+                    confirmPending(message)
+                }
+            } catch (error: Throwable) {
+                if (request != generation || mutable.value.pendingMessage?.clientMessageId != operation.id.toString()) return@launch
+                if (error is ApiException) when (classifySendFailure(error.status)) {
+                    SendFailure.REVOKED -> { pendingSends.definitiveFailure(operation.id); revokeChannel() }
+                    SendFailure.DEFINITIVE -> {
+                        pendingSends.definitiveFailure(operation.id)
+                        mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error), rejected = true))
+                    }
+                    SendFailure.UNKNOWN -> mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error)))
+                } else mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(error = message(error)))
+            }
+        }
+    }
+
+    fun discardPending(): String? {
+        val pending = mutable.value.pendingMessage ?: return null
+        pendingSends.clear()
+        mutable.value = mutable.value.copy(pendingMessage = null)
+        return pending.text
+    }
+
+    private suspend fun retryUnknownSend(block: suspend () -> ChatMessage): ChatMessage = try { block() } catch (error: IOException) {
+        if (error is ApiException) throw error
+        delay(250)
+        block()
+    }
+
+    private suspend fun createChatSession(requestAccountGeneration: Long): String? {
+        if (chatToken != null) return chatToken
+        return try {
+            val name = mutable.value.account?.displayName ?: "Guest"
+            val session = api.chatSession(accountToken, name)
+            if (requestAccountGeneration != accountGeneration) return null
+            val account = mutable.value.account
+            if (account != null) require(session.author.id == account.id && !session.author.isGuest) { "Chat identity mismatch." }
+            chatToken = session.token
+            chatAuthor = session.author
+            session.token
+        } catch (error: Throwable) {
+            if (requestAccountGeneration == accountGeneration) mutable.value = mutable.value.copy(error = message(error))
+            null
+        }
+    }
+
+    private fun openGateway(channel: String, cursor: String, request: Long) {
+        val connection = GatewayClient(
+            baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
+            onMessage = { value -> viewModelScope.launch { if (generation == request) addMessage(value) } },
+            onTyping = { author, active, revision -> viewModelScope.launch { if (generation == request) receiveTyping(author, active, revision) } },
+            onPresence = { snapshot -> viewModelScope.launch {
+                if (generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
+            } },
+            onAccessDenied = { viewModelScope.launch { if (generation == request) revokeChannel() } },
+            onResync = { viewModelScope.launch { if (generation == request) resyncChannel(channel) } },
+        )
+        gateway = connection
+        gatewayStatus = viewModelScope.launch {
+            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status) }
+        }
+        connection.start()
+        watchVisiblePresence()
+    }
+
+    private fun watchVisiblePresence() {
+        val detail = mutable.value.selectedSpace ?: return
+        if (detail.space.demo || accountToken == null || detail.members.isEmpty()) return
+        val start = mutable.value.presencePage * PRESENCE_PAGE_SIZE
+        val ids = detail.members.drop(start).take(PRESENCE_PAGE_SIZE).map { it.id }
+        if (ids.isNotEmpty()) gateway?.watchPresence(detail.space.id, ids)
+    }
+
+    private fun receiveTyping(author: ChatAuthor, active: Boolean, revision: String) {
+        if (author.id == chatAuthor?.id) return
+        val next = revision.toLongOrNull() ?: return
+        val old = typers[author.id]
+        if (old != null && next <= old.revision) return
+        if (old == null && typers.size >= 64) return
+        if (active) typers[author.id] = TypingAuthor(author, next, System.currentTimeMillis() + 6_000)
+        else typers.remove(author.id)
+        refreshTypers()
+    }
+
+    private fun refreshTypers() {
+        val now = System.currentTimeMillis()
+        typers.entries.removeAll { it.value.expiresAt <= now }
+        mutable.value = mutable.value.copy(typingAuthors = typers.values.filter { it.expiresAt > now }.map { it.author })
+        typingExpiry?.cancel()
+        val next = typers.values.minOfOrNull { it.expiresAt } ?: return
+        typingExpiry = viewModelScope.launch { delay((next - now).coerceAtLeast(1)); refreshTypers() }
+    }
+
+    private fun addMessage(message: ChatMessage) {
+        if (message.channelId != mutable.value.selectedChannel?.id) return
+        val messages = mutable.value.messages
+        if (messages.none { it.id == message.id }) {
+            mutable.value = mutable.value.copy(messages = (messages + message).sortedWith(compareBy { java.math.BigInteger(it.seq) }))
+        }
+        confirmPending(message)
+    }
+
+    private fun confirmPending(message: ChatMessage) {
+        pendingSends.confirm(message)?.let {
+            mutable.value = mutable.value.copy(pendingMessage = null)
+            it.confirmed.invoke()
+        }
+    }
+
+    private fun resyncChannel(channelId: String) {
+        val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
+        val request = ++generation
+        closeChannel(clearPending = false)
+        mutable.value = mutable.value.copy(gateway = GatewayStatus.CONNECTING, busy = true, error = null)
+        viewModelScope.launch {
+            try {
+                val history = api.history(accountToken, channel.id)
+                if (generation != request || mutable.value.selectedChannel?.id != channel.id) return@launch
+                history.messages.forEach(::confirmPending)
+                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false)
+                openGateway(channel.id, history.cursor, request)
+            } catch (error: Throwable) {
+                if (generation == request) {
+                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel() else fail(error)
+                }
+            }
+        }
+    }
+
+    fun createSpace(name: String, done: () -> Unit = {}) = launchAction {
+        val space = api.createSpace(requireAccountToken(), name)
+        mutable.value = mutable.value.copy(spaces = mutable.value.spaces + space)
+        done(); selectSpace(space.id)
+    }
+    fun renameSpace(name: String, done: () -> Unit = {}) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val space = api.updateSpace(requireAccountToken(), detail.space.id, name)
+        replaceDetail(detail.copy(space = space)); done()
+    }
+    fun deleteCurrentSpace(done: () -> Unit = {}) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        api.deleteSpace(requireAccountToken(), detail.space.id)
+        val remaining = mutable.value.spaces.filter { it.id != detail.space.id }
+        mutable.value = mutable.value.copy(spaces = remaining)
+        done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
+    }
+    fun leaveCurrentSpace(done: () -> Unit = {}) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val account = requireNotNull(mutable.value.account)
+        api.removeSpaceMember(requireAccountToken(), detail.space.id, account.id)
+        val remaining = mutable.value.spaces.filter { it.id != detail.space.id }
+        mutable.value = mutable.value.copy(spaces = remaining)
+        done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
+    }
+    fun createChannel(name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val channel = api.createChannel(requireAccountToken(), detail.space.id, name, privateChannel)
+        replaceDetail(detail.copy(channels = detail.channels + channel)); done(); selectChannel(channel)
+    }
+    fun updateChannel(channel: Channel, name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val updated = api.updateChannel(requireAccountToken(), detail.space.id, channel.id, name, privateChannel)
+        replaceDetail(detail.copy(channels = detail.channels.map { if (it.id == channel.id) updated else it }))
+        mutable.value = mutable.value.copy(selectedChannel = if (mutable.value.selectedChannel?.id == channel.id) updated else mutable.value.selectedChannel)
+        done()
+    }
+    fun deleteChannel(channel: Channel, done: () -> Unit = {}) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        api.deleteChannel(requireAccountToken(), detail.space.id, channel.id)
+        val channels = detail.channels.filter { it.id != channel.id }
+        replaceDetail(detail.copy(channels = channels)); done()
+        channels.firstOrNull()?.let(::selectChannel) ?: closeChannel(clearPending = true)
+    }
+    fun addSpaceMember(username: String) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val member = api.addSpaceMember(requireAccountToken(), detail.space.id, username)
+        replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id } + member))
+    }
+    fun removeSpaceMember(member: Member) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        api.removeSpaceMember(requireAccountToken(), detail.space.id, member.id)
+        replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id }))
+    }
+    fun loadChannelGrants(channel: Channel) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val grants = if (channel.private) api.channelMembers(requireAccountToken(), detail.space.id, channel.id).members else emptyList()
+        mutable.value = mutable.value.copy(channelGrants = grants)
+    }
+    fun addChannelGrant(channel: Channel, username: String) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val member = api.addChannelMember(requireAccountToken(), detail.space.id, channel.id, username)
+        mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id } + member)
+    }
+    fun removeChannelGrant(channel: Channel, member: Member) = launchAction {
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        api.removeChannelMember(requireAccountToken(), detail.space.id, channel.id, member.id)
+        mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id })
+    }
+
+    private fun replaceDetail(detail: SpaceDetail) {
+        mutable.value = mutable.value.copy(
+            selectedSpace = detail,
+            spaces = mutable.value.spaces.map { if (it.id == detail.space.id) detail.space else it },
+        )
+        watchVisiblePresence()
+    }
+
+    private fun revokeChannel() {
+        ++generation
+        closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(error = "You no longer have access to this channel.")
+    }
+
+    private fun closeChannel(clearPending: Boolean) {
+        gateway?.close(); gateway = null
+        gatewayStatus?.cancel(); gatewayStatus = null
+        typingExpiry?.cancel(); typingExpiry = null; typers.clear()
+        if (clearPending) pendingSends.clear()
+        mutable.value = mutable.value.copy(
+            selectedChannel = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
+        )
+    }
+
+    private fun invalidate() { ++generation; closeChannel(clearPending = true) }
+    private fun requireAccountToken() = checkNotNull(accountToken) { "Sign in required." }
+    private fun fail(error: Throwable) { mutable.value = mutable.value.copy(busy = false, error = message(error)) }
+    private fun message(error: Throwable) = error.message ?: "That request did not work."
+    fun clearError() { mutable.value = mutable.value.copy(error = null) }
+
+    private fun launchAccountAction(block: suspend (Long) -> Unit) = viewModelScope.launch {
+        val request = accountGeneration
+        mutable.value = mutable.value.copy(busy = true, error = null)
+        try { block(request) } catch (error: Throwable) {
+            if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false, error = accountMessage(error))
+        }
+        finally { if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false) }
+    }
+    private fun launchAction(block: suspend () -> Unit) = viewModelScope.launch {
+        val request = accountGeneration
+        mutable.value = mutable.value.copy(busy = true, error = null)
+        try { block() } catch (error: Throwable) { if (request == accountGeneration) fail(error) }
+        finally { if (request == accountGeneration) mutable.value = mutable.value.copy(busy = false) }
+    }
+
     override fun onCleared() { gateway?.close(); super.onCleared() }
+
+    private fun accountMessage(error: Throwable): String = when ((error as? ApiException)?.status) {
+        400 -> "Enter a valid email address."
+        401 -> "That code is incorrect or expired. Request a new one if needed."
+        503 -> "Sign-in is temporarily unavailable. Please try again later."
+        else -> "Something went wrong. Please try again."
+    }
+
+    private companion object { const val PRESENCE_PAGE_SIZE = 20 }
 }

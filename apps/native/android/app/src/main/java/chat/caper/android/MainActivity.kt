@@ -14,28 +14,39 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.CallEnd
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
@@ -45,130 +56,524 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private sealed interface Overlay {
+    data object CreateSpace : Overlay
+    data object ManageSpace : Overlay
+    data object CreateChannel : Overlay
+    data class ManageChannel(val channel: Channel) : Overlay
+    data object LeaveSpace : Overlay
+    data object Profile : Overlay
+    data object Audio : Overlay
+}
+
 @Composable private fun CaperApp(viewModel: CaperViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
+    var overlay by remember { mutableStateOf<Overlay?>(null) }
+    var navigationOpen by remember { mutableStateOf(false) }
+
+    val homeVisible = state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces
     Scaffold(containerColor = Blackout, snackbarHost = {
-        state.error?.let { Snackbar { Row(verticalAlignment = Alignment.CenterVertically) { Text(it, Modifier.weight(1f)); TextButton(viewModel::clearError) { Text("Dismiss") } } } }
+        if (homeVisible) state.error?.let { Snackbar(containerColor = SurfaceRaised) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(it, Modifier.weight(1f), color = ErrorText)
+                TextButton(viewModel::clearError) { Text("Dismiss") }
+            }
+        } }
     }) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val screen = state.screen) {
-                SessionScreen.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
-                SessionScreen.SignedOut -> LoginScreen(state.busy, viewModel::requestCode)
-                is SessionScreen.Verify -> VerifyScreen(screen, state.busy, viewModel::verify)
-                is SessionScreen.Profile -> ProfileScreen(state.busy, viewModel::saveProfile)
-                is SessionScreen.Spaces -> SpacesScreen(state, screen.account, voice, viewModel)
+                SessionScreen.Loading -> BrandLoading()
+                SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::requestCode)
+                is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::verify)
+                is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, null, viewModel::saveProfile)
+                SessionScreen.Home, is SessionScreen.Spaces -> HomeScreen(
+                    state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
+                )
             }
-            if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+            if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Terracotta)
         }
     }
-}
 
-@Composable private fun AuthCard(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
-    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-        Card(colors = CardDefaults.cardColors(containerColor = Surface), border = BorderStroke(1.dp, Border), modifier = Modifier.widthIn(max = 440.dp)) {
-            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("CAPER", color = Text, fontWeight = FontWeight.Black)
-                Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(subtitle, color = Text.copy(alpha = .7f))
-                content()
-            }
-        }
+    when (val shown = overlay) {
+        Overlay.CreateSpace -> CreateSpaceDialog(state.busy, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
+        Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
+        Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private -> viewModel.createChannel(name, private) { overlay = null } } }
+        is Overlay.ManageChannel -> ManageChannelDialog(state, shown.channel, viewModel) { overlay = null }
+        Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and messages.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
+        Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, { overlay = null }) { username, display -> viewModel.updateProfile(username, display); overlay = null } }
+        Overlay.Audio -> AudioSettingsDialog(state, voice, { overlay = null }, viewModel::logout)
+        null -> Unit
     }
 }
 
-@Composable private fun LoginScreen(busy: Boolean, submit: (String) -> Unit) {
-    var email by remember { mutableStateOf("") }
-    AuthCard("A quieter place to talk", "Sign in with the code sent to your email.") {
-        OutlinedTextField(email, { email = it }, label = { Text("Email") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(email) }, enabled = email.contains('@') && !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) { Text("Send code") }
+@Composable private fun BrandLoading() = Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Wordmark(); CircularProgressIndicator(color = Terracotta)
     }
 }
 
-@Composable private fun VerifyScreen(screen: SessionScreen.Verify, busy: Boolean, submit: (String, String) -> Unit) {
-    var code by remember { mutableStateOf("") }
-    AuthCard("Check your inbox", "Enter the code sent to ${screen.email}.") {
-        OutlinedTextField(code, { code = it }, label = { Text("Code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(screen.challengeId, code) }, enabled = code.isNotBlank() && !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
-    }
+@Composable private fun Wordmark(modifier: Modifier = Modifier) = Row(modifier) {
+    Text("caper", color = Text, fontSize = 22.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
+    Text(".", color = TerracottaBright, fontSize = 22.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
 }
 
-@Composable private fun ProfileScreen(busy: Boolean, submit: (String, String) -> Unit) {
-    var username by remember { mutableStateOf("") }; var name by remember { mutableStateOf("") }
-    AuthCard("Create your profile", "Choose how people will find and recognize you.") {
-        OutlinedTextField(username, { username = it.lowercase().filter { c -> c in 'a'..'z' || c in '0'..'9' || c == '_' }.take(32) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(name, { name = it.take(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(username, name) }, enabled = username.length >= 3 && name.isNotBlank() && !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) { Text("Enter Caper") }
-    }
-}
-
-@Composable private fun SpacesScreen(state: AppUiState, account: Account, voice: VoiceState, viewModel: CaperViewModel) {
+@Composable private fun HomeScreen(
+    state: AppUiState,
+    voice: VoiceState,
+    navigationOpen: Boolean,
+    setNavigationOpen: (Boolean) -> Unit,
+    show: (Overlay) -> Unit,
+    viewModel: CaperViewModel,
+) {
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().background(Surface).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Caper", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
-            Text(account.displayName.orEmpty(), color = Text.copy(alpha = .7f)); Spacer(Modifier.width(8.dp)); TextButton(viewModel::logout) { Text("Log out") }
+        Box(Modifier.fillMaxWidth().height(80.dp)) {
+            Wordmark(Modifier.widthIn(max = 1400.dp).fillMaxWidth().align(Alignment.Center).padding(horizontal = 28.dp))
         }
-        if (state.selectedSpace == null) {
-            LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { Text("YOUR SPACES", color = Text.copy(alpha = .55f), style = MaterialTheme.typography.labelMedium) }
-                items(state.spaces, key = { it.id }) { space -> SurfaceRow(space.name) { viewModel.selectSpace(space.id) } }
-                if (state.spaces.isEmpty()) item { Text("You do not belong to a space yet.", color = Text.copy(alpha = .65f), modifier = Modifier.padding(top = 24.dp)) }
-            }
-        } else if (state.selectedChannel == null) {
-            Column(Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(viewModel::backToSpaces) { Icon(Icons.Default.ArrowBack, "Back to spaces") }
-                    Text(state.selectedSpace.space.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val narrow = maxWidth <= 760.dp
+            Surface(
+                Modifier.padding(start = if (narrow) 12.dp else 28.dp, end = if (narrow) 12.dp else 28.dp, bottom = 24.dp).widthIn(max = 1400.dp).fillMaxSize().align(Alignment.TopCenter),
+                color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+            ) {
+                if (narrow && navigationOpen) Row {
+                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f)) { setNavigationOpen(false) }
+                } else if (narrow) {
+                    Conversation(state, voice, viewModel, show, true) { setNavigationOpen(true) }
+                } else Row {
+                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp))
+                    Conversation(state, voice, viewModel, show, false, Modifier.weight(1f)) { setNavigationOpen(true) }
                 }
-                Spacer(Modifier.height(16.dp)); Text("CHANNELS", color = Text.copy(alpha = .55f), style = MaterialTheme.typography.labelMedium)
-                state.selectedSpace.channels.forEach { channel -> SurfaceRow("# ${channel.name}") { viewModel.selectChannel(channel) } }
             }
-        } else ChatScreen(state, account, voice, viewModel)
-    }
-}
-
-@Composable private fun SurfaceRow(label: String, click: () -> Unit) {
-    Surface(color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), modifier = Modifier.fillMaxWidth().clickable(onClick = click)) {
-        Text(label, Modifier.padding(16.dp), fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable private fun ColumnScope.ChatScreen(state: AppUiState, account: Account, voice: VoiceState, viewModel: CaperViewModel) {
-    val context = LocalContext.current
-    val channel = state.selectedChannel!!
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-        if (granted[Manifest.permission.RECORD_AUDIO] == true) {
-            VoiceCallService.start(context, channel.id, channel.name, account.displayName.orEmpty())
         }
+    }
+}
+
+@Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxHeight().background(Blackout).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        state.spaces.forEach { space ->
+            val selected = state.selectedSpace?.space?.id == space.id
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
+                Spacer(Modifier.width(7.dp))
+                Surface(
+                    Modifier.size(40.dp).clickable { viewModel.selectSpace(space.id) }.semantics { contentDescription = space.name },
+                    color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
+                    border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
+                ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
+            }
+        }
+        Surface(
+            Modifier.size(40.dp).clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics { contentDescription = "Create space" },
+            color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
+        ) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Add, null, tint = TerracottaBright) } }
+    }
+}
+
+@Composable private fun ChannelSidebar(
+    state: AppUiState,
+    voice: VoiceState,
+    viewModel: CaperViewModel,
+    show: (Overlay) -> Unit,
+    modifier: Modifier,
+    closeNavigation: (() -> Unit)? = null,
+) {
+    val detail = state.selectedSpace
+    val owner = state.account?.id == detail?.space?.ownerId
+    Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(detail?.space?.name ?: "Caper", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (closeNavigation != null) IconButton(closeNavigation) { Icon(Icons.Default.Close, "Close navigation", tint = TextMuted) }
+                if (detail != null && !detail.space.demo) IconButton({ show(if (owner) Overlay.ManageSpace else Overlay.LeaveSpace) }) { Icon(if (owner) Icons.Default.Settings else Icons.Default.Logout, "Space actions", tint = TextMuted) }
+            }
+            HorizontalDivider(color = Border)
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("CHANNELS", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                if (owner) IconButton({ show(Overlay.CreateChannel) }, Modifier.size(30.dp)) { Icon(Icons.Default.Add, "Create channel", tint = TextMuted) }
+            }
+            detail?.channels?.forEach { channel ->
+                val selected = channel.id == state.selectedChannel?.id
+                Row(
+                    Modifier.fillMaxWidth().height(38.dp).clip(MaterialTheme.shapes.small)
+                        .background(if (selected) TerracottaWash else Color.Transparent)
+                        .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }
+                        .padding(horizontal = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(if (channel.private) Icons.Default.Lock else Icons.Default.Tag, null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
+                    Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(28.dp)) { Icon(Icons.Default.Settings, "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
+                }
+            }
+            VoiceRoster(voice)
+            if (detail != null && !detail.space.demo) MemberPresence(state, viewModel)
+        }
+        AccountBar(state, voice, viewModel, show)
+    }
+}
+
+@Composable private fun VoiceRoster(voice: VoiceState) {
+    if (voice.participants.isEmpty()) return
+    Text("IN VOICE · ${voice.participants.size}", Modifier.padding(start = 9.dp, top = 24.dp), color = TextMuted, fontSize = 11.sp)
+    voice.participants.forEach { participant ->
+        Row(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(participant.name, 34.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(participant.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                if (participant.deafened || participant.muted) Text(if (participant.deafened) "Deafened" else "Muted", color = TextMuted, fontSize = 10.sp)
+            }
+            if (participant.deafened) Icon(Icons.Default.VolumeOff, null, Modifier.size(15.dp), tint = TextMuted)
+            else if (participant.muted) Icon(Icons.Default.MicOff, null, Modifier.size(15.dp), tint = TextMuted)
+        }
+    }
+}
+
+@Composable private fun MemberPresence(state: AppUiState, viewModel: CaperViewModel) {
+    val members = state.selectedSpace?.members ?: return
+    if (members.isEmpty()) return
+    val pages = (members.size + 19) / 20
+    val shown = members.drop(state.presencePage * 20).take(20)
+    HorizontalDivider(Modifier.padding(top = 18.dp), color = Border)
+    Text("MEMBERS — ${members.size}", Modifier.padding(horizontal = 8.dp, vertical = 12.dp), color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    shown.forEach { member ->
+        val status = state.presence[member.id] ?: "unknown"
+        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                Avatar(member.displayName, 30.dp)
+                Box(Modifier.size(10.dp).align(Alignment.BottomEnd).clip(CircleShape).background(when (status) { "online" -> CaperGreen; "idle" -> Idle; else -> Border }))
+            }
+            Spacer(Modifier.width(10.dp)); Column {
+                Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(status, color = TextMuted, fontSize = 10.sp)
+            }
+        }
+    }
+    if (pages > 1) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0) { Text("Previous") }
+        Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp)
+        TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages) { Text("Next") }
+    }
+}
+
+@Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit) {
+    val context = LocalContext.current
+    Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+        Row(Modifier.height(42.dp).padding(5.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }, verticalAlignment = Alignment.CenterVertically) {
+                Avatar(state.account?.displayName ?: "Guest", 30.dp); Spacer(Modifier.width(7.dp))
+                Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            if (voice.phase == VoiceState.Phase.CONNECTED) {
+                IconButton({ VoiceCallService.toggleMute(context) }, Modifier.size(30.dp)) { Icon(if (voice.muted) Icons.Default.MicOff else Icons.Default.Mic, "Toggle mute", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                IconButton({ VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp)) { Icon(if (voice.deafened) Icons.Default.VolumeOff else Icons.Default.Headphones, "Toggle deafen", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+            }
+            IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(Icons.Default.Settings, "Audio and account settings", Modifier.size(18.dp), tint = TextMuted) }
+        }
+    }
+}
+
+@Composable private fun Conversation(
+    state: AppUiState,
+    voice: VoiceState,
+    viewModel: CaperViewModel,
+    show: (Overlay) -> Unit,
+    narrow: Boolean,
+    modifier: Modifier = Modifier,
+    openNavigation: () -> Unit,
+) {
+    val channel = state.selectedChannel
+    if (channel == null) return Box(modifier.fillMaxSize().background(SurfaceConversation), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.Tag, null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold); Text("Choose or create a channel.", color = TextMuted) }
+    }
+    val context = LocalContext.current
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        if (grants[Manifest.permission.RECORD_AUDIO] == true) VoiceCallService.start(context, channel.id, channel.name, state.account?.displayName ?: "Guest", state.selectedSpace?.space?.demo == true)
     }
     var draft by remember(channel.id) { mutableStateOf("") }
-    val inThisCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE
-    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(viewModel::backToChannels) { Icon(Icons.Default.ArrowBack, "Back to channels") }
-        Column(Modifier.weight(1f)) { Text("# ${channel.name}", fontWeight = FontWeight.Bold); Text(state.gateway.name.lowercase(), color = Text.copy(alpha = .55f), style = MaterialTheme.typography.labelSmall) }
-        if (BuildConfig.ENABLE_NATIVE_VOICE && !inThisCall) IconButton({
-            permission.launch(buildList {
-                add(Manifest.permission.RECORD_AUDIO)
-                if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-            }.toTypedArray())
-        }) { Icon(Icons.Default.Call, "Join voice") }
-        else if (BuildConfig.ENABLE_NATIVE_VOICE) {
-            IconButton({ VoiceCallService.toggleMute(context) }) { Icon(if (voice.muted) Icons.Default.MicOff else Icons.Default.Mic, "Toggle mute") }
-            IconButton({ context.startService(android.content.Intent(context, VoiceCallService::class.java).setAction(VoiceCallService.ACTION_DEAFEN)) }) {
-                Icon(if (voice.deafened) Icons.Default.VolumeOff else Icons.Default.VolumeUp, "Toggle deafen")
+    val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
+    Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
+        Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (narrow) OutlinedButton(openNavigation, contentPadding = PaddingValues(horizontal = 9.dp), border = BorderStroke(1.dp, Border)) { Icon(Icons.Default.Menu, null, Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text("Browse", fontSize = 11.sp) }
+            Text("# ${channel.name}", Modifier.weight(1f).padding(start = if (narrow) 10.dp else 0.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (state.gateway != GatewayStatus.LIVE) Text(if (state.gateway == GatewayStatus.ERROR) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp)
+            Spacer(Modifier.width(10.dp))
+            if (BuildConfig.ENABLE_NATIVE_VOICE) Button({
+                if (inCall) VoiceCallService.stop(context) else permission.launch(buildList {
+                    add(Manifest.permission.RECORD_AUDIO); if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                }.toTypedArray())
+            }, colors = ButtonDefaults.buttonColors(containerColor = TerracottaWash, contentColor = TerracottaBright), border = BorderStroke(1.dp, TerracottaBorder), contentPadding = PaddingValues(horizontal = 12.dp)) {
+                Icon(if (inCall) Icons.Default.CallEnd else Icons.Default.RecordVoiceOver, null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text(if (inCall) "Leave" else "Join")
             }
-            IconButton({ VoiceCallService.stop(context) }) { Icon(Icons.Default.CallEnd, "Leave voice", tint = Terracotta) }
         }
-    }
-    if (inThisCall) Text("Voice: ${voice.phase.name.lowercase()} · ${voice.participants.size} connected", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = CaperGreen)
-    HorizontalDivider(color = Border)
-    LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        items(state.messages, key = { it.id }) { message ->
-            Column { Text(message.author.name, fontWeight = FontWeight.Bold); Text(message.content.text, color = Text.copy(alpha = .9f)) }
+        HorizontalDivider(color = Border)
+        MessageTimeline(state, viewModel, Modifier.weight(1f))
+        TypingLine(state.typingAuthors)
+        HorizontalDivider(color = Border)
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+            state.pendingMessage?.error?.let { pending ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (state.pendingMessage.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
+                    TextButton({ if (state.pendingMessage.rejected) viewModel.discardPending()?.let { draft = it } else viewModel.send(state.pendingMessage.text) }) { Text(if (state.pendingMessage.rejected) "Edit" else "Retry send") }
+                    if (state.pendingMessage.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
+                }
+            }
+            OutlinedTextField(
+                draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
+                modifier = Modifier.fillMaxWidth(), placeholder = { Text("Message #${channel.name}") }, maxLines = 6,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } }),
+                trailingIcon = { IconButton({ if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } }, enabled = draft.isNotBlank() && state.pendingMessage == null) { Icon(Icons.Default.Send, "Send", tint = if (draft.isNotBlank()) TerracottaBright else TextMuted) } },
+                colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
+            )
+            if (draft.codePointCount(0, draft.length) >= 3000) Text("${draft.codePointCount(0, draft.length)} / 4,000", Modifier.align(Alignment.End), color = if (draft.codePointCount(0, draft.length) >= 3900) ErrorText else TextMuted, fontSize = 10.sp)
         }
-    }
-    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(draft, { draft = it.take(it.offsetByCodePoints(0, minOf(4000, it.codePointCount(0, it.length)))); viewModel.reportActivity() }, placeholder = { Text("Message #${channel.name}") }, modifier = Modifier.weight(1f), maxLines = 5)
-        Spacer(Modifier.width(8.dp)); Button({ val value = draft; viewModel.send(value) { if (draft == value) draft = "" } }, enabled = draft.isNotBlank(), shape = MaterialTheme.shapes.small) { Text("Send") }
     }
 }
+
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+    LazyColumn(modifier.fillMaxWidth(), reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
+        item {
+            Box(Modifier.fillMaxWidth().height(44.dp), contentAlignment = Alignment.Center) {
+                when {
+                    state.olderError != null -> TextButton(viewModel::loadOlder) { Text("Couldn’t load older messages · Retry") }
+                    state.hasMoreMessages -> OutlinedButton(viewModel::loadOlder, enabled = !state.loadingOlder, border = BorderStroke(1.dp, Border)) { Text(if (state.loadingOlder) "Loading…" else "Load older messages") }
+                    else -> Text("Beginning of conversation", color = TextMuted, fontSize = 11.sp)
+                }
+            }
+        }
+        itemsIndexed(state.messages, key = { _, message -> message.id }) { index, message ->
+            val previous = state.messages.getOrNull(index - 1)
+            MessageRow(message, grouped = previous?.author?.id == message.author.id && minutesBetween(previous.createdAt, message.createdAt) <= 5)
+        }
+        state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
+            MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true)
+        } }
+        if (state.messages.isEmpty() && state.pendingMessage == null) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) { Text("No messages yet. Start the conversation.", color = TextMuted) } }
+    }
+}
+
+@Composable private fun MessageRow(message: ChatMessage, grouped: Boolean = false) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, grouped)
+@Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, grouped: Boolean = false) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = if (grouped) 2.dp else 10.dp)) {
+        if (grouped) Spacer(Modifier.width(34.dp)) else Avatar(author, 34.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(author, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
+                Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
+            }
+            Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+        }
+    }
+}
+
+@Composable private fun TypingLine(authors: List<ChatAuthor>) {
+    val label = when { authors.size > 2 -> "Several people are typing…"; authors.size == 2 -> "${authors[0].name} and ${authors[1].name} are typing…"; authors.size == 1 -> "${authors[0].name} is typing…"; else -> "" }
+    Text(label, Modifier.fillMaxWidth().height(20.dp).padding(horizontal = 18.dp), color = TextMuted, fontSize = 10.sp)
+}
+
+@Composable private fun Avatar(name: String, size: Dp) = Box(Modifier.size(size).clip(CircleShape).background(if (size > 32.dp) SurfaceRaised else SurfaceComposer), contentAlignment = Alignment.Center) {
+    Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
+}
+
+@Composable private fun AuthFrame(content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Blackout)) {
+        val narrow = maxWidth <= 480.dp
+        Column(
+            Modifier.widthIn(max = 440.dp).fillMaxWidth().align(Alignment.TopCenter)
+                .padding(horizontal = if (narrow) 20.dp else 24.dp, vertical = if (narrow) 32.dp else 64.dp),
+        ) {
+            Wordmark()
+            Spacer(Modifier.height(if (narrow) 42.dp else 56.dp))
+            content()
+        }
+    }
+}
+
+@Composable private fun LoginScreen(busy: Boolean, error: String?, clearError: () -> Unit, back: () -> Unit, submit: (String) -> Unit) {
+    var email by remember { mutableStateOf("") }
+    AuthFrame {
+        Text("WELCOME TO CAPER", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Text("Come on in.", Modifier.padding(vertical = 20.dp), fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
+        Text("Use your email to create an account or return to one. No password needed.", color = TextMuted, lineHeight = 26.sp)
+        Text("Email address", Modifier.padding(top = 24.dp, bottom = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        OutlinedTextField(
+            email, { email = it; if (error != null) clearError() }, placeholder = { Text("you@example.com") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { if (email.contains('@') && !busy) submit(email) }),
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) {
+            Text(error, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), lineHeight = 24.sp)
+        }
+        Button({ submit(email) }, enabled = email.contains('@') && !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+            Text(if (busy) "Sending…" else "Email me a code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+            if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
+        }
+        Text("We only send a code when you ask. Prefer to look around first?", Modifier.padding(top = 10.dp), color = TextMuted, fontSize = 13.sp, lineHeight = 20.sp)
+        TextButton(back, contentPadding = PaddingValues(0.dp)) { Text("Join general as a guest.", color = Text) }
+    }
+}
+
+@Composable private fun VerifyScreen(screen: SessionScreen.Verify, busy: Boolean, error: String?, clearError: () -> Unit, back: () -> Unit, submit: (String, String) -> Unit) {
+    var code by remember { mutableStateOf("") }
+    AuthFrame {
+        Text("WELCOME TO CAPER", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Text("Check your email.", Modifier.padding(vertical = 20.dp), fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
+        Text("Enter the six-character code sent to ${screen.email}. It expires in 10 minutes.", color = TextMuted, lineHeight = 26.sp)
+        Text("Sign-in code", Modifier.padding(top = 24.dp, bottom = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        OutlinedTextField(code, { code = it.uppercase().filter { character -> character in "ABCDEFGHJKMNPQRSTWXYZ23456789" }.take(6); if (error != null) clearError() }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) { Text(error, Modifier.padding(14.dp)) }
+        Button({ submit(screen.challengeId, code) }, enabled = code.length == 6 && !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+            Text(if (busy) "Checking…" else "Continue", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+            if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
+        }
+        TextButton(back, contentPadding = PaddingValues(vertical = 16.dp)) { Text("Use a different email", color = TextMuted) }
+    }
+}
+
+@Composable private fun ProfileScreen(account: Account, busy: Boolean, close: (() -> Unit)?, submit: (String, String) -> Unit) {
+    var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
+    var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
+    val form: @Composable ColumnScope.() -> Unit = {
+        Text(if (account.username == null) "Create your profile" else "Edit profile", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
+        OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Button({ submit(username, name) }, enabled = username.length >= 3 && name.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) { Text("Save profile") }
+    }
+    if (close == null) AuthFrame { form() } else CaperDialog("Edit profile", close) { form() }
+}
+
+@Composable private fun CreateSpaceDialog(busy: Boolean, close: () -> Unit, create: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    CaperDialog("Create a space", close) {
+        Text("A space keeps channels and members together.", color = TextMuted, fontSize = 12.sp)
+        OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        DialogActions(close, "Create space", busy || name.isBlank()) { create(name.trim()) }
+    }
+}
+
+@Composable private fun CreateChannelDialog(detail: SpaceDetail, busy: Boolean, close: () -> Unit, create: (String, Boolean) -> Unit) {
+    var name by remember { mutableStateOf("") }; var private by remember { mutableStateOf(false) }
+    CaperDialog("Create a channel", close) {
+        Text("Add a conversation to ${detail.space.name}.", color = TextMuted, fontSize = 12.sp)
+        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(Icons.Default.Tag, null) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        PrivacyToggle(private) { private = it }
+        DialogActions(close, "Create channel", busy || channelInvalid(name)) { create(name.removeSuffix("-"), private) }
+    }
+}
+
+@Composable private fun ManageSpaceDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
+    var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
+    var username by remember { mutableStateOf("") }
+    var confirmingDelete by remember { mutableStateOf(false) }
+    CaperDialog("Manage space", close, wide = true) {
+        OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth())
+        Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name) { Text("Save name") }
+        HorizontalDivider(color = Border)
+        Text("Members · ${detail.members.size}", fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Existing username") }, modifier = Modifier.weight(1f), singleLine = true)
+            Spacer(Modifier.width(8.dp)); Button({ viewModel.addSpaceMember(username); username = "" }, enabled = username.length >= 3 && !state.busy) { Text("Add") }
+        }
+        detail.members.forEach { member -> MemberManagerRow(member, member.owner, { viewModel.removeSpaceMember(member) }) }
+        HorizontalDivider(color = Border)
+        Text("Delete space", fontWeight = FontWeight.Bold); Text("Delete this space and all its channels for every member.", color = TextMuted, fontSize = 11.sp)
+        OutlinedButton({ confirmingDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Delete space") }
+    }
+    if (confirmingDelete) ConfirmDialog("Delete ${detail.space.name}?", "This permanently deletes every channel and message in the space.", "Delete space", state.busy, { confirmingDelete = false }) { viewModel.deleteCurrentSpace { close() } }
+}
+
+@Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {
+    var name by remember(channel.id) { mutableStateOf(channel.name) }; var private by remember(channel.id) { mutableStateOf(channel.private) }
+    var username by remember { mutableStateOf("") }; var confirmingDelete by remember { mutableStateOf(false) }
+    LaunchedEffect(channel.id, channel.private) { viewModel.loadChannelGrants(channel) }
+    CaperDialog("Overview", close, wide = true) {
+        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(Icons.Default.Tag, null) }, modifier = Modifier.fillMaxWidth())
+        PrivacyToggle(private) { private = it }
+        val dirty = name.removeSuffix("-") != channel.name || private != channel.private
+        if (channel.private) {
+            HorizontalDivider(color = Border); Text("Private channel access · ${state.channelGrants.size}", fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Existing username") }, modifier = Modifier.weight(1f), singleLine = true)
+                Spacer(Modifier.width(8.dp)); Button({ viewModel.addChannelGrant(channel, username); username = "" }, enabled = username.length >= 3 && !state.busy) { Text("Grant") }
+            }
+            state.channelGrants.forEach { member -> MemberManagerRow(member, member.owner) { viewModel.removeChannelGrant(channel, member) } }
+        }
+        HorizontalDivider(color = Border); Text("Delete channel", fontWeight = FontWeight.Bold)
+        Text("Delete this channel for everyone in the space.", color = TextMuted, fontSize = 11.sp)
+        OutlinedButton({ confirmingDelete = true }, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Delete channel") }
+        if (dirty) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton({ name = channel.name; private = channel.private }) { Text("Reset") }
+            Spacer(Modifier.width(8.dp))
+            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = !state.busy && !channelInvalid(name)) { Text("Save changes") }
+        }
+    }
+    if (confirmingDelete) ConfirmDialog("Delete #${channel.name}?", "This permanently deletes its messages.", "Delete channel", state.busy, { confirmingDelete = false }) { viewModel.deleteChannel(channel) { close() } }
+}
+
+@Composable private fun MemberManagerRow(member: Member, protected: Boolean, remove: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+        Avatar(member.displayName, 30.dp); Spacer(Modifier.width(9.dp)); Column(Modifier.weight(1f)) { Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold); Text("@${member.username}", color = TextMuted, fontSize = 10.sp) }
+        if (protected) Text("Owner", color = TextMuted, fontSize = 10.sp) else TextButton(remove) { Text("Remove", color = ErrorText) }
+    }
+}
+
+@Composable private fun AudioSettingsDialog(state: AppUiState, voice: VoiceState, close: () -> Unit, logout: () -> Unit) {
+    val context = LocalContext.current
+    CaperDialog("Audio settings", close) {
+        Text("Input and output routing", fontWeight = FontWeight.Bold)
+        if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
+            Row(Modifier.fillMaxWidth().clickable { VoiceCallService.selectRoute(context, route.id) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
+                Spacer(Modifier.width(8.dp)); Text(route.name)
+            }
+        } else Text("Choose audio input and output in Android system settings. Available communication routes appear here during a call on Android 12 and newer.", color = TextMuted, fontSize = 12.sp)
+        if (voice.phase == VoiceState.Phase.CONNECTED) {
+            Text("Connected to #${voice.channelName}", color = CaperGreen, fontSize = 12.sp)
+            Text("Mute and deafen controls remain available in the account bar and ongoing notification.", color = TextMuted, fontSize = 12.sp)
+        } else Text("Join voice to inspect an active connection.", color = TextMuted, fontSize = 12.sp)
+        if (state.account != null) {
+            HorizontalDivider(color = Border)
+            Text("Account", fontWeight = FontWeight.Bold)
+            Text("Signed in as ${state.account.displayName} (@${state.account.username}).", color = TextMuted, fontSize = 12.sp)
+            OutlinedButton({ close(); logout() }, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Sign out") }
+        }
+    }
+}
+
+@Composable private fun PrivacyToggle(value: Boolean, change: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { change(!value) }, verticalAlignment = Alignment.CenterVertically) {
+    Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in this space can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, change)
+}
+
+@Composable private fun ConfirmDialog(title: String, body: String, action: String, busy: Boolean, close: () -> Unit, confirm: () -> Unit) = CaperDialog(title, close) {
+    Text(body, color = TextMuted); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(close) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(confirm, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Danger)) { Text(action) } }
+}
+
+@Composable private fun CaperDialog(title: String, close: () -> Unit, wide: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
+    Dialog(close) { Surface(Modifier.widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth().heightIn(max = 760.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Bold); IconButton(close) { Icon(Icons.Default.Close, "Close", tint = TextMuted) } }
+            HorizontalDivider(color = Border); content()
+        }
+    } }
+}
+
+@Composable private fun DialogActions(close: () -> Unit, label: String, disabled: Boolean, action: () -> Unit) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+    TextButton(close) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(action, enabled = !disabled) { Text(label) }
+}
+
+private fun normalizeUsername(value: String) = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(32)
+private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\\s+"), "-").filter { it in 'a'..'z' || it == '-' }.replace(Regex("-+"), "-").removePrefix("-").take(80)
+private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))
+private fun String.codePointTake(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max))
+private fun timeLabel(value: String): String = runCatching { DateTimeFormatter.ofPattern("h:mm a").format(Instant.parse(value).atZone(ZoneId.systemDefault())) }.getOrDefault("")
+private fun minutesBetween(first: String, second: String): Long = runCatching {
+    java.time.Duration.between(Instant.parse(first), Instant.parse(second)).abs().toMinutes()
+}.getOrDefault(Long.MAX_VALUE)

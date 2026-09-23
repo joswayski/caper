@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
@@ -18,6 +20,7 @@ import chat.caper.android.R
 import chat.caper.android.data.CaperApi
 import chat.caper.android.data.TokenStore
 import chat.caper.android.model.Participant
+import chat.caper.android.model.AudioRoute
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,8 +32,10 @@ data class VoiceState(
     val participants: List<Participant> = emptyList(),
     val muted: Boolean = false,
     val deafened: Boolean = false,
+    val routes: List<AudioRoute> = emptyList(),
+    val selectedRouteId: Int? = null,
     val error: String? = null,
-) { enum class Phase { IDLE, CONNECTING, CONNECTED, FAILED } }
+) { enum class Phase { IDLE, CONNECTING, CONNECTED, RECONNECTING, FAILED } }
 
 class VoiceCallService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -39,14 +44,20 @@ class VoiceCallService : Service() {
     private var connectJob: Job? = null
     private var heartbeat: Job? = null
     private var turnRenewal: Job? = null
+    private var recovery: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var audio: AudioManager
     private var focus: AudioFocusRequest? = null
+    private val deviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = updateRoutes()
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = updateRoutes()
+    }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         audio = getSystemService(AudioManager::class.java)
+        audio.registerAudioDeviceCallback(deviceCallback, null)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,6 +70,7 @@ class VoiceCallService : Service() {
                 requireNotNull(intent.getStringExtra(EXTRA_CHANNEL_ID)),
                 requireNotNull(intent.getStringExtra(EXTRA_CHANNEL_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_DISPLAY_NAME)),
+                intent.getBooleanExtra(EXTRA_DEMO, false),
             )
             ACTION_MUTE -> scope.launch {
                 engine?.let { current ->
@@ -72,19 +84,23 @@ class VoiceCallService : Service() {
                     .onSuccess { update { it.copy(deafened = engine?.deafened == true, muted = engine?.muted == true) }; notifyState() }
             }
             ACTION_STOP -> stopCall()
+            ACTION_ROUTE -> selectRoute(intent.getIntExtra(EXTRA_ROUTE_ID, -1))
         }
         return START_NOT_STICKY
     }
 
-    private fun startCall(channelId: String, channelName: String, displayName: String) {
+    private fun startCall(channelId: String, channelName: String, displayName: String, demo: Boolean) {
         if (engine != null) return
-        val token = TokenStore(this).read() ?: return stopSelf()
+        val token = TokenStore(this).read()
+        if (!demo && token == null) return stopSelf()
         val attempt = attempts.begin()
         update { VoiceState(VoiceState.Phase.CONNECTING, channelId, channelName, muted = true) }
         val current = try {
             startForegroundNotification()
             acquireAudio()
-            VoiceEngine(this, CaperApi(), token, channelId, displayName).also { engine = it }
+            lateinit var created: VoiceEngine
+            created = VoiceEngine(this, CaperApi(), token, channelId, displayName, demo) { transportState(created, attempt, it) }
+            created.also { engine = it }
         } catch (error: Throwable) {
             attempts.end()
             releaseAudio()
@@ -101,7 +117,10 @@ class VoiceCallService : Service() {
                 notifyState()
                 heartbeat = launch {
                     try {
-                        while (isActive) { delay(15_000); current.heartbeat { value -> participants(current, attempt, value) } }
+                        while (isActive) {
+                            delay(15_000)
+                            if (state.value.phase != VoiceState.Phase.RECONNECTING) current.heartbeat { value -> participants(current, attempt, value) }
+                        }
                     } catch (error: Throwable) {
                         if (error is CancellationException) throw error
                         failCall(current, error)
@@ -122,10 +141,38 @@ class VoiceCallService : Service() {
         }
     }
 
+    private fun transportState(current: VoiceEngine, attempt: Long, transport: org.webrtc.PeerConnection.PeerConnectionState) {
+        if (engine !== current || !attempts.isCurrent(attempt)) return
+        when (transport) {
+            org.webrtc.PeerConnection.PeerConnectionState.DISCONNECTED -> recover(current, attempt)
+            org.webrtc.PeerConnection.PeerConnectionState.FAILED -> recover(current, attempt)
+            org.webrtc.PeerConnection.PeerConnectionState.CONNECTED -> if (state.value.phase == VoiceState.Phase.RECONNECTING) {
+                recovery?.cancel(); recovery = null
+                update { it.copy(phase = VoiceState.Phase.CONNECTED, error = null) }; notifyState()
+            }
+            else -> Unit
+        }
+    }
+
+    private fun recover(current: VoiceEngine, attempt: Long) {
+        if (recovery?.isActive == true) return
+        update { it.copy(phase = VoiceState.Phase.RECONNECTING, error = null) }; notifyState()
+        recovery = scope.launch {
+            try {
+                withTimeout(20_000) { current.recoverIce() }
+                if (engine === current && attempts.isCurrent(attempt)) {
+                    update { it.copy(phase = VoiceState.Phase.CONNECTED) }; notifyState()
+                }
+            } catch (error: Throwable) {
+                if (error !is CancellationException) failCall(current, error)
+            }
+        }
+    }
+
     private fun failCall(current: VoiceEngine, error: Throwable) {
         if (engine !== current) return
         engine = null
-        heartbeat?.cancel(); turnRenewal?.cancel()
+        heartbeat?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); recovery = null
         val token = current.closeLocal()
         update { it.copy(phase = VoiceState.Phase.FAILED, error = error.message ?: "Voice connection failed.") }
         notifyState(); releaseAudio(); stopSelf()
@@ -144,7 +191,7 @@ class VoiceCallService : Service() {
         engine = null
         val joining = connectJob
         connectJob = null
-        heartbeat?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null
+        heartbeat?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); recovery = null
         joining?.cancel()
         val token = current?.closeLocal()
         update { VoiceState() }
@@ -171,10 +218,36 @@ class VoiceCallService : Service() {
                 }
         }
         wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Caper:voice").apply { acquire() }
+        updateRoutes()
+    }
+
+    private fun updateRoutes() {
+        if (Build.VERSION.SDK_INT < 31) return
+        val routes = audio.availableCommunicationDevices.map { AudioRoute(it.id, it.productName?.toString() ?: routeName(it.type)) }
+        val selected = audio.communicationDevice?.id
+        update { it.copy(routes = routes, selectedRouteId = selected) }
+    }
+
+    private fun selectRoute(id: Int) {
+        if (Build.VERSION.SDK_INT < 31 || id < 0) return
+        val device = audio.availableCommunicationDevices.firstOrNull { it.id == id } ?: return
+        if (!audio.setCommunicationDevice(device)) {
+            update { it.copy(error = "That audio route is unavailable.") }
+        }
+        updateRoutes(); notifyState()
+    }
+
+    private fun routeName(type: Int) = when (type) {
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET -> "Bluetooth"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_USB_HEADSET -> "Headset"
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Speaker"
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Earpiece"
+        else -> "System audio"
     }
 
     private fun releaseAudio() {
         focus?.let(audio::abandonAudioFocusRequest); focus = null
+        if (Build.VERSION.SDK_INT >= 31) audio.clearCommunicationDevice()
         audio.mode = AudioManager.MODE_NORMAL
         wakeLock?.takeIf { it.isHeld }?.release(); wakeLock = null
     }
@@ -207,10 +280,11 @@ class VoiceCallService : Service() {
 
     override fun onDestroy() {
         attempts.end()
-        connectJob?.cancel(); heartbeat?.cancel(); turnRenewal?.cancel()
+        connectJob?.cancel(); heartbeat?.cancel(); turnRenewal?.cancel(); recovery?.cancel()
         val current = engine; engine = null
         val token = current?.closeLocal() // synchronous safety: mic and peer are closed before cancellation
         if (current != null && token != null) CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { current.leave(token) }
+        audio.unregisterAudioDeviceCallback(deviceCallback)
         releaseAudio(); scope.cancel(); super.onDestroy()
     }
     override fun onBind(intent: Intent?): IBinder? = null
@@ -220,24 +294,29 @@ class VoiceCallService : Service() {
         const val ACTION_STOP = "chat.caper.android.voice.STOP"
         const val ACTION_MUTE = "chat.caper.android.voice.MUTE"
         const val ACTION_DEAFEN = "chat.caper.android.voice.DEAFEN"
+        const val ACTION_ROUTE = "chat.caper.android.voice.ROUTE"
         const val EXTRA_CHANNEL_ID = "channelId"
         const val EXTRA_CHANNEL_NAME = "channelName"
         const val EXTRA_DISPLAY_NAME = "displayName"
+        const val EXTRA_DEMO = "demo"
+        const val EXTRA_ROUTE_ID = "routeId"
         private const val CHANNEL = "caper_voice"
         private const val NOTIFICATION_ID = 7401
         private val mutableState = MutableStateFlow(VoiceState())
         val state: StateFlow<VoiceState> = mutableState
         private fun update(block: (VoiceState) -> VoiceState) { mutableState.value = block(mutableState.value) }
 
-        fun start(context: Context, channelId: String, channelName: String, displayName: String) {
+        fun start(context: Context, channelId: String, channelName: String, displayName: String, demo: Boolean = false) {
             if (!BuildConfig.ENABLE_NATIVE_VOICE) return
             val intent = Intent(context, VoiceCallService::class.java).setAction(ACTION_START)
-                .putExtra(EXTRA_CHANNEL_ID, channelId).putExtra(EXTRA_CHANNEL_NAME, channelName).putExtra(EXTRA_DISPLAY_NAME, displayName)
+                .putExtra(EXTRA_CHANNEL_ID, channelId).putExtra(EXTRA_CHANNEL_NAME, channelName).putExtra(EXTRA_DISPLAY_NAME, displayName).putExtra(EXTRA_DEMO, demo)
             context.startForegroundService(intent)
         }
         fun stop(context: Context) {
             if (state.value.phase != VoiceState.Phase.IDLE) context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_STOP))
         }
         fun toggleMute(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_MUTE)) }
+        fun toggleDeafen(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_DEAFEN)) }
+        fun selectRoute(context: Context, id: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_ROUTE).putExtra(EXTRA_ROUTE_ID, id)) }
     }
 }

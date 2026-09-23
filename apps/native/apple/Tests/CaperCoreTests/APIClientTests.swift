@@ -190,4 +190,42 @@ final class APIClientTests: XCTestCase {
         XCTAssertTrue(chat.draft.isEmpty)
         XCTAssertEqual(chat.liveState, .disconnected)
     }
+
+    @MainActor
+    func testLateOwnerMutationCannotRepopulateWorkspaceAfterLogout() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let api = APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore("account-token"))
+        let model = AppModel(api: api)
+        model.account = Account(id: "owner", username: "owner", displayName: "Owner")
+        model.phase = .ready
+        let createStarted = expectation(description: "create started")
+        var delayedCreate: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/spaces", urlRequest.httpMethod == "POST" else { return false }
+            delayedCreate = request
+            createStarted.fulfill()
+            return true
+        }
+        MockURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/api/auth/logout"): return (204, Data())
+            case ("GET", "/api/chat/general"):
+                return (200, Data(#"{"space":{"id":"demo00000001","name":"Caper"},"channel":{"id":"demo00000002","name":"general"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
+            case ("POST", "/api/chat/session"):
+                return (200, Data(#"{"token":"guest-chat","author":{"id":"guest0000001","name":"Guest","isGuest":true}}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+
+        let mutation = Task { try await model.createSpace(name: "Late Space") }
+        await fulfillment(of: [createStarted], timeout: 1)
+        await model.logout()
+        delayedCreate?.respond(status: 200, data: Data(#"{"id":"space0000009","name":"Late Space","ownerId":"owner"}"#.utf8))
+        do { try await mutation.value; XCTFail("superseded mutation must be cancelled") }
+        catch is CancellationError {}
+        catch { XCTFail("unexpected error: \(error)") }
+        XCTAssertNil(model.account)
+        XCTAssertFalse(model.spaces.contains { $0.id == "space0000009" })
+    }
 }

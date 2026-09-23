@@ -43,22 +43,27 @@ class CaperApi(
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
-    suspend fun history(token: String, channel: String, before: String? = null): ChatHistory {
+    suspend fun general(): ChatHistory = validatedHistory(get("/api/chat/general"))
+    suspend fun history(token: String?, channel: String, before: String? = null): ChatHistory {
         val history: ChatHistory = get(
             "/api/chat/channels/${channel.pathId()}/messages" + (before?.let { "?before=$it" } ?: ""), token,
         )
+        return validatedHistory(history, channel)
+    }
+    private fun validatedHistory(history: ChatHistory, expectedChannel: String? = history.channel?.id): ChatHistory {
         require(Regex("^(0|[1-9][0-9]*)$").matches(history.cursor) && history.cursor.toLongOrNull() != null) { "Invalid history cursor." }
+        val channel = requireNotNull(expectedChannel) { "History channel is missing." }
         history.messages.forEach { it.validated(channel) }
         return history
     }
-    suspend fun chatSession(token: String, name: String): ChatSession = post(
+    suspend fun chatSession(token: String?, name: String): ChatSession = post(
         "/api/chat/session", buildJsonObject { put("name", name) }, token,
     )
     suspend fun sendMessage(
-        token: String,
+        token: String?,
         chatToken: String,
         channel: String,
-        authorId: String,
+        author: ChatAuthor,
         clientMessageId: UUID,
         text: String,
     ): ChatMessage {
@@ -67,17 +72,53 @@ class CaperApi(
             buildJsonObject { put("clientMessageId", clientMessageId.toString()); put("text", text) },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
-        return message.validated(channel, authorId, clientMessageId, text)
+        return message.validated(channel, author, clientMessageId, text)
+    }
+
+    suspend fun createSpace(token: String, name: String): Space = post(
+        "/api/spaces", buildJsonObject { put("name", name.trim()) }, token,
+    )
+    suspend fun updateSpace(token: String, id: String, name: String): Space = request(
+        "/api/spaces/${id.pathId()}", "PATCH", token, buildJsonObject { put("name", name.trim()) }.toString(),
+    )
+    suspend fun deleteSpace(token: String, id: String) { request<Unit>("/api/spaces/${id.pathId()}", "DELETE", token) }
+    suspend fun createChannel(token: String, space: String, name: String, privateChannel: Boolean): Channel = post(
+        "/api/spaces/${space.pathId()}/channels",
+        buildJsonObject { put("name", name); put("private", privateChannel) }, token,
+    )
+    suspend fun updateChannel(token: String, space: String, channel: String, name: String, privateChannel: Boolean): Channel = request(
+        "/api/spaces/${space.pathId()}/channels/${channel.pathId()}", "PATCH", token,
+        buildJsonObject { put("name", name); put("private", privateChannel) }.toString(),
+    )
+    suspend fun deleteChannel(token: String, space: String, channel: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}", "DELETE", token)
+    }
+    suspend fun spaceMembers(token: String, space: String): MemberList = get("/api/spaces/${space.pathId()}/members", token)
+    suspend fun addSpaceMember(token: String, space: String, username: String): Member = post(
+        "/api/spaces/${space.pathId()}/members", buildJsonObject { put("username", username.trim()) }, token,
+    )
+    suspend fun removeSpaceMember(token: String, space: String, member: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/members/${member.pathId()}", "DELETE", token)
+    }
+    suspend fun channelMembers(token: String, space: String, channel: String): MemberList =
+        get("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/members", token)
+    suspend fun addChannelMember(token: String, space: String, channel: String, username: String): Member = post(
+        "/api/spaces/${space.pathId()}/channels/${channel.pathId()}/members",
+        buildJsonObject { put("username", username.trim()) }, token,
+    )
+    suspend fun removeChannelMember(token: String, space: String, channel: String, member: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/members/${member.pathId()}", "DELETE", token)
     }
 
     suspend inline fun <reified T> media(
-        accountToken: String,
+        accountToken: String?,
         channel: String,
         operation: String,
         body: kotlinx.serialization.json.JsonObject = buildJsonObject {},
         mediaToken: String? = null,
+        demo: Boolean = false,
     ): T = post(
-        "/api/channels/${channel.pathId()}/media/$operation", body, accountToken,
+        if (demo) "/api/media/$operation" else "/api/channels/${channel.pathId()}/media/$operation", body, accountToken,
         mediaToken?.let { mapOf("x-caper-media-token" to it) } ?: emptyMap(),
     )
 

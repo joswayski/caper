@@ -1,6 +1,8 @@
 package chat.caper.android.data
 
 import chat.caper.android.model.ChatMessage
+import chat.caper.android.model.ChatAuthor
+import java.math.BigInteger
 import java.time.Instant
 import java.util.UUID
 
@@ -8,19 +10,19 @@ private val sequencePattern = Regex("^(0|[1-9][0-9]*)$")
 
 internal fun ChatMessage.validated(
     channelId: String,
-    expectedAuthorId: String? = null,
+    expectedAuthor: ChatAuthor? = null,
     expectedClientMessageId: UUID? = null,
     expectedText: String? = null,
 ): ChatMessage = apply {
     require(this.channelId == channelId) { "Message channel mismatch." }
-    require(sequencePattern.matches(seq) && seq.toLongOrNull() != null) { "Invalid message sequence." }
+    require(sequencePattern.matches(seq) && runCatching { BigInteger(seq) }.isSuccess) { "Invalid message sequence." }
     require(content.version == 1 && content.type == "text") { "Unsupported message content." }
     require(content.text.isNotEmpty() && content.text.codePointCount(0, content.text.length) <= 4000) { "Invalid message text." }
     require(content.text.none { it.isISOControl() && it != '\n' && it != '\t' }) { "Invalid message text." }
     require(runCatching { Instant.parse(createdAt) }.isSuccess) { "Invalid message timestamp." }
     require(runCatching { UUID.fromString(clientMessageId) }.isSuccess) { "Invalid client message ID." }
-    if (expectedAuthorId != null) {
-        require(author.id == expectedAuthorId && !author.isGuest) { "Message author mismatch." }
+    if (expectedAuthor != null) {
+        require(author.id == expectedAuthor.id && author.isGuest == expectedAuthor.isGuest) { "Message author mismatch." }
     }
     if (expectedClientMessageId != null) require(clientMessageId == expectedClientMessageId.toString()) { "Message ID mismatch." }
     if (expectedText != null) require(content.text == expectedText) { "Message text mismatch." }

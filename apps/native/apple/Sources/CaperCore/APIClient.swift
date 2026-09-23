@@ -14,6 +14,14 @@ private struct EmailInput: Encodable { let email: String }
 private struct VerifyInput: Encodable { let challengeId: String; let code: String; let tokenTransport = "bearer" }
 private struct ProfileInput: Encodable { let username: String; let displayName: String }
 private struct SendInput: Encodable { let clientMessageId: String; let text: String }
+private struct SpaceInput: Encodable { let name: String }
+private struct ChannelInput: Encodable {
+    let name: String
+    let privateChannel: Bool
+    enum CodingKeys: String, CodingKey { case name; case privateChannel = "private" }
+}
+private struct UsernameInput: Encodable { let username: String }
+private struct MembersResponse: Decodable { let members: [Member] }
 
 public actor APIClient {
     public let baseURL: URL
@@ -77,6 +85,56 @@ public actor APIClient {
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
     public func space(_ id: String) async throws -> SpaceDetail { try await request("api/spaces/\(try pathID(id))") }
+
+    public func createSpace(name: String) async throws -> Space {
+        try await request("api/spaces", method: "POST", body: SpaceInput(name: name.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    public func updateSpace(id: String, name: String) async throws -> Space {
+        try await request("api/spaces/\(try pathID(id))", method: "PATCH", body: SpaceInput(name: name.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    public func deleteSpace(id: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(id))", method: "DELETE")
+    }
+
+    public func createChannel(spaceID: String, name: String, privateChannel: Bool) async throws -> Channel {
+        try await request("api/spaces/\(try pathID(spaceID))/channels", method: "POST", body: ChannelInput(name: name, privateChannel: privateChannel))
+    }
+
+    public func updateChannel(spaceID: String, channelID: String, name: String, privateChannel: Bool) async throws -> Channel {
+        try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))", method: "PATCH", body: ChannelInput(name: name, privateChannel: privateChannel))
+    }
+
+    public func deleteChannel(spaceID: String, channelID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))", method: "DELETE")
+    }
+
+    public func spaceMembers(spaceID: String) async throws -> [Member] {
+        let response: MembersResponse = try await request("api/spaces/\(try pathID(spaceID))/members")
+        return response.members
+    }
+
+    public func addSpaceMember(spaceID: String, username: String) async throws -> Member {
+        try await request("api/spaces/\(try pathID(spaceID))/members", method: "POST", body: UsernameInput(username: username))
+    }
+
+    public func removeSpaceMember(spaceID: String, memberID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/members/\(try pathID(memberID))", method: "DELETE")
+    }
+
+    public func channelMembers(spaceID: String, channelID: String) async throws -> [Member] {
+        let response: MembersResponse = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members")
+        return response.members
+    }
+
+    public func addChannelMember(spaceID: String, channelID: String, username: String) async throws -> Member {
+        try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members", method: "POST", body: UsernameInput(username: username))
+    }
+
+    public func removeChannelMember(spaceID: String, channelID: String, memberID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members/\(try pathID(memberID))", method: "DELETE")
+    }
 
     public func history(channelID: String? = nil, before: String? = nil) async throws -> ChatHistory {
         var path = channelID.map { "api/chat/channels/\($0)/messages" } ?? "api/chat/general"

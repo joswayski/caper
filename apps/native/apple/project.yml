@@ -57,11 +57,13 @@ targets:
       - package: WebRTC
         product: WebRTC
         link: true
+        embed: true
     info:
       path: Configuration/macOS-Info.plist
       properties:
         CFBundleDisplayName: Caper
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
+        ATSApplicationFontsPath: .
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_MACOS_BUNDLE_ID)
@@ -81,11 +83,13 @@ targets:
       - package: WebRTC
         product: WebRTC
         link: true
+        embed: true
     info:
       path: Configuration/iOS-Info.plist
       properties:
         CFBundleDisplayName: Caper
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
+        UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
     settings:
@@ -104,6 +108,26 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.caper.core-tests
         GENERATE_INFOPLIST_FILE: YES
+  CaperMacOSParityTests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: Tests/CaperParityUITests
+    dependencies:
+      - target: CaperMacOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.macos-parity-tests
+        GENERATE_INFOPLIST_FILE: YES
+  CaperIOSParityTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: Tests/CaperParityUITests
+    dependencies:
+      - target: CaperIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.ios-parity-tests
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   CaperMacOS:
     build:
@@ -116,3 +140,17 @@ schemes:
     build:
       targets:
         CaperIOS: all
+  CaperMacOSParityTests:
+    build:
+      targets:
+        CaperMacOS: all
+        CaperMacOSParityTests: [test]
+    test:
+      targets: [CaperMacOSParityTests]
+  CaperIOSParityTests:
+    build:
+      targets:
+        CaperIOS: all
+        CaperIOSParityTests: [test]
+    test:
+      targets: [CaperIOSParityTests]

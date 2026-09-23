@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,6 +13,18 @@ val releaseKeyAlias = providers.environmentVariable("CAPER_ANDROID_KEY_ALIAS")
 val releaseKeyPassword = providers.environmentVariable("CAPER_ANDROID_KEY_PASSWORD")
 val releaseSigningInputs = listOf(releaseStore, releaseStorePassword, releaseKeyAlias, releaseKeyPassword)
 val releaseSigningAvailable = releaseSigningInputs.all { it.isPresent }
+val apiBaseUrl = providers.gradleProperty("caperApiBaseUrl").orElse("https://caper.chat")
+val fixtureMode = providers.gradleProperty("caperFixtureMode").orElse("false")
+
+if (fixtureMode.get().toBoolean()) {
+    val fixtureOrigin = URI(apiBaseUrl.get())
+    require(
+        fixtureOrigin.scheme == "http" && fixtureOrigin.host in setOf("localhost", "127.0.0.1", "::1") &&
+            fixtureOrigin.rawUserInfo == null && fixtureOrigin.rawQuery == null && fixtureOrigin.rawFragment == null
+    ) {
+        "Fixture mode only permits an HTTP loopback API URL."
+    }
+}
 
 android {
     namespace = "chat.caper.android"
@@ -33,7 +47,6 @@ android {
         versionCode = 1
         versionName = "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "API_BASE_URL", "\"${providers.gradleProperty("caperApiBaseUrl").orElse("https://caper.chat").get()}\"")
         buildConfigField("boolean", "ENABLE_NATIVE_VOICE", providers.gradleProperty("caperEnableNativeVoice").orElse("false").get())
     }
 
@@ -41,8 +54,14 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
+            buildConfigField("boolean", "FIXTURE_MODE", fixtureMode.get())
+            manifestPlaceholders["usesCleartextTraffic"] = fixtureMode.get()
         }
         release {
+            buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
+            buildConfigField("boolean", "FIXTURE_MODE", "false")
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = if (releaseSigningAvailable) signingConfigs.getByName("release") else null
@@ -53,7 +72,10 @@ android {
         compose = true
         buildConfig = true
     }
-    sourceSets["main"].assets.srcDir("../third_party")
+    sourceSets["main"].apply {
+        assets.srcDirs("../third_party", layout.buildDirectory.dir("generated/caper-fonts/assets"))
+        res.srcDir(layout.buildDirectory.dir("generated/caper-fonts/res"))
+    }
     packaging.resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -67,6 +89,14 @@ if (!releaseSigningAvailable) {
     tasks.configureEach {
         if (name in setOf("assembleRelease", "bundleRelease")) doFirst {
             error("All four release-signing variables are required; refusing to produce an unsigned release artifact.")
+        }
+    }
+}
+
+if (fixtureMode.get().toBoolean()) {
+    tasks.configureEach {
+        if (name in setOf("assembleRelease", "bundleRelease")) doFirst {
+            error("Fixture mode is debug-only; refusing a release build.")
         }
     }
 }

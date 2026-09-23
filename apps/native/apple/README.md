@@ -1,57 +1,50 @@
 # Caper for Apple platforms
 
-Native Swift clients for macOS and iPhone. They use SwiftUI backed by AppKit/UIKit—not Electron, Tauri, WebView, or embedded browser content. Shared `CaperCore` code owns account, spaces, chat, gateway, Keychain, and WebRTC behavior.
+Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They contain no Electron, Tauri, WebView, or browser content. This follows the Captures native direction, but is not a direct port of Captures' custom AppKit views.
 
-The macOS client follows Captures' native direction, but it is a shared SwiftUI implementation backed by AppKit—not a direct port of Captures' custom AppKit views.
+## Current implementation
 
-## Implemented slice
+- Guest access to public General plus passwordless email sign-in, onboarding/profile, logout, and origin-namespaced Keychain sessions.
+- The caper.chat shell at desktop and narrow widths: space rail, channel/member sidebar, Browse navigation, conversation stage, Satoshi typography, and the web color/spacing tokens.
+- Space/channel/member owner workflows: create/delete/rename spaces and channels, add/remove existing accounts by username, private-channel toggle and grants.
+- HTTP chat history and pagination, idempotent sends, ordered gateway delivery/replay, reconnect/error state, typing, and paginated member presence.
+- Generation fences for account/channel transitions, immediate revoked-data clearing, separate in-memory chat/media capabilities, and same-origin-only credential redirects.
 
-- Passwordless email code sign-in using bearer transport, profile onboarding, logout, and a Keychain session (`AfterFirstUnlockThisDeviceOnly`).
-- Authenticated spaces/channels and native navigation.
-- HTTP history/pagination and idempotent message writes, with the unified `/api/chat/events` gateway for ordered delivery and reconnect visibility.
-- Account credentials only in `Authorization`; chat/media capabilities remain in memory and use their dedicated headers. Cross-origin redirects are rejected before credentials can be forwarded.
-- An experimental audio-only native WebRTC path implements join/publish/subscribe, mute/deafen, roster polling, departed-track cleanup, and leave. It is disabled by default; developers can expose it with `CAPER_EXPERIMENTAL_VOICE=1`. It is not a supported calling claim.
+The native UI and platform projects still require exact-head Apple CI before they are considered build-verified. The Linux orb used for implementation has no Swift or Xcode installation.
 
-The visual tokens match caper.chat. Satoshi is not bundled because the repository contains no redistributable font files; the clients use the native system font instead.
+## Fonts and licenses
 
-## Build and test
+`prepare.sh` runs the repository's verified `scripts/native_fonts.py`, then bundles the original, unmodified Satoshi Regular/Medium/Bold/Black OTF files and unchanged Fontshare license. Generated font inputs are ignored. Both app archives also contain `WebRTC-LICENSE.txt`.
 
-Requires Xcode 16.x (the default on GitHub's `macos-15` images). WebRTC is pinned exactly to `stasel/WebRTC` 153.0.0. XcodeGen is built from pinned commit `21ac9944b0ab546a07422dbed86f33dd2ebd76f8`; no global installation is needed.
+## Build
+
+Requires the Xcode 16 toolchain on GitHub `macos-15` / `macos-15-intel`. XcodeGen is built automatically from pinned commit `21ac9944b0ab546a07422dbed86f33dd2ebd76f8`; WebRTC is pinned to `stasel/WebRTC` 153.0.0.
 
 ```sh
-swift test --package-path apps/native/apple
 ./apps/native/apple/build.sh macos
 ./apps/native/apple/build.sh ios
 ```
 
-Outputs (never committed):
+Each command first runs the macOS XCTest suite. Outputs are ignored and credential-free:
 
-- `dist/Caper-macos-arm64.zip` on Apple Silicon
-- `dist/Caper-macos-x64.zip` on Intel (`x86_64` is normalized)
-- `dist/Caper-ios-simulator-arm64.zip`, explicitly simulator-only
+- `dist/Caper-macos-arm64.zip` or `dist/Caper-macos-x64.zip` with an ad-hoc-signed `.app`
+- `dist/Caper-ios-simulator-arm64.zip` (unsigned simulator app; not a device package)
 
-The macOS app is ad-hoc signed, requiring no developer identity. The simulator package is unsigned. Bundle IDs default to `chat.caper.macos` and `chat.caper.ios`; override packaging with `CAPER_MACOS_BUNDLE_ID` and `CAPER_IOS_BUNDLE_ID`.
+The script verifies app/framework architectures, embedded WebRTC, runpaths/signature on macOS, and embedded font/WebRTC license resources. Bundle IDs default to `chat.caper.macos` and `chat.caper.ios` and may be overridden with `CAPER_MACOS_BUNDLE_ID` / `CAPER_IOS_BUNDLE_ID`.
 
-GitHub's `macos-15` and `macos-15-intel` runners should be sufficient. Both macOS jobs can run tests and `build.sh macos`; run `build.sh ios` on `macos-15` (arm64).
+## Deterministic parity captures
 
-## Device signing
+The scripts launch only the explicit loopback fixture; fixture data can never be selected in a production launch.
 
-The deterministic `ios` target is simulator-only and credential-free. Physical-device archive/export configuration belongs in the repository-level distribution runbook once the Apple team and profile exist.
+```sh
+./apps/native/apple/parity-screenshots.sh macos
+./apps/native/apple/parity-screenshots.sh ios
+```
 
-## Supported vs. missing
+The macOS suite captures populated, login, actionable login error, Manage space, and private Channel overview states. The iOS suite adds narrow conversation and Browse-open states on an `iPhone 16` simulator. Screenshots are exported from the XCTest result into ignored `apps/native/apple/parity-artifacts/`. Tests also assert fixture content and required controls before capture.
 
-The supported first slice is account login/onboarding/logout, spaces/channel navigation, history/pagination, message sending, and reconnecting gateway delivery. It validates canonical cursors/content, rejects cross-origin credential redirects, isolates channel generations, clears revoked channel data, and preserves idempotent sends only for unknown outcomes.
+## Experimental voice: implemented, not accepted
 
-Space/channel/member administration, presence display, typing indicators, notification delivery, and polished mobile navigation remain missing.
+Native audio is hidden unless `CAPER_EXPERIMENTAL_VOICE=1`. The implementation requests microphone permission before capture; starts muted until publish, remote answer, transport readiness, and generation checks complete; supports gateway snapshots, lease snapshots, roster subscribe/close, immediate local mute/deafen/leave, bounded rejoin, TURN credential renewal with restart/ack, and iOS `RTCAudioSession` interruption/route handling. The iOS app declares the audio background mode so an active audio session can continue while locked.
 
-## Required voice hardening and validation before claiming parity
-
-The experimental native WebRTC path is **not verified in this Linux orb** (there is no Swift/Xcode SDK, Apple audio device, signing identity, or iPhone). The UI is disabled by default and must not be marketed as calling support yet. Before release:
-
-1. Keep both macOS architectures and the iOS Simulator build passing in CI. The macOS builds have passed all 16 XCTest cases and framework/signature packaging checks; that does not exercise live audio.
-2. Run a real two-party call through Cloudflare on macOS and a physical iPhone, including TURN-only/multi-network coverage.
-3. Lock the physical iPhone during an active call and verify uninterrupted capture/playback for a sustained period. A plist declaration and audio-session category are necessary but are not proof.
-4. Add the browser client's gateway media snapshots, TURN credential renewal/ICE restart, connection-state recovery, deployment handoff behavior, and robust audio interruption/route handling. This implementation polls snapshots and has no ICE restart; long-running/recovering-call parity is therefore still outstanding.
-5. Verify route changes, Bluetooth/wired output, interruptions, permission denial, and app termination behavior. Caper intentionally does not add incoming-call PushKit/CallKit infrastructure because the server has no incoming-call signaling.
-
-Unit coverage exercises URL transport headers, invalid history, idempotent delivery state, sequence precision, message boundaries, ICE decoding, and cross-origin redirect rejection. A full controllable WebSocket lifecycle fixture remains missing. The Linux orb cannot execute XCTest; `build.sh` runs it on the macOS pipeline before producing either artifact.
+This is **not yet shipped calling support**. The fixture deliberately returns media 503 and cannot validate Cloudflare. Required acceptance remains: exact-head Apple compilation, two-party Cloudflare calls, TURN-only/network handoff, route/interruption recovery, and sustained locked-iPhone capture/playback on physical hardware. The system route is used; selectable per-device routing, browser noise suppression/mic test, per-participant local volume, and connection diagnostics are not yet parity-complete. There is no incoming-call PushKit/CallKit behavior because the server has no incoming-call signaling.
