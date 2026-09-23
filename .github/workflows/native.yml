@@ -202,9 +202,9 @@ jobs:
           disable-animations: true
           script: |
             adb install apps/native/android/dist/Caper-android-debug.apk
-            adb shell am start -W -n chat.caper.android/.MainActivity
+            adb shell am start -W -n chat.caper.android.debug/chat.caper.android.MainActivity
             sleep 5
-            adb shell pidof chat.caper.android
+            adb shell pidof chat.caper.android.debug
             adb shell uiautomator dump /sdcard/caper-ui.xml
             adb pull /sdcard/caper-ui.xml /tmp/caper-android-ui.xml
             grep -q 'A quieter place to talk' /tmp/caper-android-ui.xml

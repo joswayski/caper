@@ -6,21 +6,25 @@ $Native = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Resolve-Path (Join-Path $Native "..\..\..")
 if (-not $env:CARGO_BUILD_JOBS) { $env:CARGO_BUILD_JOBS = "2" }
 $env:CARGO_TARGET_DIR = Join-Path $Native "target"
+$Target = "x86_64-pc-windows-msvc"
+# A portable download must not require a separately installed VC++ runtime.
+# An explicit target keeps this flag off host-built procedural macros.
+$env:RUSTFLAGS = "$env:RUSTFLAGS -C target-feature=+crt-static".Trim()
 
 cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") -- --check
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo test --manifest-path (Join-Path $Native "Cargo.toml") --locked
+cargo test --manifest-path (Join-Path $Native "Cargo.toml") --target $Target --locked
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --locked --all-targets -- -D warnings
+cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --target $Target --locked --all-targets -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo build --manifest-path (Join-Path $Native "Cargo.toml") --locked --release
+cargo build --manifest-path (Join-Path $Native "Cargo.toml") --target $Target --locked --release
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Dist = Join-Path $Native "dist"
 $Stage = Join-Path $Native "target\package\Caper-windows-x64"
 Remove-Item $Dist, $Stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $Dist, $Stage -ItemType Directory -Force | Out-Null
-Copy-Item (Join-Path $Native "target\release\caper-desktop.exe") (Join-Path $Stage "Caper.exe")
+Copy-Item (Join-Path $Native "target\$Target\release\caper-desktop.exe") (Join-Path $Stage "Caper.exe")
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
 $Output = Join-Path $Dist "Caper-windows-x64.zip"
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Output -CompressionLevel Optimal
