@@ -63,7 +63,7 @@ jobs:
         # virtual shard exposed by ElastiCache Serverless (not an HA test).
         run: |
           docker run --detach --name chat-valkey --publish 127.0.0.1:6379:6379 \
-            valkey/valkey:8.1-alpine valkey-server --cluster-enabled yes \
+            valkey/valkey:9.1.2-alpine valkey-server --cluster-enabled yes \
             --bind 0.0.0.0 --protected-mode no
           for attempt in {1..30}; do
             if docker exec chat-valkey valkey-cli ping | grep -q PONG; then break; fi
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       valkey:
-        image: valkey/valkey:8.1-alpine
+        image: valkey/valkey:9.1.2-alpine
         ports:
           - 6379:6379
         options: >-

@@ -82,6 +82,9 @@ focus and can be implemented by future desktop/mobile clients.
   Each socket renews its own 40-second lease. The per-user hash expires within
   80 seconds of its last renewal and has at most 32 socket records. A user staying
   online reuses those records indefinitely; no status history accumulates.
+  Records represent connected sessions, not installed devices. Multiple browser
+  tabs each have a connection. A suspended phone whose heartbeats stop loses its
+  lease; native background/voice execution still needs platform-specific support.
 - The space member list watches only its current 25-member page. Pagination swaps
   the subscription; collapsing releases it. Initial member *metadata* still comes
   from the space detail endpoint, but presence never loads the entire population.
@@ -93,7 +96,12 @@ focus and can be implemented by future desktop/mobile clients.
   Committed chat cursors repair missed messages; versioned room snapshots repair
   current mute/deafen/roster state. Typing expires and is intentionally not replayed.
 
-Commands include a UUID and fixed `issuedAt`. A shared Valkey ledger binds the
+Typing is best-effort: it is sent only over an already connected socket, never
+queued/replayed after reconnect, and never stored in the command ledger. Lost
+start/stop pulses are harmless; the receiving UI expires typing after six seconds.
+Authorization and one-second per-author/per-channel rate counters still apply.
+
+Media commands include a UUID and fixed `issuedAt`. A shared Valkey ledger binds the
 request to its identity and body, and retains the result for 150 seconds; requests
 older than 120 seconds are rejected rather than executed again. Reconnects retry
 the **same** command, including pending/draining responses. Accepted commands
@@ -105,12 +113,15 @@ Use a non-evicting, monitored shared broker; losing it clears temporary leases a
 command receipts, not Postgres messages. Memory grows with current sockets and
 recent commands, not account age. Capacity at 10k concurrent users is not measured.
 
-**Rollout on top of spaces/channels:** first complete PR #144's schema/API rollout.
-Prepare [the companion infrastructure configuration](https://github.com/joswayski/infrastructure/pull/120) so gateway pods receive
+**Rollout on top of spaces/channels:** PR #144 is merged and included in this
+branch. Merge [infrastructure PR #120](https://github.com/joswayski/infrastructure/pull/120)
+first and wait for Flux's in-place gateway rollout so gateway pods receive
 `MEDIA_ENABLED` and the four Cloudflare settings, but **not** email-login signing,
 SES or migration credentials. Existing opaque sessions are verified from the DB.
-Then deploy **API first**, **gateway second**, **web last**, matching the existing
-deployment workflow's API-image prerequisite. New gateways accept old chat clients.
+Then merge Caper PR #146 into `main`, wait for both immutable images, and deploy
+that merged SHA **API first**, **gateway second**, **web last**, matching the existing
+deployment workflow's API-image prerequisite. The API rollout includes outstanding
+spaces/channel migrations; the gateway does not run migrations. New gateways accept old chat clients.
 Between the first two steps, old gateways repair durable messages from Postgres,
 but old tabs can miss typing pulses as publications move to scoped topics.
 Do not expose new web clients to old gateways. Old SSE endpoints remain solely for
@@ -118,18 +129,43 @@ compatibility; mixed old API pods may delay old-tab roster updates until repair.
 The older SSE-specific sections below describe that compatibility path and its
 historical validation, not the new browser transport.
 
-After the reviewed infrastructure change and image builds, an operator can run:
+**No Terraform/OpenTofu apply is needed for these two PRs.** The production
+cluster, cache, secrets and deployment permissions already exist. Staging has no
+hosted app cluster/cache: it uses local Compose with staging AWS secrets and SES.
+The Compose/CI/orb pin is Valkey 9.1.2; the existing AWS-managed cache reports
+Valkey major version 9, not a verified 9.1.2 patch. No hosted upgrade is requested.
+
+Before merging, verify staging from the Caper PR checkout:
 
 ```bash
-MERGED_SHA=<full-merge-sha-of-this-caper-change>
-gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-# Wait for each workflow to complete and verify the new image before continuing.
-kubectl -n default rollout status deployment/caper-api --timeout=15m
-gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
-gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-kubectl -n default rollout status deployment/caper-web --timeout=15m
+gh pr checkout 146 --repo joswayski/caper
+npm ci
+aws sso login --profile staging
+npm run secrets:check
+docker compose -f compose.staging.yaml config --images | grep -Fx 'valkey/valkey:9.1.2-alpine'
+npm run dev -- --scale api=2 --scale chat-gateway=2
 ```
+
+In another terminal, confirm `PONG`/the engine version, exercise calls and member
+presence, and restart application containers while leaving Postgres/Valkey intact:
+
+```bash
+docker compose -f compose.staging.yaml exec valkey valkey-cli ping
+docker compose -f compose.staging.yaml exec valkey valkey-cli INFO server
+docker compose -f compose.staging.yaml ps
+docker compose -f compose.staging.yaml restart api chat-gateway
+# After testing, Ctrl-C the dev command, then stop containers without deleting data:
+docker compose -f compose.staging.yaml down
+```
+
+For production, follow the [copy-paste infrastructure runbook](https://github.com/joswayski/infrastructure/blob/main/docs/caper-chat-gateway.md#merge-and-production-rollout-order).
+It contains guarded PR merge commands, Flux environment/replica verification,
+production authentication and ECR image checks, and exact API → gateway → web
+workflow commands with pinned-image checks after each rollout. Use the immutable
+PR #146 merge SHA, not a moving `main` tip. Watch the exact run URL returned by
+each dispatch; do not select the latest run or let an already-ready old Deployment
+stand in for workflow completion. No manual `kubectl apply` or production restart
+is needed.
 
 These are operator instructions, not actions performed in development. Keep two
 ready gateways, `maxUnavailable: 0`, and the existing 65-second termination grace.
@@ -323,7 +359,7 @@ Validation matrix for this slice:
 
 | Check | Evidence / limitation |
 | --- | --- |
-| Transaction rollback, concurrent retry/order, replay, duplicate publish, lost last event, overlap | Automated integration test with disposable Postgres and real broker/WebSockets; also runs in CI with Postgres 17 + Valkey 8.1 |
+| Transaction rollback, concurrent retry/order, replay, duplicate publish, lost last event, overlap | Automated integration test with disposable Postgres and real broker/WebSockets; also runs in CI with Postgres 17 + Valkey 9.1.2 |
 | Typing auth/rate limits, cross-gateway fanout, legacy opt-out, unchanged durable cursor | Automated disposable Postgres/broker integration; browser unit tests cover throttling, expiry, overlap and nonblocking sends |
 | Real guest browser send/receive | Two isolated Chromium sessions, real local HTTP/DB/broker/gateway; literal HTML-like text stays text |
 | Real process SIGTERM with replacement | Readiness-aware local test proxy; 12 messages received once, zero offline transitions; old socket closed after replacement ready |
@@ -339,7 +375,7 @@ loopback Postgres (test role can create/drop test databases) and
 cargo test -p caper-api chat::tests::durable_guest_delivery_replay_and_handoff -- --ignored
 ```
 
-CI runs this against cluster-mode Valkey 8.1 with one primary owning all hash
+CI runs this against cluster-mode Valkey 9.1.2 with one primary owning all hash
 slots. This enforces the multi-key Lua restrictions that standalone mode misses:
 the typing rate counters share a per-channel `{caper:chat:v1:typing:channelId}` hash tag. It tests
 cluster command compatibility, not multi-node failover or managed-service TLS.
@@ -779,15 +815,16 @@ Subsequent same-schema deployments use RollingUpdate with `maxUnavailable: 0`,
 `maxSurge: 1`, `/readyz`, and a 65-second termination grace including the five-second
 preStop serving window from the infrastructure companion.
 
-Real disposable Redis integration tests (Redis-compatible protocol) cover independent
+Real disposable Valkey integration tests cover independent
 API instances, cross-pod notifications and capability replacement, full replacement
 with unchanged Cloudflare mappings, capacity/operation races, lease/claim recovery,
 and connection loss/recovery without replay. Cloudflare is mocked in these tests.
-CI runs them against Valkey 8.1. Run locally using a disposable loopback server:
+CI and orb setup use pinned Valkey 9.1.2. Run locally using a disposable loopback server:
 
 ```bash
 # In an orb; do not point TEST_VALKEY_URL at a shared/production service.
-amp orb service start caper-test-redis --command 'redis-server --bind 127.0.0.1 --port 6389 --save "" --appendonly no'
+amp orb service start caper-test-valkey --command 'valkey-server --bind 127.0.0.1 --port 6389 --save "" --appendonly no' --port 6389
+valkey-cli -p 6389 PING # wait for PONG before starting the tests
 TEST_VALKEY_URL=redis://127.0.0.1:6389 cargo test --locked -p caper-api tests::shared -- --ignored
 ```
 
@@ -801,7 +838,7 @@ by the shared-store tests or by HTTP readiness.
 
 ### Local Compose shared-state testing
 
-`npm run dev` starts Valkey 8.1 alongside the API, web, gateway and Postgres.
+`npm run dev` starts Valkey 9.1.2 alongside the API, web, gateway and Postgres.
 The API waits for Valkey's health check and defaults to `redis://valkey:6379`.
 Only Compose sets the process-only `VALKEY_ALLOW_INSECURE=true` opt-in, which
 allows plaintext to the exact service hostname `valkey`, not arbitrary hosts.

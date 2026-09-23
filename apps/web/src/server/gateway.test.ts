@@ -157,6 +157,48 @@ test("pending commands retry with identical identity on reconnect, command_pendi
   assert.deepEqual(await result, { ok: true });
 });
 
+for (const interruption of ["disconnect", "handoff", "draining", "pending"] as const) {
+  test(`typing pulses are not queued or retried after ${interruption}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const f = setup(t);
+    await assert.rejects(f.gateway.command({ method: "typing" }), /reconnecting/);
+    assert.equal(f.sockets.length, 0, "typing alone cannot open a connection or queue old activity");
+    const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general", after: "0" }, { event: () => undefined });
+    void subscription.ready.catch(() => undefined);
+    t.after(() => subscription.unsubscribe());
+    f.hello(0);
+    f.sockets[0].frame({ type: "subscribed", id: subscription.id });
+    const pulse = f.gateway.command({ method: "typing", channelId: "general", body: { typing: true }, timeoutMs: 2_000 });
+    const lost = assert.rejects(pulse);
+    const first = f.sockets[0].sent.find((frame) => frame.type === "command")!;
+    assert.equal(first.method, "typing");
+
+    if (interruption === "disconnect") {
+      f.sockets[0].fail();
+      t.mock.timers.tick(188);
+      f.hello(1);
+    } else if (interruption === "handoff") {
+      f.sockets[0].frame({ type: "migrating" });
+      f.hello(1);
+      f.sockets[1].frame({ type: "subscribed", id: subscription.id });
+      assert.equal(f.sockets[0].closed, true);
+    } else {
+      f.sockets[0].frame({ type: "result", id: first.id, status: interruption === "draining" ? 503 : 409,
+        body: { code: interruption === "draining" ? "gateway_draining" : "command_pending" } });
+      t.mock.timers.tick(1_000);
+    }
+    await lost;
+    assert.equal(f.sockets.flatMap((socket) => socket.sent).filter((frame) => frame.type === "command").length, 1);
+
+    const current = f.sockets.at(-1)!;
+    const stop = f.gateway.command({ method: "typing", channelId: "general", body: { typing: false } });
+    const latest = current.sent.filter((frame) => frame.type === "command").at(-1)!;
+    assert.deepEqual(latest.body, { typing: false });
+    current.frame({ type: "result", id: latest.id, status: 204, body: null });
+    await stop;
+  });
+}
+
 test("pointer movement reports throttled activity without focus state", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = setup(t);

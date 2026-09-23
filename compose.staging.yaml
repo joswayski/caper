@@ -19,7 +19,7 @@ services:
       - ./compose/staging/postgres-init.sql:/docker-entrypoint-initdb.d/runtime-role.sql:ro
 
   valkey:
-    image: valkey/valkey:8.1-alpine
+    image: valkey/valkey:9.1.2-alpine
     command: ["valkey-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]

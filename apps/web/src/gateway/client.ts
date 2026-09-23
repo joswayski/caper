@@ -188,6 +188,9 @@ export class AppGateway {
 
   command(request: CommandRequest): Promise<unknown> {
     if (request.signal?.aborted) return Promise.reject(request.signal.reason);
+    if (request.method === "typing" && !this.active?.hello) {
+      return Promise.reject(new GatewayError(503, "Typing is unavailable while reconnecting."));
+    }
     const id = crypto.randomUUID();
     const createdAt = Date.now();
     const timeoutMs = Math.min(request.timeoutMs ?? 25_000, MAX_COMMAND_TIMEOUT_MS);
@@ -353,8 +356,8 @@ export class AppGateway {
       if (frame.status >= 200 && frame.status < 300) this.finishCommand(frame.id, frame.body);
       else {
         const detail = errorBody(frame.body, `Call service returned ${frame.status}.`);
-        if ((frame.status === 409 && detail.code === "command_pending")
-          || (frame.status === 503 && detail.code === "gateway_draining")) {
+        if (pending.frame.method !== "typing" && ((frame.status === 409 && detail.code === "command_pending")
+          || (frame.status === 503 && detail.code === "gateway_draining"))) {
           if (detail.code === "gateway_draining" && !this.candidate) this.open(true);
           this.retryCommand(frame.id, detail.code === "command_pending" ? 100 : 250);
         } else {
@@ -545,8 +548,10 @@ export class AppGateway {
 
   private sendPendingCommands(stream: Stream) {
     const now = Date.now();
-    for (const command of this.commands.values()) {
-      if (now < command.deadline) this.sendCommand(stream, command);
+    for (const [id, command] of this.commands) {
+      if (command.frame.method === "typing") {
+        this.finishCommand(id, undefined, new GatewayError(503, "Typing update discarded during reconnect."));
+      } else if (now < command.deadline) this.sendCommand(stream, command);
     }
   }
 

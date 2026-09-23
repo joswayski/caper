@@ -2,12 +2,14 @@
 // Run with the dev server: SPACES_TEST_WEB_URL=http://localhost:3000/spaces node scripts/test-space-controls.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const url = process.env.SPACES_TEST_WEB_URL ?? 'http://localhost:3000/spaces';
 assert.ok(['localhost', '127.0.0.1'].includes(new URL(url).hostname), 'Use a loopback preview');
+const artifacts = process.env.SPACES_TEST_ARTIFACTS && resolve(process.env.SPACES_TEST_ARTIFACTS);
+if (artifacts) mkdirSync(artifacts, { recursive: true });
 const directory = mkdtempSync(join(tmpdir(), 'caper-space-controls-'));
 const init = join(directory, 'fixture.js');
 function fixture() {
@@ -17,7 +19,10 @@ function fixture() {
   const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner' };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: true };
-  const control = window.spaceControlFixture = { deletes: [], updates: [], fail: false, release: null, frames: [] };
+  const members = [{ ...account, owner: true }, ...Array.from({ length: 29 }, (_, index) => ({
+    id: `member${String(index).padStart(6, '0')}`, username: `member_${index}`, displayName: `Fixture member ${index + 1}`, owner: false,
+  }))];
+  const control = window.spaceControlFixture = { deletes: [], updates: [], fail: false, release: null, frames: [], subscriptions: {} };
   let deletedChannel = false, deletedSpace = false;
   const originalFetch = window.fetch.bind(window);
   const NativeSocket = window.WebSocket;
@@ -31,12 +36,15 @@ function fixture() {
     send(data) {
       const request = JSON.parse(data);
       if (request.type === 'heartbeat') this.frame({ type: 'heartbeat' });
-      if (request.type === 'unsubscribe') this.subscriptions.delete(request.id);
+      if (request.type === 'unsubscribe') { this.subscriptions.delete(request.id); delete control.subscriptions[request.id]; }
       if (request.type === 'subscribe') {
         this.subscriptions.set(request.id, request);
+        control.subscriptions[request.id] = request;
         const event = request.kind === 'chat'
           ? { type: 'ready', cursor: request.after ?? '0' }
-          : { type: 'presence.snapshot', spaceId: space.id, members: [], revision: '1' };
+          : request.kind === 'presence'
+            ? { type: 'snapshot', members: request.userIds.map((userId, index) => ({ userId, status: ['online', 'idle', 'offline'][index % 3] })) }
+            : { type: 'snapshot', participants: [], revision: 1 };
         this.frame({ type: 'event', id: request.id, event });
         this.frame({ type: 'subscribed', id: request.id });
       }
@@ -68,7 +76,7 @@ function fixture() {
     }
     if (path === '/api/spaces') return Response.json({ spaces: deletedSpace ? [] : [space], limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 } });
     if (path.endsWith('/members')) return Response.json({ members: [{ ...account, owner: true }] });
-    if (path === `/api/spaces/${space.id}`) return Response.json({ space, channels: deletedChannel ? [] : [channel], members: [] });
+    if (path === `/api/spaces/${space.id}`) return Response.json({ space, channels: deletedChannel ? [] : [channel], members });
     if (path.endsWith('/messages')) return Response.json({ space, channel, messages: [], cursor: '0', hasMore: false });
     return Response.json({ error: 'Disabled in UI fixture' }, { status: 503 });
   };
@@ -95,6 +103,7 @@ function browser(...command) {
 }
 const evaluate = source => browser('eval', source).result;
 const wait = expression => browser('wait', '--fn', expression);
+const screenshot = name => { if (artifacts) browser('screenshot', '--full', `${artifacts}/${name}.png`); };
 const modal = '.delete-confirmation';
 const opens = () => evaluate('document.querySelectorAll(".space-dialog[open]").length');
 function openOverview() {
@@ -118,10 +127,27 @@ try {
       assert.deepEqual(f.geometry, frames.at(-1).geometry, 'Loading shell moved');
     }
   }
+  wait('document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")');
+  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence").userIds.length'), 25);
+  screenshot('gateway-merged-members-desktop');
+  browser('click', '.member-presence-pages button:last-child');
+  wait('document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".member-presence-connecting")');
+  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'), 1);
+  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence").userIds.length'), 5);
+  browser('click', '.member-presence-heading');
+  wait('!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence")');
+  browser('click', '.member-presence-heading');
+  browser('set', 'viewport', '390', '844', '2');
+  browser('click', '.navigation-toggle');
+  wait('!!document.querySelector(".spaces-room.navigation-open")');
+  assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Narrow member navigation must not overflow');
+  screenshot('gateway-merged-members-narrow');
+  browser('set', 'viewport', '1280', '900', '2');
   openOverview();
   assert.equal(opens(), 2);
   assert.equal(evaluate('document.activeElement.textContent'), 'Cancel');
   assert.equal(evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid');
+  screenshot('gateway-merged-delete-confirmation');
   browser('press', 'Enter');
   assert.equal(opens(), 1, 'Immediate Enter must cancel, not delete');
   assert.equal(evaluate('spaceControlFixture.deletes.length'), 0);
@@ -181,7 +207,7 @@ try {
   evaluate('spaceControlFixture.release()');
   wait('!document.querySelector(".space-dialog[open]")');
   assert.equal(evaluate('spaceControlFixture.deletes.at(-1)'), '/api/spaces/space1234567');
-  console.log('PASS: stable loading geometry, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API).');
+  console.log('PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).');
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }
 }

@@ -762,72 +762,79 @@ async fn execute(
         }
         channel_access(&state.chat.pool, channel, identity.user).await?;
     }
-    // Binding to credentials prevents another account from retrieving cached
-    // capability-bearing results, even if it learns a request UUID.
-    let owner = identity
-        .hash
-        .as_deref()
-        .map(|h| format!("{h:x?}"))
-        .unwrap_or_else(|| {
-            format!(
-                "{:x}",
-                Sha256::digest(
-                    command
-                        .chat_token
-                        .as_deref()
-                        .or(command.token.as_deref())
-                        .unwrap_or("guest")
-                        .as_bytes()
+    // Typing pulses are disposable: authorize and publish them, but never retain
+    // a receipt for every keystroke burst. Only media commands need replay safety.
+    let receipt = if operation.is_some() {
+        // Binding to credentials prevents another account from retrieving cached
+        // capability-bearing results, even if it learns a request UUID.
+        let owner = identity
+            .hash
+            .as_deref()
+            .map(|h| format!("{h:x?}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "{:x}",
+                    Sha256::digest(
+                        command
+                            .chat_token
+                            .as_deref()
+                            .or(command.token.as_deref())
+                            .unwrap_or("guest")
+                            .as_bytes()
+                    )
                 )
-            )
-        });
-    let key = format!("caper:gateway:command:{{{owner}}}:{}", command.id);
-    let fingerprint = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(command).map_err(|_| invalid())?)
-    );
-    let mut broker = state
-        .application
-        .broker
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(chat::unavailable)?;
-    let script = redis::Script::new(
-        r#"
+            });
+        let key = format!("caper:gateway:command:{{{owner}}}:{}", command.id);
+        let fingerprint = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(command).map_err(|_| invalid())?)
+        );
+        let mut broker = state
+            .application
+            .broker
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(chat::unavailable)?;
+        let script = redis::Script::new(
+            r#"
         local old=redis.call('GET',KEYS[1])
         if old then return old end
         redis.call('SET',KEYS[1],ARGV[1],'PX',ARGV[2])
         return ''
     "#,
-    );
-    let pending = json!({"fingerprint":fingerprint,"pending":true}).to_string();
-    let cached: String = script
-        .key(&key)
-        .arg(&pending)
-        .arg(COMMAND_WINDOW_MS + 30_000)
-        .invoke_async(&mut broker)
-        .await
-        .map_err(|_| chat::unavailable())?;
-    if !cached.is_empty() {
-        let cached: Value = serde_json::from_str(&cached).map_err(|_| chat::unavailable())?;
-        if cached["fingerprint"] != fingerprint {
-            return Err(ApiError::new(
-                StatusCode::CONFLICT,
-                "request ID already used",
+        );
+        let pending = json!({"fingerprint":fingerprint,"pending":true}).to_string();
+        let cached: String = script
+            .key(&key)
+            .arg(&pending)
+            .arg(COMMAND_WINDOW_MS + 30_000)
+            .invoke_async(&mut broker)
+            .await
+            .map_err(|_| chat::unavailable())?;
+        if !cached.is_empty() {
+            let cached: Value = serde_json::from_str(&cached).map_err(|_| chat::unavailable())?;
+            if cached["fingerprint"] != fingerprint {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "request ID already used",
+                ));
+            }
+            if cached["pending"] == true {
+                return Err(
+                    ApiError::new(StatusCode::CONFLICT, "command outcome pending")
+                        .with_code("command_pending"),
+                );
+            }
+            return Ok((
+                cached["status"].as_u64().ok_or_else(invalid)? as u16,
+                cached["body"].clone(),
             ));
         }
-        if cached["pending"] == true {
-            return Err(
-                ApiError::new(StatusCode::CONFLICT, "command outcome pending")
-                    .with_code("command_pending"),
-            );
-        }
-        return Ok((
-            cached["status"].as_u64().ok_or_else(invalid)? as u16,
-            cached["body"].clone(),
-        ));
-    }
+        Some((key, fingerprint, broker))
+    } else {
+        None
+    };
     let app = state
         .application
         .state
@@ -885,15 +892,17 @@ async fn execute(
     } else {
         serde_json::from_slice(&bytes).map_err(|_| chat::unavailable())?
     };
-    let saved = json!({"fingerprint":fingerprint,"status":status,"body":body}).to_string();
-    let _: () = redis::cmd("SET")
-        .arg(&key)
-        .arg(saved)
-        .arg("PX")
-        .arg(COMMAND_WINDOW_MS + 30_000)
-        .query_async(&mut broker)
-        .await
-        .map_err(|_| chat::unavailable())?;
+    if let Some((key, fingerprint, mut broker)) = receipt {
+        let saved = json!({"fingerprint":fingerprint,"status":status,"body":body}).to_string();
+        let _: () = redis::cmd("SET")
+            .arg(&key)
+            .arg(saved)
+            .arg("PX")
+            .arg(COMMAND_WINDOW_MS + 30_000)
+            .query_async(&mut broker)
+            .await
+            .map_err(|_| chat::unavailable())?;
+    }
     Ok((status, body))
 }
 

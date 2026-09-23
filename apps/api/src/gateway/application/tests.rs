@@ -178,6 +178,10 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         broker: broker.clone(),
         wake: Arc::new(tokio::sync::Notify::new()),
     };
+    let chat_token = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Owner',$4)")
+        .bind(crate::auth::random_id(12)).bind(Sha256::digest(chat_token.as_bytes()).to_vec())
+        .bind(user).bind(&hash).execute(&pool).await.unwrap();
     let mut servers = Vec::new();
     let mut gateways = Vec::new();
     let media_key = format!("caper:{{gateway-test-{}}}:state", Uuid::new_v4());
@@ -193,6 +197,7 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
             Some(pool.clone()),
         );
         app.auth = crate::auth::AuthVerifier::new();
+        app.chat = Some(chat.clone());
         app.connect_media_store(&std::env::var("CHAT_TEST_VALKEY_URL").unwrap(), &media_key)
             .await
             .unwrap();
@@ -261,6 +266,51 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
     assert_eq!(
         next(&mut old, "event", Some("chat")).await["event"]["seq"],
         "2"
+    );
+
+    let mut typing_feed = broker.get_async_pubsub().await.unwrap();
+    typing_feed
+        .subscribe(format!("{}:{channel}", chat::TYPING_TOPIC))
+        .await
+        .unwrap();
+    let mut pulses = typing_feed.on_message();
+    let typing_id = Uuid::new_v4().to_string();
+    // Reusing an ID with a different typing state must publish the new pulse,
+    // rather than replaying a cached result or rejecting a receipt conflict.
+    for active in [true, false] {
+        transmit(&mut old, json!({"type":"command","id":typing_id,"issuedAt":chrono::Utc::now().timestamp_millis(),"method":"typing","channelId":channel,"chatToken":chat_token,"body":{"typing":active}})).await;
+        assert_eq!(
+            next(&mut old, "result", Some(&typing_id)).await["status"],
+            204
+        );
+        let pulse = tokio::time::timeout(Duration::from_secs(2), pulses.next())
+            .await
+            .unwrap()
+            .unwrap();
+        let event: Value = serde_json::from_str(&pulse.get_payload::<String>().unwrap()).unwrap();
+        assert_eq!(event["typing"], active);
+        assert_eq!(event["author"]["id"], user_external);
+        assert_eq!(event["channelId"], channel);
+    }
+    let receipts: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("*{typing_id}"))
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    assert!(
+        receipts.is_empty(),
+        "typing must not retain command receipts"
+    );
+    transmit(&mut old, json!({"type":"command","id":typing_id,"issuedAt":chrono::Utc::now().timestamp_millis(),"method":"typing","channelId":channel,"chatToken":"invalid-token","body":{"typing":true}})).await;
+    assert_eq!(
+        next(&mut old, "result", Some(&typing_id)).await["status"],
+        401
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), pulses.next())
+            .await
+            .is_err(),
+        "no receipt must not mean no authorization"
     );
 
     let id = Uuid::new_v4().to_string();
