@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { ChatClient, initialChatView, loadChatHistory, type ChatViewState } from "../chat/client.ts";
+import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -8,9 +9,44 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 class TestSocket extends EventTarget {
   url: string;
   closed = false;
-  constructor(url: string) { super(); this.url = url; }
-  frame(event: ChatEvent) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(event) })); }
-  message(message: ChatMessage) { this.frame({ type: "message.created", channelId: message.channelId, seq: message.seq, message }); }
+  sent: Array<Record<string, unknown>> = [];
+  commands: Array<{
+    active: boolean;
+    resolve: (response: Response) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  constructor(url: string) {
+    super();
+    this.url = url;
+    queueMicrotask(() => this.raw({ type: "hello", idleTimeoutSeconds: 600, serverTime: Date.now() }));
+  }
+  send(data: string) {
+    const frame = JSON.parse(data) as Record<string, unknown>;
+    this.sent.push(frame);
+    if (frame.type !== "command") return;
+    assert.equal(frame.method, "typing");
+    assert.equal(frame.channelId, "general");
+    assert.equal(frame.chatToken, "opaque");
+    assert.deepEqual(Object.keys(frame.body as object), ["typing"], "draft text and claimed identity never enter typing commands");
+    const id = frame.id as string;
+    this.commands.push({
+      active: (frame.body as { typing?: boolean }).typing === true,
+      resolve: (response) => this.raw({ type: "result", id, status: response.status, body: response.status < 300 ? {} : { error: response.statusText || "Typing failed." } }),
+      reject: (error) => this.raw({ type: "result", id, status: 500, body: { error: error.message } }),
+    });
+  }
+  private raw(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
+  subscriptions() { return this.sent.filter((frame) => frame.type === "subscribe" && frame.kind === "chat"); }
+  frame(event: ChatEvent | { type: "migrating" }, subscriptionId?: string) {
+    if (event.type === "migrating") { this.raw(event); return; }
+    const id = subscriptionId ?? this.subscriptions().at(-1)?.id;
+    assert.equal(typeof id, "string", "chat event requires an active gateway subscription");
+    this.raw({ type: "event", id, event });
+    if (event.type === "ready") this.raw({ type: "subscribed", id });
+  }
+  message(message: ChatMessage, subscriptionId?: string) {
+    this.frame({ type: "message.created", channelId: message.channelId, seq: message.seq, message }, subscriptionId);
+  }
   close() { this.closed = true; }
 }
 
@@ -19,7 +55,7 @@ function installBrowser(t: TestContext) {
   const values = new Map<string, string>();
   const sockets: TestSocket[] = [];
   Object.defineProperties(globalThis, {
-    window: { configurable: true, value: { location: { protocol: "https:", host: "caper.test" } } },
+    window: { configurable: true, value: Object.assign(new EventTarget(), { location: { protocol: "https:", host: "caper.test" } }) },
     localStorage: { configurable: true, value: {
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => values.set(key, value),
@@ -29,7 +65,15 @@ function installBrowser(t: TestContext) {
       constructor(url: string) { super(url); sockets.push(this); }
     } },
   });
+  const gateway = new AppGateway((url) => {
+    const socket = new TestSocket(url);
+    sockets.push(socket);
+    return socket;
+  }, () => 0);
+  setAppGatewayForTests(gateway);
   t.after(() => {
+    gateway.destroy();
+    setAppGatewayForTests(undefined);
     Object.defineProperties(globalThis, {
       window: { configurable: true, value: originals.window },
       localStorage: { configurable: true, value: originals.localStorage },
@@ -37,6 +81,12 @@ function installBrowser(t: TestContext) {
     });
   });
   return sockets;
+}
+
+function chatSubscription(socket: TestSocket, offset = -1) {
+  const frame = socket.subscriptions().at(offset);
+  assert.ok(frame, "expected a chat subscription frame");
+  return frame;
 }
 
 test("pressing Send again after an unknown outcome preserves the original UUID and text", async (t) => {
@@ -162,19 +212,12 @@ async function sendingFixture(t: TestContext) {
   const sockets = installBrowser(t);
   const history: ChatMessage[] = [];
   const posts: { body: SendBody; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
-  const typingPosts: { active: boolean; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     if (String(input) === "/api/chat/session") return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general") return Response.json({
       space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" },
       messages: history, cursor: history.at(-1)?.seq ?? "0", hasMore: false,
     });
-    if (String(input) === "/api/chat/channels/general/typing") {
-      assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
-      const body = JSON.parse(String(init?.body));
-      assert.deepEqual(Object.keys(body), ["typing"], "draft text and claimed identity never enter typing requests");
-      return new Promise<Response>((resolve, reject) => typingPosts.push({ active: body.typing, resolve, reject }));
-    }
     assert.equal(String(input), "/api/chat/channels/general/messages");
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(Object.keys(body).sort(), ["clientMessageId", "text"], "local metadata never enters the wire contract");
@@ -186,7 +229,11 @@ async function sendingFixture(t: TestContext) {
   client.start(); client.identify("Test Guest");
   await tick();
   sockets[0].frame({ type: "ready", cursor: "0" });
-  return { client, sockets, posts, typingPosts, history, get state() { return state; } };
+  return {
+    client, sockets, posts, history,
+    get typingPosts() { return sockets.flatMap((socket) => socket.commands); },
+    get state() { return state; },
+  };
 }
 
 test("optimistic send is immediate; HTTP-first confirmation uses server content/order without skipping replay", async (t) => {
@@ -205,7 +252,8 @@ test("optimistic send is immediate; HTTP-first confirmation uses server content/
   assert.deepEqual(f.state.messages, [accepted]);
 
   f.sockets[0].frame({ type: "migrating" });
-  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), "0");
+  await tick();
+  assert.equal(chatSubscription(f.sockets[1]).after, "0");
   for (const seq of ["1", "2"]) f.sockets[0].message(committed({ clientMessageId: `other-${seq}`, text: "local text" }, seq));
   f.sockets[0].message(accepted);
   f.sockets[0].message(accepted);
@@ -314,7 +362,8 @@ function typingEvent(id: string, revision = "9007199254740992", typing = true): 
 test("typing is opt-in, author-deduplicated, expires independently, and never advances replay", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 });
   const f = await sendingFixture(t);
-  assert.equal(new URL(f.sockets[0].url).searchParams.get("typing"), "true");
+  assert.equal(chatSubscription(f.sockets[0]).channelId, "general");
+  assert.equal(new URL(f.sockets[0].url).search, "", "typing is multiplexed rather than enabled through URL credentials");
   f.sockets[0].frame(typingEvent("guest"));
   f.sockets[0].frame({ ...typingEvent("wrong-channel"), channelId: "private" });
   assert.equal(f.state.typingAuthors.length, 0);
@@ -328,7 +377,8 @@ test("typing is opt-in, author-deduplicated, expires independently, and never ad
   assert.deepEqual(f.state.typingAuthors.map((author) => author.id), ["b"], "duplicates do not prolong a stale indicator");
   assert.deepEqual(f.state.messages, []);
   f.sockets[0].frame({ type: "migrating" });
-  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), "0");
+  await tick();
+  assert.equal(chatSubscription(f.sockets[1]).after, "0");
   f.sockets[1].frame(typingEvent("b", "9007199254740993", false));
   f.sockets[0].frame(typingEvent("b"));
   assert.deepEqual(f.state.typingAuthors, [], "an older overlapping start cannot undo a stop, even above JS's safe integer limit");
@@ -347,7 +397,7 @@ test("typing clears on message, offline, and history resync; unique typers are b
   f.sockets[0].dispatchEvent(new Event("close"));
   assert.deepEqual(f.state.typingAuthors, []);
   f.client.retryLoad();
-  await tick();
+  await new Promise((resolve) => setTimeout(resolve, 200));
   const current = f.sockets.at(-1)!;
   current.frame({ type: "ready", cursor: "0" });
   for (let index = 0; index < 100; index++) current.frame(typingEvent(`person-${index}`));
@@ -437,7 +487,8 @@ test("older pages serialize, merge with live delivery, retry the same cursor, an
   await loading;
   assert.deepEqual(f.state.messages, [2, 3, 4, 5, 6].map(f.message), "overlap is deduplicated without losing a concurrent live message");
   f.sockets[0].frame({ type: "migrating" });
-  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), f.message(6).seq, "older history never rewinds the live replay cursor");
+  await tick();
+  assert.equal(chatSubscription(f.sockets[1]).after, f.message(6).seq, "older history never rewinds the live replay cursor");
 
   const failed = f.client.loadOlder();
   f.requests[1].resolve(Response.json({ error: "temporary history outage" }, { status: 503 }));
@@ -480,7 +531,7 @@ for (const status of [200, 503]) {
   });
 }
 
-test("channel clients isolate history, websocket URLs, and late events across a switch", async (t) => {
+test("channel clients isolate history, gateway subscriptions, and late events across a switch", async (t) => {
   const sockets = installBrowser(t);
   const requests: string[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
@@ -499,9 +550,11 @@ test("channel clients isolate history, websocket URLs, and late events across a 
   first.start();
   await tick();
   assert.equal(requests[0], "/api/chat/channels/alphaChannel/messages");
-  assert.equal(new URL(sockets[0].url).searchParams.get("channelId"), "alphaChannel");
+  const alphaSubscription = chatSubscription(sockets[0]);
+  assert.equal(alphaSubscription.channelId, "alphaChannel");
   first.stop();
-  assert.equal(sockets[0].closed, true);
+  assert.equal(sockets[0].closed, false, "the shared socket remains available for the next channel");
+  assert.equal(sockets[0].sent.some((frame) => frame.type === "unsubscribe" && frame.id === alphaSubscription.id), true);
 
   let bravo!: ChatViewState;
   const second = new ChatClient((state) => { bravo = state; }, "bravoChannel");
@@ -509,18 +562,19 @@ test("channel clients isolate history, websocket URLs, and late events across a 
   second.start();
   await tick();
   assert.equal(requests[1], "/api/chat/channels/bravoChannel/messages");
-  assert.equal(new URL(sockets[1].url).searchParams.get("channelId"), "bravoChannel");
+  assert.equal(sockets.length, 1);
+  assert.equal(chatSubscription(sockets[0]).channelId, "bravoChannel");
 
   const stale: ChatMessage = {
     id: "stale", channelId: "alphaChannel", seq: "1", author: { id: "peer", name: "Peer", isGuest: false },
     content: { version: 1, type: "text", text: "wrong room" }, createdAt: "2026-09-22T12:00:00Z", clientMessageId: "stale-command",
   };
-  sockets[0].message(stale);
+  sockets[0].message(stale, alphaSubscription.id as string);
   assert.deepEqual(alpha.messages, []);
   assert.deepEqual(bravo.messages, [], "an old channel cannot leak messages into the replacement client");
 });
 
-test("prepared history is ready on the first render and starts live replay without another history fetch", (t) => {
+test("prepared history is ready on the first render and starts live replay without another history fetch", async (t) => {
   const sockets = installBrowser(t);
   t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected duplicate history fetch"); });
   const message: ChatMessage = {
@@ -539,11 +593,12 @@ test("prepared history is ready on the first render and starts live replay witho
   t.after(() => client.stop());
   client.start(history);
   assert.ok(states.every((state) => state.phase === "ready"));
-  assert.equal(new URL(sockets[0].url).searchParams.get("after"), "7");
+  await tick();
+  assert.equal(chatSubscription(sockets[0]).after, "7");
   sockets[0].message({ ...message, id: "eight", seq: "8", clientMessageId: "command-eight", content: { version: 1, type: "text", text: "Arrived during navigation" } });
   assert.deepEqual(states.at(-1)?.messages.map((item) => item.content.text), ["Prepared message", "Arrived during navigation"]);
   client.stop();
-  assert.equal(sockets[0].closed, true);
+  assert.equal(sockets[0].closed, false);
 });
 
 test("prefetch rejects a history payload containing another channel's messages", async (t) => {
@@ -592,9 +647,9 @@ test("snapshots include older pages and live messages; returning replays the mis
   const returning = new ChatClient((state) => states.push(state), "general");
   t.after(() => returning.stop());
   returning.start(snapshot);
-  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), f.message(6).seq);
+  assert.equal(chatSubscription(f.sockets[0]).after, f.message(6).seq);
   assert.deepEqual(states.at(-1)?.messages, snapshot.messages);
-  f.sockets[1].message(f.message(7));
+  f.sockets[0].message(f.message(7));
   assert.deepEqual(states.at(-1)?.messages, [2, 3, 4, 5, 6, 7].map(f.message));
   assert.ok(states.every((state) => state.phase === "ready"));
   assert.equal(f.requests.length, 1, "return does not request another history page");

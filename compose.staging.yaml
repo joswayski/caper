@@ -90,6 +90,13 @@ services:
     environment:
       CHAT_ENABLED: ${CHAT_ENABLED:-true}
       CHAT_GATEWAY_BIND: 0.0.0.0:3002
+      PRESENCE_IDLE_TIMEOUT_SECONDS: ${PRESENCE_IDLE_TIMEOUT_SECONDS:-600}
+      GATEWAY_MAX_CONNECTIONS: ${GATEWAY_MAX_CONNECTIONS:-4096}
+      MEDIA_ENABLED: ${MEDIA_ENABLED:-false}
+      CF_SFU_APP_ID: ${CF_SFU_APP_ID:-}
+      CF_SFU_APP_SECRET: ${CF_SFU_APP_SECRET:-}
+      CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}
+      CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN:-}
       DATABASE_URL: ${DATABASE_URL:-postgres://caper_runtime:caper_runtime@postgres:5432/caperchat?sslmode=disable}
       DATABASE_ALLOW_INSECURE: "true"
       VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}

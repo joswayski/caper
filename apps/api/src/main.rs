@@ -110,8 +110,13 @@ async fn run_gateway(environment: &RuntimeEnvironment) -> Result<(), String> {
         shutdown_signal().await;
         state.begin_shutdown();
         // Upgraded WebSockets outlive Axum's HTTP serve future. Keep the runtime
-        // alive explicitly while they hand off; readiness/new upgrades fail now.
-        tokio::time::sleep(caper_api::gateway::HANDOFF_WINDOW + Duration::from_secs(1)).await;
+        // alive through both handoff and accepted commands (including commands
+        // detached from a lost socket). Readiness and new commands fail now.
+        tokio::time::sleep(
+            caper_api::gateway::COMMAND_TIMEOUT.max(caper_api::gateway::HANDOFF_WINDOW)
+                + Duration::from_secs(1),
+        )
+        .await;
     })
     .await
     .map_err(|_| "chat gateway drain failed".to_owned())

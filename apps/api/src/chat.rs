@@ -341,12 +341,12 @@ async fn publish_typing(
     );
     let published = tokio::time::timeout(Duration::from_secs(2), async {
         let mut connection = chat.broker.get_multiplexed_async_connection().await?;
-        // Both counters must share a hash slot for Lua on ElastiCache Serverless.
-        // Keep the Pub/Sub topic unchanged so existing gateways still receive it.
+        // Channel-local counters share a hash slot. Unrelated spaces do not
+        // compete for one global typing budget or receive each other's traffic.
         script
-            .key(format!("{{{TYPING_TOPIC}}}:rate:{channel}:{author_id}"))
-            .key(format!("{{{TYPING_TOPIC}}}:rate:global"))
-            .arg(TYPING_TOPIC)
+            .key(format!("{{{TYPING_TOPIC}:{channel}}}:rate:{author_id}"))
+            .key(format!("{{{TYPING_TOPIC}:{channel}}}:rate:channel"))
+            .arg(format!("{TYPING_TOPIC}:{channel}"))
             .arg(event.to_string())
             .invoke_async::<i64>(&mut connection)
             .await
@@ -437,8 +437,8 @@ async fn persist(
     Ok(payload)
 }
 
-/// Every API replica can publish. A transaction-scoped advisory lock prevents
-/// concurrent publishers reordering this demo's events; it never locks sends.
+/// API replicas claim disjoint outbox batches. Broker arrival order is not an
+/// ordering authority: gateways merge/replay the committed channel sequences.
 pub(crate) fn spawn_publisher(chat: Chat) {
     tokio::spawn(async move {
         loop {
@@ -456,14 +456,7 @@ pub(crate) fn spawn_publisher(chat: Chat) {
 }
 async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     let mut tx = chat.pool.begin().await.map_err(|_| ())?;
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(731902, 3)")
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| ())?;
-    if !locked {
-        return Ok(false);
-    }
-    let rows: Vec<(i64, i64, Value)> = sqlx::query_as("SELECT channel_id, seq, payload FROM public.channel_events WHERE published_at IS NULL ORDER BY channel_id, seq LIMIT 64")
+    let rows: Vec<(i64, i64, Value)> = sqlx::query_as("SELECT channel_id, seq, payload FROM public.channel_events WHERE published_at IS NULL ORDER BY channel_id, seq LIMIT 64 FOR UPDATE SKIP LOCKED")
         .fetch_all(&mut *tx).await.map_err(|_| ())?;
     if rows.is_empty() {
         return Ok(false);
@@ -479,7 +472,10 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
         tokio::time::timeout(
             Duration::from_secs(2),
             redis::cmd("PUBLISH")
-                .arg(TOPIC)
+                .arg(format!(
+                    "{TOPIC}:{}",
+                    event["channelId"].as_str().ok_or(())?
+                ))
                 .arg(event.to_string())
                 .query_async::<i64>(&mut connection),
         )

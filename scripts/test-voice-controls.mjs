@@ -31,14 +31,13 @@ async function fixture() {
   const { default: Call } = await import('/src/pages/Call.tsx');
   for (const element of document.body.children) element.hidden = true;
   const mount = document.createElement('div'); document.body.append(mount);
-  const f = window.voiceFixture = { people: [], streams: new Set(), sockets: [], captures: [], devices: [], recorders: [], revision: 0 };
+  const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], revision: 0 };
   const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture' };
   const author = { id: account.id, name: account.displayName, isGuest: false };
   const peer = { id: 'peer', name: 'Peach Donkey', isGuest: true };
   const snapshot = () => ({ participants: f.people, revision: f.revision });
-  const frame = (event, data = {}) => new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const originalFetch = window.fetch.bind(window);
-  window.fetch = async (input, options = {}) => {
+  const respond = async (input, options = {}) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
     if (path === '/api/account/me') return Response.json(account);
     if (path === '/api/account/profile') {
@@ -55,14 +54,6 @@ async function fixture() {
     if (path.endsWith('/typing')) return new Response(null, { status: 204 });
     if (path === '/api/media/status') return Response.json({ enabled: true });
     if (path === '/api/media/presence' || path === '/api/media/snapshot') return Response.json(snapshot());
-    if (path.startsWith('/api/media/') && path.endsWith('/events')) {
-      let controller;
-      return new Response(new ReadableStream({ start(next) {
-        controller = next; f.streams.add(controller);
-        next.enqueue(frame('ready')); next.enqueue(frame('snapshot', snapshot()));
-        options.signal?.addEventListener('abort', () => { f.streams.delete(controller); controller.error(new DOMException('Cancelled', 'AbortError')); }, { once: true });
-      }, cancel() { f.streams.delete(controller); } }), { headers: { 'content-type': 'text/event-stream' } });
-    }
     if (path === '/api/media/join') {
       f.people = [{ id: 'self', name: account.displayName, muted: false, deafened: false, tracks: [] }]; f.revision++;
       return Response.json({ token: 'fixture-voice', id: 'self', iceServers: [] });
@@ -72,17 +63,53 @@ async function fixture() {
     if (path.startsWith('/api/')) throw Error(`Unexpected fixture request: ${path}`);
     return originalFetch(input, options);
   };
+  window.fetch = (input, options = {}) => {
+    const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+    if ((path.startsWith('/api/media/') && path !== '/api/media/status') || path.endsWith('/typing')) {
+      throw Error(`Ephemeral operation bypassed gateway: ${path}`);
+    }
+    return respond(input, options);
+  };
   const NativeSocket = window.WebSocket;
   window.WebSocket = class extends EventTarget {
+    subscriptions = new Map();
     constructor(url, protocols) {
       super();
       if (!String(url).includes('/api/chat/events')) return new NativeSocket(url, protocols);
-      f.sockets.push(this); setTimeout(() => this.frame({ type: 'ready', cursor: '1' }), 0);
+      f.sockets.push(this);
+      setTimeout(() => this.frame({ type: 'hello', idleTimeoutSeconds: 600, serverTime: Date.now() }), 0);
+    }
+    async send(data) {
+      const request = JSON.parse(data);
+      if (request.type === 'heartbeat') this.frame({ type: 'heartbeat' });
+      if (request.type === 'unsubscribe') this.subscriptions.delete(request.id);
+      if (request.type === 'subscribe') {
+        this.subscriptions.set(request.id, request);
+        const event = request.kind === 'chat' ? { type: 'ready', cursor: request.after } : {
+          type: 'snapshot', ...snapshot(),
+          participants: request.token ? f.people : f.people.map(({ tracks, ...person }) => person),
+        };
+        this.frame({ type: 'event', id: request.id, event });
+        this.frame({ type: 'subscribed', id: request.id });
+      }
+      if (request.type === 'command') {
+        // Reuse fixture responses, without issuing network requests. The real
+        // client must reach them through a command on this shared socket.
+        const path = request.method === 'typing' ? `/api/chat/channels/${request.channelId}/typing`
+          : `/api/media/${request.method.slice('media.'.length)}`;
+        const response = await respond(path, { body: JSON.stringify(request.body) });
+        this.frame({ type: 'result', id: request.id, status: response.status,
+          body: response.status === 204 ? null : await response.json() });
+      }
     }
     frame(event) { this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(event) })); }
     close() { f.sockets = f.sockets.filter(socket => socket !== this); }
   };
-  f.typing = () => f.sockets.forEach(socket => socket.frame({ type: 'typing.updated', channelId: 'general', author: peer, typing: true, revision: String(Date.now() * 1000) }));
+  f.typing = () => f.sockets.forEach(socket => {
+    for (const [id, subscription] of socket.subscriptions) if (subscription.kind === 'chat') {
+      socket.frame({ type: 'event', id, event: { type: 'typing.updated', channelId: 'general', author: peer, typing: true, revision: String(Date.now() * 1000) } });
+    }
+  });
   const context = new AudioContext(); await context.resume();
   const signal = context.createOscillator(); signal.start();
   // Device IDs are synthetic; exercise selection without requiring host hardware.
@@ -202,6 +229,7 @@ try {
 
   click('Join voice');
   wait(`document.querySelector('[aria-label="Leave voice"]')`);
+  assert.equal(evaluate(`return voiceFixture.sockets.length;`), 1, 'Chat and joined voice must share one socket');
   assert.deepEqual(bounds(), initialBounds, 'Joining must not move the chat header or composer');
   assert.equal(evaluate(`return voiceFixture.devices.at(-1);`), 'headset');
   evaluate(`voiceFixture.addRemoteAudio();`);

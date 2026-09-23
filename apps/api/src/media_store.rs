@@ -278,8 +278,8 @@ impl ValkeyStore {
             if notify {
                 transaction
                     .cmd("PUBLISH")
-                    .arg(&self.topic)
-                    .arg(state.revision);
+                    .arg(format!("{}:{}", self.topic, channel.unwrap_or("demo")))
+                    .arg(json!({"channelId":channel,"revision":state.revision}).to_string());
             }
             let committed: Option<Vec<redis::Value>> = transaction
                 .query_async(&mut connection)
@@ -293,31 +293,57 @@ impl ValkeyStore {
         }
     }
 
-    fn listen(&self, mut pubsub: PubSub, events: watch::Sender<()>) {
+    fn listen(&self, mut pubsub: PubSub, state: AppState) {
         let client = self.client.clone();
         let topic = self.topic.clone();
         let subscribed = self.subscribed.clone();
         let task = tokio::spawn(async move {
             loop {
                 let (mut sink, mut messages) = pubsub.split();
+                let mut topics = std::collections::HashSet::<String>::new();
                 subscribed.store(true, Ordering::Release);
                 // Pub/Sub is lossy: on every resubscription wake existing streams
                 // to rebuild from current state, never replay old UI transitions.
-                events.send_replace(());
+                state.events.send_replace(());
+                state.notify_rooms(None);
                 let mut ping = tokio::time::interval(Duration::from_secs(5));
                 loop {
                     tokio::select! {
                         message = messages.next() => {
-                            if message.is_none() { break; }
-                            events.send_replace(());
+                            let Some(message) = message else { break; };
+                            state.events.send_replace(());
+                            let payload = message.get_payload::<String>().ok()
+                                .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+                            let channel = payload.as_ref().filter(|v| v.is_object())
+                                .map(|v| v["channelId"].as_str().map(str::to_owned));
+                            // Old API pods send only a revision during cutover.
+                            state.notify_rooms(channel.as_ref());
                         },
-                        _ = ping.tick() => {
-                            if !matches!(tokio::time::timeout(IO_TIMEOUT, sink.ping::<Vec<String>>()).await, Ok(Ok(_))) { break; }
+                        _ = async { tokio::select! { _ = ping.tick() => {}, _ = state.room_interest.notified() => {} } } => {
+                            let next: std::collections::HashSet<String> = {
+                                let mut rooms = state.room_events.lock().unwrap();
+                                rooms.retain(|_, sender| sender.receiver_count() > 0);
+                                rooms.keys().map(|id| format!("{topic}:{}", id.as_deref().unwrap_or("demo"))).collect()
+                            };
+                            let added: Vec<_> = next.difference(&topics).cloned().collect();
+                            let removed: Vec<_> = topics.difference(&next).cloned().collect();
+                            let changed = !added.is_empty();
+                            let result = tokio::time::timeout(IO_TIMEOUT, async {
+                                if !added.is_empty() { sink.subscribe(added).await?; }
+                                if !removed.is_empty() { sink.unsubscribe(removed).await?; }
+                                sink.ping::<Vec<String>>().await
+                            }).await;
+                            if !matches!(result, Ok(Ok(_))) { break; }
+                            topics = next;
+                            // Registration can race the initial snapshot. Read
+                            // again after subscribing to close that loss window.
+                            if changed { state.notify_rooms(None); }
                         }
                     }
                 }
                 subscribed.store(false, Ordering::Release);
-                events.send_replace(());
+                state.events.send_replace(());
+                state.notify_rooms(None);
                 drop(sink);
                 drop(messages);
                 loop {
@@ -365,6 +391,28 @@ fn connection_ids(state: &Registry) -> std::collections::BTreeMap<Uuid, Option<U
 }
 
 impl AppState {
+    pub(super) fn room_updates(&self) -> watch::Receiver<()> {
+        let receiver = self
+            .room_events
+            .lock()
+            .unwrap()
+            .entry(self.media_channel.clone())
+            .or_insert_with(|| watch::channel(()).0)
+            .subscribe();
+        self.room_interest.notify_one();
+        receiver
+    }
+
+    fn notify_rooms(&self, channel: Option<&Option<String>>) {
+        let mut rooms = self.room_events.lock().unwrap();
+        rooms.retain(|_, sender| sender.receiver_count() > 0);
+        for (id, sender) in rooms.iter() {
+            if channel.is_none_or(|channel| channel == id) {
+                sender.send_replace(());
+            }
+        }
+    }
+
     pub async fn enable_shared_media(
         &mut self,
         environment: &RuntimeEnvironment,
@@ -388,7 +436,7 @@ impl AppState {
         let (store, subscriber) = tokio::time::timeout(IO_TIMEOUT, ValkeyStore::connect(url, key))
             .await
             .map_err(|_| unavailable())??;
-        store.listen(subscriber, self.events.clone());
+        store.listen(subscriber, self.clone());
         self.store = Some(store);
         Ok(())
     }
@@ -442,6 +490,7 @@ impl AppState {
         };
         if notify {
             self.events.send_replace(());
+            self.notify_rooms(Some(&self.media_channel));
         }
         if cleanup_changed {
             self.cleanup_wakeup.notify_one();

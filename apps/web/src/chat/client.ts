@@ -1,5 +1,6 @@
 import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
+import { appGateway } from "../gateway/client.ts";
 import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
@@ -163,10 +164,9 @@ export class ChatClient {
     this.typingSentAt = Date.now();
     // Serialize start/stop so a delayed start request cannot overtake its stop.
     // Presence is best-effort: failure must never block or fail a real message.
-    this.typingRequest = fetch(`/api/chat/channels/${encodeURIComponent(channel)}/typing`, {
-      method: "POST", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-      body: JSON.stringify({ typing: active }),
-      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(2_000)]),
+    this.typingRequest = appGateway().command({
+      method: "typing", channelId: channel, chatToken: session.token,
+      body: { typing: active }, timeoutMs: 2_000, signal: this.controller.signal,
     }).then(() => undefined, () => undefined).finally(() => {
       this.typingRequest = undefined;
       if (this.typingActive !== active) this.flushTyping();

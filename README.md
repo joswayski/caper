@@ -70,8 +70,14 @@ requires a one-time empty-channel cutover before enabling multiple replicas.
 In production, Traefik routes public `caper.chat/api/*`
 requests directly to that Rust service. Run `cargo run -p caper-api` alongside
 `npm run dev:web`; Vite forwards development `/api` requests to port `3001`.
-The exception is `/api/chat/events`, which goes to the independent WebSocket
-gateway on `3002` (`cargo run -p caper-api -- --gateway`). With `CHAT_ENABLED=true`,
+The exception is `/api/chat/events`, which goes to the independent application
+WebSocket gateway on `3002` (`cargo run -p caper-api -- --gateway`). One connection
+carries chat delivery, typing, member status, and voice controls/rosters. Durable
+message writes and history remain HTTP. Member status becomes idle after ten
+minutes without input (`PRESENCE_IDLE_TIMEOUT_SECONDS=600`); temporary session
+records expire in Valkey rather than accumulating presence history. See the
+[gateway runbook](docs/media.md#application-gateway-and-account-presence) for
+recovery guarantees, configuration, and deployment order. With `CHAT_ENABLED=true`,
 Postgres, and Valkey, `/spaces` offers messaging in the public demo's `general`
 channel. Guests can read/send without joining voice or signing in. Messages
 are persisted; the [text runbook](docs/media.md#public-text-demo) covers limits,
@@ -84,9 +90,10 @@ roles, and screen sharing are not implemented. See
 [space access and rollout](docs/media.md#spaces-and-channel-access).
 Voice in the same public `general` channel gives guests a random name,
 while signed-in people use their display name. No account is required to join. Set `MEDIA_ENABLED=true` and the four
-server-only Cloudflare variables in `.env.example` in the API environment to
-enable calls. The guest voice API needs no database, but the unified browser
-screen requires chat storage to resolve the demo's space/channel IDs. The account API supports email sign-in codes when its database, SES, and
+server-only Cloudflare variables in `.env.example` in both API and gateway environments
+to enable calls. The current browser requires the gateway, Postgres, and Valkey
+even for guest voice; legacy HTTP-only clients can still use the single-process API.
+The account API supports email sign-in codes when its database, SES, and
 `AUTH_SECRET` settings are configured. Codes contain six uppercase letters or digits,
 allow three attempts, and expire after 10 minutes. The website supports email-code sign-in and
 required username/display-name onboarding. Guest names remain unverified and are
