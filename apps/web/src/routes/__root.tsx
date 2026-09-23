@@ -5,6 +5,7 @@ import {
   createRootRoute,
 } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { sidebarWidthScript } from "../pages/ChannelSidebar";
 import "../index.css";
 
 export const Route = createRootRoute({
@@ -68,10 +69,11 @@ function NotFound() {
 
 function RootDocument({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
         <style>{"html,body{background:#0c0d0f;color-scheme:dark}"}</style>
+        <script dangerouslySetInnerHTML={{ __html: sidebarWidthScript }} />
       </head>
       <body>
         {children}

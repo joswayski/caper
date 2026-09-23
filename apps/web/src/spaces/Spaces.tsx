@@ -1,5 +1,7 @@
 import {
   useEffect,
+  useId,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -64,30 +66,53 @@ function Dialog({
   onClose,
   children,
   width = "standard",
+  dismissOnBackdrop = false,
 }: {
   title: string;
   description?: string;
   onClose: () => void;
   children: ReactNode;
   width?: "standard" | "wide";
+  dismissOnBackdrop?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    ref.current?.showModal();
+  const titleId = useId();
+  const backdropPress = useRef(false);
+  useLayoutEffect(() => {
+    const dialog = ref.current!;
+    const opener = document.activeElement as HTMLElement | null;
+    dialog.showModal();
+    dialog.querySelector<HTMLElement>("[data-initial-focus]")?.focus();
+    return () => {
+      dialog.close();
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
   return (
     <dialog
       ref={ref}
       className={`space-dialog ${width === "wide" ? "space-dialog-wide" : ""}`}
-      aria-labelledby="space-dialog-title"
+      aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         onClose();
+      }}
+      onPointerDown={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        backdropPress.current = event.target === event.currentTarget &&
+          (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom);
+      }}
+      onClick={(event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (dismissOnBackdrop && backdropPress.current && event.target === event.currentTarget &&
+          (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) onClose();
+        backdropPress.current = false;
       }}
     >
       <header>
         <div>
-          <h2 id="space-dialog-title">{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           {description && <p>{description}</p>}
         </div>
         <button type="button" aria-label={`Close ${title}`} onClick={onClose}>
@@ -96,6 +121,40 @@ function Dialog({
       </header>
       {children}
     </dialog>
+  );
+}
+
+function DeleteConfirmation({ kind, name, onClose, onDelete }: {
+  kind: "space" | "channel";
+  name: string;
+  onClose: () => void;
+  onDelete: () => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  const submitting = useRef(false);
+  return (
+    <Dialog title={`Delete ${kind}`} dismissOnBackdrop onClose={() => { if (!submitting.current) onClose(); }}>
+      <div className="delete-confirmation">
+        <p>Delete <strong>{kind === "channel" ? "#" : ""}{name}</strong>{kind === "space" ? " and all its channels" : ""} for everyone? This cannot be undone.</p>
+        {error && <p className="space-form-error" role="alert">{error}</p>}
+        <div className="space-dialog-actions">
+          <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>Cancel</button>
+          <button type="button" className="danger" disabled={pending} onClick={(event) => {
+            // A second click from the opener's double-click must not confirm deletion.
+            if (event.detail > 1 || submitting.current) return;
+            submitting.current = true;
+            setPending(true);
+            setError(undefined);
+            void onDelete().catch((reason) => {
+              setError(errorMessage(reason));
+              submitting.current = false;
+              setPending(false);
+            });
+          }}>{pending ? "Deleting…" : `Delete ${kind}`}</button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -382,6 +441,7 @@ function MemberManager({
       <ul>
         {members.map((member) => (
           <li key={member.id}>
+            {/* TODO show status indicator */}
             <span className="member-avatar" aria-hidden="true">
               {member.displayName.slice(0, 1).toUpperCase()}
             </span>
@@ -496,43 +556,13 @@ function ManageSpaceDialog({
       />
       <section className="danger-zone">
         <h3>Delete space</h3>
-        <p>
-          This removes access to this space and all of its conversations. There
-          is no undo in Caper.
-        </p>
-        {confirmDelete ? (
-          <div>
-            <button
-              className="secondary"
-              type="button"
-              onClick={() => setConfirmDelete(false)}
-            >
-              Cancel
-            </button>
-            <button
-              className="danger"
-              type="button"
-              disabled={pending}
-              onClick={() =>
-                void run(async () => {
-                  await deleteSpace(detail.space.id);
-                  onDeleted();
-                }).catch((reason) => setError(errorMessage(reason)))
-              }
-            >
-              Delete {detail.space.name}
-            </button>
-          </div>
-        ) : (
-          <button
-            className="danger-outline"
-            type="button"
-            onClick={() => setConfirmDelete(true)}
-          >
-            Delete space…
-          </button>
-        )}
+        <p>Delete this space and all its channels for every member.</p>
+        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>Delete space</button>
       </section>
+      {confirmDelete && <DeleteConfirmation kind="space" name={detail.space.name} onClose={() => setConfirmDelete(false)} onDelete={async () => {
+        await deleteSpace(detail.space.id);
+        onDeleted();
+      }} />}
     </Dialog>
   );
 }
@@ -642,43 +672,8 @@ function ManageChannelDialog({
       )}
       <section className="danger-zone">
         <h3>Delete channel</h3>
-        <p>
-          This removes access to this channel and its conversation. There is no
-          undo in Caper.
-        </p>
-        {confirmDelete ? (
-          <div>
-            <button
-              className="secondary"
-              type="button"
-              onClick={() => setConfirmDelete(false)}
-            >
-              Cancel
-            </button>
-            <button
-              className="danger"
-              type="button"
-              disabled={pending}
-              onClick={() =>
-                void run(async () => {
-                  await deleteChannel(detail.space.id, channel.id);
-                  onDeleted();
-                }).catch((reason) => setError(errorMessage(reason)))
-              }
-            >
-              Delete #{channel.name}
-            </button>
-          </div>
-        ) : (
-          <button
-            className="danger-outline"
-            type="button"
-            disabled={pending}
-            onClick={() => setConfirmDelete(true)}
-          >
-            Delete channel
-          </button>
-        )}
+        <p>Delete this channel for everyone in the space.</p>
+        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>Delete channel</button>
       </section>
       {dirty && (
         <footer className="channel-save-bar">
@@ -693,6 +688,10 @@ function ManageChannelDialog({
           </div>
         </footer>
       )}
+      {confirmDelete && <DeleteConfirmation kind="channel" name={channel.name} onClose={() => setConfirmDelete(false)} onDelete={async () => {
+        await deleteChannel(detail.space.id, channel.id);
+        onDeleted();
+      }} />}
     </Dialog>
   );
 }
