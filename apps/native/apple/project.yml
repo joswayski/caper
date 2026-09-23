@@ -25,6 +25,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.caper.core
+        PRODUCT_NAME: CaperCore
         PRODUCT_MODULE_NAME: CaperCore
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES
@@ -40,6 +41,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.caper.core
+        PRODUCT_NAME: CaperCore
         PRODUCT_MODULE_NAME: CaperCore
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES

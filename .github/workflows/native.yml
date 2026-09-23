@@ -132,6 +132,30 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Launch iPhone Simulator app and capture sign-in
+        if: matrix.platform == 'ios'
+        run: |
+          runtime="$(xcrun simctl list runtimes -j | jq -er '
+            [.runtimes[] | select(.isAvailable and
+              (.identifier | startswith("com.apple.CoreSimulator.SimRuntime.iOS-")))]
+            | sort_by(.version | split(".") | map(tonumber)) | last | .identifier')"
+          device="$(xcrun simctl create Caper-preview com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$runtime")"
+          trap 'xcrun simctl shutdown "$device"; xcrun simctl delete "$device"' EXIT
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl ui "$device" appearance dark
+          xcrun simctl install "$device" apps/native/apple/dist/Caper.app
+          xcrun simctl launch "$device" chat.caper.ios
+          sleep 5
+          xcrun simctl io "$device" screenshot /tmp/caper-ios-sign-in.png
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'ios'
+        with:
+          name: caper-ui-ios-${{ github.sha }}
+          path: /tmp/caper-ios-sign-in.png
+          if-no-files-found: error
+          retention-days: 14
+
   android:
     name: Android / development APK
     needs: artifact-contract
