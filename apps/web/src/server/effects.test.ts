@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { playSliderTick, playSound, preloadSoundEffects } from "../audio/effects.ts";
+import { getSystemSoundsEnabled, playSliderTick, playSound, preloadSoundEffects, setSystemSoundsEnabled } from "../audio/effects.ts";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -58,20 +58,36 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   assert.equal(requests.length, 8, "every effect, including delete, is fetched once");
   assert.equal(decoded.length, 7, "failed downloads are not decoded");
 
+  const originalMatchMedia = Object.getOwnPropertyDescriptor(globalThis, "matchMedia");
+  Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query === "(pointer: coarse)" }) });
+  try {
+    await preloadSoundEffects();
+    playSound("toggle-on");
+    playSound("channel-leave");
+    playSliderTick(.5);
+    await flush();
+    assert.equal(sources.length, 0, "mobile never starts a sound, including cached effects");
+    assert.equal(currentContext.resumeCalls, 0, "mobile never unlocks audio for decorative effects");
+    assert.equal(requests.length, 8, "mobile preloading makes no requests");
+  } finally {
+    if (originalMatchMedia) Object.defineProperty(globalThis, "matchMedia", originalMatchMedia);
+    else Reflect.deleteProperty(globalThis, "matchMedia");
+  }
+
   let now = 1_000;
   t.mock.method(performance, "now", () => now);
   playSound("channel-join", { volume: 2, playbackRate: 3 });
   await flush();
   assert.equal(requests.filter((url) => url.endsWith("/channel-join.wav")).length, 1, "decoded buffers are reused");
   assert.equal(sources[0].playbackRate.value, 2, "rate is capped");
-  assert.equal(gains[0].gain.value, 1, "volume is capped");
+  assert.equal(gains[0].gain.value, 0.6, "volume is capped then reduced by 40%");
   assert.equal((sources[0] as unknown as { stopped: boolean }).stopped, false);
   assert.equal((sources[0].buffer as AudioBuffer | undefined) !== undefined, true);
 
   playSliderTick(0);
   await flush();
   assert.equal(sources.at(-1)?.playbackRate.value, 0.75);
-  assert.equal(gains.at(-1)?.gain.value, 0.1);
+  assert.equal(gains.at(-1)?.gain.value, 0.06);
   now += 39;
   playSliderTick(1);
   await flush();
@@ -81,7 +97,7 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   await flush();
   assert.equal(sources.length, throttledCount + 1, "slider ticks are throttled at 40ms");
   assert.equal(sources.at(-1)?.playbackRate.value, 1.35);
-  assert.equal(gains.at(-1)?.gain.value, 0.32);
+  assert.equal(gains.at(-1)?.gain.value, 0.192);
 
   for (let i = 0; i < 4; i++) playSound("toggle-on");
   await flush();
@@ -110,6 +126,20 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   playSound("toggle-on");
   await flush();
   assert.equal(sources.length, beforeResume + 1);
+  const beforeDisable = sources.length;
+  playSound("toggle-on");
+  setSystemSoundsEnabled(false);
+  assert.equal(getSystemSoundsEnabled(), false);
+  assert.equal(sources.filter(source => source.started && !source.stopped).length, 0, "disabling stops currently playing effects");
+  playSound("delete");
+  await preloadSoundEffects();
+  setSystemSoundsEnabled(true);
+  await flush();
+  assert.equal(sources.length, beforeDisable, "a queued sound stays cancelled even after re-enabling");
+  playSound("toggle-on");
+  await flush();
+  assert.equal(sources.length, beforeDisable + 1);
+  assert.equal(gains.at(-1)?.gain.value, 0.27, "default effect gain is also reduced by 40%");
 });
 
 test("effects remain best-effort when Web Audio is unavailable", () => {

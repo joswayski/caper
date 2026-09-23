@@ -9,7 +9,7 @@ Size: 14,857,107 bytes. Reproduce with `node scripts/vendor-dpdfnet.mjs 8`
 The ONNX runtime, DSP and worklet are vendored alongside the model. It uses 48 kHz,
 960-point FFT, 480-sample hops, Vorbis window, normalization initialization and
 bounded-backlog bypass when the device cannot sustain real-time inference. The
-fallback attempts browser noise suppression and otherwise remains unprocessed.
+fallback tries DPDFNet-2 HR, then RNNoise, with browser suppression during runtime transitions.
 Voice-page preparation initializes one unused worker
 for exclusive handoff to microphone capture. No paid API or inference service.
 
@@ -19,6 +19,7 @@ reusing immutable cached v1 responses. Runtime WASM: 11,905,541 bytes; SHA-256
 `45eaee27761ad883742a8d4b8fce1538d60ce43b51adf1726fafccc59b8c1a15`.
 Use binary-safe copies when moving WASM or ONNX files; never round-trip through text.
 
-DPDFNet-8 is the default and only DPDFNet microphone filter. Check its active
-status after joining. Startup failure blocks publication; runtime overload keeps the
-microphone live, attempts browser suppression and reports the resulting state in the UI.
+DPDFNet-8 is the preferred microphone filter. Check its active status after joining.
+Startup failure tries DPDFNet-2 HR then RNNoise before allowing publication;
+runtime failure/overload keeps tracks live while trying the same recovery order.
+See `../dpdfnet2-v1/README.md` for the smaller model. Healthy captures stay on 8 HR.

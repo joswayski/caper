@@ -15,6 +15,8 @@ const init = join(directory, 'fixture.js');
 function fixture() {
   if (location.protocol === 'about:') return;
   const saved = new URL(location.href).searchParams.get('width') ?? '240';
+  const publicDemo = new URL(location.href).searchParams.has('public');
+  const guest = new URL(location.href).searchParams.has('guest');
   localStorage.setItem('caper:channel-sidebar-width', saved);
   const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner', debugEnabled: new URL(location.href).searchParams.has('debug') };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
@@ -31,12 +33,13 @@ function fixture() {
     constructor(socketUrl, protocols) {
       super();
       if (!String(socketUrl).includes('/api/chat/events')) return new NativeSocket(socketUrl, protocols);
+      control.disconnect = () => { control.disconnected = true; this.dispatchEvent(new Event('close')); };
       control.setPresence = (status) => {
         for (const request of this.subscriptions.values()) {
           if (request.kind === 'presence') this.frame({ type: 'event', id: request.id, event: { type: 'snapshot', members: request.userIds.map(userId => ({ userId, status })) } });
         }
       };
-      queueMicrotask(() => this.frame({ type: 'hello', idleTimeoutSeconds: 600, serverTime: Date.now() }));
+      if (!control.disconnected) queueMicrotask(() => this.frame({ type: 'hello', idleTimeoutSeconds: 600, serverTime: Date.now() }));
     }
     send(data) {
       const request = JSON.parse(data);
@@ -77,8 +80,11 @@ function fixture() {
     }
     if (path === '/api/account/me') {
       await new Promise(resolve => setTimeout(resolve, 350));
+      if (guest) return Response.json({error:'unauthorized'}, {status:401});
       return Response.json(account);
     }
+    if (path === '/api/chat/session') return Response.json({token:'fixture-token',author:{id:account.id,name:guest?'Fixture guest':account.displayName,isGuest:guest}});
+    if (publicDemo && path === '/api/chat/general') return Response.json({space,channel,messages:[],cursor:'0',hasMore:false});
     if (path === '/api/spaces') return Response.json({ spaces: deletedSpace ? [] : [space], limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 } });
     if (path.endsWith('/members')) return Response.json({ members: [{ ...account, owner: true }] });
     if (path === `/api/spaces/${space.id}`) return Response.json({ space, channels: deletedChannel ? [] : [channel], members });
@@ -174,10 +180,13 @@ try {
   browser('click', '.member-list-toggle');
   assert.equal(evaluate('document.querySelector(".space-member-presence")'), null);
   screenshot('members-narrow-hidden');
+  assert.ok(evaluate('Math.abs(document.querySelector(".chat-messages").getBoundingClientRect().bottom - document.querySelector(".chat-typing").getBoundingClientRect().top) < 2'), 'Mobile messages must fill the available grid row without a fixed-height blank gap');
   browser('click', '.navigation-toggle');
   wait('!!document.querySelector(".spaces-room.navigation-open")');
   assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Narrow member navigation must not overflow');
   screenshot('gateway-merged-members-narrow');
+  browser('click', '.channel-select[aria-current="page"]');
+  wait('!document.querySelector(".spaces-room.navigation-open")');
   browser('set', 'viewport', '1280', '900', '2');
   for (const label of ['Create space', 'Create channel']) {
     browser('click', `[aria-label="${label}"]`);
@@ -268,6 +277,40 @@ try {
     }
   }
   console.log('PASS: debug-enabled account sees diagnostics; other accounts do not; unused capture is explicit.');
+  for (const guest of [false, true]) {
+    browser('open', `${url}?public${guest ? '&guest' : ''}`);
+    wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
+    assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'), 0, 'Demo self presence must not subscribe to account-space presence');
+    assert.equal(evaluate('getComputedStyle(document.querySelector(".account-avatar .presence-dot")).backgroundColor'), 'rgb(99, 122, 67)');
+    screenshot(guest ? 'guest-self-online' : 'demo-account-self-online');
+    browser('click', '[aria-label="User Settings"]');
+    assert.equal(evaluate('document.querySelector(".top-layer-tooltip:popover-open")'), null, 'Clicking settings dismisses its tooltip');
+    browser('uncheck', '[role="switch"]');
+    assert.equal(evaluate('localStorage.getItem("caper:system-sounds")'), 'off');
+    screenshot(guest ? 'guest-system-sounds-off' : 'account-system-sounds-off');
+    browser('open', `${url}?public${guest ? '&guest' : ''}`);
+    wait('document.querySelector(".account-avatar .presence-dot")?.dataset.status === "online"');
+    browser('click', '[aria-label="User Settings"]');
+    assert.equal(evaluate('document.querySelector("[role=switch]").checked'), false, 'System sounds preference survives reload');
+    browser('check', '[role="switch"]');
+    screenshot(guest ? 'guest-system-sounds-on' : 'account-system-sounds-on');
+    if (guest) {
+      browser('set', 'viewport', '390', '844', '2');
+      browser('click', '.navigation-toggle');
+      browser('click', '[aria-label="User Settings"]');
+      screenshot('guest-system-sounds-narrow');
+      browser('set', 'viewport', '1280', '900', '2');
+    }
+    browser('click', '[aria-label="User Settings"]');
+    evaluate('window.realNow = Date.now; Date.now = () => realNow() + 600001');
+    wait('document.querySelector(".account-avatar .presence-dot").dataset.status === "idle"');
+    screenshot(guest ? 'guest-self-idle' : 'demo-account-self-idle');
+    evaluate('Date.now = realNow; window.dispatchEvent(new Event("pointerdown"))');
+    wait('document.querySelector(".account-avatar .presence-dot").dataset.status === "online"');
+    evaluate('spaceControlFixture.disconnect()');
+    wait('document.querySelector(".account-avatar .presence-dot").dataset.status === "offline"');
+  }
+  console.log('PASS: public guest and account footer dots track chat online/idle/offline without an account presence subscription.');
   console.log('PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).');
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }

@@ -16,6 +16,34 @@ const effects: readonly SoundEffect[] = [
 const buffers = new Map<SoundEffect, Promise<AudioBuffer>>();
 const active: AudioBufferSourceNode[] = [];
 let context: AudioContext | undefined;
+const SOUND_SETTING = "caper:system-sounds";
+let soundsEnabled = true;
+let soundGeneration = 0;
+
+export function getSystemSoundsEnabled() {
+  try { return localStorage.getItem(SOUND_SETTING) !== "off"; } catch { return soundsEnabled; }
+}
+
+export function setSystemSoundsEnabled(enabled: boolean) {
+  soundsEnabled = enabled;
+  soundGeneration++;
+  try { localStorage.setItem(SOUND_SETTING, enabled ? "on" : "off"); } catch { /* In-memory preference still works. */ }
+  if (!enabled) active.splice(0).forEach(source => source.stop());
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(SOUND_SETTING));
+}
+
+export function subscribeSystemSounds(changed: () => void) {
+  window.addEventListener(SOUND_SETTING, changed);
+  window.addEventListener("storage", changed);
+  return () => {
+    window.removeEventListener(SOUND_SETTING, changed);
+    window.removeEventListener("storage", changed);
+  };
+}
+
+function mobileAudioDisabled() {
+  return typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
+}
 
 function now() {
   return typeof performance === "undefined" ? Date.now() : performance.now();
@@ -53,7 +81,7 @@ function start(audioContext: AudioContext, buffer: AudioBuffer, volume: number, 
   const gain = audioContext.createGain();
   source.buffer = buffer;
   source.playbackRate.value = Math.max(0.5, Math.min(2, playbackRate));
-  gain.gain.value = Math.max(0, Math.min(1, volume));
+  gain.gain.value = Math.max(0, Math.min(1, volume)) * 0.6;
   source.connect(gain).connect(audioContext.destination);
   active.push(source);
   source.addEventListener("ended", () => {
@@ -67,6 +95,7 @@ function start(audioContext: AudioContext, buffer: AudioBuffer, volume: number, 
 
 /** Fetch and decode all effects ahead of interaction. Safe to call during browser mount. */
 export async function preloadSoundEffects() {
+  if (mobileAudioDisabled() || !getSystemSoundsEnabled()) return;
   const audioContext = getContext();
   if (!audioContext || typeof fetch === "undefined") return;
   await Promise.allSettled(effects.map((effect) => load(effect, audioContext)));
@@ -74,12 +103,13 @@ export async function preloadSoundEffects() {
 
 /** Play a short UI sound without allowing audio policy or decode failures to escape. */
 export function playSound(effect: SoundEffect, options: { volume?: number; playbackRate?: number } = {}) {
+  if (mobileAudioDisabled() || !getSystemSoundsEnabled()) return;
   const audioContext = getContext();
   if (!audioContext || typeof fetch === "undefined") {
     if (typeof Audio === "undefined") return;
     try {
       const fallback = new Audio(`/audio/effects/${effect}.wav`);
-      fallback.volume = Math.max(0, Math.min(1, options.volume ?? 0.45));
+      fallback.volume = Math.max(0, Math.min(1, options.volume ?? 0.45)) * 0.6;
       fallback.playbackRate = Math.max(0.5, Math.min(2, options.playbackRate ?? 1));
       fallback.preservesPitch = false;
       void fallback.play().catch(() => undefined);
@@ -90,9 +120,10 @@ export function playSound(effect: SoundEffect, options: { volume?: number; playb
     // Calling resume directly in the input handler preserves browser gesture activation.
     const resumed = audioContext.state === "running" ? Promise.resolve() : audioContext.resume();
     const requestedAt = now();
+    const generation = soundGeneration;
     void Promise.all([load(effect, audioContext), resumed]).then(([buffer]) => {
       // A slow network/decode must not turn old interactions into a burst of late sounds.
-      if (audioContext.state !== "running" || now() - requestedAt > MAX_DEFERRED_PLAY_MS) return;
+      if (!getSystemSoundsEnabled() || generation !== soundGeneration || audioContext.state !== "running" || now() - requestedAt > MAX_DEFERRED_PLAY_MS) return;
       start(audioContext, buffer, options.volume ?? 0.45, options.playbackRate ?? 1);
     }).catch(() => undefined);
   } catch {
@@ -104,6 +135,7 @@ let lastSliderTick = Number.NEGATIVE_INFINITY;
 
 /** Slider feedback rises in both pitch and loudness, capped to avoid noisy drags. */
 export function playSliderTick(normalizedValue: number) {
+  if (mobileAudioDisabled()) return;
   const timestamp = now();
   if (timestamp - lastSliderTick < 40) return;
   lastSliderTick = timestamp;

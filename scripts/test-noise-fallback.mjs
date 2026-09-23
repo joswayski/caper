@@ -1,5 +1,5 @@
-// Real browser audio/ONNX/RNNoise with synthetic noise and an intentionally stalled
-// DPDFNet worker. No hardware microphone, production API, or SFU is used.
+// Real browser audio/ONNX/RNNoise with synthetic noise. Stall 8 HR, verify 2 HR,
+// then stall 2 HR to verify RNNoise. No hardware microphone, API, or SFU is used.
 // node scripts/test-noise-fallback.mjs http://localhost:5174
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
@@ -23,10 +23,12 @@ try {
     window.assert = (value, message) => { if (!value) throw new Error(message); };
     const { captureMicrophone } = await import('/src/media/microphone.ts');
     const WorkerClass = Worker;
+    window.stallTwo = false;
     window.Worker = class extends WorkerClass {
+      constructor(url, options) { super(url, options); this.isTwo = String(url).includes('dpdfnet2'); }
       postMessage(message, ...rest) {
-        // Let the real model initialize, then withhold live hops to force overload.
-        if (message?.type !== 'process') super.postMessage(message, ...rest);
+        // Only withhold live hops; model loading and warm-up remain real.
+        if (message?.type !== 'process' || (this.isTwo && !window.stallTwo)) super.postMessage(message, ...rest);
       }
     };
     window.context = new AudioContext({sampleRate: 48000});
@@ -41,14 +43,20 @@ try {
     window.raw = context.createMediaStreamDestination(); source.connect(raw); source.start();
     navigator.mediaDevices.getUserMedia = async () => raw.stream;
     window.capturePromise = captureMicrophone(undefined, 'dpdfnet8', new AbortController().signal, () => {}, 'headphones')
-      .then(value => {window.capture = value;}).catch(error => {window.captureError = String(error);});
+      .then(value => {window.capture = value; window.originalTrack = value.track; window.originalNatural = value.naturalTrack;})
+      .catch(error => {window.captureError = String(error);});
   `);
   browser('wait', '--fn', '!!window.capture || !!window.captureError', '--timeout', '70000');
-  console.log(evaluate(`
+  browser('wait', '--fn', "window.capture?.status.includes('DPDFNet-2 HR active')", '--timeout', '70000');
+  for (const engine of ['DPDFNet-2 HR', 'RNNoise']) {
+    if (engine === 'RNNoise') {
+      evaluate('window.stallTwo = true;');
+      browser('wait', '--fn', "window.capture?.status.includes('RNNoise active')", '--timeout', '30000');
+    }
+    console.log(evaluate(`
     assert(window.capture, window.captureError);
-    const track = capture.track, natural = capture.naturalTrack;
-    for (let i = 0; i < 200 && !capture.status.includes('RNNoise active'); i++) await wait(50);
-    assert(capture.status.includes('RNNoise active'), capture.status);
+    const track = window.originalTrack, natural = window.originalNatural;
+    assert(capture.status.includes('${engine} active'), capture.status);
     assert(capture.track === track && capture.naturalTrack === natural, 'fallback changed track identity');
     const {recordReceivedAudio} = await import('/src/media/recording.ts');
     const recordings = [recordReceivedAudio(raw.stream), recordReceivedAudio(new MediaStream([natural]))];
@@ -61,9 +69,12 @@ try {
     });
     assert(rms[0] > .01 && rms[1] > 0, 'must test real nonzero audio, not silence');
     assert(rms[1] < rms[0] * .5, 'fallback must attenuate noise by at least 6 dB');
+    assert(capture.status.includes('${engine} active'), 'processor must stay active throughout recording');
+    if ('${engine}' === 'DPDFNet-2 HR') assert(capture.diagnostics().dpdfnet.processedHops > 100, '2 HR must process real hops');
     window.filteredStream = new MediaStream([natural]);
     return {status: capture.status, reductionDb: 20 * Math.log10(rms[0] / rms[1])};
-  `));
+    `));
+  }
   evaluate(`
     const {default: React} = await import('/node_modules/.vite/deps/react.js');
     const {default: {createRoot}} = await import('/node_modules/.vite/deps/react-dom_client.js');
@@ -88,7 +99,7 @@ try {
     browser('press', 'Escape');
     evaluate(`assert(!document.querySelector(':popover-open') && document.querySelector('dialog[open]'), 'Escape should dismiss only the tooltip');`);
   }
-  console.log('PASS: real RNNoise fallback attenuates synthetic noise; stable tracks; desktop/narrow top-layer tooltip and Escape. Not hardware/SFU validation.');
+  console.log('PASS: real DPDFNet-2 HR and RNNoise fallback attenuate synthetic noise; stable tracks; desktop/narrow top-layer tooltip and Escape. Not hardware/SFU validation.');
 } catch (error) {
   console.error(evaluate(`return {context: window.context?.state, capture: window.capture?.status};`));
   throw error;

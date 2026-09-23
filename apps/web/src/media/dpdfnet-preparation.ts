@@ -7,6 +7,9 @@ interface PreparedWorker {
 /** One unused, initialized worker. Taking it transfers exclusive ownership to a capture. */
 export class DpdfnetPreparation {
   private prepared?: PreparedWorker;
+  private readonly profile: 8 | 2;
+
+  constructor(profile: 8 | 2 = 8) { this.profile = profile; }
 
   async prepare() {
     await this.get().ready;
@@ -28,7 +31,7 @@ export class DpdfnetPreparation {
 
   private get(): PreparedWorker {
     if (this.prepared) return this.prepared;
-    const worker = new Worker("/audio/dpdfnet8-v2/worker.js", { type: "module", name: "caper-dpdfnet8" });
+    const worker = new Worker(this.profile === 8 ? "/audio/dpdfnet8-v2/worker.js" : "/audio/dpdfnet2-v1/worker.js", { type: "module", name: `caper-dpdfnet${this.profile}` });
     let resolve!: () => void;
     let reject!: (error: Error) => void;
     const ready = new Promise<void>((yes, no) => { resolve = yes; reject = no; });

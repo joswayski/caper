@@ -1298,12 +1298,12 @@ Join still opens the microphone and initializes a dedicated worklet, but takes
 exclusive ownership of the prepared worker rather than starting another model
 instance. It waits for any unfinished initialization, SSE readiness, transport,
 and initial roster/state synchronization before enabling outgoing audio. A cold
-join does not temporarily publish raw audio. Filter initialization failure fails
-Join instead of downgrading. A transient DPDFNet underrun outputs silence while
+join does not temporarily publish raw audio. DPDFNet-8 initialization failure tries
+DPDFNet-2 HR, then RNNoise; Join fails if none can initialize. A transient DPDFNet underrun outputs silence while
 refilling the three-hop reserve, then resumes processed audio. Sustained overload
 or worker failure switches the existing processed track to a bypass, preserving the call, and attempts to enable
-the browser's microphone noise-suppression constraint while the bundled RNNoise
-fallback loads. Once RNNoise is ready, it replaces only the processing node:
+the browser's microphone noise-suppression constraint while DPDFNet-2 HR loads.
+Only if 2 HR also fails or overloads does RNNoise load. A ready fallback replaces only the processing node:
 outgoing and mic-test track identities, mute state, input gain and voice enhancement
 are preserved. Browser suppression is then disabled to avoid stacking filters.
 If RNNoise cannot initialize, the browser fallback remains. The reported track
@@ -1311,8 +1311,8 @@ setting determines whether the UI says browser suppression is active or unavaila
 The mic test displays that live status; both Natural and Enhanced use this same
 noise-suppressed input, and Enhanced adds EQ/compression rather than more denoising.
 The recovery worklet uses `worklet-v3.js` to avoid the immutable cache of older clients.
-An unrecoverable processor error stops and unpublishes the microphone without
-restarting an otherwise healthy connection.
+DPDFNet processor errors also advance to the next tier. An unrecoverable RNNoise
+processor error stops the microphone without restarting the connection.
 
 Preparation has a 60-second readiness timeout. Failed workers are terminated and
 evicted so a later join can retry. Cancellation terminates a worker already handed
@@ -1660,12 +1660,20 @@ tracks and clips; record a fresh sample to hear the newly active filter. Its 14.
 runtime load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the processor acknowledges initialization.
-Loading/initialization failure rejects capture and stops its tracks. Transient
-underruns rebuffer processed audio. Sustained overload keeps the existing microphone
-track live and loads RNNoise, with browser suppression during the transition.
+The recovery order is DPDFNet-8 HR → DPDFNet-2 HR → RNNoise, for initialization
+failure, sustained backlog or processor failure. Healthy 8 HR is never downgraded
+based on CPU count or a single slow hop. Transient underruns rebuffer processed audio.
+2 HR uses the same 48 kHz framing/DSP with its own smaller model and recurrent state;
+upstream lists 2.42G MACs versus 8 HR's 7.17G (not a measured CPU guarantee).
+Its 10.5 MB model loads only on fallback, reusing the existing ONNX runtime.
+Reproduce with `node scripts/vendor-dpdfnet.mjs 2`; provenance is in
+`apps/web/public/audio/dpdfnet2-v1/README.md`.
+A downgrade lasts for the current capture; a fresh capture starts with 8 HR again.
+If all local engines fail to initialize, capture rejects without publishing raw audio.
+Runtime recovery keeps the existing microphone track live, with browser suppression during transitions.
 If both local fallback initialization and browser suppression fail, the status
 explicitly reports bypassed audio. This avoids a call-wide reconnect loop.
-An unrecoverable AudioWorklet processor error still stops the microphone. This does
+An unrecoverable RNNoise AudioWorklet processor error still stops the microphone. This does
 not ensure that all CPU overload or audio artifacts can be detected.
 
 Device/mode changes replace the outgoing track and release the previous hardware
@@ -1703,8 +1711,9 @@ active/fallback status before attributing a sound to DPDFNet.
 Fallback validation, September 23, 2026:
 
 - `node scripts/test-noise-fallback.mjs http://localhost:5174` runs against local
-  Vite, with real model initialization, an intentionally stalled worker, real RNNoise,
-  and synthetic white noise. It verifies unchanged tracks, measurable attenuation
+  Vite, with real model initialization and synthetic white noise. It stalls 8 HR,
+  verifies real 2 HR processing/attenuation, then stalls 2 HR and verifies RNNoise.
+  It verifies unchanged tracks, measurable attenuation
   (at least 6 dB), and unclipped desktop/narrow mic tooltips with Escape dismissal.
 - A separate unmodified-worker Chromium run in the orb reproduced sustained overload
   (10.8 ms average inference per 10 ms hop). RNNoise then reduced synthetic noise
