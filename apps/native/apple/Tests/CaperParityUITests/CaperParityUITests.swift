@@ -5,7 +5,7 @@ import XCTest
 final class CaperParityUITests: XCTestCase {
     private var launchedApp: XCUIApplication?
 
-    private func launch(fixture: String? = nil, signedIn: Bool = true) -> XCUIApplication {
+    private func launch(fixture: String? = nil, signedIn: Bool = true, experimentalVoice: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
@@ -13,6 +13,7 @@ final class CaperParityUITests: XCTestCase {
             app.launchEnvironment["CAPER_TEST_BEARER"] = "fixture-owner-token"
             app.launchEnvironment["CAPER_TEST_SPACE_ID"] = "space0000001"
         }
+        if experimentalVoice { app.launchEnvironment["CAPER_EXPERIMENTAL_VOICE"] = "1" }
         if let fixture { app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture }
         app.launch()
         launchedApp = app
@@ -43,17 +44,30 @@ final class CaperParityUITests: XCTestCase {
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 2))
         let size = window.frame.size
-        let dimensions = XCTAttachment(string: "\(Int(size.width))x\(Int(size.height))")
-        dimensions.name = "\(name)-window-size"
+        #if arch(arm64)
+        let desktop = size.width >= 1_400
+        let layout = desktop ? "desktop" : "medium"
+        XCTAssertGreaterThanOrEqual(size.width, desktop ? 1_400 : 980, "Hosted ARM medium capture requires at least 980 points of width")
+        XCTAssertGreaterThanOrEqual(size.height, desktop ? 880 : 640, "Hosted ARM capture is too short for its declared layout")
+        #else
+        let layout = "desktop"
+        XCTAssertGreaterThanOrEqual(size.width, 1_400, "Intel desktop parity capture requires a 1,400-point-wide app window")
+        XCTAssertGreaterThanOrEqual(size.height, 880, "Intel desktop parity capture requires an app window close to the 1,440×900 reference")
+        #endif
+        let captureName = "\(layout)-\(name)"
+        let dimensions = XCTAttachment(string: "layout=\(layout) width=\(Int(size.width)) height=\(Int(size.height))")
+        dimensions.name = "\(captureName)-window-size"
         dimensions.lifetime = .keepAlways
         add(dimensions)
-        XCTAssertGreaterThanOrEqual(size.width, 1_400, "Desktop parity capture requires a 1,400-point-wide app window")
-        XCTAssertGreaterThanOrEqual(size.height, 880, "Desktop parity capture requires an app window close to the 1,440×900 reference")
         let attachment = XCTAttachment(screenshot: window.screenshot())
         #else
         let attachment = XCTAttachment(screenshot: app.screenshot())
         #endif
+        #if os(macOS)
+        attachment.name = captureName
+        #else
         attachment.name = name
+        #endif
         attachment.lifetime = .keepAlways
         add(attachment)
     }
@@ -132,6 +146,33 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(delivered.count, 1, "HTTP confirmation and gateway delivery must merge into one message")
         let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
         XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
+    }
+
+    func testExperimentalAudioPreferencesWithoutJoiningVoice() {
+        let app = launch(experimentalVoice: true)
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
+        #if os(iOS)
+        app.buttons["Browse"].tap()
+        #endif
+        let settings = app.descendants(matching: .any)["account-settings-menu"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        settings.tap()
+        let preferences = app.descendants(matching: .any)["Audio preferences"]
+        XCTAssertTrue(preferences.waitForExistence(timeout: 2))
+        preferences.tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["audio-preferences-sheet"].waitForExistence(timeout: 5))
+        assertStaticText("Audio preferences", in: app, timeout: 2)
+        let gain = app.sliders["Output gain"]
+        XCTAssertTrue(gain.waitForExistence(timeout: 2))
+        gain.adjust(toNormalizedSliderPosition: 0.75)
+        assertStaticText("150%", in: app, timeout: 2)
+        #if os(iOS)
+        XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
+        #else
+        assertStaticText("Caper follows the input and output selected in macOS System Settings. The embedded WebRTC build does not expose safe per-device switching.", in: app, timeout: 2)
+        #endif
+        capture("experimental-audio-preferences", app: app)
     }
 
     func testActionableLoginError() async throws {

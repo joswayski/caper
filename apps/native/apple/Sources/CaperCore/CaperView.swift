@@ -489,6 +489,7 @@ private struct AccountBar: View {
                 Button("Audio preferences") { voice.showAudioPreferences = true }
                 if model.account != nil { Button("Log out", role: .destructive) { Task { await model.logout() } } }
             } label: { Image(systemName: "gearshape.fill") }.menuStyle(.borderlessButton).frame(width: 28)
+                .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
         }
         .padding(4).frame(height: 42).background(CaperTheme.raised)
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
@@ -945,6 +946,8 @@ private struct AudioPreferencesView: View {
                 Text("Choose an audio route").font(CaperTheme.font(13, weight: .bold))
                 Spacer()
                 SystemAudioRoutePicker().frame(width: 44, height: 36)
+                    .accessibilityLabel("Choose system audio route")
+                    .accessibilityIdentifier("system-audio-route-picker")
             }
             Text("Use the iPhone system picker to switch available routes during a call.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
@@ -952,7 +955,9 @@ private struct AudioPreferencesView: View {
             Text("Caper follows the input and output selected in macOS System Settings. The embedded WebRTC build does not expose safe per-device switching.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             #endif
-        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface).task { await voice.refreshAudioDevices() }
+        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
+            .accessibilityIdentifier("audio-preferences-sheet")
+            .task { await voice.refreshAudioDevices() }
     }
 
     private var outputGain: Binding<Double> {

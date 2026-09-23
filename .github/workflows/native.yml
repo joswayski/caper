@@ -149,10 +149,12 @@ jobs:
           retention-days: 14
 
       - name: Provide room for the macOS desktop reference window
-        if: matrix.platform == 'macos'
+        if: matrix.target == 'macos-x64'
         run: |
           # The hosted VM can default to 1024x768, forcing the medium layout.
           # Leave room for a 1440x900 app window and native menu/Dock chrome.
+          # ARM Anka guests reject dynamic resizing; their UI tests explicitly
+          # label the constrained capture as medium instead of desktop.
           if [[ -x '/Library/Application Support/Veertu/Anka/addons/change_res' ]]; then
             '/Library/Application Support/Veertu/Anka/addons/change_res' 1920x1080x32@30
           elif [[ -x '/Library/Application Support/VMware Tools/vmware-resolutionSet' ]]; then

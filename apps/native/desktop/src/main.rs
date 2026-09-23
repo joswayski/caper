@@ -2483,7 +2483,16 @@ fn channel_button(
         egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
         color,
     );
-    let settings = (manageable && (response.hovered() || response.has_focus())).then(|| {
+    // The nested settings hit target owns hover while the pointer is over it,
+    // so parent-response hover alone makes the control disappear between the
+    // mouse press and release. Geometry remains stable for the whole gesture.
+    let pointer_over_row = ui.input(|input| {
+        input
+            .pointer
+            .hover_pos()
+            .is_some_and(|position| rect.contains(position))
+    });
+    let settings = (manageable && (pointer_over_row || response.has_focus())).then(|| {
         let rect = egui::Rect::from_center_size(
             egui::pos2(rect.right() - 18.0, rect.center().y),
             egui::vec2(28.0, 28.0),
