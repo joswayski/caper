@@ -11,14 +11,17 @@ python3 scripts/native_fonts.py
 ```
 
 This downloads the official Fontshare family package into the ignored
-`shared/fonts/cache/` directory and verifies the pinned archive and file
-SHA-256 hashes before use. Running the command downloads licensed font software
+`shared/fonts/cache/` directory and verifies pinned SHA-256 hashes of all four
+font files and the accompanying license before caching or extracting them.
+Running the command downloads licensed font software
 and constitutes acceptance of the license.
 
 Official download: `https://api.fontshare.com/v2/fonts/download/satoshi`
 
-Pinned package: `Satoshi_Complete.zip`, 2,168,134 bytes, SHA-256
-`5c0469e84d3331424a21adde6954dacfc6d9f080c204026efd53c2f40e8dc1c3`.
+Fontshare's `Satoshi_Complete.zip` container varies across downloads/regions.
+The build pins the embedded resources, not the ZIP's packaging metadata.
+Downloads are bounded to 8 MiB and each extracted member to 1 MiB. Unused ZIP
+members are never extracted. Altered fonts or license terms fail closed.
 
 | Cached resource | Weight | PostScript name | SHA-256 |
 | --- | ---: | --- | --- |
@@ -36,6 +39,7 @@ redistributing the standalone font software. Platform builds must copy these
 files unchanged into application resources and must not publish the cache or
 the font files as separate artifacts. The helper also extracts the unchanged
 license as `shared/fonts/cache/Satoshi-FFL.txt`; bundle it with the application.
+Its SHA-256 is `145e7fe2429a3336ba215c070ef722000e01348a3e1baaa127e871bb5012f554`.
 See the
 [current license page](https://www.fontshare.com/licenses/itf-ffl).
 

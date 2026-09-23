@@ -12,9 +12,10 @@ import zipfile
 
 
 DOWNLOAD_URL = "https://api.fontshare.com/v2/fonts/download/satoshi"
-ARCHIVE_SHA256 = "5c0469e84d3331424a21adde6954dacfc6d9f080c204026efd53c2f40e8dc1c3"
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
+MAX_RESOURCE_BYTES = 1024 * 1024
 LICENSE_MEMBER = "Satoshi_Complete/License/FFL.txt"
+LICENSE_SHA256 = "145e7fe2429a3336ba215c070ef722000e01348a3e1baaa127e871bb5012f554"
 FONTS = {
     "Satoshi_Complete/Fonts/OTF/Satoshi-Regular.otf": (
         "Satoshi-Regular.otf",
@@ -34,7 +35,7 @@ FONTS = {
     ),
 }
 CACHE_DIR = Path(__file__).resolve().parents[1] / "shared" / "fonts" / "cache"
-ARCHIVE_PATH = CACHE_DIR / f"Satoshi_Complete-{ARCHIVE_SHA256}.zip"
+ARCHIVE_PATH = CACHE_DIR / "Satoshi_Complete.zip"
 
 
 def sha256(data: bytes) -> str:
@@ -62,7 +63,6 @@ def download_archive(destination: Path = ARCHIVE_PATH) -> None:
                 dir=destination.parent, prefix=".satoshi-", delete=False
             ) as output:
                 temporary = Path(output.name)
-                digest = hashlib.sha256()
                 size = 0
                 while chunk := response.read(64 * 1024):
                     size += len(chunk)
@@ -70,13 +70,8 @@ def download_archive(destination: Path = ARCHIVE_PATH) -> None:
                         raise RuntimeError(
                             f"download exceeds {MAX_DOWNLOAD_BYTES} byte limit"
                         )
-                    digest.update(chunk)
                     output.write(chunk)
-        actual = digest.hexdigest()
-        if actual != ARCHIVE_SHA256:
-            raise RuntimeError(
-                f"archive SHA-256 mismatch: expected {ARCHIVE_SHA256}, got {actual}"
-            )
+        verified_resources(temporary)
         os.replace(temporary, destination)
         temporary = None
     finally:
@@ -84,47 +79,50 @@ def download_archive(destination: Path = ARCHIVE_PATH) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def extract_fonts(archive_path: Path = ARCHIVE_PATH, cache_dir: Path = CACHE_DIR) -> None:
-    archive_data = archive_path.read_bytes()
-    require_hash(archive_data, ARCHIVE_SHA256, "archive")
-
+def verified_resources(archive_path: Path) -> dict[str, tuple[bytes, str]]:
+    # Fontshare's ZIP container varies between requests/regions. Authenticate
+    # every byte actually embedded, including the license, rather than ZIP metadata.
+    if archive_path.stat().st_size > MAX_DOWNLOAD_BYTES:
+        raise RuntimeError("archive exceeds download size limit")
+    resources = {**FONTS, LICENSE_MEMBER: ("Satoshi-FFL.txt", LICENSE_SHA256)}
+    verified = {}
     with zipfile.ZipFile(archive_path) as archive:
         names = archive.namelist()
-        required = [*FONTS, LICENSE_MEMBER]
-        missing = [name for name in required if names.count(name) != 1]
+        missing = [name for name in resources if names.count(name) != 1]
         if missing:
             raise RuntimeError(
                 "archive must contain exactly one of each required member; invalid: "
                 + ", ".join(missing)
             )
 
-        # The pinned archive authenticates the accompanying license too. Keep it
-        # unmodified beside the fonts so each application can bundle the terms.
-        resources = {
-            **FONTS,
-            LICENSE_MEMBER: ("Satoshi-FFL.txt", sha256(archive.read(LICENSE_MEMBER))),
-        }
-        cache_dir.mkdir(parents=True, exist_ok=True)
         for member, (filename, expected_hash) in resources.items():
+            if archive.getinfo(member).file_size > MAX_RESOURCE_BYTES:
+                raise RuntimeError(f"{member} exceeds resource size limit")
             data = archive.read(member)
             require_hash(data, expected_hash, member)
-            destination = cache_dir / filename
-            if destination.exists():
-                require_hash(destination.read_bytes(), expected_hash, str(destination))
-                continue
-            with tempfile.NamedTemporaryFile(dir=cache_dir, prefix=f".{filename}-", delete=False) as output:
-                temporary = Path(output.name)
-                output.write(data)
-            try:
-                os.replace(temporary, destination)
-            finally:
-                temporary.unlink(missing_ok=True)
+            verified[filename] = (data, expected_hash)
+    return verified
+
+
+def extract_fonts(archive_path: Path = ARCHIVE_PATH, cache_dir: Path = CACHE_DIR) -> None:
+    resources = verified_resources(archive_path)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for filename, (data, expected_hash) in resources.items():
+        destination = cache_dir / filename
+        if destination.exists():
+            require_hash(destination.read_bytes(), expected_hash, str(destination))
+            continue
+        with tempfile.NamedTemporaryFile(dir=cache_dir, prefix=f".{filename}-", delete=False) as output:
+            temporary = Path(output.name)
+            output.write(data)
+        try:
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def main() -> None:
-    if ARCHIVE_PATH.exists():
-        require_hash(ARCHIVE_PATH.read_bytes(), ARCHIVE_SHA256, str(ARCHIVE_PATH))
-    else:
+    if not ARCHIVE_PATH.exists():
         print(f"Downloading official Satoshi package from {DOWNLOAD_URL}")
         download_archive()
     extract_fonts()

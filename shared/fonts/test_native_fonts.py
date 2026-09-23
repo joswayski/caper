@@ -28,14 +28,8 @@ class NativeFontsTest(unittest.TestCase):
             with zipfile.ZipFile(archive_path, "w") as archive:
                 archive.writestr(native_fonts.LICENSE_MEMBER, "license")
 
-            archive_hash = native_fonts.sha256(archive_path.read_bytes())
-            original_hash = native_fonts.ARCHIVE_SHA256
-            native_fonts.ARCHIVE_SHA256 = archive_hash
-            try:
-                with self.assertRaisesRegex(RuntimeError, "required member"):
-                    native_fonts.extract_fonts(archive_path, Path(temporary))
-            finally:
-                native_fonts.ARCHIVE_SHA256 = original_hash
+            with self.assertRaisesRegex(RuntimeError, "required member"):
+                native_fonts.extract_fonts(archive_path, Path(temporary))
 
     def test_fonts_and_license_are_preserved_and_corrupt_cache_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -48,7 +42,7 @@ class NativeFontsTest(unittest.TestCase):
                 archive.writestr(member, font)
                 archive.writestr(native_fonts.LICENSE_MEMBER, license_text)
                 archive.writestr("../unexpected.txt", b"must not be extracted")
-            with patch.object(native_fonts, "ARCHIVE_SHA256", native_fonts.sha256(archive_path.read_bytes())), patch.object(
+            with patch.object(native_fonts, "LICENSE_SHA256", native_fonts.sha256(license_text)), patch.object(
                 native_fonts, "FONTS", {member: ("Test.otf", native_fonts.sha256(font))}
             ):
                 cache = root / "cache"
@@ -60,6 +54,32 @@ class NativeFontsTest(unittest.TestCase):
                 (cache / "Satoshi-FFL.txt").write_bytes(b"changed license")
                 with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch"):
                     native_fonts.extract_fonts(archive_path, cache)
+
+    def test_container_metadata_can_vary_but_resource_bytes_cannot(self) -> None:
+        member = "Satoshi_Complete/Fonts/OTF/Test.otf"
+        font, license_text = b"font", b"license"
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            native_fonts, "FONTS", {member: ("Test.otf", native_fonts.sha256(font))}
+        ), patch.object(native_fonts, "LICENSE_SHA256", native_fonts.sha256(license_text)):
+            root = Path(temporary)
+            hashes = []
+            for year in (2020, 2026):
+                path = root / f"{year}.zip"
+                with zipfile.ZipFile(path, "w") as archive:
+                    for name, data in ((member, font), (native_fonts.LICENSE_MEMBER, license_text)):
+                        archive.writestr(zipfile.ZipInfo(name, (year, 1, 1, 0, 0, 0)), data)
+                hashes.append(native_fonts.sha256(path.read_bytes()))
+                native_fonts.extract_fonts(path, root / str(year))
+                self.assertEqual((root / str(year) / "Test.otf").read_bytes(), font)
+            self.assertNotEqual(*hashes)
+            for changed_member in (member, native_fonts.LICENSE_MEMBER):
+                path = root / "tampered.zip"
+                with zipfile.ZipFile(path, "w") as archive:
+                    for name, data in ((member, font), (native_fonts.LICENSE_MEMBER, license_text)):
+                        archive.writestr(name, data + b"changed" if name == changed_member else data)
+                with self.assertRaisesRegex(RuntimeError, "SHA-256 mismatch"):
+                    native_fonts.extract_fonts(path, root / "refused")
+                self.assertFalse((root / "refused").exists())
 
 
 if __name__ == "__main__":
