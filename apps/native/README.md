@@ -37,6 +37,12 @@ exact checked-out Git revision and development-only distribution status. Artifac
 names on PRs refer to the tested merge commit, not necessarily the PR branch tip.
 Artifacts expire after 14 days and downloading requires repository access.
 
+The mobile jobs also install and launch the packaged app in an iPhone Simulator
+and an Android emulator, uploading signed-out screenshots as separate `caper-ui-*`
+artifacts. Android checks the sign-in accessibility hierarchy too. These startup
+checks do not exercise authenticated conversations, microphones or locked-phone
+calling; inspect the captures rather than treating upload success as visual parity.
+
 | Target | Package | Installation limits |
 | --- | --- | --- |
 | Windows x64 | `Caper-windows-x64.zip` | Portable, unsigned; Windows security policy can block it |

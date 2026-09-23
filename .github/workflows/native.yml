@@ -187,3 +187,33 @@ jobs:
           path: dist/native/android-debug/
           if-no-files-found: error
           retention-days: 14
+      - name: Enable emulator KVM on the GitHub runner
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Launch Android app and capture sign-in
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7_pro
+          disable-animations: true
+          script: |
+            adb install apps/native/android/dist/Caper-android-debug.apk
+            adb shell am start -W -n chat.caper.android/.MainActivity
+            sleep 5
+            adb shell pidof chat.caper.android
+            adb shell uiautomator dump /sdcard/caper-ui.xml
+            adb pull /sdcard/caper-ui.xml /tmp/caper-android-ui.xml
+            grep -q 'A quieter place to talk' /tmp/caper-android-ui.xml
+            adb exec-out screencap -p > /tmp/caper-android-sign-in.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caper-ui-android-${{ github.sha }}
+          path: |
+            /tmp/caper-android-sign-in.png
+            /tmp/caper-android-ui.xml
+          if-no-files-found: error
+          retention-days: 14

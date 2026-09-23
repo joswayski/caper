@@ -48,7 +48,7 @@ Space/channel/member administration, presence display, typing indicators, notifi
 
 The experimental native WebRTC path is **not verified in this Linux orb** (there is no Swift/Xcode SDK, Apple audio device, signing identity, or iPhone). The UI is disabled by default and must not be marketed as calling support yet. Before release:
 
-1. Compile on both macOS runners and resolve any WebRTC 153 header/API drift.
+1. Keep both macOS architectures and the iOS Simulator build passing in CI. The macOS builds have passed all 16 XCTest cases and framework/signature packaging checks; that does not exercise live audio.
 2. Run a real two-party call through Cloudflare on macOS and a physical iPhone, including TURN-only/multi-network coverage.
 3. Lock the physical iPhone during an active call and verify uninterrupted capture/playback for a sustained period. A plist declaration and audio-session category are necessary but are not proof.
 4. Add the browser client's gateway media snapshots, TURN credential renewal/ICE restart, connection-state recovery, deployment handoff behavior, and robust audio interruption/route handling. This implementation polls snapshots and has no ICE restart; long-running/recovering-call parity is therefore still outstanding.
