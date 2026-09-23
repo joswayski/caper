@@ -167,6 +167,9 @@
   .call-header, .call-room { width: calc(100% - 24px); }
   .call-header { height: 64px; }
   .call-room { grid-template: auto minmax(0, 1fr) / 1fr; }
+  .call-room.spaces-room { height: calc(100dvh - 88px); min-height: 420px; }
+  .spaces-room .stage { min-height: 0; }
+  .spaces-room .chat-panel { min-height: 0; }
   .people-panel { width: auto !important; border-right: 0; border-bottom: 1px solid var(--border); }
   .channel-sidebar-resize { display: none; }
   .sidebar-channels { padding: 16px; }

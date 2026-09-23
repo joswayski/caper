@@ -71,7 +71,7 @@ function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: {
   return <details ref={menuRef} open={open} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
     if (event.key === "Escape") { onOpenChange(false); event.currentTarget.querySelector("summary")?.focus(); }
   }}>
-    <Tooltip content={label}><summary aria-label={label} onClick={(event) => { event.preventDefault(); playSound(open ? "toggle-off" : "toggle-on"); onOpenChange(!open); }}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary></Tooltip>
+    <Tooltip content={label}><summary aria-label={label} onClick={(event) => { event.preventDefault(); onOpenChange(!open); }}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary></Tooltip>
     <div className="call-settings-panel">{children}</div>
   </details>;
 }
@@ -316,8 +316,8 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     } finally { if (generation === actionGeneration.current) setActionPending(false); }
   };
   const leave = () => {
-    const wasConnected = connected;
-    void act(() => clientRef.current!.leave(), () => { if (wasConnected) playSound("channel-leave"); });
+    if (connected) playSound("channel-leave");
+    void act(() => clientRef.current!.leave());
   };
   const closeAudioPanel = () => {
     if (audioPanel === "mic") {
@@ -375,7 +375,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
                     return next;
                   })}
                 />}
-                {!idle && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => { playSound(volumeParticipant === participant.id ? "toggle-off" : "toggle-on"); setVolumeParticipant((current) => current === participant.id ? undefined : participant.id); }}>Audio</button>}
+                {!idle && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
                 {!idle && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
                   <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
                   <Slider
@@ -452,7 +452,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
             {!audioPanel && (state.error || actionError) && <div className="room-error chat-refresh-error" role="alert">{state.error || actionError}</div>}
-            {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={() => { playSound(navigationOpen ? "toggle-off" : "toggle-on"); onNavigationToggle(); }}><Menu aria-hidden="true" />Browse</button>}
+            {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join">
               <Tooltip id="voice-availability" placement="bottom" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : undefined}><button className="voice-button" type="button" aria-label={viewingVoice && connected ? "Leave voice" : viewingVoice && !idle ? "Cancel joining voice" : "Join voice"} aria-disabled={joinDisabled} onClick={() => {
                 if (joinDisabled) return;
@@ -469,7 +469,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
               }}><Speech aria-hidden="true" />{viewingVoice && connected ? "Leave" : viewingVoice && !idle ? "Cancel" : "Join"}</button></Tooltip>
             </span>
             {!idle && viewingVoice && <span className="voice-status" role="status">{connected ? "Voice connected" : state.phase === "joining" ? "Joining…" : "Reconnecting…"}</span>}
-            {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => { playSound(membersVisible ? "toggle-off" : "toggle-on"); setMembersVisible(!membersVisible); }}><Users aria-hidden="true" /></button></Tooltip>}
+            {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />
         </div>
         {membersVisible && membersPanel}

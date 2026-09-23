@@ -17,6 +17,10 @@ const buffers = new Map<SoundEffect, Promise<AudioBuffer>>();
 const active: AudioBufferSourceNode[] = [];
 let context: AudioContext | undefined;
 
+function mobileAudioDisabled() {
+  return typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
+}
+
 function now() {
   return typeof performance === "undefined" ? Date.now() : performance.now();
 }
@@ -67,6 +71,7 @@ function start(audioContext: AudioContext, buffer: AudioBuffer, volume: number, 
 
 /** Fetch and decode all effects ahead of interaction. Safe to call during browser mount. */
 export async function preloadSoundEffects() {
+  if (mobileAudioDisabled()) return;
   const audioContext = getContext();
   if (!audioContext || typeof fetch === "undefined") return;
   await Promise.allSettled(effects.map((effect) => load(effect, audioContext)));
@@ -74,6 +79,7 @@ export async function preloadSoundEffects() {
 
 /** Play a short UI sound without allowing audio policy or decode failures to escape. */
 export function playSound(effect: SoundEffect, options: { volume?: number; playbackRate?: number } = {}) {
+  if (mobileAudioDisabled()) return;
   const audioContext = getContext();
   if (!audioContext || typeof fetch === "undefined") {
     if (typeof Audio === "undefined") return;
@@ -104,6 +110,7 @@ let lastSliderTick = Number.NEGATIVE_INFINITY;
 
 /** Slider feedback rises in both pitch and loudness, capped to avoid noisy drags. */
 export function playSliderTick(normalizedValue: number) {
+  if (mobileAudioDisabled()) return;
   const timestamp = now();
   if (timestamp - lastSliderTick < 40) return;
   lastSliderTick = timestamp;

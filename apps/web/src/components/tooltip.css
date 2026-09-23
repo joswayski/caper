@@ -1,5 +1,8 @@
 .top-layer-tooltip {
   position: fixed;
+  box-sizing: border-box;
+  overflow: auto;
+  overflow-wrap: anywhere;
   inset: auto;
   width: max-content;
   max-width: min(280px, calc(100vw - 16px));

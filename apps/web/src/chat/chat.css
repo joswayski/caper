@@ -51,7 +51,6 @@
 
 @media (max-width: 760px) {
   .chat-panel { min-height: 420px; }
-  .chat-messages { height: 50vh; }
   .chat-message { padding-inline: 14px; }
   .chat-composer, .chat-typing { padding-inline: 14px; }
 }
