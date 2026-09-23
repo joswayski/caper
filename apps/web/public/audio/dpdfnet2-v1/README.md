@@ -12,6 +12,7 @@ Uses the existing DSP, worklet-v3 and ONNX Runtime 1.23.2 binaries in
 Both models use 48 kHz mono, 960-point FFT and 480-sample hops. Upstream lists
 2.42G MACs for 2 HR versus 7.17G for 8 HR; this is not measured device performance.
 
-Loaded only after DPDFNet-8 initialization failure, processor failure or sustained
-backlog. If 2 HR fails, RNNoise is next. Each capture starts with 8 HR; recovery
+Loaded after DPDFNet-8 exhausts its single error retry or encounters sustained
+backlog. 2 HR also gets one error retry before RNNoise; overload skips retries.
+Each capture starts with 8 HR; recovery
 does not automatically upgrade mid-capture. All processing stays on-device.

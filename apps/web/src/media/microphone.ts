@@ -58,7 +58,10 @@ export async function captureMicrophone(
   const fallbackController = new AbortController();
   let stopped = false;
   let bypassing = false;
-  let activeProfile: 8 | 2 = 8;
+  type Profile = 8 | 2 | "rnnoise";
+  let activeProfile: Profile = 8;
+  // One retry per engine for the entire capture, shared by startup and crashes.
+  const retried = new Set<Profile>();
   let processedHops = 0;
   let totalProcessingMs = 0;
   let maxProcessingMs = 0;
@@ -155,26 +158,33 @@ export async function captureMicrophone(
         totalProcessingMs += data.duration;
         maxProcessingMs = Math.max(maxProcessingMs, data.duration);
         target.port.postMessage(data, [data.samples]);
-      } else target.port.postMessage({ type: "failed" });
+      } else bypass(true);
     };
-    worker.onerror = () => target.port.postMessage({ type: "failed" });
+    worker.onerror = () => { if (!stopped && node === target) bypass(true); };
     target.port.addEventListener("message", ({ data }) => {
       if (!stopped && node === target && data?.type === "process") worker.postMessage(data, [data.samples]);
     });
     target.port.start();
   };
-  const useFallback = async (profile: 2 | "rnnoise"): Promise<boolean> => {
+  const nextProfile = (profile: Profile, retry: boolean): Profile | undefined => {
+    if (retry && !retried.has(profile)) {
+      retried.add(profile);
+      return profile;
+    }
+    return profile === 8 ? 2 : profile === 2 ? "rnnoise" : undefined;
+  };
+  const useFallback = async (profile: Profile): Promise<boolean> => {
     let replacement: AudioWorkletNode | undefined;
     const fallbackSignal = fallbackController.signal;
     try {
-      const { module } = profile === 2 ? { module: undefined } : await assets.load("rnnoise", fallbackSignal);
-      await context!.audioWorklet.addModule(profile === 2 ? "/audio/dpdfnet8-v2/worklet-v3.js" : "/audio/noise-v1/worklet.js");
+      const { module } = profile !== "rnnoise" ? { module: undefined } : await assets.load("rnnoise", fallbackSignal);
+      await context!.audioWorklet.addModule(profile !== "rnnoise" ? "/audio/dpdfnet8-v2/worklet-v3.js" : "/audio/noise-v1/worklet.js");
       fallbackSignal.throwIfAborted();
-      replacement = new AudioWorkletNode(context!, profile === 2 ? "caper-dpdfnet8" : "caper-noise", {
+      replacement = new AudioWorkletNode(context!, profile !== "rnnoise" ? "caper-dpdfnet8" : "caper-noise", {
         numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
-        channelCount: 1, channelCountMode: "explicit", processorOptions: { engine: "rnnoise", module },
+        channelCount: 1, channelCountMode: "explicit", processorOptions: { engine: profile === "rnnoise" ? "rnnoise" : "dpdfnet8", module },
       });
-      if (profile === 2) prepared = new DpdfnetPreparation(2).take();
+      if (profile !== "rnnoise") prepared = new DpdfnetPreparation(profile).take();
       await new Promise<void>((resolve, reject) => {
         const finish = (error?: Error) => {
           clearTimeout(timer);
@@ -182,13 +192,13 @@ export async function captureMicrophone(
           error ? reject(error) : resolve();
         };
         const abort = () => finish(new Error("Fallback cancelled"));
-        const timer = setTimeout(() => finish(new Error("Fallback timed out")), profile === 2 ? 60_000 : 15_000);
+        const timer = setTimeout(() => finish(new Error("Fallback timed out")), profile !== "rnnoise" ? 60_000 : 15_000);
         fallbackSignal.addEventListener("abort", abort, { once: true });
-        if (profile === 2) void prepared!.ready.then(() => finish(), finish);
+        if (profile !== "rnnoise") void prepared!.ready.then(() => finish(), finish);
         replacement!.onprocessorerror = () => finish(new Error("Fallback failed"));
         replacement!.port.onmessage = ({ data }) => {
           if (data !== "ready") finish(new Error("Fallback failed"));
-          else if (profile !== 2) finish();
+          else if (profile === "rnnoise") finish();
         };
       });
       fallbackSignal.throwIfAborted();
@@ -202,34 +212,35 @@ export async function captureMicrophone(
       previous?.port.postMessage("stop");
       previous?.port.close();
       node = replacement;
-      if (profile === 2) {
-        activeProfile = 2;
-        processedHops = totalProcessingMs = maxProcessingMs = 0;
+      activeProfile = profile;
+      processedHops = totalProcessingMs = maxProcessingMs = 0;
+      if (profile !== "rnnoise") {
         bridgeWorker(node, prepared!.worker);
       }
       gain!.connect(node);
       node.connect(naturalDestination!);
       node.connect(voiceInput!);
-      const failed = () => {
-        if (stopped) return;
-        microphone.status = "RNNoise failed - microphone stopped";
-        microphone.stop();
-        changed();
-      };
-      node.onprocessorerror = profile === 2 ? bypass : failed;
+      node.onprocessorerror = () => bypass(true);
       node.port.onmessage = ({ data }) => {
-        if (profile === 2 && (data === "failed" || data === "bypassed")) bypass();
-        else if (data === "failed") failed();
+        if (data === "failed") bypass(true);
+        else if (data === "bypassed") bypass();
       };
       bypassing = false;
-      microphone.status = profile === 2 ? "DPDFNet-8 HR unavailable · DPDFNet-2 HR active · on-device" : "DPDFNet unavailable · RNNoise active · on-device";
+      microphone.status = profile === 8 ? "DPDFNet-8 HR active · on-device" : profile === 2 ? "DPDFNet-8 HR unavailable · DPDFNet-2 HR active · on-device" : "DPDFNet unavailable · RNNoise active · on-device";
       changed();
       return true;
     } catch {
-      if (profile === 2) {
-        prepared?.stop();
-        prepared = undefined;
-        if (!stopped) return await useFallback("rnnoise");
+      prepared?.stop();
+      prepared = undefined;
+      if (replacement && replacement !== node) {
+        replacement.port.postMessage("stop");
+        replacement.disconnect();
+        replacement.port.close();
+        replacement = undefined;
+      }
+      if (!stopped) {
+        const next = nextProfile(profile, true);
+        if (next !== undefined) return await useFallback(next);
       }
       // Keep the existing browser fallback and its honest status if RNNoise fails.
       return false;
@@ -241,9 +252,16 @@ export async function captureMicrophone(
       }
     }
   };
-  const bypass = () => {
+  const bypass = (retry = false) => {
     if (stopped || bypassing) return;
     bypassing = true;
+    const next = engine === "dpdfnet8" ? nextProfile(activeProfile, retry) : undefined;
+    if (activeProfile === "rnnoise" && next === undefined) {
+      microphone.status = "RNNoise failed - microphone stopped";
+      microphone.stop();
+      changed();
+      return;
+    }
     prepared?.stop();
     prepared = undefined;
     // A processorerror silences a worklet permanently; do not leave it in the path.
@@ -261,7 +279,7 @@ export async function captureMicrophone(
         ? `${engineName} unavailable · browser suppression active`
         : `${engineName} unavailable - noise suppression bypassed`;
       changed();
-      if (engine === "dpdfnet8") void useFallback(activeProfile === 8 ? 2 : "rnnoise");
+      if (next !== undefined) void useFallback(next);
     });
   };
 
@@ -321,15 +339,16 @@ export async function captureMicrophone(
     node.connect(voiceInput);
     connectVoicePath(voiceProcessingStrength);
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
-    node.onprocessorerror = engine === "dpdfnet8" ? bypass : fail;
-    node.port.onmessage = ({ data }) => { if (data === "bypassed" || (engine === "dpdfnet8" && data === "failed")) bypass(); else if (data === "failed") fail(); };
+    node.onprocessorerror = engine === "dpdfnet8" ? () => bypass(true) : fail;
+    node.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") { if (engine === "dpdfnet8") bypass(true); else fail(); } };
     return microphone;
   } catch {
     if (engine === "dpdfnet8" && !stopped && context?.state === "running" && gain && naturalDestination && voiceInput) {
       prepared?.stop();
       prepared = undefined;
       // Startup recovery stays disconnected until a local processor is ready.
-      if (await useFallback(2)) {
+      retried.add(8);
+      if (await useFallback(8)) {
         source!.connect(gain);
         connectVoicePath(voiceProcessingStrength);
         return microphone;

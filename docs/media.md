@@ -1298,8 +1298,9 @@ Join still opens the microphone and initializes a dedicated worklet, but takes
 exclusive ownership of the prepared worker rather than starting another model
 instance. It waits for any unfinished initialization, SSE readiness, transport,
 and initial roster/state synchronization before enabling outgoing audio. A cold
-join does not temporarily publish raw audio. DPDFNet-8 initialization failure tries
-DPDFNet-2 HR, then RNNoise; Join fails if none can initialize. A transient DPDFNet underrun outputs silence while
+join does not temporarily publish raw audio. Each engine gets one fresh-instance retry
+for initialization errors or crashes before advancing from DPDFNet-8 to DPDFNet-2 HR,
+then RNNoise; Join fails if none can initialize. A transient DPDFNet underrun outputs silence while
 refilling the three-hop reserve, then resumes processed audio. Sustained overload
 or worker failure switches the existing processed track to a bypass, preserving the call, and attempts to enable
 the browser's microphone noise-suppression constraint while DPDFNet-2 HR loads.
@@ -1311,7 +1312,7 @@ setting determines whether the UI says browser suppression is active or unavaila
 The mic test displays that live status; both Natural and Enhanced use this same
 noise-suppressed input, and Enhanced adds EQ/compression rather than more denoising.
 The recovery worklet uses `worklet-v3.js` to avoid the immutable cache of older clients.
-DPDFNet processor errors also advance to the next tier. An unrecoverable RNNoise
+DPDFNet processor errors retry once before advancing to the next tier. An unrecoverable RNNoise
 processor error stops the microphone without restarting the connection.
 
 Preparation has a 60-second readiness timeout. Failed workers are terminated and
@@ -1663,6 +1664,12 @@ The active status appears only after the processor acknowledges initialization.
 The recovery order is DPDFNet-8 HR → DPDFNet-2 HR → RNNoise, for initialization
 failure, sustained backlog or processor failure. Healthy 8 HR is never downgraded
 based on CPU count or a single slow hop. Transient underruns rebuffer processed audio.
+Initialization errors/timeouts and processor crashes receive one fresh worker/worklet
+retry per engine per capture, shared across startup and runtime; successful recovery
+does not reset this budget. Sustained backlog skips retries and advances immediately.
+Worker-reported inference failures are handled separately from worklet overload.
+DPDFNet initialization is bounded to 60 seconds per attempt, RNNoise worklet readiness
+to 15 seconds (asset download has its own 30-second timeout). Abort stops recovery.
 2 HR uses the same 48 kHz framing/DSP with its own smaller model and recurrent state;
 upstream lists 2.42G MACs versus 8 HR's 7.17G (not a measured CPU guarantee).
 Its 10.5 MB model loads only on fallback, reusing the existing ONNX runtime.
@@ -1711,7 +1718,8 @@ active/fallback status before attributing a sound to DPDFNet.
 Fallback validation, September 23, 2026:
 
 - `node scripts/test-noise-fallback.mjs http://localhost:5174` runs against local
-  Vite, with real model initialization and synthetic white noise. It stalls 8 HR,
+  Vite, with real model initialization and synthetic white noise. It injects an initial
+  8 HR startup failure, verifies a fresh 8 HR retry, then stalls 8 HR,
   verifies real 2 HR processing/attenuation, then stalls 2 HR and verifies RNNoise.
   It verifies unchanged tracks, measurable attenuation
   (at least 6 dB), and unclipped desktop/narrow mic tooltips with Escape dismissal.
