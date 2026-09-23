@@ -1,15 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { ChatClient, type ChatViewState } from "./client.ts";
-import type { ChatAuthor } from "./types.ts";
+import { ChatClient, initialChatView } from "./client.ts";
+import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
 const INITIAL_ITEM_INDEX = 1_000_000_000;
-const initialView: ChatViewState = {
-  phase: "loading", online: false, spaceName: "Caper", channelName: "General",
-  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
-};
 
 function timeLabel(value: string) {
   const date = new Date(value);
@@ -33,8 +29,9 @@ function HistoryHeader({ context }: { context?: HistoryContext }) {
 
 const listComponents = { Header: HistoryHeader };
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, showTitle = false, headerActions, onAuthorChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void }) {
-  const [state, setState] = useState(initialView);
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void }) {
+  const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   const [draft, setDraft] = useState("");
   const [validationError, setValidationError] = useState<string>();
@@ -84,9 +81,16 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       setState(next);
     }, channelId);
     clientRef.current = client;
-    client.start();
+    client.start(initialHistory, initialHistoryError);
     return () => { client.stop(); clientRef.current = undefined; };
   }, [channelId]);
+
+  useEffect(() => {
+    setShowConnectionStatus(false);
+    if (state.online) return;
+    const timer = setTimeout(() => setShowConnectionStatus(true), 1_000);
+    return () => clearTimeout(timer);
+  }, [state.online, channelId]);
 
   useEffect(() => {
     if (identityReady) clientRef.current?.identify(name, signedIn);
@@ -135,7 +139,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     <header className="chat-heading">
       <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}># {channelName}</h2>
       {headerActions}
-      {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
+      {!state.online && showConnectionStatus && <span className="chat-offline" role="status">{state.phase === "error" ? "Offline" : "Connecting…"}</span>}
     </header>
 
     <div className="chat-messages" aria-busy={state.phase === "loading"}>

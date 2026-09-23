@@ -35,6 +35,15 @@ const initialState: ChatViewState = {
   messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
 };
 
+export function initialChatView(history?: GeneralChatHistory, error?: string): ChatViewState {
+  if (error) return { ...initialState, phase: "error", error };
+  return history ? {
+    ...initialState, phase: "ready", spaceName: history.space.name,
+    channelId: history.channel.id, channelName: history.channel.name,
+    messages: history.messages, hasMore: history.hasMore,
+  } : initialState;
+}
+
 function apiError(response: Response, fallback: string) {
   return response.json().catch(() => undefined).then((body: { error?: unknown } | undefined) =>
     new Error(typeof body?.error === "string" ? body.error : fallback));
@@ -49,6 +58,17 @@ function validHistory(value: unknown, general: boolean): value is ChatHistory | 
   return Array.isArray(history.messages) && history.messages.every(isChatMessage) && typeof history.hasMore === "boolean"
     && (!general || (!!history.space && typeof history.space.id === "string" && typeof history.space.name === "string"
       && !!history.channel && typeof history.channel.id === "string" && typeof history.channel.name === "string"));
+}
+
+export async function loadChatHistory(channelId?: string, signal?: AbortSignal): Promise<GeneralChatHistory> {
+  const path = channelId ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages` : "/api/chat/general";
+  const response = await fetch(path, { cache: "no-store", signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]) });
+  if (!response.ok) throw await apiError(response, "Messages are unavailable.");
+  const history: unknown = await response.json();
+  if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
+  if (channelId && history.channel.id !== channelId) throw new Error("The chat service returned the wrong channel.");
+  if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
+  return history;
 }
 
 function storedSession(): ChatSession | undefined {
@@ -85,8 +105,9 @@ export class ChatClient {
     this.channelId = channelId;
   }
 
-  start() {
-    void this.loadInitial();
+  start(history?: GeneralChatHistory, error?: string) {
+    if (error) this.update({ phase: "error", error });
+    else void this.loadInitial(history);
   }
 
   identify(name: string, signedIn = false) {
@@ -251,20 +272,17 @@ export class ChatClient {
     }
   }
 
-  private async loadInitial() {
+  private async loadInitial(prepared?: GeneralChatHistory) {
     const generation = ++this.generation;
     this.connection?.stop();
     this.connection = undefined;
     this.typers.clear();
-    this.refreshTypers();
-    this.update({ phase: "loading", online: false, error: undefined, loadingOlder: false, olderError: undefined });
+    if (!prepared) {
+      this.refreshTypers();
+      this.update({ phase: "loading", online: false, error: undefined, loadingOlder: false, olderError: undefined });
+    }
     try {
-      const historyPath = this.channelId
-        ? `/api/chat/channels/${encodeURIComponent(this.channelId)}/messages`
-        : "/api/chat/general";
-      const response = await fetch(historyPath, { cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]) });
-      if (!response.ok) throw await apiError(response, "Messages are unavailable.");
-      const history: unknown = await response.json();
+      const history = prepared ?? await loadChatHistory(this.channelId, this.controller.signal);
       if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
       if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
       if (generation !== this.generation) return;

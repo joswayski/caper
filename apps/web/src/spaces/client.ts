@@ -80,7 +80,7 @@ export function listSpaces() {
 }
 
 export function getSpace(spaceId: string) {
-  return request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}`);
+  return request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}`, { signal: AbortSignal.timeout(10_000) });
 }
 
 export function createSpace(name: string) {

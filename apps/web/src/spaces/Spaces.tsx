@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useId,
   useRef,
   useState,
   type FormEvent,
@@ -18,6 +17,7 @@ import {
 import { getAccount, type Account } from "../account/client";
 import Call from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
+import { createSpaceNavigation, type PreparedSpace } from "./navigation";
 import {
   addChannelMember,
   addSpaceMember,
@@ -26,7 +26,6 @@ import {
   createSpace,
   deleteChannel,
   deleteSpace,
-  getSpace,
   listChannelMembers,
   listSpaces,
   removeChannelMember,
@@ -676,14 +675,30 @@ function ManageChannelDialog({
   );
 }
 
+function SpacesLoading() {
+  return <main className="call-page" aria-busy="true">
+    <header className="call-header">
+      <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
+      <a className="call-destination" href="/live">General demo</a>
+    </header>
+    <section className="call-room spaces-room spaces-loading">
+      <div className="space-rail" aria-hidden="true"><i /><i /><i /></div>
+      <ChannelSidebar><div className="sidebar-channels" aria-hidden="true"><i /><i /><i /></div></ChannelSidebar>
+      <div className="stage"><p className="sr-only" role="status">Loading your spaces…</p></div>
+    </section>
+  </main>;
+}
+
 export default function Spaces() {
-  const glowId = useId();
   const [account, setAccount] = useState<Account>();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [limits, setLimits] = useState<SpaceLimits>();
-  const [detail, setDetail] = useState<SpaceDetail>();
+  const [view, setView] = useState<PreparedSpace>();
+  const detail = view?.detail;
+  const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState(selectedFromUrl);
   const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [dialog, setDialog] = useState<
     "space" | "channel" | "manage-space" | "leave-space"
@@ -715,7 +730,11 @@ export default function Spaces() {
       `/spaces${query.size ? `?${query}` : ""}`,
     );
     setSelected({ spaceId, channelId });
-    setNavigationOpen(false);
+  };
+
+  const prefetch = (spaceId: string, channelId?: string) => {
+    if (spaceId === detail?.space.id && (!channelId || channelId === view?.channelId)) return;
+    void navigation.current.prepare(spaceId, channelId).catch(() => undefined);
   };
 
   useEffect(() => {
@@ -754,29 +773,37 @@ export default function Spaces() {
 
   useEffect(() => {
     if (loading || !selected.spaceId) {
-      setDetail(undefined);
       return;
     }
     let current = true;
     setError(undefined);
-    void getSpace(selected.spaceId)
+    setPending(true);
+    void navigation.current.take(selected.spaceId, selected.channelId)
       .then((next) => {
         if (!current) return;
-        setDetail(next);
-        if (!next.channels.some((channel) => channel.id === selected.channelId))
-          choose(next.space.id, next.channels[0]?.id, true);
+        // Commit the channel list and first history together. Until this point,
+        // the existing Call (including its draft and live connections) stays put.
+        setView(next);
+        setPending(false);
+        setNavigationOpen(false);
+        const query = new URLSearchParams({ space: next.detail.space.id });
+        if (next.channelId) query.set("channel", next.channelId);
+        window.history.replaceState({}, "", `/spaces?${query}`);
       })
       .catch((reason) => {
-        if (current) setError(errorMessage(reason));
+        if (current) {
+          setError(errorMessage(reason));
+          setPending(false);
+        }
       });
     return () => {
       current = false;
     };
-  }, [selected.spaceId, loading]);
+  }, [selected, loading]);
 
   const channel = detail?.channels.find(
-    (item) => item.id === selected.channelId,
-  );
+    (item) => item.id === view?.channelId,
+  ) ?? detail?.channels[0];
   const owner = !!account && detail?.space.ownerId === account.id;
   const ownedCount = account
     ? spaces.filter((space) => space.ownerId === account.id).length
@@ -788,21 +815,24 @@ export default function Spaces() {
   const canCreateChannel =
     !!limits && !!detail && detail.channels.length < limits.channelsPerSpace;
   const replaceDetail = (next: SpaceDetail) => {
-    setDetail(next);
+    navigation.current.clear();
+    setView((current) => current && { ...current, detail: next });
     setSpaces((current) =>
       current.map((space) => (space.id === next.space.id ? next.space : space)),
     );
   };
+  const forgetSpace = () => {
+    const remaining = spaces.filter((space) => space.id !== detail?.space.id);
+    navigation.current.clear();
+    // Explicit removal must tear down the old Call immediately, even if the
+    // next space is slow. It is no longer a conversation we can keep showing.
+    setView(undefined);
+    setSpaces(remaining);
+    setDialog(undefined);
+    choose(remaining[0]?.id, undefined, true);
+  };
 
-  if (loading)
-    return (
-      <main className="spaces-state">
-        <a className="wordmark" href="/">
-          caper<span className="wordmark-dot">.</span>
-        </a>
-        <p>Loading your spaces…</p>
-      </main>
-    );
+  if (loading) return <SpacesLoading />;
   if (error && !spaces.length)
     return (
       <main className="spaces-state">
@@ -850,13 +880,15 @@ export default function Spaces() {
         )}
       </main>
     );
+  if ((!detail || !account) && !error) return <SpacesLoading />;
   if (!detail || !account)
     return (
       <main className="spaces-state">
         <a className="wordmark" href="/">
           caper<span className="wordmark-dot">.</span>
         </a>
-        <p>{error ?? "Loading channels…"}</p>
+        <p role="alert">{error}</p>
+        <button type="button" onClick={() => setSelected({ ...selected })}>Try again</button>
       </main>
     );
 
@@ -871,30 +903,14 @@ export default function Spaces() {
           key={space.id}
           data-active={space.id === detail.space.id}
         >
-          {space.id === detail.space.id && (
-            <svg className="space-glow" viewBox="0 0 60 64" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-              <defs>
-                <radialGradient id={`${glowId}-light`} cx=".5" cy=".5" r=".5">
-                  <stop offset="0" stopColor="#b64d32" stopOpacity=".55" />
-                  <stop offset=".65" stopColor="#b64d32" stopOpacity=".35" />
-                  <stop offset="1" stopColor="#b64d32" stopOpacity="0" />
-                </radialGradient>
-                <filter id={`${glowId}-noise`} x="-50%" y="-50%" width="200%" height="200%">
-                  <feTurbulence type="fractalNoise" baseFrequency=".035 .065" numOctaves="2" seed="8" result="noise" />
-                  <feDisplacementMap in="SourceGraphic" in2="noise" scale="14" xChannelSelector="R" yChannelSelector="G" />
-                </filter>
-              </defs>
-              <ellipse cx="0" cy="32" rx="90" ry="30" fill={`url(#${glowId}-light)`} opacity=".45" />
-              <g className="space-glow-wave">
-                <ellipse cx="0" cy="32" rx="87" ry="27" fill={`url(#${glowId}-light)`} filter={`url(#${glowId}-noise)`} />
-              </g>
-            </svg>
-          )}
           <button
             type="button"
             title={space.name}
             aria-label={space.name}
             aria-current={space.id === detail.space.id ? "page" : undefined}
+            aria-busy={pending && space.id === selected.spaceId}
+            onMouseEnter={() => prefetch(space.id)}
+            onFocus={() => prefetch(space.id)}
             onClick={() => choose(space.id)}
           >
             <span>{space.name.slice(0, 1).toUpperCase()}</span>
@@ -915,6 +931,7 @@ export default function Spaces() {
       >
         <Plus aria-hidden="true" />
       </button>
+      {pending && <span className="sr-only" role="status">Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…</span>}
     </nav>
   );
   const channelNavigation = (
@@ -1003,6 +1020,9 @@ export default function Spaces() {
               className="channel-select"
               type="button"
               aria-current={item.id === channel?.id ? "page" : undefined}
+              aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
+              onMouseEnter={() => prefetch(detail.space.id, item.id)}
+              onFocus={() => prefetch(detail.space.id, item.id)}
               onClick={() => choose(detail.space.id, item.id)}
             >
               {item.private ? (
@@ -1028,6 +1048,7 @@ export default function Spaces() {
       {error && (
         <p className="space-sidebar-error" role="alert">
           {error}
+          <button type="button" onClick={() => setSelected({ ...selected })}>Retry opening</button>
         </p>
       )}
     </nav>
@@ -1109,14 +1130,7 @@ export default function Spaces() {
             detail={detail}
             onClose={() => setDialog(undefined)}
             onChanged={replaceDetail}
-            onDeleted={() => {
-              const remaining = spaces.filter(
-                (space) => space.id !== detail.space.id,
-              );
-              setSpaces(remaining);
-              setDialog(undefined);
-              choose(remaining[0]?.id, undefined, true);
-            }}
+            onDeleted={forgetSpace}
           />
         )}
         {dialog === "leave-space" && (
@@ -1124,14 +1138,7 @@ export default function Spaces() {
             space={detail.space}
             account={account}
             onClose={() => setDialog(undefined)}
-            onLeft={() => {
-              const remaining = spaces.filter(
-                (space) => space.id !== detail.space.id,
-              );
-              setSpaces(remaining);
-              setDialog(undefined);
-              choose(remaining[0]?.id, undefined, true);
-            }}
+            onLeft={forgetSpace}
           />
         )}
       </>
@@ -1147,6 +1154,8 @@ export default function Spaces() {
           spaceName: detail.space.name,
         }}
         initialAccount={account}
+        initialHistory={view?.history?.channel.id === channel.id ? view.history : undefined}
+        initialHistoryError={view?.channelId === channel.id ? view.historyError : undefined}
         spaceRail={rail}
         channelNavigation={channelNavigation}
         navigationOpen={navigationOpen}
@@ -1182,14 +1191,7 @@ export default function Spaces() {
           detail={detail}
           onClose={() => setDialog(undefined)}
           onChanged={replaceDetail}
-          onDeleted={() => {
-            const remaining = spaces.filter(
-              (space) => space.id !== detail.space.id,
-            );
-            setSpaces(remaining);
-            setDialog(undefined);
-            choose(remaining[0]?.id, undefined, true);
-          }}
+          onDeleted={forgetSpace}
         />
       )}
       {dialog === "leave-space" && (
@@ -1197,14 +1199,7 @@ export default function Spaces() {
           space={detail.space}
           account={account}
           onClose={() => setDialog(undefined)}
-          onLeft={() => {
-            const remaining = spaces.filter(
-              (space) => space.id !== detail.space.id,
-            );
-            setSpaces(remaining);
-            setDialog(undefined);
-            choose(remaining[0]?.id, undefined, true);
-          }}
+          onLeft={forgetSpace}
         />
       )}
       {manageChannel && (

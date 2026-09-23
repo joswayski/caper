@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { ChatClient, type ChatViewState } from "../chat/client.ts";
-import type { ChatEvent, ChatMessage, ChatTypingEvent } from "../chat/types.ts";
+import { ChatClient, initialChatView, loadChatHistory, type ChatViewState } from "../chat/client.ts";
+import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -518,4 +518,61 @@ test("channel clients isolate history, websocket URLs, and late events across a 
   sockets[0].message(stale);
   assert.deepEqual(alpha.messages, []);
   assert.deepEqual(bravo.messages, [], "an old channel cannot leak messages into the replacement client");
+});
+
+test("prepared history is ready on the first render and starts live replay without another history fetch", (t) => {
+  const sockets = installBrowser(t);
+  t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected duplicate history fetch"); });
+  const message: ChatMessage = {
+    id: "seven", channelId: "alphaChannel", seq: "7", author: { id: "peer", name: "Peer", isGuest: false },
+    content: { version: 1, type: "text", text: "Prepared message" }, createdAt: "2026-09-23T12:00:00Z", clientMessageId: "command-seven",
+  };
+  const history: GeneralChatHistory = {
+    space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" },
+    messages: [message], cursor: "7", hasMore: true,
+  };
+  const firstRender = initialChatView(history);
+  assert.equal(firstRender.phase, "ready");
+  assert.deepEqual(firstRender.messages, [message]);
+  const states: ChatViewState[] = [];
+  const client = new ChatClient((state) => states.push(state), "alphaChannel");
+  t.after(() => client.stop());
+  client.start(history);
+  assert.ok(states.every((state) => state.phase === "ready"));
+  assert.equal(new URL(sockets[0].url).searchParams.get("after"), "7");
+  sockets[0].message({ ...message, id: "eight", seq: "8", clientMessageId: "command-eight", content: { version: 1, type: "text", text: "Arrived during navigation" } });
+  assert.deepEqual(states.at(-1)?.messages.map((item) => item.content.text), ["Prepared message", "Arrived during navigation"]);
+  client.stop();
+  assert.equal(sockets[0].closed, true);
+});
+
+test("prefetch rejects a history payload containing another channel's messages", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" },
+    messages: [{ id: "one", channelId: "bravoChannel", seq: "1", author: { id: "peer", name: "Peer", isGuest: false },
+      content: { version: 1, type: "text", text: "Wrong channel" }, createdAt: "2026-09-23T12:00:00Z", clientMessageId: "command-one" }],
+    cursor: "1", hasMore: false,
+  }));
+  await assert.rejects(loadChatHistory("alphaChannel"), /another channel/);
+});
+
+test("a prepared history failure renders once and retries only when requested", async (t) => {
+  const sockets = installBrowser(t);
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++;
+    return Response.json({ space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" }, messages: [], cursor: "0", hasMore: false });
+  });
+  let view = initialChatView(undefined, "Messaging unavailable");
+  assert.equal(view.phase, "error");
+  const client = new ChatClient((next) => { view = next; }, "alphaChannel");
+  t.after(() => client.stop());
+  client.start(undefined, "Messaging unavailable");
+  assert.equal(requests, 0);
+  assert.equal(sockets.length, 0);
+  client.retryLoad();
+  await tick();
+  assert.equal(requests, 1);
+  assert.equal(view.phase, "ready");
+  assert.equal(sockets.length, 1);
 });

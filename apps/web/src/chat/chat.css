@@ -1,8 +1,8 @@
 .chat-panel { flex: 1; min-width: 0; min-height: 360px; display: grid; grid-template-rows: auto minmax(140px, 1fr) auto auto; overflow: hidden; background: var(--surface-conversation); }
-.chat-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 18px; border-bottom: 1px solid var(--border); }
+.chat-heading { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 18px; border-bottom: 1px solid var(--border); }
 .chat-heading h2 { margin: 0; }
 .chat-channel-title { min-width: 0; flex: 1; overflow: hidden; font-size: .86rem; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
-.chat-offline { color: var(--text-muted); font-size: .7rem; font-weight: 750; }
+.chat-offline { position: absolute; z-index: 1; top: calc(100% + 8px); right: 18px; padding: 3px 6px; border-radius: 4px; background: var(--surface-conversation); color: var(--text-muted); font-size: .7rem; font-weight: 750; }
 .chat-messages { min-height: 0; overflow: hidden; }
 .chat-scroller { overflow-anchor: none; }
 .chat-history { height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 14px; color: var(--text-muted); font-size: .72rem; }

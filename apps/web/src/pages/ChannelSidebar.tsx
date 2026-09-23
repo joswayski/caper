@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 const DEFAULT_WIDTH = 280;
 const MIN_WIDTH = 220;
@@ -11,7 +11,7 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [maximum, setMaximum] = useState(MAX_WIDTH);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     try {
       const saved = Number(localStorage.getItem(STORAGE_KEY));
       if (saved >= MIN_WIDTH && saved <= MAX_WIDTH) setWidth(saved);
@@ -19,7 +19,7 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
       /* Storage may be unavailable in private browsing. */
     }
     const room = panel.current!.parentElement!;
-    const observer = new ResizeObserver(() => {
+    const measure = () => {
       if (window.innerWidth <= 760) return;
       const rail =
         room.querySelector(".space-rail")?.getBoundingClientRect().width ?? 0;
@@ -29,7 +29,9 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
       );
       setMaximum(max);
       setWidth((current) => Math.min(current, max));
-    });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
     observer.observe(room);
     return () => observer.disconnect();
   }, []);

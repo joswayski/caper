@@ -4,7 +4,7 @@ import { ChevronDown, Hash, Headphones, Menu, Mic, MicOff, Speech, Settings, Vol
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import Chat from "../chat/Chat";
-import type { ChatAuthor } from "../chat/types";
+import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import Slider from "../components/Slider";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
@@ -149,14 +149,16 @@ interface CallProps {
   navigationOpen?: boolean;
   onNavigationToggle?: () => void;
   initialAccount?: Account;
+  initialHistory?: GeneralChatHistory;
+  initialHistoryError?: string;
 }
 
-export default function Call({ channel, spaceRail, channelNavigation, navigationOpen = false, onNavigationToggle, initialAccount }: CallProps = {}) {
+export default function Call({ channel, spaceRail, channelNavigation, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError }: CallProps = {}) {
   const [state, setState] = useState(initialState);
-  const [name, setName] = useState("");
-  const [account, setAccount] = useState<Account | null>(null);
+  const [name, setName] = useState(initialAccount?.displayName ?? "");
+  const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
   const [chatAuthor, setChatAuthor] = useState<ChatAuthor>();
-  const [identityReady, setIdentityReady] = useState(false);
+  const [identityReady, setIdentityReady] = useState(!!initialAccount);
   const [available, setAvailable] = useState<boolean>();
   const [joinTooltipDismissed, setJoinTooltipDismissed] = useState(false);
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection">();
@@ -191,7 +193,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
 
   useEffect(() => {
     let current = true;
-    setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
+    if (!initialAccount) setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
     void (initialAccount ? Promise.resolve(initialAccount) : getAccount())
       .then((account) => {
         if (!current) return;
@@ -389,7 +391,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {!audioPanel && (state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
+          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
               if (event.key === "Escape") setJoinTooltipDismissed(true);
