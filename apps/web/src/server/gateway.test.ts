@@ -199,6 +199,26 @@ for (const interruption of ["disconnect", "handoff", "draining", "pending"] as c
   });
 }
 
+test("local presence follows connection and the server idle timeout without a presence subscription", (t) => {
+  const f = setup(t);
+  let now = 10_000;
+  t.mock.method(Date, "now", () => now);
+  f.gateway.reportActivity();
+  assert.equal(f.gateway.localPresence(false), "offline");
+  const subscription = f.gateway.subscribe({ kind: "chat", channelId: "general" }, { event: () => undefined });
+  void subscription.ready.catch(() => undefined);
+  t.after(() => subscription.unsubscribe());
+  f.sockets[0].frame({ type: "hello", idleTimeoutSeconds: 12, serverTime: now });
+  now += 11_999;
+  assert.equal(f.gateway.localPresence(true), "online");
+  now++;
+  assert.equal(f.gateway.localPresence(true), "idle");
+  assert.equal(f.gateway.localPresence(false), "offline");
+  globalThis.window.dispatchEvent(new Event("pointerdown"));
+  assert.equal(f.gateway.localPresence(true), "online");
+  assert.equal(f.sockets[0].sent.filter(frame => frame.type === "subscribe").length, 1);
+});
+
 test("pointer movement reports throttled activity without focus state", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = setup(t);

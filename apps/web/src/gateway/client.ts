@@ -143,6 +143,7 @@ export class AppGateway {
   private idleTimer?: ReturnType<typeof setTimeout>;
   private activityTimer?: ReturnType<typeof setTimeout>;
   private reconnects = 0;
+  private idleTimeoutMs = 600_000;
   private readonly subscriptions = new Map<string, LogicalSubscription>();
   private readonly commands = new Map<string, PendingCommand>();
   private readonly socketFactory: SocketFactory;
@@ -218,6 +219,12 @@ export class AppGateway {
       this.ensureConnected();
       if (this.active?.hello) this.sendCommand(this.active, pending);
     });
+  }
+
+  /** This tab's activity, not cross-device account presence. No new subscription. */
+  localPresence(connected: boolean): PresenceStatus {
+    if (!connected) return "offline";
+    return Date.now() - lastActivityAt >= this.idleTimeoutMs ? "idle" : "online";
   }
 
   reportActivity() {
@@ -299,6 +306,7 @@ export class AppGateway {
         throw new Error("Invalid gateway hello.");
       }
       stream.hello = true;
+      this.idleTimeoutMs = frame.idleTimeoutSeconds * 1_000;
       stream.serverOffsetMs = frame.serverTime - Date.now();
       clearTimeout(stream.openTimer);
       this.armWatchdog(stream);

@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { ChevronDown, Hash, Headphones, Menu, Mic, MicOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
-import { playSound, preloadSoundEffects } from "../audio/effects";
+import { getSystemSoundsEnabled, playSound, preloadSoundEffects, setSystemSoundsEnabled, subscribeSystemSounds } from "../audio/effects";
 import Chat from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import Slider from "../components/Slider";
@@ -162,6 +162,7 @@ interface CallProps {
 }
 
 export default function Call({ channel, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange }: CallProps = {}) {
+  const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
   const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
@@ -181,6 +182,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const [outputVolume, setOutputVolume] = useState(100);
   const [membersVisible, setMembersVisible] = useState(true);
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
+  const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [actionPending, setActionPending] = useState(false);
@@ -210,6 +212,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const controlsDisabled = (!idle && !connected) || actionPending;
   const roster = idle ? publicParticipants[mediaRoot] ?? [] : state.participants;
   const identityName = account?.displayName || chatAuthor?.name || name;
+  const accountPresence = !!account && !!channel?.spaceId && !channel.demo;
   const joined = useRef(false);
 
   useEffect(() => {
@@ -414,7 +417,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
           </div>}
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
-              <span className="account-avatar"><span aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span><PresenceDot status={selfPresence} live={presenceLive} /></span>
+              <span className="account-avatar"><span aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span><PresenceDot status={accountPresence ? selfPresence : localPresence} live={accountPresence ? presenceLive : true} /></span>
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className={`voice-action-group${state.muted ? " active" : ""}`}>
@@ -441,6 +444,10 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
             </div>
             <AudioMenu label="User Settings" settings open={audioMenu === "settings"} onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)} menuRef={audioMenu === "settings" ? audioMenuRef : undefined}>
               <strong>Audio settings</strong>
+              <fieldset className="device-options">
+                <label><input type="checkbox" role="switch" checked={systemSounds} onChange={(event) => { setSystemSoundsEnabled(event.target.checked); if (event.target.checked) { void preloadSoundEffects(); playSound("toggle-on"); } }} /><span>System sounds</span></label>
+                <p>Saved for this browser. Does not mute voices or mic playback. Effects stay silent on mobile.</p>
+              </fieldset>
               <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
               {state.diagnostics && <button type="button" onClick={() => setAudioPanel("connection")}>Connection details</button>}
               {account?.debugEnabled && <button type="button" onClick={() => setAudioPanel("debug")}>Audio diagnostics</button>}
@@ -450,7 +457,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
+          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
             {!audioPanel && (state.error || actionError) && <div className="room-error chat-refresh-error" role="alert">{state.error || actionError}</div>}
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join">

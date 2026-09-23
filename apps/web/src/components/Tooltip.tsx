@@ -102,10 +102,9 @@ export default function Tooltip({ children, content, id, placement = "top", touc
     "aria-describedby": content == null ? children.props["aria-describedby"] : tooltipId,
     onClick: (event) => {
       children.props.onClick?.(event);
-      if (touch) {
-        if (touchPointerRef.current && tooltipRef.current?.matches(":popover-open")) hide();
-        else show(event.currentTarget);
-      }
+      if (!touch) { hide(); return; }
+      if (touchPointerRef.current && tooltipRef.current?.matches(":popover-open")) hide();
+      else show(event.currentTarget);
     },
     onMouseEnter: (event) => {
       children.props.onMouseEnter?.(event);

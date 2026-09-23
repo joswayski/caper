@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
+import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -39,7 +40,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange, onHistoryChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange, onHistoryChange, onLocalPresenceChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -109,6 +110,14 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     const timer = setTimeout(() => setShowConnectionStatus(true), 1_000);
     return () => clearTimeout(timer);
   }, [state.online, channelId]);
+
+  useEffect(() => {
+    if (!onLocalPresenceChange) return;
+    const update = () => onLocalPresenceChange(appGateway().localPresence(state.online));
+    update();
+    const timer = setInterval(update, 1_000);
+    return () => clearInterval(timer);
+  }, [state.online, onLocalPresenceChange]);
 
   useEffect(() => {
     if (identityReady) clientRef.current?.identify(name, signedIn);
