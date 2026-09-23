@@ -174,19 +174,27 @@ broker. Durable replay, lease expiry and command dedup tests use disposable loca
 services; they do not establish production capacity or physical-device behavior.
 
 Validation for this transport change:
-- `cargo test --workspace` and the explicitly enabled ignored tests passed against
-  disposable loopback Postgres/Valkey. The gateway test holds Join inside a mocked
+- After merging the latest PR #144 website, `cargo test --workspace` passed 91
+  tests; all 23 explicitly enabled ignored integrations passed against disposable
+  loopback Postgres 15 and Valkey 9.1.2. Another 14 tests passed against Valkey
+  9.1.2 in cluster mode. The gateway test holds Join inside a mocked
   provider while the original socket disappears, retries on another gateway, and
   verifies one participant and the original result. The outbox test locks one
   claimed row and verifies a second publisher can publish the remaining rows.
-- `npm run check`, browser-client tests, Rust formatting/Clippy, and the API release
-  build passed. Docker was unavailable; the web and Rust image build stages were
-  executed directly, not claimed as built Docker images.
+- `npm run check`, all 222 web tests, Rust formatting/Clippy, and the API release
+  build passed. Typing regressions cover start/stop publication without receipts,
+  authorization, and dropping interrupted pulses rather than retrying them.
+  Orb setup completed twice with the pinned native Valkey binaries. The Docker
+  daemon was unavailable; the web and Rust image build stages were executed
+  directly, not claimed as built Docker images.
 - Chromium exercised real member presence with seeded local accounts: online/idle,
   25-to-5 member pagination, collapse/unsubscribe, and desktop/narrow layouts.
-  `scripts/test-voice-controls.mjs` exercised the actual Call/Chat components over
-  a mocked multiplexed socket and synthetic audio. No live SFU, physical mobile,
-  mass reconnect, or production capacity test was performed for this change.
+  After the website merge, `scripts/test-space-controls.mjs` and
+  `scripts/test-voice-controls.mjs` passed with mocked HTTP/WebSocket/WebRTC and
+  synthetic audio, including deletion confirmation/focus/retry, member
+  subscriptions, voice menus, and narrow layouts. No live SFU, physical mobile,
+  mass reconnect, authenticated staging-secret, or production capacity test was
+  performed for this change.
 
 ### Public text demo
 
