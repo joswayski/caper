@@ -11,6 +11,7 @@ native="$root/apps/native/desktop"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 export CARGO_TARGET_DIR="$native/target"
 
+python3 "$root/scripts/native_fonts.py"
 cargo fmt --manifest-path "$native/Cargo.toml" -- --check
 cargo test --manifest-path "$native/Cargo.toml" --locked
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --all-targets -- -D warnings
@@ -20,6 +21,7 @@ rm -rf "$native/dist" "$native/target/package"
 mkdir -p "$native/dist" "$native/target/package/Caper-linux-x64"
 install -m 0755 "$native/target/release/caper-desktop" "$native/target/package/Caper-linux-x64/caper-desktop"
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$native/target/package/Caper-linux-x64/"
+install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$native/target/package/Caper-linux-x64/"
 tar -C "$native/target/package" -czf "$native/dist/Caper-linux-x64.tar.gz" Caper-linux-x64
 
 deb="$native/target/package/deb"
@@ -28,6 +30,7 @@ install -m 0755 "$native/target/release/caper-desktop" "$deb/usr/bin/caper-deskt
 install -m 0644 "$native/resources/caper.desktop" "$deb/usr/share/applications/caper.desktop"
 install -m 0644 "$native/resources/caper.svg" "$deb/usr/share/icons/hicolor/scalable/apps/caper.svg"
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$deb/usr/share/doc/caper-desktop/"
+install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$deb/usr/share/doc/caper-desktop/"
 size="$(du -sk "$deb" | cut -f1)"
 cat > "$deb/DEBIAN/control" <<EOF
 Package: caper-desktop

@@ -4,6 +4,7 @@ import chat.caper.android.data.ApiException
 import chat.caper.android.model.MediaSnapshot
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -34,6 +35,7 @@ class MediaEventClientTest {
         }))
         val snapshots = ArrayBlockingQueue<MediaSnapshot>(1)
         val terminal = ArrayBlockingQueue<Throwable>(1)
+        val now = AtomicLong(100)
         val events = MediaEventClient(
             baseUrl = server.url("/").toString().trimEnd('/'),
             accountToken = "account-secret",
@@ -41,6 +43,8 @@ class MediaEventClientTest {
             mediaToken = "media-capability",
             onSnapshot = snapshots::add,
             onTerminal = terminal::add,
+            monotonicMs = now::get,
+            heartbeatIntervalMs = 20,
         )
         try {
             events.start()
@@ -52,6 +56,12 @@ class MediaEventClientTest {
             assertEquals("media", subscription["kind"]?.jsonPrimitive?.content)
             assertEquals("media-capability", subscription["token"]?.jsonPrimitive?.content)
             assertEquals("channel00001", subscription["channelId"]?.jsonPrimitive?.content)
+            now.set(460)
+            val heartbeat = Json.parseToJsonElement(
+                incoming.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("heartbeat not sent"),
+            ).jsonObject
+            assertEquals("heartbeat", heartbeat["type"]?.jsonPrimitive?.content)
+            assertEquals("360", heartbeat["activityAgeMs"]?.jsonPrimitive?.content)
 
             val id = subscription.getValue("id").jsonPrimitive.content
             val request = server.takeRequest(2, TimeUnit.SECONDS) ?: throw AssertionError("missing handshake")
@@ -65,6 +75,44 @@ class MediaEventClientTest {
             socket.send("""{"type":"error","id":"$id","status":403,"code":"forbidden"}""")
             val error = terminal.poll(2, TimeUnit.SECONDS)
             assertTrue(error is ApiException && error.status == 403)
+        } finally {
+            events.close()
+            server.close()
+        }
+    }
+
+    @Test fun `socket that never receives hello is replaced by watchdog`() {
+        val server = MockWebServer()
+        val firstOpened = ArrayBlockingQueue<WebSocket>(1)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                firstOpened.add(webSocket)
+            }
+        }))
+        val secondOpened = ArrayBlockingQueue<WebSocket>(1)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                secondOpened.add(webSocket)
+                webSocket.send("""{"type":"hello","idleTimeoutSeconds":600,"serverTime":1}""")
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+            }
+        }))
+        val events = MediaEventClient(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            accountToken = null,
+            channelId = null,
+            mediaToken = "media-capability",
+            onSnapshot = {},
+            onTerminal = {},
+            helloTimeoutMs = 50,
+        )
+        try {
+            events.start()
+            assertTrue(firstOpened.poll(2, TimeUnit.SECONDS) != null)
+            assertTrue("hello watchdog must reconnect a silent open socket", secondOpened.poll(2, TimeUnit.SECONDS) != null)
         } finally {
             events.close()
             server.close()

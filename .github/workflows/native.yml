@@ -148,6 +148,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Provide room for the macOS desktop reference window
+        if: matrix.platform == 'macos'
+        run: |
+          # The hosted VM can default to 1024x768, forcing the medium layout.
+          # Leave room for a 1440x900 app window and native menu/Dock chrome.
+          if [[ -x '/Library/Application Support/Veertu/Anka/addons/change_res' ]]; then
+            '/Library/Application Support/Veertu/Anka/addons/change_res' 1920x1080x32@30
+          elif [[ -x '/Library/Application Support/VMware Tools/vmware-resolutionSet' ]]; then
+            '/Library/Application Support/VMware Tools/vmware-resolutionSet' 1920 1080
+          else
+            echo '::warning::No supported VM display resizer; UI tests record the actual window size.'
+          fi
+          sleep 3
+          system_profiler SPDisplaysDataType
       - name: Exercise native UI against the loopback parity fixture
         env:
           PLATFORM: ${{ matrix.platform }}

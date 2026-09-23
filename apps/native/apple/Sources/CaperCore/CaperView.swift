@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import MediaPlayer
+#endif
 
 public enum CaperTheme {
     public static let blackout = Color(red: 12/255, green: 13/255, blue: 15/255)
@@ -401,15 +404,32 @@ private struct VoiceRoster: View {
                 }
             }
             ForEach(voice.participants) { participant in
-                HStack(spacing: 10) {
-                    Avatar(name: participant.name, size: 38)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(participant.name).font(CaperTheme.font(14, weight: .bold)).lineLimit(1)
-                        Text(participant.muted ? "Muted" : "Listening").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                VStack(spacing: 7) {
+                    HStack(spacing: 10) {
+                        Avatar(name: participant.name, size: 38)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(participant.name).font(CaperTheme.font(14, weight: .bold)).lineLimit(1)
+                            Text(participant.muted ? "Muted" : "Listening").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                        }
+                        Spacer()
+                        if !voice.isSelf(participantID: participant.id) {
+                            Button {
+                                voice.setParticipantMuted(!voice.locallyMutedParticipants.contains(participant.id), participantID: participant.id)
+                            } label: {
+                                Image(systemName: voice.locallyMutedParticipants.contains(participant.id) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Mute \(participant.name) locally")
+                        }
+                        if participant.muted { Image(systemName: "mic.slash.fill").foregroundStyle(CaperTheme.muted) }
+                        if participant.deafened { Image(systemName: "speaker.slash.fill").foregroundStyle(CaperTheme.muted) }
                     }
-                    Spacer()
-                    if participant.muted { Image(systemName: "mic.slash.fill").foregroundStyle(CaperTheme.muted) }
-                    if participant.deafened { Image(systemName: "speaker.slash.fill").foregroundStyle(CaperTheme.muted) }
+                    if !voice.isSelf(participantID: participant.id) {
+                        HStack(spacing: 8) {
+                            Slider(value: participantGain(participant.id), in: 0...200, step: 1)
+                                .accessibilityLabel("\(participant.name) volume")
+                            Text("\(voice.participantGains[participant.id] ?? 100)%")
+                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).frame(width: 36, alignment: .trailing)
+                        }
+                    }
                 }.padding(9).background(CaperTheme.raised.opacity(0.45)).clipShape(RoundedRectangle(cornerRadius: 8))
             }
             if let context = voice.context {
@@ -428,6 +448,13 @@ private struct VoiceRoster: View {
             }
             if let error = voice.error { Text(error).font(CaperTheme.font(10)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
         }.padding(.vertical, 16)
+    }
+
+    private func participantGain(_ id: String) -> Binding<Double> {
+        Binding(
+            get: { Double(voice.participantGains[id] ?? 100) },
+            set: { voice.setParticipantGain(Int($0), participantID: id) }
+        )
     }
 }
 
@@ -907,9 +934,54 @@ private struct AudioPreferencesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Audio preferences").font(CaperTheme.font(20, weight: .bold))
-            Picker("Input", selection: $voice.selectedInputID) { Text("System default").tag(String?.none); ForEach(voice.availableInputs, id: \.id) { Text($0.name).tag(Optional($0.id)) } }
-            Picker("Output", selection: $voice.selectedOutputID) { Text("System default").tag(String?.none); ForEach(voice.availableOutputs, id: \.id) { Text($0.name).tag(Optional($0.id)) } }
-            Text("Changes apply to the next call. iPhone route selection remains controlled by the system route picker.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
+            AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+            VStack(alignment: .leading, spacing: 7) {
+                HStack { Text("Output gain").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
+                Slider(value: outputGain, in: 0...200, step: 1).accessibilityLabel("Output gain")
+            }
+            #if os(iOS)
+            HStack {
+                Text("Choose an audio route").font(CaperTheme.font(13, weight: .bold))
+                Spacer()
+                SystemAudioRoutePicker().frame(width: 44, height: 36)
+            }
+            Text("Use the iPhone system picker to switch available routes during a call.")
+                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #else
+            Text("Caper follows the input and output selected in macOS System Settings. The embedded WebRTC build does not expose safe per-device switching.")
+                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #endif
         }.padding(22).frame(minWidth: 360).background(CaperTheme.surface).task { await voice.refreshAudioDevices() }
     }
+
+    private var outputGain: Binding<Double> {
+        Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) })
+    }
 }
+
+private struct AudioRouteRow: View {
+    let title: String
+    let value: String
+    var body: some View {
+        HStack {
+            Text(title).font(CaperTheme.font(13, weight: .bold))
+            Spacer()
+            Text(value).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+        }
+    }
+}
+
+#if os(iOS)
+private struct SystemAudioRoutePicker: UIViewRepresentable {
+    func makeUIView(context: Context) -> MPVolumeView {
+        let picker = MPVolumeView()
+        picker.showsVolumeSlider = false
+        picker.tintColor = UIColor(CaperTheme.text)
+        picker.accessibilityLabel = "Choose system audio route"
+        return picker
+    }
+
+    func updateUIView(_ view: MPVolumeView, context: Context) {}
+}
+#endif

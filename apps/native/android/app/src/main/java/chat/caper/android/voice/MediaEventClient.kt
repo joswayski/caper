@@ -32,6 +32,10 @@ internal class MediaEventClient(
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val client: OkHttpClient = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS)
         .followRedirects(false).followSslRedirects(false).build(),
+    private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val helloTimeoutMs: Long = 10_000,
+    private val receiveTimeoutMs: Long = 30_000,
+    private val heartbeatIntervalMs: Long = 10_000,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val subscriptionId = UUID.randomUUID().toString()
@@ -41,7 +45,7 @@ internal class MediaEventClient(
     private var reconnect: Job? = null
     private var attempts = 0
     private var closed = false
-    private val startedAt = System.currentTimeMillis()
+    private val startedAt = monotonicMs()
 
     fun start() = connect()
 
@@ -49,7 +53,9 @@ internal class MediaEventClient(
         if (closed || socket != null) return
         val url = baseUrl.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") + "/api/chat/events"
         val request = Request.Builder().url(url).apply { accountToken?.let { header("Authorization", "Bearer $it") } }.build()
-        socket = client.newWebSocket(request, listener)
+        val created = client.newWebSocket(request, listener)
+        socket = created
+        armWatchdog(created, helloTimeoutMs)
     }
 
     private val listener = object : WebSocketListener() {
@@ -79,14 +85,14 @@ internal class MediaEventClient(
                 heartbeat?.cancel()
                 heartbeat = scope.launch {
                     while (true) {
-                        delay(10_000)
-                        val age = (System.currentTimeMillis() - startedAt).coerceAtLeast(0)
+                        delay(heartbeatIntervalMs)
+                        val age = (monotonicMs() - startedAt).coerceAtLeast(0)
                         webSocket.send("""{"type":"heartbeat","activityAgeMs":$age}""")
                     }
                 }
-                armWatchdog(webSocket)
+                armWatchdog(webSocket, receiveTimeoutMs)
             }
-            "heartbeat" -> armWatchdog(webSocket)
+            "heartbeat" -> armWatchdog(webSocket, receiveTimeoutMs)
             "event" -> if (frame["id"]?.jsonPrimitive?.content == subscriptionId) {
                 val event = frame["event"]?.jsonObject ?: return
                 if (event["type"]?.jsonPrimitive?.content == "snapshot") {
@@ -101,9 +107,9 @@ internal class MediaEventClient(
         }
     }
 
-    private fun armWatchdog(webSocket: WebSocket) {
+    private fun armWatchdog(webSocket: WebSocket, timeoutMs: Long) {
         watchdog?.cancel()
-        watchdog = scope.launch { delay(30_000); fail(webSocket, terminal = null) }
+        watchdog = scope.launch { delay(timeoutMs); fail(webSocket, terminal = null) }
     }
 
     @Synchronized private fun fail(webSocket: WebSocket, terminal: Throwable?) {

@@ -31,6 +31,7 @@ import java.io.IOException
 data class VoiceState(
     val phase: Phase = Phase.IDLE,
     val channelId: String? = null,
+    val spaceId: String? = null,
     val channelName: String? = null,
     val spaceName: String? = null,
     val participants: List<Participant> = emptyList(),
@@ -74,6 +75,7 @@ class VoiceCallService : Service() {
         when (intent?.action) {
             ACTION_START -> startCall(
                 requireNotNull(intent.getStringExtra(EXTRA_CHANNEL_ID)),
+                requireNotNull(intent.getStringExtra(EXTRA_SPACE_ID)),
                 requireNotNull(intent.getStringExtra(EXTRA_CHANNEL_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_SPACE_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_DISPLAY_NAME)),
@@ -100,12 +102,12 @@ class VoiceCallService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startCall(channelId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean) {
+    private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean) {
         if (engine != null) return
         val token = TokenStore(this).read()
         if (!demo && token == null) return stopSelf()
         val attempt = attempts.begin()
-        update { VoiceState(VoiceState.Phase.CONNECTING, channelId, channelName, spaceName, muted = true) }
+        update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName, muted = true) }
         val current = try {
             startForegroundNotification()
             acquireAudio()
@@ -337,6 +339,7 @@ class VoiceCallService : Service() {
         const val ACTION_DEAFEN = "chat.caper.android.voice.DEAFEN"
         const val ACTION_ROUTE = "chat.caper.android.voice.ROUTE"
         const val EXTRA_CHANNEL_ID = "channelId"
+        const val EXTRA_SPACE_ID = "spaceId"
         const val EXTRA_CHANNEL_NAME = "channelName"
         const val EXTRA_SPACE_NAME = "spaceName"
         const val EXTRA_DISPLAY_NAME = "displayName"
@@ -349,16 +352,17 @@ class VoiceCallService : Service() {
         val state: StateFlow<VoiceState> = mutableState
         private fun update(block: (VoiceState) -> VoiceState) { mutableState.update(block) }
 
-        fun start(context: Context, channelId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean = false) {
+        fun start(context: Context, channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean = false) {
             if (!BuildConfig.ENABLE_NATIVE_VOICE) return
             val current = active
             if (current != null && state.value.channelId != channelId) {
                 current.stopCall(stopService = false)
-                current.startCall(channelId, channelName, spaceName, displayName, demo)
+                current.startCall(channelId, spaceId, channelName, spaceName, displayName, demo)
                 return
             }
             val intent = Intent(context, VoiceCallService::class.java).setAction(ACTION_START)
-                .putExtra(EXTRA_CHANNEL_ID, channelId).putExtra(EXTRA_CHANNEL_NAME, channelName).putExtra(EXTRA_SPACE_NAME, spaceName)
+                .putExtra(EXTRA_CHANNEL_ID, channelId).putExtra(EXTRA_SPACE_ID, spaceId)
+                .putExtra(EXTRA_CHANNEL_NAME, channelName).putExtra(EXTRA_SPACE_NAME, spaceName)
                 .putExtra(EXTRA_DISPLAY_NAME, displayName).putExtra(EXTRA_DEMO, demo)
             context.startForegroundService(intent)
         }
@@ -367,12 +371,16 @@ class VoiceCallService : Service() {
             if (current != null) current.stopCall()
             else if (state.value.phase != VoiceState.Phase.IDLE) context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_STOP))
         }
-        fun stopIfChannel(context: Context, channelId: String) { if (state.value.channelId == channelId) stop(context) }
+        fun stopIfChannel(context: Context, channelId: String) { if (state.value.belongsToChannel(channelId)) stop(context) }
+        fun stopIfSpace(context: Context, spaceId: String) { if (state.value.belongsToSpace(spaceId)) stop(context) }
         fun toggleMute(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_MUTE)) }
         fun toggleDeafen(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_DEAFEN)) }
         fun selectRoute(context: Context, id: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_ROUTE).putExtra(EXTRA_ROUTE_ID, id)) }
     }
 }
+
+internal fun VoiceState.belongsToChannel(id: String) = channelId == id && phase != VoiceState.Phase.IDLE
+internal fun VoiceState.belongsToSpace(id: String) = spaceId == id && phase != VoiceState.Phase.IDLE
 
 internal fun transientVoiceControlError(error: Throwable): Boolean = when (error) {
     is ApiException -> error.status == 408 || error.status == 429 || error.status >= 500

@@ -12,6 +12,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.Typography
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import chat.caper.android.R
 
 val Blackout = Color(0xFF0C0D0F)
@@ -62,11 +63,11 @@ private val Satoshi = FontFamily(
         ),
         typography = Typography().run {
             copy(
-                displayLarge = displayLarge.copy(fontFamily = Satoshi), displayMedium = displayMedium.copy(fontFamily = Satoshi), displaySmall = displaySmall.copy(fontFamily = Satoshi),
-                headlineLarge = headlineLarge.copy(fontFamily = Satoshi), headlineMedium = headlineMedium.copy(fontFamily = Satoshi), headlineSmall = headlineSmall.copy(fontFamily = Satoshi),
-                titleLarge = titleLarge.copy(fontFamily = Satoshi), titleMedium = titleMedium.copy(fontFamily = Satoshi), titleSmall = titleSmall.copy(fontFamily = Satoshi),
-                bodyLarge = bodyLarge.copy(fontFamily = Satoshi), bodyMedium = bodyMedium.copy(fontFamily = Satoshi), bodySmall = bodySmall.copy(fontFamily = Satoshi),
-                labelLarge = labelLarge.copy(fontFamily = Satoshi), labelMedium = labelMedium.copy(fontFamily = Satoshi), labelSmall = labelSmall.copy(fontFamily = Satoshi),
+                displayLarge = displayLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), displayMedium = displayMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), displaySmall = displaySmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
+                headlineLarge = headlineLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), headlineMedium = headlineMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), headlineSmall = headlineSmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
+                titleLarge = titleLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), titleMedium = titleMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), titleSmall = titleSmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
+                bodyLarge = bodyLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), bodyMedium = bodyMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), bodySmall = bodySmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
+                labelLarge = labelLarge.copy(fontFamily = Satoshi, letterSpacing = 0.sp), labelMedium = labelMedium.copy(fontFamily = Satoshi, letterSpacing = 0.sp), labelSmall = labelSmall.copy(fontFamily = Satoshi, letterSpacing = 0.sp),
             )
         },
         content = content,

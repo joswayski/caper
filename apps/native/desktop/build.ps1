@@ -11,6 +11,8 @@ $Target = "x86_64-pc-windows-msvc"
 # An explicit target keeps this flag off host-built procedural macros.
 $env:RUSTFLAGS = "$env:RUSTFLAGS -C target-feature=+crt-static".Trim()
 
+python (Join-Path $Root "scripts\native_fonts.py")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") -- --check
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --target $Target --locked
@@ -26,6 +28,7 @@ Remove-Item $Dist, $Stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $Dist, $Stage -ItemType Directory -Force | Out-Null
 Copy-Item (Join-Path $Native "target\$Target\release\caper-desktop.exe") (Join-Path $Stage "Caper.exe")
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
+Copy-Item (Join-Path $Root "shared\fonts\cache\Satoshi-FFL.txt") $Stage
 $Output = Join-Path $Dist "Caper-windows-x64.zip"
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Output -CompressionLevel Optimal
 Write-Host "Built: $Output (unsigned portable application)"

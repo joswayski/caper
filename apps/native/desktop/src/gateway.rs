@@ -1,4 +1,4 @@
-use crate::model::{Message, sequence};
+use crate::model::{Author, Message, Presence, sequence};
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
@@ -21,6 +21,18 @@ pub enum GatewayEvent {
         generation: u64,
         channel: String,
         message: Box<Message>,
+    },
+    Typing {
+        generation: u64,
+        channel: String,
+        author: Author,
+        typing: bool,
+        revision: String,
+    },
+    Presence {
+        generation: u64,
+        space: String,
+        members: Vec<Presence>,
     },
     Resync {
         generation: u64,
@@ -51,10 +63,11 @@ impl GatewayControl {
 
 pub fn spawn(
     base: &url::Url,
-    account_token: String,
+    account_token: Option<String>,
     generation: u64,
     channel: String,
     cursor: String,
+    presence: Option<(String, Vec<String>)>,
     events: Sender<GatewayEvent>,
 ) -> GatewayControl {
     let stop = Arc::new(AtomicBool::new(false));
@@ -75,6 +88,7 @@ pub fn spawn(
             generation,
             channel,
             cursor,
+            presence,
             events,
             stopped,
             thread_activity,
@@ -105,10 +119,11 @@ const TIMING: Timing = Timing {
 #[allow(clippy::too_many_arguments)]
 fn run(
     url: url::Url,
-    token: String,
+    token: Option<String>,
     generation: u64,
     channel: String,
     mut cursor: String,
+    presence: Option<(String, Vec<String>)>,
     events: Sender<GatewayEvent>,
     stop: Arc<AtomicBool>,
     activity: Arc<Mutex<Instant>>,
@@ -132,6 +147,7 @@ fn run(
             generation,
             &channel,
             &mut cursor,
+            presence.as_ref(),
             &events,
             &stop,
             &activity,
@@ -170,10 +186,11 @@ fn run(
 #[allow(clippy::too_many_arguments)]
 fn connect_once(
     url: &url::Url,
-    token: &str,
+    token: &Option<String>,
     generation: u64,
     channel: &str,
     cursor: &mut String,
+    presence: Option<&(String, Vec<String>)>,
     events: &Sender<GatewayEvent>,
     stop: &AtomicBool,
     activity: &Mutex<Instant>,
@@ -186,12 +203,15 @@ fn connect_once(
         .as_str()
         .into_client_request()
         .map_err(|_| Failure::Retry("Invalid gateway endpoint".into()))?;
-    let mut authorization = tungstenite::http::HeaderValue::from_str(&format!("Bearer {token}"))
-        .map_err(|_| Failure::Denied("Invalid account credential".into()))?;
-    authorization.set_sensitive(true);
-    request
-        .headers_mut()
-        .insert(tungstenite::http::header::AUTHORIZATION, authorization);
+    if let Some(token) = token {
+        let mut authorization =
+            tungstenite::http::HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| Failure::Denied("Invalid account credential".into()))?;
+        authorization.set_sensitive(true);
+        request
+            .headers_mut()
+            .insert(tungstenite::http::header::AUTHORIZATION, authorization);
+    }
     let (mut socket, _) = tungstenite::connect(request).map_err(|error| match error {
         tungstenite::Error::Http(response)
             if matches!(response.status().as_u16(), 401 | 403 | 404) =>
@@ -203,6 +223,7 @@ fn connect_once(
     set_timeout(socket.get_mut(), timing.poll)
         .map_err(|_| Failure::Retry("Could not configure the live connection.".into()))?;
     let subscription = uuid::Uuid::new_v4().to_string();
+    let presence_subscription = presence.map(|_| uuid::Uuid::new_v4().to_string());
     let mut subscribed = false;
     let mut last_server = Instant::now();
     let mut last_heartbeat = Instant::now();
@@ -260,6 +281,20 @@ fn connect_once(
                     ))
                     .map_err(|_| Failure::Retry("Could not subscribe to live messages.".into()))?;
                 subscribed = true;
+                if let (Some((space, users)), Some(id)) = (presence, &presence_subscription) {
+                    socket
+                        .send(WsMessage::Text(
+                            json!({
+                                "type":"subscribe", "id":id, "kind":"presence",
+                                "spaceId":space, "userIds":users
+                            })
+                            .to_string()
+                            .into(),
+                        ))
+                        .map_err(|_| {
+                            Failure::Retry("Could not subscribe to member presence.".into())
+                        })?;
+                }
             }
             Some("heartbeat") => {}
             Some("subscribed") if value["id"] == subscription => {
@@ -323,12 +358,45 @@ fn connect_once(
                         }
                         *cursor = ready.into();
                     }
-                    Some("typing.updated") => {}
+                    Some("typing.updated") => {
+                        let author: Author = serde_json::from_value(event["author"].clone())
+                            .map_err(|_| Failure::Retry("Invalid typing author.".into()))?;
+                        let revision = event["revision"]
+                            .as_str()
+                            .ok_or_else(|| Failure::Retry("Invalid typing revision.".into()))?;
+                        sequence(revision).map_err(Failure::Retry)?;
+                        let _ = events.send(GatewayEvent::Typing {
+                            generation,
+                            channel: channel.into(),
+                            author,
+                            typing: event["typing"].as_bool().unwrap_or(false),
+                            revision: revision.into(),
+                        });
+                    }
                     _ => {
                         return Err(Failure::Retry(
                             "The gateway returned an invalid event.".into(),
                         ));
                     }
+                }
+            }
+            Some("event")
+                if presence_subscription
+                    .as_ref()
+                    .is_some_and(|id| value["id"] == *id) =>
+            {
+                let event = &value["event"];
+                if event["type"] == "snapshot"
+                    && let Some((space, _)) = presence
+                {
+                    let members: Vec<Presence> =
+                        serde_json::from_value(event["members"].clone())
+                            .map_err(|_| Failure::Retry("Invalid member presence.".into()))?;
+                    let _ = events.send(GatewayEvent::Presence {
+                        generation,
+                        space: space.clone(),
+                        members,
+                    });
                 }
             }
             Some("error") if value["id"] == subscription => {
@@ -435,10 +503,11 @@ mod tests {
         let base = url::Url::parse(&format!("http://{address}/")).unwrap();
         let control = spawn(
             &base,
-            "account-secret".into(),
+            Some("account-secret".into()),
             4,
             "channel-id".into(),
             "37".into(),
+            None,
             events,
         );
         thread::sleep(Duration::from_millis(250));
@@ -462,10 +531,11 @@ mod tests {
         let base = url::Url::parse(&format!("http://{address}/")).unwrap();
         let _control = spawn(
             &base,
-            "revoked".into(),
+            Some("revoked".into()),
             9,
             "private".into(),
             "0".into(),
+            None,
             events,
         );
         let denied =

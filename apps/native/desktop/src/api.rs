@@ -1,4 +1,6 @@
-use crate::model::{Account, ChatSession, History, Message, SpaceDetail, Spaces};
+use crate::model::{
+    Account, Channel, ChatSession, History, Member, Members, Message, Space, SpaceDetail, Spaces,
+};
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
 use serde::de::DeserializeOwned;
@@ -106,6 +108,10 @@ impl Api {
         self.request(Method::GET, "api/spaces", Some(token), None, None)
     }
 
+    pub fn general_history(&self, token: Option<&str>) -> Result<History, ApiError> {
+        self.request(Method::GET, "api/chat/general", token, None, None)
+    }
+
     pub fn space(&self, token: &str, id: &str) -> Result<SpaceDetail, ApiError> {
         self.request(
             Method::GET,
@@ -116,29 +122,171 @@ impl Api {
         )
     }
 
-    pub fn history(&self, token: &str, channel: &str) -> Result<History, ApiError> {
-        self.request(
-            Method::GET,
-            &format!("api/chat/channels/{channel}/messages"),
-            Some(token),
-            None,
-            None,
-        )
+    pub fn history(
+        &self,
+        token: Option<&str>,
+        channel: &str,
+        before: Option<&str>,
+    ) -> Result<History, ApiError> {
+        let path = before.map_or_else(
+            || format!("api/chat/channels/{channel}/messages"),
+            |cursor| format!("api/chat/channels/{channel}/messages?before={cursor}"),
+        );
+        self.request(Method::GET, &path, token, None, None)
     }
 
-    pub fn chat_session(&self, token: &str, name: &str) -> Result<ChatSession, ApiError> {
+    pub fn chat_session(&self, token: Option<&str>, name: &str) -> Result<ChatSession, ApiError> {
         self.request(
             Method::POST,
             "api/chat/session",
-            Some(token),
+            token,
             None,
             Some(json!({"name":name})),
         )
     }
 
-    pub fn send(
+    pub fn typing(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        channel: &str,
+        typing: bool,
+    ) -> Result<(), ApiError> {
+        let response = self.raw(
+            Method::POST,
+            &format!("api/chat/channels/{channel}/typing"),
+            token,
+            Some(chat_token),
+            Some(json!({"typing":typing})),
+        )?;
+        checked(response).map(|_| ())
+    }
+
+    pub fn create_space(&self, token: &str, name: &str) -> Result<Space, ApiError> {
+        self.request(
+            Method::POST,
+            "api/spaces",
+            Some(token),
+            None,
+            Some(json!({"name":name.trim()})),
+        )
+    }
+
+    pub fn update_space(&self, token: &str, id: &str, name: &str) -> Result<Space, ApiError> {
+        self.request(
+            Method::PATCH,
+            &format!("api/spaces/{id}"),
+            Some(token),
+            None,
+            Some(json!({"name":name.trim()})),
+        )
+    }
+
+    pub fn delete_space(&self, token: &str, id: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{id}"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn create_channel(
         &self,
         token: &str,
+        space: &str,
+        name: &str,
+        private: bool,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/channels"),
+            Some(token),
+            None,
+            Some(json!({"name":name,"private":private})),
+        )
+    }
+
+    pub fn update_channel(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+        name: &str,
+        private: bool,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::PATCH,
+            &format!("api/spaces/{space}/channels/{channel}"),
+            Some(token),
+            None,
+            Some(json!({"name":name,"private":private})),
+        )
+    }
+
+    pub fn delete_channel(&self, token: &str, space: &str, channel: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/channels/{channel}"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn members(
+        &self,
+        token: &str,
+        space: &str,
+        channel: Option<&str>,
+    ) -> Result<Members, ApiError> {
+        let path = channel.map_or_else(
+            || format!("api/spaces/{space}/members"),
+            |channel| format!("api/spaces/{space}/channels/{channel}/members"),
+        );
+        self.request(Method::GET, &path, Some(token), None, None)
+    }
+
+    pub fn add_member(
+        &self,
+        token: &str,
+        space: &str,
+        channel: Option<&str>,
+        username: &str,
+    ) -> Result<Member, ApiError> {
+        let path = channel.map_or_else(
+            || format!("api/spaces/{space}/members"),
+            |channel| format!("api/spaces/{space}/channels/{channel}/members"),
+        );
+        self.request(
+            Method::POST,
+            &path,
+            Some(token),
+            None,
+            Some(json!({"username":username})),
+        )
+    }
+
+    pub fn remove_member(
+        &self,
+        token: &str,
+        space: &str,
+        channel: Option<&str>,
+        member: &str,
+    ) -> Result<(), ApiError> {
+        let path = channel.map_or_else(
+            || format!("api/spaces/{space}/members/{member}"),
+            |channel| format!("api/spaces/{space}/channels/{channel}/members/{member}"),
+        );
+        checked(self.raw(Method::DELETE, &path, Some(token), None, None)?).map(|_| ())
+    }
+
+    pub fn send(
+        &self,
+        token: Option<&str>,
         chat_token: &str,
         channel: &str,
         client_id: &str,
@@ -147,7 +295,7 @@ impl Api {
         self.request(
             Method::POST,
             &format!("api/chat/channels/{channel}/messages"),
-            Some(token),
+            token,
             Some(chat_token),
             Some(json!({"clientMessageId":client_id,"text":text})),
         )

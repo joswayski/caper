@@ -20,12 +20,16 @@ final class CaperParityUITests: XCTestCase {
     }
 
     override func tearDown() {
-        if testRun?.hasSucceeded == false, let app = launchedApp {
+        if (testRun?.failureCount ?? 0) > 0, let app = launchedApp {
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "accessibility-hierarchy-\(name)"
             hierarchy.lifetime = .keepAlways
             add(hierarchy)
+            #if os(macOS)
+            let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.exists ? app.windows.firstMatch.screenshot() : app.screenshot())
+            #else
             let screenshot = XCTAttachment(screenshot: app.screenshot())
+            #endif
             screenshot.name = "failure-\(name)"
             screenshot.lifetime = .keepAlways
             add(screenshot)
@@ -35,7 +39,20 @@ final class CaperParityUITests: XCTestCase {
     }
 
     private func capture(_ name: String, app: XCUIApplication) {
+        #if os(macOS)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 2))
+        let size = window.frame.size
+        let dimensions = XCTAttachment(string: "\(Int(size.width))x\(Int(size.height))")
+        dimensions.name = "\(name)-window-size"
+        dimensions.lifetime = .keepAlways
+        add(dimensions)
+        XCTAssertGreaterThanOrEqual(size.width, 1_400, "Desktop parity capture requires a 1,400-point-wide app window")
+        XCTAssertGreaterThanOrEqual(size.height, 880, "Desktop parity capture requires an app window close to the 1,440×900 reference")
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        #else
         let attachment = XCTAttachment(screenshot: app.screenshot())
+        #endif
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
@@ -44,17 +61,34 @@ final class CaperParityUITests: XCTestCase {
     private func assertElement(_ identifier: String, label: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         let element = app.descendants(matching: .any)[identifier]
         XCTAssertTrue(element.waitForExistence(timeout: timeout), "Missing accessibility identifier \(identifier)")
+        #if os(macOS)
+        if element.elementType == .staticText { XCTAssertEqual(element.value as? String, label) }
+        else { XCTAssertEqual(element.label, label) }
+        #else
         XCTAssertEqual(element.label, label)
+        #endif
+    }
+
+    private func staticTexts(_ text: String, in app: XCUIApplication) -> XCUIElementQuery {
+        #if os(macOS)
+        app.staticTexts.matching(NSPredicate(format: "value == %@", text))
+        #else
+        app.staticTexts.matching(NSPredicate(format: "label == %@", text))
+        #endif
+    }
+
+    private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
+        XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }
 
     func testPopulatedWorkspace() {
         let app = launch()
         assertElement("selected-channel-name", label: "# general", in: app)
-        XCTAssertTrue(app.staticTexts["TEST FIXTURE — local sample data, not a live conversation."].exists)
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         #if os(macOS)
         assertElement("selected-space-name", label: "Fixture Studio", in: app)
         XCTAssertTrue(app.buttons["Hide members"].exists)
-        XCTAssertTrue(app.staticTexts["Members"].exists)
+        assertStaticText("Members", in: app, timeout: 2)
         #endif
         capture("populated", app: app)
     }
@@ -67,22 +101,22 @@ final class CaperParityUITests: XCTestCase {
         toggle.tap()
         XCTAssertTrue(app.buttons["Show members"].waitForExistence(timeout: 2))
         assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
-        XCTAssertTrue(app.staticTexts["TEST FIXTURE — local sample data, not a live conversation."].exists)
-        XCTAssertFalse(app.staticTexts["Members"].exists)
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 2)
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         capture("members-hidden", app: app)
     }
     #endif
 
     func testLogin() {
         let app = launch(fixture: "login", signedIn: false)
-        XCTAssertTrue(app.staticTexts["Come on in."].waitForExistence(timeout: 10))
+        assertStaticText("Come on in.", in: app)
         XCTAssertTrue(app.buttons["guest-general-button"].exists)
         capture("login", app: app)
     }
 
     func testAccountCanSendExactlyOneMessageAndComposerClears() {
         let app = launch()
-        XCTAssertTrue(app.staticTexts["TEST FIXTURE — local sample data, not a live conversation."].waitForExistence(timeout: 10))
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         let composer = app.descendants(matching: .any)["message-composer"]
         XCTAssertTrue(composer.exists)
         let message = "Native parity send \(UUID().uuidString)"
@@ -93,7 +127,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(send.isEnabled)
         send.tap()
 
-        let delivered = app.staticTexts.matching(NSPredicate(format: "label == %@", message))
+        let delivered = staticTexts(message, in: app)
         XCTAssertTrue(delivered.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(delivered.count, 1, "HTTP confirmation and gateway delivery must merge into one message")
         let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
@@ -114,21 +148,21 @@ final class CaperParityUITests: XCTestCase {
         email.tap()
         email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
-        XCTAssertTrue(app.staticTexts["TEST FIXTURE: email service unavailable."].waitForExistence(timeout: 5))
+        assertStaticText("TEST FIXTURE: email service unavailable.", in: app, timeout: 5)
         capture("login-error", app: app)
     }
 
     func testManageSpace() {
         let app = launch(fixture: "manage-space")
-        XCTAssertTrue(app.staticTexts["Manage space"].waitForExistence(timeout: 10))
+        assertStaticText("Manage space", in: app)
         assertElement("space-members-heading", label: "Members 3", in: app)
         capture("manage-space", app: app)
     }
 
     func testPrivateChannelOverview() {
         let app = launch(fixture: "manage-channel")
-        XCTAssertTrue(app.staticTexts["Channel Overview"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Private channel"].exists)
+        assertStaticText("Channel Overview", in: app)
+        assertStaticText("Private channel", in: app, timeout: 2)
         capture("private-channel-overview", app: app)
     }
 

@@ -17,6 +17,8 @@ pub struct Space {
     pub id: String,
     pub name: String,
     pub owner_id: String,
+    #[serde(default)]
+    pub demo: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -40,6 +42,16 @@ pub struct Member {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Spaces {
     pub spaces: Vec<Space>,
+    #[serde(default)]
+    pub limits: Option<SpaceLimits>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceLimits {
+    pub owned_spaces: usize,
+    pub total_spaces: usize,
+    pub channels_per_space: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -109,6 +121,18 @@ pub struct ChatSession {
     pub author: Author,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Presence {
+    pub user_id: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Members {
+    pub members: Vec<Member>,
+}
+
 #[derive(Default)]
 pub struct Timeline {
     cursor: u64,
@@ -162,6 +186,13 @@ impl Timeline {
 
     pub fn merge_sent(&mut self, message: Message) -> Result<(), String> {
         self.merge(message)
+    }
+
+    pub fn prepend(&mut self, messages: Vec<Message>) -> Result<(), String> {
+        for message in messages {
+            self.merge(message)?;
+        }
+        Ok(())
     }
 
     pub fn cursor(&self) -> String {

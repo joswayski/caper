@@ -124,4 +124,33 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(revisions.accept(9))
         XCTAssertEqual(revisions.latest, 9)
     }
+
+    @MainActor
+    func testDeafenRestoresMuteIntentIncludingChangesWhileDeafened() async {
+        let voice = VoiceClient(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        await voice.setMuted(false)
+        await voice.setDeafened(true)
+        XCTAssertTrue(voice.muted)
+        XCTAssertTrue(voice.deafened)
+        await voice.setDeafened(false)
+        XCTAssertFalse(voice.muted, "undeafen restores the pre-deafen unmuted intent")
+
+        await voice.setMuted(true)
+        await voice.setDeafened(true)
+        await voice.setMuted(false)
+        XCTAssertTrue(voice.muted, "capture remains locally silent while deafened")
+        await voice.setDeafened(false)
+        XCTAssertFalse(voice.muted, "an explicit mute change while deafened becomes the restored intent")
+
+        await voice.setMuted(true)
+        await voice.setDeafened(false)
+        XCTAssertTrue(voice.muted, "repeating an already-false deafen state must not restore stale intent")
+
+        voice.setOutputGain(250)
+        voice.setParticipantGain(-10, participantID: "remote")
+        voice.setParticipantMuted(true, participantID: "remote")
+        XCTAssertEqual(voice.outputGain, 200)
+        XCTAssertEqual(voice.participantGains["remote"], 0)
+        XCTAssertTrue(voice.locallyMutedParticipants.contains("remote"))
+    }
 }

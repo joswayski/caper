@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import traceback
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -135,7 +136,42 @@ def enter_first_field(value: str) -> None:
     assert field is not None, "Expected an editable field"
     x, y = center(field)
     adb("shell", "input", "tap", str(x), str(y))
-    adb("shell", "input", "text", value)
+    deadline = time.monotonic() + 10
+    focused: ET.Element | None = None
+    while time.monotonic() < deadline:
+        current = hierarchy()
+        focused = next(
+            (
+                node for node in nodes(current)
+                if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"
+            ),
+            None,
+        )
+        if focused is not None:
+            break
+        time.sleep(0.25)
+    assert focused is not None, "Editable field did not receive focus"
+
+    # API 36's input command supports key combinations. Explicitly clear the
+    # focused editor and wait briefly for the IME connection before typing;
+    # otherwise its startup can consume the first keystrokes on CI emulators.
+    adb("shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A")
+    adb("shell", "input", "keyevent", "KEYCODE_DEL")
+    time.sleep(0.5)
+    # adb input uses %s as its space escape. Arguments are passed without a
+    # shell, so characters such as @ must remain literal.
+    adb("shell", "input", "text", value.replace(" ", "%s"))
+
+    observed = ""
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        current = hierarchy()
+        editor = next((node for node in nodes(current) if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"), None)
+        observed = editor.get("text", "") if editor is not None else ""
+        if observed == value:
+            break
+        time.sleep(0.25)
+    assert observed == value, f"Editable field value mismatch: expected {value!r}, observed {observed!r}"
     adb("shell", "input", "keyevent", "KEYCODE_BACK")
 
 
@@ -157,6 +193,48 @@ def viewport(width_dp: int, height_dp: int) -> None:
 def launch() -> None:
     adb("shell", "am", "force-stop", PACKAGE)
     adb("shell", "am", "start", "-W", "-n", ACTIVITY)
+
+
+def preserve_failure_artifacts(error: BaseException) -> None:
+    """Best-effort bounded evidence for failures before or between named captures."""
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    (OUTPUT / "final-failure.txt").write_text(
+        "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+    )
+    with (OUTPUT / "final-failure.png").open("wb") as image:
+        subprocess.run(
+            ["adb", "exec-out", "screencap", "-p"],
+            stdout=image,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    try:
+        ET.ElementTree(hierarchy()).write(OUTPUT / "final-failure.xml", encoding="unicode")
+    except Exception as hierarchy_error:
+        with (OUTPUT / "final-failure-hierarchy.txt").open("a") as details:
+            details.write(f"{type(hierarchy_error).__name__}: {hierarchy_error}\n")
+
+    pid = subprocess.run(
+        ["adb", "shell", "pidof", "-s", PACKAGE],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    ).stdout.strip()
+    if pid.isdigit():
+        logcat = subprocess.run(
+            ["adb", "logcat", "-d", "-t", "400", "--pid", pid],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        (OUTPUT / "final-failure-logcat.txt").write_text(
+            logcat.stdout[-256_000:] + ("\nSTDERR:\n" + logcat.stderr[-16_000:] if logcat.stderr else ""),
+        )
+    else:
+        (OUTPUT / "final-failure-logcat.txt").write_text("App process was not running; no app-scoped logcat available.\n")
 
 
 def main() -> None:
@@ -208,8 +286,39 @@ def main() -> None:
     wait_for(text="Fixture Studio")
     browse = capture("caper-android-browse", "Fixture Studio")
     assert find(browse, text="CHANNELS") is not None
+
+    # Run after parity captures so the stable seeded reference conversation is
+    # unchanged. This crosses the real Compose input -> HTTP send -> gateway UI
+    # path and independently checks fixture persistence.
+    tap(text="general")
+    wait_for(contains="Message #general")
+    sent_text = "Android fixture send check"
+    enter_first_field(sent_text)
+    tap(description="Send")
+    delivered = wait_for(text=sent_text)
+    assert sum(1 for node in nodes(delivered) if node.get("text") == sent_text) == 1, "Sent message rendered more than once"
+    composer = next((node for node in nodes(delivered) if node.get("class") == "android.widget.EditText"), None)
+    assert composer is not None and composer.get("text", "") == "", "Composer did not clear after confirmed send"
+
+    history_request = urllib.request.Request(
+        "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages",
+        headers={"Authorization": "Bearer fixture-owner-token"},
+    )
+    with urllib.request.urlopen(history_request, timeout=5) as response:
+        history = json.load(response)
+    matching = [message for message in history["messages"] if message["content"]["text"] == sent_text]
+    assert len(matching) == 1, "Fixture history did not contain exactly one sent message"
+    assert matching[0]["author"] == {"id": "owner0000001", "name": "Fixture Owner", "isGuest": False}
+    assert matching[0]["channelId"] == "chan00000001" and matching[0]["content"]["version"] == 1
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as error:
+        try:
+            preserve_failure_artifacts(error)
+        except Exception as artifact_error:
+            print(f"WARNING: could not preserve all failure artifacts: {artifact_error}")
+        raise

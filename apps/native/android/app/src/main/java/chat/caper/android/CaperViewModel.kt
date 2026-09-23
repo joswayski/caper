@@ -29,6 +29,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val typers = mutableMapOf<String, TypingAuthor>()
     private var generation = 0L
     private var accountGeneration = 0L
+    internal val accountEpoch: Long get() = accountGeneration
     private val pendingSends = PendingSendTracker()
 
     init { loadHome() }
@@ -370,7 +371,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val context = AdminMutationContext(request, detail.space.id)
         api.deleteSpace(requireAccountToken(), detail.space.id)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        VoiceCallService.stop(getApplication())
+        VoiceCallService.stopIfSpace(getApplication(), detail.space.id)
         val remaining = mutable.value.spaces.filter { it.id != detail.space.id }
         mutable.value = mutable.value.copy(spaces = remaining)
         done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
@@ -381,7 +382,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val account = requireNotNull(mutable.value.account)
         api.removeSpaceMember(requireAccountToken(), detail.space.id, account.id)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        VoiceCallService.stop(getApplication())
+        VoiceCallService.stopIfSpace(getApplication(), detail.space.id)
         val remaining = mutable.value.spaces.filter { it.id != detail.space.id }
         mutable.value = mutable.value.copy(spaces = remaining)
         done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
@@ -457,7 +458,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun revokeChannel() {
-        VoiceCallService.stop(getApplication())
+        mutable.value.selectedChannel?.id?.let { VoiceCallService.stopIfChannel(getApplication(), it) }
         ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(error = "You no longer have access to this channel.")

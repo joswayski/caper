@@ -70,6 +70,9 @@ public final class VoiceClient {
     public var muted = false
     public var deafened = false
     public var participants: [VoiceParticipant] = []
+    public var outputGain = 100
+    public var participantGains: [String: Int] = [:]
+    public var locallyMutedParticipants: Set<String> = []
     public var error: String?
     public var showAudioPreferences = false
     public var availableInputs: [AudioDevice] = []
@@ -88,12 +91,14 @@ public final class VoiceClient {
     private var subscribed: [String: String] = [:]
     private var remoteAudio: [RTCAudioTrack] = []
     private var remoteAudioByMID: [String: RTCAudioTrack] = [:]
+    private var participantByMID: [String: String] = [:]
     private var pollTask: Task<Void, Never>?
     private var turnTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var mediaSubscriptionID: String?
     private var stateSequence = 0
     private var restartSequence = 0
+    private var muteBeforeDeafen = false
     private var snapshotRevisions = MonotonicRevision()
     private var reconnectAttempts = 0
     private var joinName = "Guest"
@@ -143,15 +148,22 @@ public final class VoiceClient {
             self.delegate = delegate
             self.peer = peer
             delegate.receivedAudio = { [weak self, weak peer] callbackPeer, transceiver, track in
+                track.isEnabled = false
                 Task { @MainActor in
                     guard let self, let peer, callbackPeer === peer, self.peer === peer,
                           self.generation == attempt, (self.phase == .connected || self.phase == .joining) else {
                         track.isEnabled = false
                         return
                     }
-                    track.isEnabled = !self.deafened
+                    track.isEnabled = false
+                    track.source.volume = 0
                     self.remoteAudio.append(track)
-                    if !transceiver.mid.isEmpty { self.remoteAudioByMID[transceiver.mid] = track }
+                    if !transceiver.mid.isEmpty {
+                        self.remoteAudioByMID[transceiver.mid] = track
+                        if let participantID = self.participantByMID[transceiver.mid] {
+                            self.applyLocalPlayback(to: track, participantID: participantID)
+                        }
+                    }
                 }
             }
             delegate.connectionChanged = { [weak self, weak peer] callbackPeer, state in
@@ -205,16 +217,44 @@ public final class VoiceClient {
     }
 
     public func setMuted(_ value: Bool) async {
-        muted = value || deafened; microphone?.isEnabled = !muted
+        if deafened {
+            muteBeforeDeafen = value
+            muted = true
+        } else { muted = value }
+        microphone?.isEnabled = !muted
         await syncState()
     }
 
     public func setDeafened(_ value: Bool) async {
+        guard value != deafened else { return }
+        if value, !deafened { muteBeforeDeafen = muted }
         deafened = value
-        remoteAudio.forEach { $0.isEnabled = !value }
-        if value { muted = true; microphone?.isEnabled = false }
+        for (mid, track) in remoteAudioByMID {
+            if let participantID = participantByMID[mid] { applyLocalPlayback(to: track, participantID: participantID) }
+            else { track.isEnabled = false }
+        }
+        muted = value ? true : muteBeforeDeafen
+        microphone?.isEnabled = !muted
         await syncState()
     }
+
+    public func setOutputGain(_ value: Int) {
+        outputGain = min(200, max(0, value))
+        refreshLocalPlayback()
+    }
+
+    public func setParticipantMuted(_ value: Bool, participantID: String) {
+        if value { locallyMutedParticipants.insert(participantID) }
+        else { locallyMutedParticipants.remove(participantID) }
+        refreshLocalPlayback(participantID: participantID)
+    }
+
+    public func setParticipantGain(_ value: Int, participantID: String) {
+        participantGains[participantID] = min(200, max(0, value))
+        refreshLocalPlayback(participantID: participantID)
+    }
+
+    public func isSelf(participantID: String) -> Bool { participantID == selfID }
 
     public func leave() async { leaveImmediately() }
 
@@ -299,6 +339,7 @@ public final class VoiceClient {
                     track.isEnabled = false
                     remoteAudio.removeAll { $0 === track }
                 }
+                participantByMID.removeValue(forKey: mid)
                 try? await api.media(channelID: channelID, operation: "close", token: token, body: CloseBody(mid: mid))
             }
         }
@@ -316,7 +357,22 @@ public final class VoiceClient {
                 } else if response.requiresImmediateRenegotiation == true { throw VoiceError.invalidAnswer }
                 guard generation == attempt, self.peer === peer else { return }
                 subscribed[track.id] = mid
+                participantByMID[mid] = participant.id
+                if let audio = remoteAudioByMID[mid] { applyLocalPlayback(to: audio, participantID: participant.id) }
             }
+        }
+    }
+
+    private func applyLocalPlayback(to track: RTCAudioTrack, participantID: String) {
+        let participantGain = participantGains[participantID] ?? 100
+        track.source.volume = Double(outputGain * participantGain) / 10_000
+        track.isEnabled = !deafened && !locallyMutedParticipants.contains(participantID)
+    }
+
+    private func refreshLocalPlayback(participantID: String? = nil) {
+        for (mid, track) in remoteAudioByMID {
+            guard let id = participantByMID[mid], participantID == nil || participantID == id else { continue }
+            applyLocalPlayback(to: track, participantID: id)
         }
     }
 
@@ -357,7 +413,8 @@ public final class VoiceClient {
         remoteAudio.forEach { $0.isEnabled = false }
         peer?.close()
         peer = nil; delegate = nil; microphone = nil
-        remoteAudio = []; remoteAudioByMID = [:]
+        remoteAudio = []; remoteAudioByMID = [:]; participantByMID = [:]
+        participantGains = [:]; locallyMutedParticipants = []
         token = nil; selfID = nil; subscribed = [:]; participants = []
         publishedMID = nil; snapshotRevisions = MonotonicRevision(); signalingBusy = false
         channelID = nil
@@ -471,12 +528,20 @@ public final class VoiceClient {
     }
 
     public func refreshAudioDevices() async {
-        // WebRTC follows the system's selected input/output route. Listing a
-        // device that cannot actually be selected would be misleading.
+        #if os(iOS)
+        let audio = AVAudioSession.sharedInstance()
+        availableInputs = (audio.availableInputs ?? []).map { AudioDevice(id: $0.uid, name: $0.portName) }
+        availableOutputs = audio.currentRoute.outputs.map { AudioDevice(id: $0.uid, name: $0.portName) }
+        selectedInputID = audio.currentRoute.inputs.first?.uid
+        selectedOutputID = audio.currentRoute.outputs.first?.uid
+        #else
+        // The embedded WebRTC build follows the macOS system route and does
+        // not expose a supported per-device switch API.
         availableInputs = []
         availableOutputs = []
         selectedInputID = nil
         selectedOutputID = nil
+        #endif
     }
 
     private static func microphonePermission() async -> Bool {

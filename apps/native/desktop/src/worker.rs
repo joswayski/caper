@@ -1,6 +1,8 @@
 use crate::api::Api;
 use crate::gateway::{self, GatewayEvent};
-use crate::model::{Account, ChatSession, History, Message, SpaceDetail, Spaces};
+use crate::model::{
+    Account, Channel, ChatSession, History, Member, Message, Space, SpaceDetail, Spaces,
+};
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -31,23 +33,42 @@ pub enum Command {
     },
     LoadChannel {
         generation: u64,
-        token: String,
+        token: Option<String>,
         channel: String,
         name: String,
+        general: bool,
+    },
+    LoadOlder {
+        generation: u64,
+        token: Option<String>,
+        channel: String,
+        before: String,
     },
     Connect {
         generation: u64,
-        token: String,
+        token: Option<String>,
         channel: String,
         cursor: String,
+        presence: Option<(String, Vec<String>)>,
     },
     Send {
         generation: u64,
-        token: String,
+        token: Option<String>,
         chat_token: String,
         channel: String,
         client_id: String,
         text: String,
+    },
+    Typing {
+        token: Option<String>,
+        chat_token: String,
+        channel: String,
+        typing: bool,
+    },
+    Admin {
+        generation: u64,
+        token: String,
+        operation: AdminOperation,
     },
     Logout {
         generation: u64,
@@ -62,6 +83,70 @@ pub enum Command {
     },
     Activity,
     StopGateway,
+}
+
+#[derive(Clone)]
+pub enum AdminOperation {
+    CreateSpace {
+        name: String,
+    },
+    UpdateSpace {
+        space: String,
+        name: String,
+    },
+    DeleteSpace {
+        space: String,
+    },
+    CreateChannel {
+        space: String,
+        name: String,
+        private: bool,
+    },
+    UpdateChannel {
+        space: String,
+        channel: String,
+        name: String,
+        private: bool,
+    },
+    DeleteChannel {
+        space: String,
+        channel: String,
+    },
+    LoadMembers {
+        space: String,
+        channel: Option<String>,
+    },
+    AddMember {
+        space: String,
+        channel: Option<String>,
+        username: String,
+    },
+    RemoveMember {
+        space: String,
+        channel: Option<String>,
+        member: String,
+    },
+}
+
+pub enum AdminResult {
+    SpaceCreated(Space),
+    SpaceUpdated(Space),
+    SpaceDeleted(String),
+    ChannelCreated(Channel),
+    ChannelUpdated(Channel),
+    ChannelDeleted(String),
+    Members {
+        channel: Option<String>,
+        members: Vec<Member>,
+    },
+    MemberAdded {
+        channel: Option<String>,
+        member: Member,
+    },
+    MemberRemoved {
+        channel: Option<String>,
+        member: String,
+    },
 }
 
 pub enum Event {
@@ -89,7 +174,13 @@ pub enum Event {
     ChannelLoaded {
         generation: u64,
         channel: String,
+        general: bool,
         result: Result<(History, ChatSession), LoadError>,
+    },
+    OlderLoaded {
+        generation: u64,
+        channel: String,
+        result: Result<History, LoadError>,
     },
     Sent {
         generation: u64,
@@ -105,6 +196,10 @@ pub enum Event {
         generation: u64,
         result: Result<(), String>,
     },
+    Admin {
+        generation: u64,
+        result: Result<AdminResult, String>,
+    },
     Gateway(GatewayEvent),
 }
 
@@ -113,6 +208,7 @@ pub struct SendFailure {
     pub message: String,
 }
 
+#[derive(Debug)]
 pub struct LoadError {
     pub message: String,
     pub access_denied: bool,
@@ -149,6 +245,7 @@ fn manage(api: Api, context: egui::Context, incoming: Receiver<Command>, events:
                 token,
                 channel,
                 cursor,
+                presence,
             } => {
                 if let Some(control) = gateway.take() {
                     control.stop();
@@ -160,6 +257,7 @@ fn manage(api: Api, context: egui::Context, incoming: Receiver<Command>, events:
                     generation,
                     channel,
                     cursor,
+                    presence,
                     gateway_tx,
                 ));
                 let events = events.clone();
@@ -269,25 +367,47 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             channel,
             name,
+            general,
         } => {
-            let result = api
-                .history(&token, &channel)
-                .and_then(|history| {
-                    api.chat_session(&token, &name)
-                        .map(|session| (history, session))
-                })
+            let result = (if general {
+                api.general_history(token.as_deref())
+            } else {
+                api.history(token.as_deref(), &channel, None)
+            })
+            .and_then(|history| {
+                api.chat_session(token.as_deref(), &name)
+                    .map(|session| (history, session))
+            })
+            .map_err(|error| LoadError {
+                access_denied: error
+                    .status
+                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
+                message: error.to_string(),
+            });
+            Event::ChannelLoaded {
+                generation,
+                channel,
+                general,
+                result,
+            }
+        }
+        Command::LoadOlder {
+            generation,
+            token,
+            channel,
+            before,
+        } => Event::OlderLoaded {
+            generation,
+            channel: channel.clone(),
+            result: api
+                .history(token.as_deref(), &channel, Some(&before))
                 .map_err(|error| LoadError {
                     access_denied: error
                         .status
                         .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
                     message: error.to_string(),
-                });
-            Event::ChannelLoaded {
-                generation,
-                channel,
-                result,
-            }
-        }
+                }),
+        },
         Command::Send {
             generation,
             token,
@@ -300,11 +420,28 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel: channel.clone(),
             client_id: client_id.clone(),
             result: api
-                .send(&token, &chat_token, &channel, &client_id, &text)
+                .send(token.as_deref(), &chat_token, &channel, &client_id, &text)
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),
                 }),
+        },
+        Command::Typing {
+            token,
+            chat_token,
+            channel,
+            typing,
+        } => {
+            let _ = api.typing(token.as_deref(), &chat_token, &channel, typing);
+            return;
+        }
+        Command::Admin {
+            generation,
+            token,
+            operation,
+        } => Event::Admin {
+            generation,
+            result: execute_admin(api, &token, operation).map_err(|error| error.to_string()),
         },
         Command::Logout { generation, token } => Event::LoggedOut {
             generation,
@@ -317,6 +454,62 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         | Command::ClearCredential { .. } => return,
     };
     send(events, context, event);
+}
+
+fn execute_admin(
+    api: &Api,
+    token: &str,
+    operation: AdminOperation,
+) -> Result<AdminResult, crate::api::ApiError> {
+    Ok(match operation {
+        AdminOperation::CreateSpace { name } => {
+            AdminResult::SpaceCreated(api.create_space(token, &name)?)
+        }
+        AdminOperation::UpdateSpace { space, name } => {
+            AdminResult::SpaceUpdated(api.update_space(token, &space, &name)?)
+        }
+        AdminOperation::DeleteSpace { space } => {
+            api.delete_space(token, &space)?;
+            AdminResult::SpaceDeleted(space)
+        }
+        AdminOperation::CreateChannel {
+            space,
+            name,
+            private,
+        } => AdminResult::ChannelCreated(api.create_channel(token, &space, &name, private)?),
+        AdminOperation::UpdateChannel {
+            space,
+            channel,
+            name,
+            private,
+        } => AdminResult::ChannelUpdated(
+            api.update_channel(token, &space, &channel, &name, private)?,
+        ),
+        AdminOperation::DeleteChannel { space, channel } => {
+            api.delete_channel(token, &space, &channel)?;
+            AdminResult::ChannelDeleted(channel)
+        }
+        AdminOperation::LoadMembers { space, channel } => AdminResult::Members {
+            channel: channel.clone(),
+            members: api.members(token, &space, channel.as_deref())?.members,
+        },
+        AdminOperation::AddMember {
+            space,
+            channel,
+            username,
+        } => AdminResult::MemberAdded {
+            channel: channel.clone(),
+            member: api.add_member(token, &space, channel.as_deref(), &username)?,
+        },
+        AdminOperation::RemoveMember {
+            space,
+            channel,
+            member,
+        } => {
+            api.remove_member(token, &space, channel.as_deref(), &member)?;
+            AdminResult::MemberRemoved { channel, member }
+        }
+    })
 }
 
 fn send(events: &Sender<Event>, context: &egui::Context, event: Event) {
