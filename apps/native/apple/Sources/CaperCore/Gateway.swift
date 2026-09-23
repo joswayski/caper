@@ -177,7 +177,7 @@ public actor Gateway {
     private func send(_ value: [String: Any], on target: URLSessionWebSocketTask? = nil) async throws {
         guard let target = target ?? socket else { return }
         let data = try JSONSerialization.data(withJSONObject: value)
-        guard let text = String(data: data, encoding: .utf8) else { throw URLError(.cannotEncodeContentData) }
+        let text = String(decoding: data, as: UTF8.self)
         try await target.send(.string(text))
     }
 

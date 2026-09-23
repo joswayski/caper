@@ -229,7 +229,7 @@ public final class ChatModel {
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             if delivery.pending?.id != command.id {
                 draft = ""
-                error = nil
+                self.error = nil
                 sending = false
                 return
             }
