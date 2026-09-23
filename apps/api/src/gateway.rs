@@ -39,6 +39,7 @@ pub struct Gateway {
     events: broadcast::Sender<Value>,
     typing: broadcast::Sender<Value>,
     repair: watch::Sender<u64>,
+    presence: broadcast::Sender<Value>,
     drain: watch::Sender<bool>,
     slots: Arc<Semaphore>,
     broker_ready: Arc<AtomicBool>,
@@ -59,12 +60,14 @@ impl Gateway {
         let (events, _) = broadcast::channel(256);
         let (typing, _) = broadcast::channel(64);
         let (repair, _) = watch::channel(0);
+        let (presence, _) = broadcast::channel(64);
         let (drain, _) = watch::channel(false);
         Self {
             chat,
             events,
             typing,
             repair,
+            presence,
             drain,
             slots: Arc::new(Semaphore::new(128)),
             broker_ready: Arc::new(AtomicBool::new(false)),
@@ -87,7 +90,11 @@ impl Gateway {
                     && matches!(
                         tokio::time::timeout(
                             Duration::from_secs(3),
-                            pubsub.subscribe(&[chat::TOPIC, chat::TYPING_TOPIC])
+                            pubsub.subscribe(&[
+                                chat::TOPIC,
+                                chat::TYPING_TOPIC,
+                                chat::PRESENCE_TOPIC
+                            ])
                         )
                         .await,
                         Ok(Ok(()))
@@ -101,6 +108,8 @@ impl Gateway {
                         {
                             let sender = if message.get_channel_name() == chat::TYPING_TOPIC {
                                 &state.typing
+                            } else if message.get_channel_name() == chat::PRESENCE_TOPIC {
+                                &state.presence
                             } else {
                                 &state.events
                             };
@@ -165,6 +174,8 @@ struct Subscription {
     // Older browser parsers reject unknown events. Typing is explicitly opt-in.
     #[serde(default)]
     typing: bool,
+    #[serde(default)]
+    presence: bool,
 }
 
 async fn upgrade(
@@ -221,16 +232,7 @@ async fn upgrade(
         .max_frame_size(1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
-            let _ = serve(
-                socket,
-                state,
-                channel,
-                query.channel_id,
-                token_hash,
-                after,
-                query.typing,
-            )
-            .await;
+            let _ = serve(socket, state, channel, query, token_hash, after).await;
         })
         .into_response())
 }
@@ -299,11 +301,16 @@ async fn serve(
     mut socket: WebSocket,
     state: Gateway,
     channel: i64,
-    external_id: String,
+    subscription: Subscription,
     token_hash: Option<Vec<u8>>,
     mut after: i64,
-    with_typing: bool,
 ) -> Result<(), ()> {
+    let Subscription {
+        channel_id: external_id,
+        typing: with_typing,
+        presence: with_presence,
+        ..
+    } = subscription;
     // Buffer live before capturing a DB high-water mark. Replay then merge by
     // sequence. Lagging bounded buffers trigger another replay, never a skip.
     let mut events = state.events.subscribe();
@@ -329,6 +336,7 @@ async fn serve(
     // No replay or initial buffer for ephemeral presence; dropping it must
     // never consume durable buffer space or alter the delivery cursor.
     let mut typing = state.typing.subscribe();
+    let mut presence = state.presence.subscribe();
     if *drain.borrow_and_update() {
         write(&mut socket, json!({"type":"migrating"})).await?;
         deadline = Some(tokio::time::Instant::now() + HANDOFF_WINDOW);
@@ -366,6 +374,11 @@ async fn serve(
                 let access = authorized(&state, &external_id, token_hash.as_deref()).await?;
                 if access.last_seq > after {
                     tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??;
+                }
+            }
+            event = presence.recv(), if with_presence => {
+                if let Ok(event) = event {
+                    write(&mut socket, event).await?;
                 }
             }
             _ = heartbeat.tick() => {

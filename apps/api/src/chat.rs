@@ -25,6 +25,7 @@ use uuid::Uuid;
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
 // Separate from durable events: older gateways require a sequence on that topic.
 pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
+pub(crate) const PRESENCE_TOPIC: &str = "caper:chat:v1:presence";
 const PAGE: i64 = 50;
 
 #[derive(Clone)]
@@ -93,6 +94,7 @@ pub(crate) fn routes() -> Router<AppState> {
             get(history).post(send),
         )
         .route("/api/chat/channels/{channel}/typing", post(typing))
+        .route("/api/chat/presence", get(presence_snapshot).post(presence))
 }
 
 fn enabled(state: &AppState) -> Result<&Chat, ApiError> {
@@ -307,6 +309,75 @@ async fn typing(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn presence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let chat = enabled(&state)?;
+    let (_, author_id, name, user_id) = {
+        let mut connection = chat.pool.acquire().await.map_err(database_error)?;
+        authorize_sender(&mut connection, sender_token(&headers)?).await?
+    };
+    let event = json!({"type":"presence.updated","author":{"id":author_id,"name":name,"isGuest":user_id.is_none()}});
+    let script = redis::Script::new(
+        r#"
+        local event = cjson.decode(ARGV[2])
+        local clock = redis.call('TIME')
+        event.revision = clock[1] .. string.format('%06d', tonumber(clock[2]))
+        event.expiresAt = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000) + 120000
+        redis.call('HSET', KEYS[1], event.author.id, cjson.encode(event))
+        redis.call('PEXPIRE', KEYS[1], 120000)
+        redis.call('PUBLISH', ARGV[1], cjson.encode(event))
+        return 1
+    "#,
+    );
+    let mut connection = chat
+        .broker
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|_| unavailable())?;
+    script
+        .key(format!("{{{PRESENCE_TOPIC}}}:members"))
+        .arg(PRESENCE_TOPIC)
+        .arg(event.to_string())
+        .invoke_async::<i64>(&mut connection)
+        .await
+        .map_err(|_| unavailable())?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn presence_snapshot(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let chat = enabled(&state)?;
+    let mut connection = chat
+        .broker
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|_| unavailable())?;
+    let members: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
+        .arg(format!("{{{PRESENCE_TOPIC}}}:members"))
+        .query_async(&mut connection)
+        .await
+        .map_err(|_| unavailable())?;
+    let now = Utc::now().timestamp_millis();
+    let mut presence = Vec::new();
+    for (id, value) in members {
+        if let Ok(event) = serde_json::from_str::<Value>(&value)
+            && event["expiresAt"]
+                .as_i64()
+                .is_some_and(|expires| expires > now)
+        {
+            presence.push(event);
+        } else {
+            let _: Result<(), _> = redis::cmd("HDEL")
+                .arg(format!("{{{PRESENCE_TOPIC}}}:members"))
+                .arg(id)
+                .query_async(&mut connection)
+                .await;
+        }
+    }
+    Ok(Json(json!({"presence":presence})))
 }
 
 async fn publish_typing(

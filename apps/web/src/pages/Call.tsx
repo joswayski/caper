@@ -66,7 +66,7 @@ function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: {
   return <details ref={menuRef} open={open} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
     if (event.key === "Escape") { onOpenChange(false); event.currentTarget.querySelector("summary")?.focus(); }
   }}>
-    <summary aria-label={label} title={label} onClick={(event) => { event.preventDefault(); onOpenChange(!open); }}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary>
+    <summary aria-label={label} data-tooltip={label} title={label} onClick={(event) => { event.preventDefault(); onOpenChange(!open); }}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary>
     <div className="call-settings-panel">{children}</div>
   </details>;
 }
@@ -181,6 +181,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
+  const [activeAuthorIds, setActiveAuthorIds] = useState<string[]>([]);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState, mediaRoot);
@@ -355,12 +356,15 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
           </div>
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
-              <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
+              <span className="account-avatar-wrap">
+                <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
+                {chatAuthor && activeAuthorIds.includes(chatAuthor.id) && <span className="presence-indicator" role="img" aria-label="Online" />}
+              </span>
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className="voice-action-group">
-              <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} title={!connected ? "Join voice to use your microphone" : state.muted ? "Unmute" : "Mute"} onClick={() => { setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
-              <AudioMenu label="Input options" open={audioMenu === "input"} onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)} menuRef={audioMenu === "input" ? audioMenuRef : undefined}>
+              <button type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-disabled={!connected || state.monitoring} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} data-tooltip={state.muted ? "Unmute" : "Mute"} title={state.muted ? "Unmute" : "Mute"} onClick={() => { if (!connected || state.monitoring) return; setActionError(undefined); void clientRef.current!.setMuted(!state.muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button>
+              <AudioMenu label="Input Options" open={audioMenu === "input"} onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)} menuRef={audioMenu === "input" ? audioMenuRef : undefined}>
                 <fieldset className="device-options" disabled={controlsDisabled}>
                   <legend>Microphone</legend>
                   {deviceOptions(devices, "audioinput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="input-device" value={device.deviceId} checked={deviceId === device.deviceId} onChange={() => { if (connected) void act(() => clientRef.current!.changeMicrophone(device.deviceId), () => setDeviceId(device.deviceId)); else setDeviceId(device.deviceId); }} /><span>{label}</span></label>)}
@@ -370,8 +374,8 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
               </AudioMenu>
             </div>
             <div className="voice-action-group">
-              <button disabled={!connected || state.monitoring} type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} title={!connected ? "Join voice to control its audio" : state.deafened ? "Listen" : "Deafen"} onClick={() => { setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
-              <AudioMenu label="Output options" open={audioMenu === "output"} onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)} menuRef={audioMenu === "output" ? audioMenuRef : undefined}>
+              <button type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-disabled={!connected || state.monitoring} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} data-tooltip={state.deafened ? "Undeafen" : "Deafen"} title={state.deafened ? "Undeafen" : "Deafen"} onClick={() => { if (!connected || state.monitoring) return; setActionError(undefined); void clientRef.current!.setDeafened(!state.deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button>
+              <AudioMenu label="Output Options" open={audioMenu === "output"} onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)} menuRef={audioMenu === "output" ? audioMenuRef : undefined}>
                 {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <fieldset className="device-options">
                   <legend>Audio output</legend>
                   {deviceOptions(devices, "audiooutput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="output-device" value={device.deviceId} checked={output === device.deviceId} onChange={() => setOutput(device.deviceId)} /><span>{label}</span></label>)}
@@ -380,7 +384,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
                 <div className="volume-control output-volume"><span>Output volume <output>{outputVolume}%</output></span><Slider label="Output volume" value={outputVolume} max={200} onChange={setOutputVolume} /></div>
               </AudioMenu>
             </div>
-            <AudioMenu label="Settings" settings open={audioMenu === "settings"} onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)} menuRef={audioMenu === "settings" ? audioMenuRef : undefined}>
+            <AudioMenu label="User Settings" settings open={audioMenu === "settings"} onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)} menuRef={audioMenu === "settings" ? audioMenuRef : undefined}>
               <strong>Audio settings</strong>
               <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
               {state.diagnostics && <button type="button" onClick={() => setAudioPanel("connection")}>Connection details</button>}
@@ -391,7 +395,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {!audioPanel && (state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
+          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} onPresenceChange={setActiveAuthorIds} headerActions={<div className="voice-actions">
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
               if (event.key === "Escape") setJoinTooltipDismissed(true);

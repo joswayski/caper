@@ -86,7 +86,7 @@
 
 .space-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: 0 24px 80px rgb(0 0 0 / .55); }
 .space-dialog-wide { width: min(600px, calc(100vw - 32px)); }
-.space-dialog::backdrop { background: rgb(0 0 0 / .5); }
+.space-dialog::backdrop { background: rgb(0 0 0 / .4); }
 .space-dialog > header { position: sticky; z-index: 2; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .space-dialog > header h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
 .space-dialog > header p { margin: 6px 0 0; color: var(--text-muted); font-size: .76rem; line-height: 1.45; }

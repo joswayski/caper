@@ -46,6 +46,7 @@ test("pressing Send again after an unknown outcome preserves the original UUID a
   let sendAttempts = 0;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    if (url === "/api/chat/presence") return Response.json({ presence: [] });
     if (url === "/api/chat/session") return Response.json({ token: "opaque-token", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (url === "/api/chat/general") return Response.json({
       space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" }, messages: [], cursor: "0", hasMore: false,
@@ -86,6 +87,7 @@ test("signed-in startup does not reuse another account's capability with the sam
   }));
   let sessions = 0;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
     if (String(input) === "/api/chat/session") {
       sessions++;
       return Response.json({ token: "current-account-token", author: { id: "current-account", name: "Shared Name", isGuest: false } });
@@ -116,6 +118,7 @@ test("public history loads before identity and remains visible while the send se
   let finishSession!: (response: Response) => void;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const path = String(input);
+    if (path === "/api/chat/presence") return Response.json({ presence: [] });
     requests.push(path);
     if (path === "/api/chat/session") return new Promise<Response>((resolve) => { finishSession = resolve; });
     assert.equal(path, "/api/chat/general");
@@ -164,6 +167,7 @@ async function sendingFixture(t: TestContext) {
   const posts: { body: SendBody; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   const typingPosts: { active: boolean; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
     if (String(input) === "/api/chat/session") return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general") return Response.json({
       space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" },
@@ -414,6 +418,7 @@ async function paginationFixture(t: TestContext) {
   const requests: { url: string; resolve: (response: Response) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const url = String(input);
+    if (url === "/api/chat/presence") return Response.json({ presence: [] });
     if (url === "/api/chat/general") return Response.json({ ...history, space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" } });
     return new Promise<Response>((resolve) => requests.push({ url, resolve }));
   });
@@ -485,6 +490,7 @@ test("channel clients isolate history, websocket URLs, and late events across a 
   const requests: string[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const url = String(input);
+    if (url === "/api/chat/presence") return Response.json({ presence: [] });
     requests.push(url);
     const channelId = url.includes("alpha") ? "alphaChannel" : "bravoChannel";
     return Response.json({
@@ -522,7 +528,11 @@ test("channel clients isolate history, websocket URLs, and late events across a 
 
 test("prepared history is ready on the first render and starts live replay without another history fetch", (t) => {
   const sockets = installBrowser(t);
-  t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected duplicate history fetch"); });
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    requests.push(String(input));
+    return Response.json({ presence: [] });
+  });
   const message: ChatMessage = {
     id: "seven", channelId: "alphaChannel", seq: "7", author: { id: "peer", name: "Peer", isGuest: false },
     content: { version: 1, type: "text", text: "Prepared message" }, createdAt: "2026-09-23T12:00:00Z", clientMessageId: "command-seven",
@@ -538,6 +548,7 @@ test("prepared history is ready on the first render and starts live replay witho
   const client = new ChatClient((state) => states.push(state), "alphaChannel");
   t.after(() => client.stop());
   client.start(history);
+  assert.deepEqual(requests, ["/api/chat/presence"], "only presence refreshes; prepared messages never refetch");
   assert.ok(states.every((state) => state.phase === "ready"));
   assert.equal(new URL(sockets[0].url).searchParams.get("after"), "7");
   sockets[0].message({ ...message, id: "eight", seq: "8", clientMessageId: "command-eight", content: { version: 1, type: "text", text: "Arrived during navigation" } });
@@ -559,7 +570,8 @@ test("prefetch rejects a history payload containing another channel's messages",
 test("a prepared history failure renders once and retries only when requested", async (t) => {
   const sockets = installBrowser(t);
   let requests = 0;
-  t.mock.method(globalThis, "fetch", async () => {
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
     requests++;
     return Response.json({ space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" }, messages: [], cursor: "0", hasMore: false });
   });
@@ -603,7 +615,10 @@ test("snapshots include older pages and live messages; returning replays the mis
 test("resync retains visible messages through transient failures but clears them on access denial", async (t) => {
   const f = await paginationFixture(t);
   let finish!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
   f.sockets[0].frame({ type: "resync_required" });
   assert.equal(f.state.phase, "ready");
   assert.deepEqual(f.state.messages, [4, 5].map(f.message));

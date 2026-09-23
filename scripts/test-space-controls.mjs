@@ -77,6 +77,7 @@ function openOverview() {
   browser('focus', '[aria-label="Manage fixture-channel"]');
   browser('press', 'Enter');
   browser('click', '.danger-outline');
+  wait('!!document.querySelector(".delete-confirmation")');
 }
 try {
   browser('open', 'about:blank');
