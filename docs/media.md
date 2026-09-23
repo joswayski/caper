@@ -914,6 +914,7 @@ Keep this temporary test separate from any future production app/key.
 | `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Startup grants the parsed runtime role access to migrated application tables. Neither DB secret belongs in WEB. |
 | `DATABASE_ALLOW_INSECURE` | Local development only. Set by Compose so the API may connect without TLS to the private `postgres` service. Hosted databases still default to verified TLS. |
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
+| `DEBUG_USERS` | Optional API-only comma-separated username allowlist for authenticated client diagnostics. Exact case-insensitive matches after trimming; blank disables. Restart the API and refresh or log in again after changes. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
 | `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
@@ -1298,10 +1299,18 @@ exclusive ownership of the prepared worker rather than starting another model
 instance. It waits for any unfinished initialization, SSE readiness, transport,
 and initial roster/state synchronization before enabling outgoing audio. A cold
 join does not temporarily publish raw audio. Filter initialization failure fails
-Join instead of downgrading. DPDFNet runtime overload or underrun switches the
-existing processed track to a bypass, preserving the call, and attempts to enable
-the browser's microphone noise-suppression constraint. The reported track setting
-determines whether the UI says browser suppression is active or unavailable.
+Join instead of downgrading. A transient DPDFNet underrun outputs silence while
+refilling the three-hop reserve, then resumes processed audio. Sustained overload
+or worker failure switches the existing processed track to a bypass, preserving the call, and attempts to enable
+the browser's microphone noise-suppression constraint while the bundled RNNoise
+fallback loads. Once RNNoise is ready, it replaces only the processing node:
+outgoing and mic-test track identities, mute state, input gain and voice enhancement
+are preserved. Browser suppression is then disabled to avoid stacking filters.
+If RNNoise cannot initialize, the browser fallback remains. The reported track
+setting determines whether the UI says browser suppression is active or unavailable.
+The mic test displays that live status; both Natural and Enhanced use this same
+noise-suppressed input, and Enhanced adds EQ/compression rather than more denoising.
+The recovery worklet uses `worklet-v3.js` to avoid the immutable cache of older clients.
 An unrecoverable processor error stops and unpublishes the microphone without
 restarting an otherwise healthy connection.
 
@@ -1642,19 +1651,20 @@ RNNoise provenance/reproduction is in `apps/web/public/audio/rnnoise-v1/README.m
 The shared adapter lives at `/audio/noise-v1/`. Normal web deployment includes
 all new assets; no operator configuration commands are required.
 
-DPDFNet-8 HR is the fixed in-channel noise-suppression filter; no engine selector
+DPDFNet-8 HR is the preferred in-channel noise-suppression filter; no engine selector
 is shown. Speakers/Headphones stays fixed to natural headphone input.
 Microphone/output selectors remain; output selection also applies to live and
 recorded mic-test playback. Changing a device clears the old recording immediately
-and disables recording during initialization. Runtime failure also discards any old
-recording. Run a fresh mic test after DPDFNet reports active. Its 14.9 MB model and
+and disables recording during initialization. A fallback preserves the existing
+tracks and clips; record a fresh sample to hear the newly active filter. Its 14.9 MB model and
 runtime load lazily from the same versioned asset directory.
 Use `node scripts/vendor-dpdfnet.mjs 8` to reproduce its model/metadata/licenses.
 The active status appears only after the processor acknowledges initialization.
-Loading/initialization failure rejects capture and stops its tracks. Runtime overload
-or underrun keeps the existing microphone track live, attempts browser suppression
-and reports whether it is active; unsupported or rejected browser suppression leaves
-unprocessed audio. This avoids a call-wide reconnect loop.
+Loading/initialization failure rejects capture and stops its tracks. Transient
+underruns rebuffer processed audio. Sustained overload keeps the existing microphone
+track live and loads RNNoise, with browser suppression during the transition.
+If both local fallback initialization and browser suppression fail, the status
+explicitly reports bypassed audio. This avoids a call-wide reconnect loop.
 An unrecoverable AudioWorklet processor error still stops the microphone. This does
 not ensure that all CPU overload or audio artifacts can be detected.
 
@@ -1667,9 +1677,9 @@ isolation. It can affect laughter, music, whispers, and natural voice timbre.
 The RNNoise/DeepFilter adapter adds 10 ms buffering **in addition to** model and
 system latency. DPDFNet uses a 20 ms analysis window, 10 ms hops and three output
 hops of startup buffering, plus scheduling/device/network latency. Its Worker
-warms up and resets state before readiness. An eight-hop backlog or output
-underrun terminates inference and switches the existing worklet output to raw input,
-rather than ending the track or building unbounded delay.
+warms up and resets state before readiness. An eight-hop backlog terminates inference
+and starts fallback, rather than ending the track or building unbounded delay.
+An empty output queue refills the three-hop reserve without abandoning inference.
 
 DPDFNet model/runtime provenance, checksums, full licenses and reproduction are
 in `apps/web/public/audio/dpdfnet8-v2/README.md`. CEVA code/weights are Apache-2.0;
@@ -1689,6 +1699,18 @@ performance benchmark.
 Keep input gain below hardware clipping, use a consistent close mic position,
 and disable duplicate OS/vendor voice filters when comparing quality. Check the
 active/fallback status before attributing a sound to DPDFNet.
+
+Fallback validation, September 23, 2026:
+
+- `node scripts/test-noise-fallback.mjs http://localhost:5174` runs against local
+  Vite, with real model initialization, an intentionally stalled worker, real RNNoise,
+  and synthetic white noise. It verifies unchanged tracks, measurable attenuation
+  (at least 6 dB), and unclipped desktop/narrow mic tooltips with Escape dismissal.
+- A separate unmodified-worker Chromium run in the orb reproduced sustained overload
+  (10.8 ms average inference per 10 ms hop). RNNoise then reduced synthetic noise
+  energy by about 40 dB in the locally recorded test track. This is not a quality
+  guarantee, physical microphone listening test, or live SFU/TURN validation.
+- No configuration or migration is required; ship with the normal web deployment.
 
 Default-preset / snippet validation, September 6, 2026:
 
@@ -2002,6 +2024,50 @@ revealing signup order or the internal sequence. Stored as `external_id` for
 integrations and external references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
+
+`DEBUG_USERS` is an optional, server-only comma-separated username allowlist for
+client diagnostics. Entries are trimmed and compared as exact, case-insensitive
+usernames; blanks disable the allowlist, and wildcards or substring matches are
+not supported. Authenticated own-account payloads from email verification,
+`GET /api/account/me`, and `POST /api/account/profile` include
+`debugEnabled` (default `false`). Public rosters and other users' account data
+never include it. Because usernames can change, eligibility follows the current
+username and can transfer; use immutable public account IDs in a future design if
+eligibility must remain attached to a person.
+
+After merge, preserve every existing property while adding `DEBUG_USERS` to the
+existing `production/apps/caper` Secrets Manager record, then deploy the merged
+API and web images. No database or vendor is required:
+
+```sh
+MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+```
+
+For later allowlist changes, update the same record without deleting other keys
+and restart the API so it reloads configuration from Secrets Manager:
+
+```sh
+kubectl -n default rollout restart deployment/caper-api
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+```
+
+Affected clients must refresh or log in again to consume the updated own-account
+response. Do not expose `DEBUG_USERS` through web configuration or a `VITE_`
+variable.
+
+Eligible accounts see **User Settings → Audio diagnostics**, plus expandable
+diagnostics inside **Mic test**. Reports distinguish no capture, opening, failed,
+active and ended capture; include actual processor/fallback status, capture
+settings, DPDFNet hop counts and mean/max processing time against its 10 ms budget,
+and connection statistics when available. Counters are local and reset on refresh.
+Copying is explicit; no audio, device IDs, credentials or automatic diagnostic
+uploads are included. This controls UI visibility, not access to privileged server
+data. OpenFeature is an evaluation API/provider standard, not a required database
+or service; this single allowlist intentionally has no flag SDK or table.
 
 ### Removed account lifecycle integration
 

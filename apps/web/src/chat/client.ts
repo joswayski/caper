@@ -1,5 +1,6 @@
 import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
+import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
 import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
@@ -318,10 +319,16 @@ export class ChatClient {
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
         message: (message) => {
+          const visible = new Set(this.timeline.messages.map((item) => item.id));
           const result = this.timeline.applyEvent(message);
           const typer = this.typers.get(message.author.id);
           if (typer && result !== "duplicate") { typer.typing = false; this.refreshTypers(); }
-          if (result !== "buffered" && result !== "overflow") this.update({ messages: this.timeline.messages });
+          if (result !== "buffered" && result !== "overflow") {
+            const messages = this.timeline.messages;
+            this.update({ messages });
+            const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
+            if (result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
+          }
           return result;
         },
         status: (online) => {

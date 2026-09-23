@@ -16,7 +16,7 @@ function fixture() {
   if (location.protocol === 'about:') return;
   const saved = new URL(location.href).searchParams.get('width') ?? '240';
   localStorage.setItem('caper:channel-sidebar-width', saved);
-  const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner' };
+  const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner', debugEnabled: new URL(location.href).searchParams.has('debug') };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: true };
   const members = [{ ...account, owner: true }, ...Array.from({ length: 29 }, (_, index) => ({
@@ -31,6 +31,11 @@ function fixture() {
     constructor(socketUrl, protocols) {
       super();
       if (!String(socketUrl).includes('/api/chat/events')) return new NativeSocket(socketUrl, protocols);
+      control.setPresence = (status) => {
+        for (const request of this.subscriptions.values()) {
+          if (request.kind === 'presence') this.frame({ type: 'event', id: request.id, event: { type: 'snapshot', members: request.userIds.map(userId => ({ userId, status })) } });
+        }
+      };
       queueMicrotask(() => this.frame({ type: 'hello', idleTimeoutSeconds: 600, serverTime: Date.now() }));
     }
     send(data) {
@@ -130,27 +135,45 @@ try {
   wait('document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")');
   assert.ok(evaluate('(() => { const a = document.querySelector(".channel-navigation > header").getBoundingClientRect(), b = document.querySelector(".chat-heading").getBoundingClientRect(); return a.top === b.top && a.bottom === b.bottom; })()'), 'Space and channel headers must align');
   assert.ok(evaluate('document.querySelector(".space-member-presence").getBoundingClientRect().left >= document.querySelector(".stage").getBoundingClientRect().right'), 'Desktop members must be on the right');
-  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence").userIds.length'), 25);
+  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length'), 25);
+  assert.equal(evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'), 'Online');
+  assert.equal(evaluate('document.querySelectorAll(".space-member-presence small").length'), 0, 'Statuses belong on the dots, not text rows');
+  assert.equal(evaluate('getComputedStyle(document.querySelector(".member-presence-heading")).borderBottomWidth'), '0px');
   assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), '1');
   assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), '30', 'Member count must include every page');
   screenshot('gateway-merged-members-desktop');
+  for (const status of ['idle', 'offline', 'online']) {
+    evaluate(`spaceControlFixture.setPresence('${status}')`);
+    wait(`document.querySelector('.account-avatar .presence-dot').dataset.status === '${status}'`);
+    assert.equal(evaluate('document.querySelector(".space-member-presence .presence-dot").dataset.status'), status);
+    screenshot(`presence-${status}`);
+  }
   browser('click', '.member-presence-pages button:last-child');
   wait('document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".member-presence-connecting")');
-  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'), 1);
-  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence").userIds.length'), 5);
-  browser('click', '.member-presence-heading');
-  wait('!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence")');
+  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'), 2);
+  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length'), 5);
+  const expandedChatWidth = evaluate('document.querySelector(".stage").getBoundingClientRect().width');
+  browser('click', '.member-list-toggle');
+  wait('!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence" && s.userIds.length > 1)');
+  assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'), 1, 'Own presence must remain subscribed with members hidden');
+  assert.equal(evaluate('document.querySelector(".space-member-presence")'), null, 'Hidden members must not retain a sidebar');
+  assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), 'false');
+  assert.ok(evaluate('document.querySelector(".stage").getBoundingClientRect().width') > expandedChatWidth, 'Chat must reclaim the member column');
   browser('click', '.channel-section-toggle');
   assert.ok(evaluate('document.querySelector("#space-channel-list").hidden'));
   assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), '1');
-  assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), '30');
   screenshot('members-collapsed');
   browser('click', '.channel-section-toggle');
-  evaluate('spaceControlFixture.holdPresence = true');
-  browser('click', '.member-presence-heading');
-  assert.ok(evaluate('[...document.querySelectorAll(".space-member-presence small")].every(node => ["online", "idle", "offline"].includes(node.textContent))'), 'Cached statuses must remain visible before the next snapshot');
+  browser('click', '.member-list-toggle');
+  wait('document.querySelectorAll(".space-member-presence li").length === 25');
+  assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), '30');
+  assert.ok(evaluate('[...document.querySelectorAll(".space-member-presence .presence-dot")].every(node => ["online", "idle", "offline"].includes(node.dataset.status))'), 'Reopening must restore live subscriptions');
   assert.equal(evaluate('document.querySelector(".space-member-presence").textContent.includes("Updating")'), false);
   browser('set', 'viewport', '390', '844', '2');
+  screenshot('members-narrow-open');
+  browser('click', '.member-list-toggle');
+  assert.equal(evaluate('document.querySelector(".space-member-presence")'), null);
+  screenshot('members-narrow-hidden');
   browser('click', '.navigation-toggle');
   wait('!!document.querySelector(".spaces-room.navigation-open")');
   assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Narrow member navigation must not overflow');
@@ -231,6 +254,20 @@ try {
   evaluate('spaceControlFixture.release()');
   wait('!document.querySelector(".space-dialog[open]")');
   assert.equal(evaluate('spaceControlFixture.deletes.at(-1)'), '/api/spaces/space1234567');
+  for (const enabled of [false, true]) {
+    browser('set', 'viewport', '1280', '900', '2');
+    browser('open', `${url}?space=space1234567&channel=channel12345${enabled ? '&debug' : ''}`);
+    wait('!!document.querySelector(".account-avatar")');
+    browser('click', '[aria-label="User Settings"]');
+    assert.equal(evaluate('[...document.querySelectorAll("button")].some(b => b.textContent === "Audio diagnostics")'), enabled);
+    if (enabled) {
+      browser('find', 'role', 'button', 'click', '--name', 'Audio diagnostics', '--exact');
+      wait('!!document.querySelector(".audio-debug")');
+      assert.match(evaluate('document.querySelector(".audio-debug").textContent'), /No microphone capture started/);
+      assert.equal(evaluate('JSON.parse(document.querySelector(".audio-debug pre").textContent).captureAttempt'), 'not-started');
+    }
+  }
+  console.log('PASS: debug-enabled account sees diagnostics; other accounts do not; unused capture is explicit.');
   console.log('PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).');
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }

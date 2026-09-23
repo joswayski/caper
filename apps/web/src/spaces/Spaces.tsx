@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { getAccount, type Account } from "../account/client";
+import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import Call from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
@@ -134,6 +135,13 @@ function DeleteConfirmation({ kind, name, onClose, onDelete }: {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const submitting = useRef(false);
+  const warned = useRef(false);
+  useEffect(() => {
+    if (!warned.current) {
+      warned.current = true;
+      playSound("warning");
+    }
+  }, []);
   return (
     <Dialog title={`Delete ${kind}`} dismissOnBackdrop onClose={() => { if (!submitting.current) onClose(); }}>
       <div className="delete-confirmation">
@@ -147,7 +155,7 @@ function DeleteConfirmation({ kind, name, onClose, onDelete }: {
             submitting.current = true;
             setPending(true);
             setError(undefined);
-            void onDelete().catch((reason) => {
+            void onDelete().then(() => playSound("delete")).catch((reason) => {
               setError(errorMessage(reason));
               submitting.current = false;
               setPending(false);
@@ -209,7 +217,7 @@ function ChannelPrivacy({ spaceName, checked, onChange }: {
     <div className="channel-privacy">
       <label>
         <span><LockKeyhole aria-hidden="true" />Private channel</span>
-        <input type="checkbox" role="switch" checked={checked} onChange={(event) => onChange(event.target.checked)} aria-describedby="channel-privacy-help" />
+        <input type="checkbox" role="switch" checked={checked} onChange={(event) => { playSound(event.target.checked ? "toggle-on" : "toggle-off"); onChange(event.target.checked); }} aria-describedby="channel-privacy-help" />
       </label>
       <p id="channel-privacy-help">{checked ? "Only you and the people you add can view or join." : <>Anyone in <strong>{spaceName}</strong> can view or join this channel.</>}</p>
     </div>
@@ -772,6 +780,7 @@ export default function Spaces() {
 
   useEffect(() => {
     let current = true;
+    void preloadSoundEffects();
     void getAccount()
       .then(async (nextAccount) => {
         if (!current) return;
@@ -1041,7 +1050,7 @@ export default function Spaces() {
         )}
       </header>
       <div className="channel-section-heading">
-        <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded((value) => !value)}>
+        <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => { playSound(channelsExpanded ? "toggle-off" : "toggle-on"); setChannelsExpanded(!channelsExpanded); }}>
           <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
         </button>
         {owner && <div className="channel-section-actions">

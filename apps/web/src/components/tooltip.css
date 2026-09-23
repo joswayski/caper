@@ -1,0 +1,17 @@
+.top-layer-tooltip {
+  position: fixed;
+  inset: auto;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 16px));
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--blackout);
+  box-shadow: 0 8px 24px rgb(0 0 0 / .35);
+  font-size: .7rem;
+  font-weight: 700;
+  line-height: 1.35;
+  text-wrap: pretty;
+}

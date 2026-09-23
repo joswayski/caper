@@ -7,6 +7,7 @@ const SECRET_KEYS: &[&str] = &[
     "DATABASE_URL",
     "MIGRATION_DATABASE_URL",
     "AUTH_SECRET",
+    "DEBUG_USERS",
     "AUTH_CODE_ATTEMPTS",
     "AUTH_EMAIL_15M_LIMIT",
     "AUTH_EMAIL_DAILY_LIMIT",
@@ -106,6 +107,17 @@ impl RuntimeEnvironment {
             secret_loaded: true,
         })
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_values_for_test<const N: usize>(values: [(&'static str, &str); N]) -> Self {
+        Self {
+            secret_values: values
+                .into_iter()
+                .map(|(key, value)| (key, value.to_owned()))
+                .collect(),
+            secret_loaded: false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -130,6 +142,7 @@ mod tests {
         let environment = RuntimeEnvironment::from_secret_json(
             r#"{
                 "AUTH_SECRET":"remote-secret",
+                "DEBUG_USERS":"alice,bob",
                 "MEDIA_ENABLED":"true",
                 "DATABASE_URL":"postgres://runtime",
                 "MIGRATION_DATABASE_URL":"postgres://migration",
@@ -146,6 +159,7 @@ mod tests {
             environment.get("AUTH_SECRET").as_deref(),
             Some("remote-secret")
         );
+        assert_eq!(environment.get("DEBUG_USERS").as_deref(), Some("alice,bob"));
         assert_eq!(environment.get("MEDIA_ENABLED").as_deref(), Some("true"));
         assert_eq!(
             environment.get("DATABASE_URL").as_deref(),

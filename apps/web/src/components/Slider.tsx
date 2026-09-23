@@ -1,4 +1,5 @@
 import * as SliderPrimitive from "@radix-ui/react-slider";
+import { playSliderTick } from "../audio/effects";
 
 export default function Slider({ label, value, min = 0, max = 100, step = 1, disabled, onChange }: {
   label: string;
@@ -16,7 +17,10 @@ export default function Slider({ label, value, min = 0, max = 100, step = 1, dis
     max={max}
     step={step}
     disabled={disabled}
-    onValueChange={([next]) => onChange(next)}
+    onValueChange={([next]) => {
+      playSliderTick(max === min ? 0 : (next - min) / (max - min));
+      onChange(next);
+    }}
   >
     <SliderPrimitive.Track className="range-slider-track">
       <SliderPrimitive.Range className="range-slider-fill" />

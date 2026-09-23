@@ -55,7 +55,7 @@ test("pinned DPDFNet-8 model performs stateful inference on real spectra", async
 });
 
 async function loadWorklet() {
-  const code = await readFile(new URL("worklet.js", assets), "utf8");
+  const code = await readFile(new URL("worklet-v3.js", assets), "utf8");
   const messages: unknown[] = [];
   let Processor: any;
   new Function("AudioWorkletProcessor", "registerProcessor", code)(
@@ -112,7 +112,7 @@ test("DPDFNet adapter prebuffers three hops and stays continuous across variable
   assert.ok(live.every((sample) => sample !== 0), "no holes after startup");
 });
 
-test("DPDFNet adapter bypasses on overload and underrun without ending audio", async () => {
+test("DPDFNet adapter bounds sustained overload but recovers from a transient underrun", async () => {
   const overloaded = await loadWorklet();
   let overloadOutput = new Float32Array();
   for (let i = 0; i < 35; i++) {
@@ -132,8 +132,15 @@ test("DPDFNet adapter bypasses on overload and underrun without ending audio", a
   const input = new Float32Array([0.25]);
   const output = new Float32Array(1);
   assert.equal(underrun.processor.process([[input]], [[output]]), true);
-  assert.equal(underrun.messages.at(-1), "bypassed");
-  assert.deepEqual(output, input);
+  assert.ok(!underrun.messages.includes("bypassed"));
+  assert.deepEqual(output, new Float32Array(1), "never leak raw input during refill");
+  for (let i = 0; i < 3; i++) underrun.processor.port.onmessage({
+    data: { type: "output", samples: new Float32Array(480).fill(0.1 * (i + 1)).buffer },
+  });
+  const recovered = new Float32Array(128);
+  underrun.processor.process([[new Float32Array(128).fill(0.9)]], [[recovered]]);
+  assert.deepEqual(recovered, new Float32Array(128).fill(0.1), "resume processed samples after refilling");
+  assert.ok(!underrun.messages.includes("bypassed"));
 });
 
 test("DPDFNet adapter keeps silence and missing input deterministic", async () => {
