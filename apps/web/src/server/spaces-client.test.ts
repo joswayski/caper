@@ -7,6 +7,7 @@ import {
   createChannel,
   createSpace,
   deleteSpace,
+  normalizeChannelName,
   spaceNameError,
 } from "../spaces/client.ts";
 
@@ -18,6 +19,14 @@ test("space and channel names enforce the browser-visible API rules", () => {
   for (const name of ["Launch-plans", "launch--plans", "launch-2", "launch-"]) {
     assert.match(channelNameError(name)!, /lowercase/);
   }
+});
+
+test("channel input normalizes pasted names while allowing a word separator during typing", () => {
+  assert.equal(normalizeChannelName("  Launch--PLANS 42! & updates"), "launch-plans-updates");
+  assert.equal(normalizeChannelName("---123!?"), "");
+  assert.equal(normalizeChannelName("launch-"), "launch-");
+  assert.equal(normalizeChannelName("launch--p"), "launch-p");
+  assert.equal(normalizeChannelName("UPDATES".repeat(12)), "updates".repeat(11) + "upd");
 });
 
 test("CRUD sends only the specified payload and preserves server error details", async (t) => {
