@@ -652,6 +652,7 @@ pub struct AppState {
     cleanup_lock: Arc<Mutex<()>>,
     expiry_lock: Arc<Mutex<()>>,
     auth: auth::AuthVerifier,
+    debug_users: accounts::DebugUsers,
     notifications_webhook: notifications::NotificationsWebhook,
 }
 impl AppState {
@@ -691,6 +692,7 @@ impl AppState {
             cleanup_lock: Arc::new(Mutex::new(())),
             expiry_lock: Arc::new(Mutex::new(())),
             auth,
+            debug_users: accounts::DebugUsers::default(),
             notifications_webhook: notifications::NotificationsWebhook::from_env(
                 &RuntimeEnvironment::default(),
             ),
@@ -720,6 +722,7 @@ impl AppState {
         environment: &RuntimeEnvironment,
     ) -> Result<(), String> {
         self.auth = auth::AuthVerifier::from_env(environment).await?;
+        self.debug_users = accounts::DebugUsers::from_env(environment);
         self.notifications_webhook = notifications::NotificationsWebhook::from_env(environment);
         Ok(())
     }
@@ -1112,9 +1115,12 @@ async fn auth_email_verify(
             ));
     }
     let mut response = match input.token_transport {
-        TokenTransport::Cookie => Json(json!({"account": session.user.public()})).into_response(),
+        TokenTransport::Cookie => {
+            Json(json!({"account": session.user.own(&state.debug_users)})).into_response()
+        }
         TokenTransport::Bearer => {
-            Json(json!({"account": session.user.public(), "token": session.token})).into_response()
+            Json(json!({"account": session.user.own(&state.debug_users), "token": session.token}))
+                .into_response()
         }
     };
     if matches!(input.token_transport, TokenTransport::Cookie) {
@@ -1149,8 +1155,11 @@ async fn auth_logout(
     Ok(response)
 }
 
-async fn account_me(Extension(principal): Extension<auth::Principal>) -> Json<Value> {
-    Json(serde_json::to_value(principal.user.public()).expect("account serializes"))
+async fn account_me(
+    State(state): State<AppState>,
+    Extension(principal): Extension<auth::Principal>,
+) -> Json<Value> {
+    Json(serde_json::to_value(principal.user.own(&state.debug_users)).expect("account serializes"))
 }
 
 #[derive(Deserialize)]
@@ -1184,7 +1193,7 @@ async fn account_profile(
     })?;
     match accounts::set_profile(pool, principal.user.id, &username, display_name).await {
         Ok(Some(user)) => Ok(Json(
-            serde_json::to_value(user.public()).expect("account serializes"),
+            serde_json::to_value(user.own(&state.debug_users)).expect("account serializes"),
         )),
         Ok(None) => Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized")),
         Err(sqlx::Error::Database(error)) if error.is_unique_violation() => {

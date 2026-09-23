@@ -357,6 +357,21 @@ test("join, 204 state responses, real sender mute, deafen, undeafen, and immedia
   assert.ok(calls.includes("leave"));
 });
 
+test("undeafen unmutes even when muted before deafening, but an already-undeafened request preserves mute", async (t) => {
+  const { client, track, states, stateUpdates } = setup(t);
+  await client.join("Guest");
+  await client.setMuted(true);
+  await client.setDeafened(false);
+  assert.equal(track.enabled, false, "a no-op is not an undeafen gesture");
+  await client.setDeafened(true);
+  await client.setDeafened(false);
+  assert.equal(track.enabled, true);
+  assert.equal(Peer.latest.senders[0].track, track);
+  assert.equal(states.at(-1)?.muted, false);
+  assert.deepEqual(stateUpdates.at(-1), { muted: false, deafened: false });
+  client.leaveImmediately();
+});
+
 test("mic test stays local, detaches channel audio, and restores prior state", async (t) => {
   const { client, track, calls, states, stateUpdates } = setup(t);
   await client.join("Guest");
@@ -472,11 +487,53 @@ test("local mic test times out unanswered permission and releases a late grant",
 
 test("local mic test explains missing, denied, and busy devices", async (t) => {
   const { client, install } = setup(t);
+  assert.equal(client.getAudioDiagnostics().captureAttempt, "not-started");
   for (const [name, expected] of [["NotFoundError", /Connect a microphone/], ["NotAllowedError", /permission was denied/], ["NotReadableError", /another app/]] as const) {
     install("navigator", { mediaDevices: { getUserMedia: async () => { throw new DOMException("Browser error", name); } } });
     await assert.rejects(client.startLocalMicTest(), expected);
+    assert.equal(client.getAudioDiagnostics().captureAttempt, "failed");
+    assert.equal(client.getAudioDiagnostics().captureError, name);
+    assert.deepEqual(client.getAudioDiagnostics().captures, []);
   }
   client.stopLocalMicTest();
+});
+
+test("pre-join undeafen unmutes without capturing or signaling", async (t) => {
+  const { client, states, calls } = setup(t);
+  await client.setMuted(true);
+  await client.setDeafened(true);
+  await client.setDeafened(false);
+  assert.equal(states.at(-1)?.muted, false, "Undeafen also unmutes an explicitly muted mic");
+  assert.equal(states.at(-1)?.deafened, false);
+  await client.setMuted(false);
+  await client.setDeafened(true);
+  await client.setDeafened(false);
+  assert.equal(states.at(-1)?.muted, false, "Undeafen restores a previously live mic");
+  await client.setDeafened(true);
+  await client.setMuted(false);
+  assert.equal(states.at(-1)?.deafened, false, "Explicit unmute also undeafens");
+  assert.deepEqual(calls, [], "Preferences need neither capture nor API calls");
+  await client.setMuted(true);
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(Peer.latest.senders[0].track, null, "Pre-join mute must prevent publication of audible audio");
+  await client.leave();
+  assert.equal(states.at(-1)?.muted, true, "Leaving retains mute intent");
+  await client.setMuted(false);
+  await client.setDeafened(true);
+  client.setInputVolume(145);
+  client.setVoiceProcessingStrength(37);
+  const nextStates: CallViewState[] = [];
+  const next = new PublicCallClient((state) => nextStates.push(state), "/api/channels/next00000000/media");
+  next.copyAudioPreferencesFrom(client);
+  assert.equal(nextStates.at(-1)?.phase, "idle");
+  assert.equal(nextStates.at(-1)?.deafened, true);
+  assert.equal(nextStates.at(-1)?.inputVolume, 145);
+  assert.equal(nextStates.at(-1)?.voiceProcessingStrength, 37);
+  assert.equal(nextStates.at(-1)?.selfId, undefined);
+  await next.setDeafened(false);
+  assert.equal(nextStates.at(-1)?.muted, false, "Switching channels retains the pre-deafen intent too");
 });
 
 test("pre-join microphone selection is retained and can be supplied when testing", async (t) => {

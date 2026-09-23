@@ -16,6 +16,7 @@ export interface Microphone {
   track: MediaStreamTrack;
   naturalTrack: MediaStreamTrack;
   status: string;
+  diagnostics(): object;
   setInputVolume(volume: number): void;
   setVoiceProcessingStrength(strength: number): void;
   pause(): Promise<void>;
@@ -54,8 +55,12 @@ export async function captureMicrophone(
   let node: AudioWorkletNode | undefined;
   let voiceProcessing: VoiceProcessingNodes | undefined;
   let prepared: ReturnType<DpdfnetPreparation["take"]> | undefined;
+  const fallbackController = new AbortController();
   let stopped = false;
   let bypassing = false;
+  let processedHops = 0;
+  let totalProcessingMs = 0;
+  let maxProcessingMs = 0;
   let processingConnected: boolean | undefined;
   const connectVoicePath = (strength: number) => {
     if (!context || !voiceInput || !destination || !voiceProcessing) return;
@@ -75,6 +80,15 @@ export async function captureMicrophone(
     track: raw,
     naturalTrack: raw,
     status: "Noise suppression off",
+    diagnostics() {
+      const { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl } = raw.getSettings();
+      return {
+        requested: mode, status: microphone.status, stopped,
+        context: context?.state, contextSampleRate: context?.sampleRate,
+        capture: { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl },
+        dpdfnet: { processedHops, meanProcessingMs: processedHops ? totalProcessingMs / processedHops : null, maxProcessingMs, hopBudgetMs: 10 },
+      };
+    },
     setInputVolume(volume) {
       const value = Math.max(0, Math.min(volume, 200)) / 100;
       if (gain) gain.gain.setValueAtTime(value, gain.context.currentTime);
@@ -92,6 +106,7 @@ export async function captureMicrophone(
     stop() {
       if (stopped) return;
       stopped = true;
+      fallbackController.abort();
       signal.removeEventListener("abort", microphone.stop);
       stream.getTracks().forEach((track) => track.stop());
       destination?.stream.getTracks().forEach((track) => track.stop());
@@ -131,6 +146,62 @@ export async function captureMicrophone(
     microphone.stop();
     changed();
   };
+  const useRnnoise = async () => {
+    let replacement: AudioWorkletNode | undefined;
+    const fallbackSignal = fallbackController.signal;
+    try {
+      const { module } = await assets.load("rnnoise", fallbackSignal);
+      await context!.audioWorklet.addModule("/audio/noise-v1/worklet.js");
+      fallbackSignal.throwIfAborted();
+      replacement = new AudioWorkletNode(context!, "caper-noise", {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+        channelCount: 1, channelCountMode: "explicit", processorOptions: { engine: "rnnoise", module },
+      });
+      await new Promise<void>((resolve, reject) => {
+        const finish = (error?: Error) => {
+          clearTimeout(timer);
+          fallbackSignal.removeEventListener("abort", abort);
+          error ? reject(error) : resolve();
+        };
+        const abort = () => finish(new Error("Fallback cancelled"));
+        const timer = setTimeout(() => finish(new Error("Fallback timed out")), 15_000);
+        fallbackSignal.addEventListener("abort", abort, { once: true });
+        replacement!.onprocessorerror = () => finish(new Error("Fallback failed"));
+        replacement!.port.onmessage = ({ data }) => finish(data === "ready" ? undefined : new Error("Fallback failed"));
+      });
+      fallbackSignal.throwIfAborted();
+      const previous = node!;
+      gain!.disconnect();
+      previous.disconnect();
+      previous.port.postMessage("stop");
+      previous.port.close();
+      node = replacement;
+      gain!.connect(node);
+      node.connect(naturalDestination!);
+      node.connect(voiceInput!);
+      const failed = () => {
+        if (stopped) return;
+        microphone.status = "RNNoise failed - microphone stopped";
+        microphone.stop();
+        changed();
+      };
+      node.onprocessorerror = failed;
+      node.port.onmessage = ({ data }) => { if (data === "failed") failed(); };
+      // Do not stack browser suppression on the local fallback engine.
+      await raw.applyConstraints({ noiseSuppression: false }).catch(() => undefined);
+      if (stopped) return;
+      microphone.status = `${engineName} unavailable · RNNoise active · on-device`;
+      changed();
+    } catch {
+      // Keep the existing browser fallback and its honest status if RNNoise fails.
+    } finally {
+      if (replacement && replacement !== node) {
+        replacement.port.postMessage("stop");
+        replacement.disconnect();
+        replacement.port.close();
+      }
+    }
+  };
   const bypass = () => {
     if (stopped || bypassing) return;
     bypassing = true;
@@ -144,6 +215,7 @@ export async function captureMicrophone(
         ? `${engineName} unavailable · browser suppression active`
         : `${engineName} unavailable - noise suppression bypassed`;
       changed();
+      if (engine === "dpdfnet8") void useRnnoise();
     });
   };
 
@@ -165,7 +237,7 @@ export async function captureMicrophone(
     microphone.setInputVolume(inputVolume);
     voiceProcessing = createVoiceProcessingNodes(context, voiceProcessingStrength);
     const { module, model } = engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
-    await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet.js" : "/audio/noise-v1/worklet.js");
+    await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet-v3.js" : "/audio/noise-v1/worklet.js");
     signal.throwIfAborted();
     node = new AudioWorkletNode(context, engine === "dpdfnet8" ? "caper-dpdfnet8" : "caper-noise", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
@@ -198,7 +270,12 @@ export async function captureMicrophone(
     if (prepared) {
       const worker = prepared.worker;
       worker.onmessage = ({ data }) => {
-        if (data?.type === "output") node?.port.postMessage(data, [data.samples]);
+        if (data?.type === "output") {
+          processedHops++;
+          totalProcessingMs += data.duration;
+          maxProcessingMs = Math.max(maxProcessingMs, data.duration);
+          node?.port.postMessage(data, [data.samples]);
+        }
         else node?.port.postMessage({ type: "failed" });
       };
       worker.onerror = () => node?.port.postMessage({ type: "failed" });

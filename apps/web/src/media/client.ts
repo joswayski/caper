@@ -113,6 +113,8 @@ export class PublicCallClient {
   private audioSetup: AudioSetup = "headphones";
   private voiceProcessingStrength = DEFAULT_VOICE_PROCESSING_STRENGTH;
   private microphoneStatus?: string;
+  private captureAttempt: "not-started" | "opening" | "opened" | "failed" = "not-started";
+  private captureError?: string;
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
   private joinTiming?: Omit<ConnectionDiagnostics, "receivedBytes" | "sentBytes" | "receiveBitrate" | "sendBitrate" | "packetsLost" | "maxJitterMs" | "roundTripMs" | "route">;
@@ -126,6 +128,17 @@ export class PublicCallClient {
     this.changed = changed;
     this.apiRoot = apiRoot;
     this.fetchTransport = fetchTransport;
+  }
+
+  /** Carry user intent to a new channel without sharing session capabilities or media. */
+  copyAudioPreferencesFrom(previous: PublicCallClient) {
+    this.muted = previous.muted;
+    this.deafened = previous.deafened;
+    this.inputVolume = previous.inputVolume;
+    this.voiceProcessingStrength = previous.voiceProcessingStrength;
+    this.noiseSuppression = previous.noiseSuppression;
+    this.audioSetup = previous.audioSetup;
+    this.emit();
   }
 
   prepareMicrophone() {
@@ -495,6 +508,7 @@ export class PublicCallClient {
   async setMuted(muted: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
+    if (!muted) this.deafened = false;
     this.muted = muted;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !muted;
@@ -598,14 +612,31 @@ export class PublicCallClient {
   }
 
   private async openMicrophone(deviceId?: string, signal = this.captureController.signal) {
+    this.captureAttempt = "opening";
+    this.captureError = undefined;
     let microphone: Microphone;
-    microphone = await captureMicrophone(deviceId, this.noiseSuppression, signal, () => {
-      this.microphoneStatus = microphone.status;
-      this.emit();
-    }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceProcessingStrength);
+    try {
+      microphone = await captureMicrophone(deviceId, this.noiseSuppression, signal, () => {
+        this.microphoneStatus = microphone.status;
+        this.emit();
+      }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceProcessingStrength);
+      this.captureAttempt = "opened";
+    } catch (error) {
+      this.captureAttempt = "failed";
+      this.captureError = error instanceof Error ? error.name : "UnknownError";
+      throw error;
+    }
     this.microphoneStatus = microphone.status;
     this.captures.set(microphone.track, microphone);
     return microphone.track;
+  }
+
+  getAudioDiagnostics() {
+    return {
+      captureAttempt: this.captureAttempt, captureError: this.captureError,
+      captures: [...this.captures.values()].map((capture) => capture.diagnostics()),
+      connection: this.diagnostics,
+    };
   }
 
   private stopMicrophone(track: MediaStreamTrack) {
