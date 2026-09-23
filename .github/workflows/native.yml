@@ -200,20 +200,10 @@ jobs:
           arch: x86_64
           profile: pixel_7_pro
           disable-animations: true
-          script: |
-            adb install apps/native/android/dist/Caper-android-debug.apk
-            adb shell am start -W -n chat.caper.android.debug/chat.caper.android.MainActivity
-            sleep 5
-            adb shell pidof chat.caper.android.debug
-            adb shell uiautomator dump /sdcard/caper-ui.xml
-            adb pull /sdcard/caper-ui.xml /tmp/caper-android-ui.xml
-            grep -q 'A quieter place to talk' /tmp/caper-android-ui.xml
-            adb exec-out screencap -p > /tmp/caper-android-sign-in.png
+          script: python apps/native/android/smoke.py
       - uses: actions/upload-artifact@v4
         with:
           name: caper-ui-android-${{ github.sha }}
-          path: |
-            /tmp/caper-android-sign-in.png
-            /tmp/caper-android-ui.xml
+          path: apps/native/android/dist/ui/
           if-no-files-found: error
           retention-days: 14

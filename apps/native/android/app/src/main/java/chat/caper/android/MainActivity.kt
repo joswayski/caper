@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Card(colors = CardDefaults.cardColors(containerColor = Surface), border = BorderStroke(1.dp, Border), modifier = Modifier.widthIn(max = 440.dp)) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("CAPER", color = CaperGreen, fontWeight = FontWeight.Black)
+                Text("CAPER", color = Text, fontWeight = FontWeight.Black)
                 Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Text(subtitle, color = Text.copy(alpha = .7f))
                 content()
@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
     var email by remember { mutableStateOf("") }
     AuthCard("A quieter place to talk", "Sign in with the code sent to your email.") {
         OutlinedTextField(email, { email = it }, label = { Text("Email") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(email) }, enabled = email.contains('@') && !busy, modifier = Modifier.fillMaxWidth()) { Text("Send code") }
+        Button({ submit(email) }, enabled = email.contains('@') && !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) { Text("Send code") }
     }
 }
 
@@ -89,7 +89,7 @@ class MainActivity : ComponentActivity() {
     var code by remember { mutableStateOf("") }
     AuthCard("Check your inbox", "Enter the code sent to ${screen.email}.") {
         OutlinedTextField(code, { code = it }, label = { Text("Code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(screen.challengeId, code) }, enabled = code.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
+        Button({ submit(screen.challengeId, code) }, enabled = code.isNotBlank() && !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) { Text("Continue") }
     }
 }
 
@@ -98,7 +98,7 @@ class MainActivity : ComponentActivity() {
     AuthCard("Create your profile", "Choose how people will find and recognize you.") {
         OutlinedTextField(username, { username = it.lowercase().filter { c -> c in 'a'..'z' || c in '0'..'9' || c == '_' }.take(32) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(name, { name = it.take(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(username, name) }, enabled = username.length >= 3 && name.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) { Text("Enter Caper") }
+        Button({ submit(username, name) }, enabled = username.length >= 3 && name.isNotBlank() && !busy, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) { Text("Enter Caper") }
     }
 }
 
@@ -169,6 +169,6 @@ class MainActivity : ComponentActivity() {
     }
     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
         OutlinedTextField(draft, { draft = it.take(it.offsetByCodePoints(0, minOf(4000, it.codePointCount(0, it.length)))); viewModel.reportActivity() }, placeholder = { Text("Message #${channel.name}") }, modifier = Modifier.weight(1f), maxLines = 5)
-        Spacer(Modifier.width(8.dp)); Button({ val value = draft; viewModel.send(value) { if (draft == value) draft = "" } }, enabled = draft.isNotBlank()) { Text("Send") }
+        Spacer(Modifier.width(8.dp)); Button({ val value = draft; viewModel.send(value) { if (draft == value) draft = "" } }, enabled = draft.isNotBlank(), shape = MaterialTheme.shapes.small) { Text("Send") }
     }
 }
