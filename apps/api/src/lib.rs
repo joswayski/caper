@@ -40,6 +40,7 @@ const RESERVATION: Duration = Duration::from_secs(30);
 
 pub mod accounts;
 mod auth;
+mod channel_media;
 mod chat;
 mod db;
 mod email;
@@ -47,6 +48,7 @@ mod environment;
 pub mod gateway;
 mod media_store;
 mod notifications;
+mod spaces;
 use media_store::Timestamp;
 
 pub use db::{connect_database, connect_runtime_database, migrate_database};
@@ -56,6 +58,7 @@ pub use environment::RuntimeEnvironment;
 pub struct Config {
     pub enabled: bool,
     pub bind: SocketAddr,
+    space_limits: spaces::Limits,
     app_id: Option<String>,
     app_secret: Option<String>,
     turn_key_id: Option<String>,
@@ -73,6 +76,7 @@ impl Config {
         let get = |key| environment.get(key).filter(|v| !v.trim().is_empty());
         let config = Self {
             enabled,
+            space_limits: spaces::Limits::from_env(environment)?,
             bind: environment
                 .get("MEDIA_BIND")
                 .unwrap_or_else(|| "0.0.0.0:3001".into())
@@ -107,6 +111,7 @@ impl Config {
         Self {
             enabled,
             bind: "127.0.0.1:0".parse().unwrap(),
+            space_limits: spaces::Limits::default(),
             app_id: Some("app".into()),
             app_secret: Some("secret".into()),
             turn_key_id: Some("turn".into()),
@@ -632,6 +637,9 @@ pub struct AppState {
     config: Config,
     provider: Arc<dyn Provider>,
     registry: Arc<Mutex<Registry>>,
+    channel_registries: Arc<Mutex<HashMap<String, Registry>>>,
+    media_channel: Option<String>,
+    media_session: Option<Vec<u8>>,
     store: Option<Arc<media_store::ValkeyStore>>,
     database: Option<PgPool>,
     chat: Option<chat::Chat>,
@@ -666,6 +674,9 @@ impl AppState {
             config,
             provider,
             registry: Arc::new(Mutex::new(Registry::default())),
+            channel_registries: Arc::new(Mutex::new(HashMap::new())),
+            media_channel: None,
+            media_session: None,
             store: None,
             database,
             chat: None,
@@ -727,6 +738,8 @@ struct JoinReservation {
 struct Participant {
     id: Uuid,
     token: String,
+    #[serde(default)]
+    account_session: Option<Vec<u8>>,
     name: String,
     country_code: Option<String>,
     session: String,
@@ -906,6 +919,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/account/me", get(account_me))
         .route("/api/account/profile", post(account_profile))
         .route("/api/auth/logout", post(auth_logout))
+        .merge(spaces::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             account_auth,
@@ -913,22 +927,7 @@ pub fn app(state: AppState) -> Router {
     let account_login = Router::new()
         .route("/api/auth/email/request", post(auth_email_request))
         .route("/api/auth/email/verify", post(auth_email_verify));
-    let media = Router::new()
-        .route("/api/media/status", get(status))
-        .route("/api/media/presence", get(presence))
-        .route("/api/media/presence/events", get(presence_events))
-        .route("/api/media/join", post(join))
-        .route("/api/media/turn", post(turn))
-        .route("/api/media/restart-ice", post(restart_ice))
-        .route("/api/media/restart-ice-ack", post(restart_ice_ack))
-        .route("/api/media/snapshot", post(snapshot))
-        .route("/api/media/events", get(events))
-        .route("/api/media/publish", post(publish))
-        .route("/api/media/subscribe", post(subscribe))
-        .route("/api/media/negotiate", post(negotiate))
-        .route("/api/media/close", post(close))
-        .route("/api/media/state", post(update_state))
-        .route("/api/media/leave", post(leave));
+    let media = media_routes();
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/readyz", get(ready))
@@ -936,6 +935,7 @@ pub fn app(state: AppState) -> Router {
         .merge(account_login)
         .merge(protected)
         .merge(media)
+        .merge(channel_media::routes())
         .merge(chat::routes())
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
@@ -981,6 +981,25 @@ pub fn app(state: AppState) -> Router {
             },
         ))
         .with_state(state)
+}
+
+fn media_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/media/status", get(status))
+        .route("/api/media/presence", get(presence))
+        .route("/api/media/presence/events", get(presence_events))
+        .route("/api/media/join", post(join))
+        .route("/api/media/turn", post(turn))
+        .route("/api/media/restart-ice", post(restart_ice))
+        .route("/api/media/restart-ice-ack", post(restart_ice_ack))
+        .route("/api/media/snapshot", post(snapshot))
+        .route("/api/media/events", get(events))
+        .route("/api/media/publish", post(publish))
+        .route("/api/media/subscribe", post(subscribe))
+        .route("/api/media/negotiate", post(negotiate))
+        .route("/api/media/close", post(close))
+        .route("/api/media/state", post(update_state))
+        .route("/api/media/leave", post(leave))
 }
 
 async fn account_auth(
@@ -1397,6 +1416,7 @@ async fn event_stream(
                 }
                 // Heartbeats do not renew the lease. They do bound expiry/revocation detection
                 // even when the cleanup sweep is not running.
+                stream.state.check_media_access().await.ok()?;
                 let snapshot = stream
                     .state
                     .read(|r| {
@@ -1625,6 +1645,7 @@ async fn join(
     let p = Participant {
         id,
         token: token_hash(&token),
+        account_session: s.media_session.clone(),
         name: name.into(),
         country_code,
         session,
@@ -1658,6 +1679,15 @@ async fn join(
         monitor,
         events: None,
     };
+    if let Err(error) = s.check_media_access().await {
+        s.update(|r| {
+            r.reservations.remove(&reservation);
+            cleanup_participant_locked(r, &p);
+            Ok(())
+        })
+        .await?;
+        return Err(error);
+    }
     s.update(|r| {
         let reserved = r
             .reservations
@@ -2895,7 +2925,12 @@ pub fn spawn_cleanup(s: AppState) {
     tokio::spawn(async move {
         let mut shutdown = worker.shutting_down.subscribe();
         while !*shutdown.borrow() {
-            let wait = retry_backlog(&worker).await;
+            let mut wait = CLEANUP_RECONCILE_INTERVAL;
+            if let Ok(rooms) = worker.media_rooms().await {
+                for room in rooms {
+                    wait = wait.min(retry_backlog(&room).await);
+                }
+            }
             // Local queue changes wake this worker immediately. The slower poll
             // recovers shared work left by a replica that exited after enqueueing.
             tokio::select! {
@@ -2919,7 +2954,12 @@ pub fn spawn_cleanup(s: AppState) {
             if *shutdown.borrow() {
                 break;
             }
-            let _ = expire_sessions(&s).await;
+            if let Ok(rooms) = s.media_rooms().await {
+                for room in rooms {
+                    let _ = room.revoke_media_access().await;
+                    let _ = expire_sessions(&room).await;
+                }
+            }
         }
     });
 }
@@ -2934,32 +2974,32 @@ pub async fn shutdown_cleanup(s: &AppState) {
     }
     // Finish any local expiry/enqueue pass before deciding the queue is drained.
     let _expiry_guard = s.expiry_lock.lock().await;
-    let ids = {
-        s.registry
-            .lock()
-            .await
-            .participants
-            .keys()
-            .copied()
-            .collect::<Vec<_>>()
-    };
+    let rooms = s.media_rooms().await.unwrap_or_else(|_| vec![s.clone()]);
     let result = tokio::time::timeout(Duration::from_secs(20), async {
-        for id in ids {
-            remove_participant(s, id).await;
+        for room in &rooms {
+            let ids = room
+                .read(|r| Ok(r.participants.keys().copied().collect::<Vec<_>>()))
+                .await
+                .unwrap_or_default();
+            for id in ids {
+                remove_participant(room, id).await;
+            }
         }
         loop {
-            retry_backlog(s).await;
-            if s.registry.lock().await.cleanup.is_empty() {
+            let mut remaining = 0;
+            for room in &rooms {
+                retry_backlog(room).await;
+                remaining += room.read(|r| Ok(r.cleanup.len())).await.unwrap_or(1);
+            }
+            if remaining == 0 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     })
     .await;
-    let remaining = s.registry.lock().await.cleanup.len();
     if result.is_err() {
         tracing::warn!(
-            remaining,
             "shutdown cleanup deadline reached; queued or in-flight resources may remain"
         );
     }

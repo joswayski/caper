@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tower::ServiceExt;
 
+mod channels;
 mod reliability;
 mod renewal;
 mod shared;

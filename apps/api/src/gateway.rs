@@ -3,6 +3,8 @@
 use crate::{
     ApiError, RuntimeEnvironment,
     chat::{self, Chat},
+    session_cookie,
+    spaces::{channel_access, session_user},
 };
 use axum::{
     Router,
@@ -17,6 +19,7 @@ use axum::{
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     sync::{
         Arc,
@@ -35,8 +38,8 @@ pub struct Gateway {
     chat: Chat,
     events: broadcast::Sender<Value>,
     typing: broadcast::Sender<Value>,
+    repair: watch::Sender<u64>,
     presence: broadcast::Sender<Value>,
-    head: watch::Sender<i64>,
     drain: watch::Sender<bool>,
     slots: Arc<Semaphore>,
     broker_ready: Arc<AtomicBool>,
@@ -56,15 +59,15 @@ impl Gateway {
     pub(crate) fn new(chat: Chat) -> Self {
         let (events, _) = broadcast::channel(256);
         let (typing, _) = broadcast::channel(64);
+        let (repair, _) = watch::channel(0);
         let (presence, _) = broadcast::channel(64);
-        let (head, _) = watch::channel(0);
         let (drain, _) = watch::channel(false);
         Self {
             chat,
             events,
             typing,
+            repair,
             presence,
-            head,
             drain,
             slots: Arc::new(Semaphore::new(128)),
             broker_ready: Arc::new(AtomicBool::new(false)),
@@ -125,15 +128,18 @@ impl Gateway {
         let state = self.clone();
         tokio::spawn(async move {
             loop {
-                // One check per gateway, not per recipient. Repairs the final
-                // missed event even when Pub/Sub goes silent without disconnect.
-                let result = sqlx::query_scalar::<_, i64>("SELECT c.last_seq FROM public.channels c JOIN public.spaces s ON s.id = c.space_id WHERE s.demo AND c.name = 'General'")
-                    .fetch_one(&state.chat.pool).await;
+                // One readiness check per gateway. Each recipient repairs its
+                // own channel cursor on the resulting tick.
+                let result = sqlx::query_scalar::<_, i32>("SELECT 1")
+                    .fetch_one(&state.chat.pool)
+                    .await;
                 state
                     .database_ready
                     .store(result.is_ok(), Ordering::Release);
-                if let Ok(head) = result {
-                    state.head.send_replace(head);
+                if result.is_ok() {
+                    state
+                        .repair
+                        .send_modify(|tick| *tick = tick.wrapping_add(1));
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
@@ -181,8 +187,8 @@ async fn upgrade(
     if *state.drain.borrow() {
         return Err(chat::unavailable());
     }
-    // Public reads do not require login, but browsers may only open same-origin
-    // sockets. No bearer credentials are accepted in URL/query strings.
+    // Public demo reads do not require login, but browsers may only open
+    // same-origin sockets. Credentials are accepted only from the account cookie.
     if headers
         .get("sec-fetch-site")
         .is_some_and(|v| v == "cross-site")
@@ -204,7 +210,15 @@ async fn upgrade(
         ));
     }
     let after = chat::cursor(&query.after)?;
-    let (channel, _) = chat::public_channel(&state.chat.pool, &query.channel_id).await?;
+    let token_hash =
+        session_cookie(&headers).map(|token| Sha256::digest(token.as_bytes()).to_vec());
+    let user = match token_hash.as_deref() {
+        Some(hash) => Some(session_user(&state.chat.pool, hash).await?),
+        None => None,
+    };
+    let channel = channel_access(&state.chat.pool, &query.channel_id, user)
+        .await?
+        .id;
     let slot = state
         .slots
         .clone()
@@ -218,16 +232,7 @@ async fn upgrade(
         .max_frame_size(1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
-            let _ = serve(
-                socket,
-                state,
-                channel,
-                query.channel_id,
-                after,
-                query.typing,
-                query.presence,
-            )
-            .await;
+            let _ = serve(socket, state, channel, query, token_hash, after).await;
         })
         .into_response())
 }
@@ -246,18 +251,20 @@ async fn catch_up(
     socket: &mut WebSocket,
     state: &Gateway,
     channel: i64,
+    external_id: &str,
+    token_hash: Option<&[u8]>,
     after: &mut i64,
 ) -> Result<(), ()> {
-    let head: i64 = sqlx::query_scalar("SELECT last_seq FROM public.channels WHERE id = $1")
-        .bind(channel)
-        .fetch_one(&state.chat.pool)
-        .await
-        .map_err(|_| ())?;
+    let head = authorized(state, external_id, token_hash).await?.last_seq;
     if *after > head || head - *after > REPLAY_LIMIT {
         write(socket, json!({"type":"resync_required"})).await?;
         return Err(());
     }
     while *after < head {
+        let access = authorized(state, external_id, token_hash).await?;
+        if access.id != channel {
+            return Err(());
+        }
         let rows: Vec<(i64, Value)> = sqlx::query_as("SELECT seq, payload FROM public.channel_events WHERE channel_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq LIMIT 16")
             .bind(channel).bind(*after).bind(head).fetch_all(&state.chat.pool).await.map_err(|_| ())?;
         if rows.is_empty() {
@@ -276,19 +283,38 @@ async fn catch_up(
     write(socket, json!({"type":"ready","cursor":after.to_string()})).await
 }
 
+async fn authorized(
+    state: &Gateway,
+    external_id: &str,
+    token_hash: Option<&[u8]>,
+) -> Result<crate::spaces::ChannelAccess, ()> {
+    let user = match token_hash {
+        Some(hash) => Some(session_user(&state.chat.pool, hash).await.map_err(|_| ())?),
+        None => None,
+    };
+    channel_access(&state.chat.pool, external_id, user)
+        .await
+        .map_err(|_| ())
+}
+
 async fn serve(
     mut socket: WebSocket,
     state: Gateway,
     channel: i64,
-    external_id: String,
+    subscription: Subscription,
+    token_hash: Option<Vec<u8>>,
     mut after: i64,
-    with_typing: bool,
-    with_presence: bool,
 ) -> Result<(), ()> {
+    let Subscription {
+        channel_id: external_id,
+        typing: with_typing,
+        presence: with_presence,
+        ..
+    } = subscription;
     // Buffer live before capturing a DB high-water mark. Replay then merge by
     // sequence. Lagging bounded buffers trigger another replay, never a skip.
     let mut events = state.events.subscribe();
-    let mut head = state.head.subscribe();
+    let mut repair = state.repair.subscribe();
     let mut drain = state.drain.subscribe();
     let mut deadline = None;
     let mut last_pong = tokio::time::Instant::now();
@@ -296,7 +322,14 @@ async fn serve(
     // Bound initial catch-up, including slow readers, to avoid retaining tasks.
     tokio::time::timeout(
         Duration::from_secs(10),
-        catch_up(&mut socket, &state, channel, &mut after),
+        catch_up(
+            &mut socket,
+            &state,
+            channel,
+            &external_id,
+            token_hash.as_deref(),
+            &mut after,
+        ),
     )
     .await
     .map_err(|_| ())??;
@@ -318,11 +351,12 @@ async fn serve(
             event = events.recv() => {
                 match event {
                     Ok(event) if event["channelId"].as_str() == Some(&external_id) => {
+                        authorized(&state, &external_id, token_hash.as_deref()).await?;
                         let seq = event["seq"].as_str().and_then(|v| v.parse::<i64>().ok()).ok_or(())?;
                         if seq == after + 1 { write(&mut socket, event).await?; after = seq; }
-                        else if seq > after { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &mut after)).await.map_err(|_| ())??; }
+                        else if seq > after { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??; }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &mut after)).await.map_err(|_| ())??; }
+                    Err(broadcast::error::RecvError::Lagged(_)) => { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??; }
                     Err(broadcast::error::RecvError::Closed) => return Err(()),
                     _ => {},
                 }
@@ -331,17 +365,21 @@ async fn serve(
                 if let Ok(event) = event
                     && event["channelId"].as_str() == Some(&external_id)
                 {
+                    authorized(&state, &external_id, token_hash.as_deref()).await?;
                     write(&mut socket, event).await?;
+                }
+            }
+            _ = repair.changed() => {
+                repair.borrow_and_update();
+                let access = authorized(&state, &external_id, token_hash.as_deref()).await?;
+                if access.last_seq > after {
+                    tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??;
                 }
             }
             event = presence.recv(), if with_presence => {
                 if let Ok(event) = event {
                     write(&mut socket, event).await?;
                 }
-            }
-            _ = head.changed() => {
-                let high_water = *head.borrow_and_update();
-                if high_water > after { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &mut after)).await.map_err(|_| ())??; }
             }
             _ = heartbeat.tick() => {
                 if last_pong.elapsed() > Duration::from_secs(30) { return Err(()); }

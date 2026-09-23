@@ -10,13 +10,14 @@ const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
   account: Account | null;
+  demoHref: string;
   initialNow: number;
   latestChanges: readonly LatestChange[];
 };
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 
-export default function Home({ account, initialNow, latestChanges }: HomeProps) {
+export default function Home({ account, demoHref, initialNow, latestChanges }: HomeProps) {
   const [now, setNow] = useState(initialNow);
 
   useEffect(() => {
@@ -29,7 +30,7 @@ export default function Home({ account, initialNow, latestChanges }: HomeProps) 
     <main className="page">
       <header className="site-header shell">
         <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
-        <div className="site-header-actions"><AccountNav account={account} /><a className="login-button" href="/live">Try the demo</a></div>
+        <div className="site-header-actions"><AccountNav account={account} /><a className="login-button" href={demoHref}>Try the demo</a></div>
       </header>
 
       <section className="hero shell">
@@ -48,7 +49,7 @@ export default function Home({ account, initialNow, latestChanges }: HomeProps) 
             Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a>.
           </p>
           <div className="hero-actions">
-            <a className="github-button" href="/live">Open the demo</a>
+            <a className="github-button" href={demoHref}>Open the demo</a>
             <span className="action-separator" aria-hidden="true">·</span>
             <a className="coming-soon" href={repositoryUrl} target="_blank" rel="noreferrer">
               Follow on GitHub <span aria-hidden="true">↗</span>

@@ -1,4 +1,4 @@
-//! Shared state for the bounded General channel. Transactions contain only state
+//! Shared state for bounded channel rooms. Transactions contain only state
 //! changes: provider HTTP requests must never run inside a retryable closure.
 use super::*;
 use redis::aio::{MultiplexedConnection, PubSub};
@@ -101,8 +101,7 @@ impl ValkeyStore {
             client,
             reads: Mutex::new(reads),
             transactions: Mutex::new(Vec::new()),
-            // Every write targets this store's one channel key. Queue local
-            // writers instead of making them invalidate each other's WATCH.
+            // Bound transaction connections and contention across local writers.
             slots: Semaphore::new(1),
             key: key.into(),
             topic,
@@ -110,16 +109,37 @@ impl ValkeyStore {
             listener: std::sync::Mutex::new(None),
         });
         // Validate schema before accepting traffic, including after an upgrade.
-        store.read().await?;
+        store.read(None).await?;
         Ok((store, pubsub))
+    }
+
+    fn room_key(&self, channel: Option<&str>) -> String {
+        channel.map_or_else(
+            || self.key.clone(),
+            |id| format!("{}:channel:{id}", self.key),
+        )
+    }
+
+    pub(super) async fn active_channels(&self) -> Result<Vec<String>, ApiError> {
+        tokio::time::timeout(IO_TIMEOUT, async {
+            let mut connection = self.reads.lock().await.clone();
+            redis::cmd("SMEMBERS")
+                .arg(format!("{}:active", self.key))
+                .query_async(&mut connection)
+                .await
+                .map_err(|_| unavailable())
+        })
+        .await
+        .map_err(|_| unavailable())?
     }
 
     async fn read_connection(
         &self,
         connection: &mut MultiplexedConnection,
+        key: &str,
     ) -> Result<Registry, ApiError> {
         let fields: HashMap<String, String> = redis::cmd("HGETALL")
-            .arg(&self.key)
+            .arg(key)
             .query_async(connection)
             .await
             .map_err(|_| unavailable())?;
@@ -142,14 +162,15 @@ impl ValkeyStore {
         Ok(state)
     }
 
-    async fn read(&self) -> Result<Registry, ApiError> {
+    async fn read(&self, channel: Option<&str>) -> Result<Registry, ApiError> {
         if !self.subscribed.load(Ordering::Acquire) {
             return Err(unavailable());
         }
+        let key = self.room_key(channel);
         // Establish a fresh connection after an I/O error; never read a local
         // replica/cache as authoritative state.
         let mut connection = self.reads.lock().await.clone();
-        match self.read_connection(&mut connection).await {
+        match self.read_connection(&mut connection, &key).await {
             Ok(state) => Ok(state),
             Err(_) => {
                 let mut connection = self
@@ -157,7 +178,7 @@ impl ValkeyStore {
                     .get_multiplexed_async_connection()
                     .await
                     .map_err(|_| unavailable())?;
-                let state = self.read_connection(&mut connection).await?;
+                let state = self.read_connection(&mut connection, &key).await?;
                 *self.reads.lock().await = connection;
                 Ok(state)
             }
@@ -166,12 +187,14 @@ impl ValkeyStore {
 
     async fn update<T>(
         &self,
+        channel: Option<&str>,
         update: impl Fn(&mut Registry) -> Result<T, ApiError>,
     ) -> Result<(T, bool, bool), ApiError> {
         if !self.subscribed.load(Ordering::Acquire) {
             return Err(unavailable());
         }
         let _permit = self.slots.acquire().await.map_err(|_| unavailable())?;
+        let key = self.room_key(channel);
         // WATCH is connection-scoped. Never clone/share this connection while
         // a transaction is in progress; errors/cancellation discard it.
         let pooled = self.transactions.lock().await.pop();
@@ -188,7 +211,7 @@ impl ValkeyStore {
         // confirmed EXEC conflict is safe to retry, never an ambiguous I/O error.
         loop {
             if redis::cmd("WATCH")
-                .arg(&self.key)
+                .arg(&key)
                 .query_async::<()>(&mut connection)
                 .await
                 .is_err()
@@ -201,12 +224,12 @@ impl ValkeyStore {
                     .await
                     .map_err(|_| unavailable())?;
                 redis::cmd("WATCH")
-                    .arg(&self.key)
+                    .arg(&key)
                     .query_async::<()>(&mut connection)
                     .await
                     .map_err(|_| unavailable())?;
             }
-            let mut state = self.read_connection(&mut connection).await?;
+            let mut state = self.read_connection(&mut connection, &key).await?;
             let before = fields(&state)?;
             let visible = public_snapshot(&state);
             let connections = connection_ids(&state);
@@ -231,11 +254,26 @@ impl ValkeyStore {
             transaction.atomic();
             for (field, value) in &after {
                 if before.get(field) != Some(value) {
-                    transaction.cmd("HSET").arg(&self.key).arg(field).arg(value);
+                    transaction.cmd("HSET").arg(&key).arg(field).arg(value);
                 }
             }
             for field in before.keys().filter(|field| !after.contains_key(*field)) {
-                transaction.cmd("HDEL").arg(&self.key).arg(field);
+                transaction.cmd("HDEL").arg(&key).arg(field);
+            }
+            if let Some(channel) = channel {
+                // Same hash slot as the room, committed atomically. A fresh pod
+                // discovers active calls/cleanup even without new HTTP traffic.
+                let active = format!("{}:active", self.key);
+                if state.participants.is_empty()
+                    && state.reservations.is_empty()
+                    && state.cleanup.is_empty()
+                {
+                    transaction.cmd("SREM").arg(active).arg(channel);
+                } else {
+                    transaction.cmd("SADD").arg(active).arg(channel);
+                }
+                // Retain the tiny metadata row: resetting its revision would
+                // make connected spectators reject the next call's snapshots.
             }
             if notify {
                 transaction
@@ -360,10 +398,13 @@ impl AppState {
         read: impl FnOnce(&Registry) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
         if let Some(store) = &self.store {
-            let state = tokio::time::timeout(IO_TIMEOUT, store.read())
+            let state = tokio::time::timeout(IO_TIMEOUT, store.read(self.media_channel.as_deref()))
                 .await
                 .map_err(|_| unavailable())??;
             read(&state)
+        } else if let Some(channel) = &self.media_channel {
+            let rooms = self.channel_registries.lock().await;
+            read(rooms.get(channel).unwrap_or(&Registry::default()))
         } else {
             read(&*self.registry.lock().await)
         }
@@ -374,11 +415,20 @@ impl AppState {
         update: impl Fn(&mut Registry) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
         let (result, notify, cleanup_changed) = if let Some(store) = &self.store {
-            tokio::time::timeout(IO_TIMEOUT, store.update(update))
-                .await
-                .map_err(|_| unavailable())??
+            tokio::time::timeout(
+                IO_TIMEOUT,
+                store.update(self.media_channel.as_deref(), update),
+            )
+            .await
+            .map_err(|_| unavailable())??
         } else {
-            let mut state = self.registry.lock().await;
+            let mut state = if let Some(channel) = &self.media_channel {
+                tokio::sync::MutexGuard::map(self.channel_registries.lock().await, |rooms| {
+                    rooms.entry(channel.clone()).or_default()
+                })
+            } else {
+                tokio::sync::MutexGuard::map(self.registry.lock().await, |room| room)
+            };
             let mut next = state.clone();
             let result = update(&mut next)?;
             let changed = public_snapshot(&state) != public_snapshot(&next);

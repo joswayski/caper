@@ -17,7 +17,6 @@ import type {
   SessionDescriptionResponse,
 } from "./types";
 
-const API_ROOT = "/api/media";
 const CONNECT_TIMEOUT_MS = 12_000;
 const MAX_REJOINS = 3;
 const FETCH_TIMEOUT_MS = 25_000;
@@ -108,9 +107,13 @@ export class PublicCallClient {
   private joinTiming?: Omit<ConnectionDiagnostics, "receivedBytes" | "sentBytes" | "receiveBitrate" | "sendBitrate" | "packetsLost" | "maxJitterMs" | "roundTripMs" | "route">;
   private readonly noiseAssets = new NoiseAssets();
   private readonly dpdfnet = new DpdfnetPreparation();
+  private readonly apiRoot: string;
 
   private readonly changed: (state: CallViewState) => void;
-  constructor(changed: (state: CallViewState) => void) { this.changed = changed; }
+  constructor(changed: (state: CallViewState) => void, apiRoot = "/api/media") {
+    this.changed = changed;
+    this.apiRoot = apiRoot;
+  }
 
   prepareMicrophone() {
     // Download/compile only: no permission prompt, hardware capture or AudioContext.
@@ -180,7 +183,7 @@ export class PublicCallClient {
     try {
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted();
-        const response = await fetch(`${API_ROOT}/${operation}`, {
+        const response = await fetch(`${this.apiRoot}/${operation}`, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -336,7 +339,7 @@ export class PublicCallClient {
       if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
     }, () => {
       if (generation === this.generation && this.phase === "connected") this.scheduleEventRecovery(generation, true);
-    });
+    }, this.apiRoot);
     await events.open(this.token!, this.captureController.signal);
     if (generation === this.generation && events === this.events && events.connected) {
       this.eventRetryAttempts = 0;

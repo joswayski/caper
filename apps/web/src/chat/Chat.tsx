@@ -1,15 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { ChatClient, type ChatViewState } from "./client.ts";
-import type { ChatAuthor } from "./types.ts";
+import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
+import { ChatClient, initialChatView } from "./client.ts";
+import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
 const INITIAL_ITEM_INDEX = 1_000_000_000;
-const initialView: ChatViewState = {
-  phase: "loading", online: false, spaceName: "Caper", channelName: "General",
-  messages: [], typingAuthors: [], activeAuthorIds: [], hasMore: false, loadingOlder: false,
-};
 
 function timeLabel(value: string) {
   const date = new Date(value);
@@ -21,6 +17,7 @@ interface HistoryContext {
   loadingOlder: boolean;
   olderError?: string;
   loadOlder: () => void;
+  onListReady?: () => void;
 }
 
 function HistoryHeader({ context }: { context?: HistoryContext }) {
@@ -31,15 +28,27 @@ function HistoryHeader({ context }: { context?: HistoryContext }) {
   </div>;
 }
 
-const listComponents = { Header: HistoryHeader };
+function MessageList({ context, children, ...props }: ListProps & ContextProp<HistoryContext>) {
+  // Virtuoso deliberately hides its items while finding the initial scroll
+  // position. Hand over from the real-message preview before the next paint.
+  useLayoutEffect(() => {
+    if (Array.isArray(children) && children.length && props.style?.visibility !== "hidden") context?.onListReady?.();
+  }, [children, props.style?.visibility, context?.onListReady]);
+  return <div {...props}>{children}</div>;
+}
 
-export default function Chat({ name, signedIn, identityReady, headerActions, onAuthorChange, onPresenceChange }: { name: string; signedIn: boolean; identityReady: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onPresenceChange?: (authorIds: string[]) => void }) {
-  const [state, setState] = useState(initialView);
+const listComponents = { Header: HistoryHeader, List: MessageList };
+
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange, onHistoryChange, onPresenceChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onPresenceChange?: (authorIds: string[]) => void }) {
+  const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
+  const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
   const [draft, setDraft] = useState("");
   const [validationError, setValidationError] = useState<string>();
   const clientRef = useRef<ChatClient | undefined>(undefined);
   const listRef = useRef<VirtuosoHandle>(null);
+  const initialListRef = useRef<HTMLDivElement>(null);
+  const [listReady, setListReady] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
@@ -69,6 +78,7 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
     const client = new ChatClient((next) => {
       if (next.phase !== "ready") {
         firstMessageId = undefined;
+        setListReady(false);
         setFirstItemIndex(INITIAL_ITEM_INDEX);
       } else if (next.messages[0]?.id !== firstMessageId) {
         const prepended = next.messages.findIndex((message) => message.id === firstMessageId);
@@ -82,11 +92,23 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
       }
       pendingId = pending?.clientMessageId;
       setState(next);
-    });
+    }, channelId);
     clientRef.current = client;
-    client.start();
-    return () => { client.stop(); clientRef.current = undefined; };
-  }, []);
+    client.start(initialHistory, initialHistoryError);
+    return () => {
+      const history = client.snapshotHistory();
+      if (history) onHistoryChange?.(history);
+      client.stop();
+      clientRef.current = undefined;
+    };
+  }, [channelId]);
+
+  useEffect(() => {
+    setShowConnectionStatus(false);
+    if (state.online) return;
+    const timer = setTimeout(() => setShowConnectionStatus(true), 1_000);
+    return () => clearTimeout(timer);
+  }, [state.online, channelId]);
 
   useEffect(() => {
     if (identityReady) clientRef.current?.identify(name, signedIn);
@@ -107,10 +129,14 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
   const loadOlder = () => { void clientRef.current?.loadOlder(); };
 
   const sending = !!state.pendingSend && !state.sendError;
-  const channelName = state.channelName.toLowerCase();
+  const channelName = (expectedChannelName ?? state.channelName).toLowerCase();
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const messages = state.pendingSend ? [...state.messages, state.pendingSend] : state.messages;
+  useLayoutEffect(() => {
+    const list = initialListRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [messages, listReady]);
   const typingNames = state.typingAuthors.map((author) => author.name);
   const typingLabel = typingNames.length > 2 ? "Several people are typing…"
     : typingNames.length ? `${typingNames.join(" and ")} ${typingNames.length === 1 ? "is" : "are"} typing…` : "";
@@ -135,11 +161,37 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
     }
   };
 
+  const renderMessage = (_: number, message: (typeof messages)[number]) => {
+    const pending = !("content" in message);
+    const author = message.author;
+    return <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId} key={message.clientMessageId}>
+      <div className="chat-avatar-wrap">
+        <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
+        {author && state.activeAuthorIds.includes(author.id) && <span className="chat-presence-indicator" role="img" aria-label="Online" />}
+      </div>
+      <div>
+        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header>
+        <p>{"content" in message ? message.content.text : message.text}</p>
+        {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
+          <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
+          {state.sendRejected ? <>
+            <button type="button" disabled={!!draft} title={draft ? "Clear your current draft to edit this message." : undefined} onClick={() => {
+              const text = clientRef.current?.discardRejected();
+              if (text !== undefined) { setDraft(text); composerRef.current?.focus(); }
+            }}>Edit</button>
+            <button type="button" onClick={() => clientRef.current?.discardRejected()}>Dismiss</button>
+          </> : <button type="button" onClick={() => void submit()}>Retry send</button>}
+        </div>}
+      </div>
+    </article>;
+  };
+
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
-      <h2 id="chat-heading" className="sr-only"># {channelName}</h2>
+      <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}># {channelName}</h2>
       {headerActions}
-      {!state.online && <span className="chat-offline" role="status">{state.phase === "loading" ? "Loading" : "Offline"}</span>}
+      {!state.online && showConnectionStatus && <span className="chat-offline" role="status">{state.phase === "error" ? "Offline" : "Connecting…"}</span>}
+      {state.phase === "ready" && state.error && <div className="chat-refresh-error" role="alert">{state.error} <button type="button" onClick={() => clientRef.current?.retryLoad()}>Retry</button></div>}
     </header>
 
     <div className="chat-messages" aria-busy={state.phase === "loading"}>
@@ -159,9 +211,10 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
         atBottomStateChange={(atBottom) => { followLatest.current = atBottom; }}
         startReached={() => { if (!state.olderError) loadOlder(); }}
         components={listComponents}
-        context={{ hasMore: state.hasMore, loadingOlder: state.loadingOlder, olderError: state.olderError, loadOlder }}
+        context={{ hasMore: state.hasMore, loadingOlder: state.loadingOlder, olderError: state.olderError, loadOlder, onListReady: listReady ? undefined : () => setListReady(true) }}
         className="chat-scroller"
-        tabIndex={0}
+        aria-hidden={!listReady}
+        tabIndex={listReady ? 0 : -1}
         role="region"
         aria-label={`Messages in ${channelName}`}
         onKeyDown={(event) => {
@@ -170,30 +223,11 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
             listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
           }
         }}
-        itemContent={(_, message) => {
-          const pending = !("content" in message);
-          const author = message.author;
-          return <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId}>
-            <div className="chat-avatar-wrap">
-              <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
-              {author && state.activeAuthorIds.includes(author.id) && <span className="chat-presence-indicator" role="img" aria-label="Online" />}
-            </div>
-            <div>
-              <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header>
-              <p>{"content" in message ? message.content.text : message.text}</p>
-              {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
-                <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
-                {state.sendRejected ? <>
-                  <button type="button" disabled={!!draft} title={draft ? "Clear your current draft to edit this message." : undefined} onClick={() => {
-                    const text = clientRef.current?.discardRejected();
-                    if (text !== undefined) { setDraft(text); composerRef.current?.focus(); }
-                  }}>Edit</button>
-                  <button type="button" onClick={() => clientRef.current?.discardRejected()}>Dismiss</button>
-                </> : <button type="button" onClick={() => void submit()}>Retry send</button>}
-              </div>}
-            </div>
-          </article>;
-        }} />}
+        itemContent={renderMessage} />}
+      {state.phase === "ready" && messages.length > 0 && !listReady && <div ref={initialListRef} className="chat-initial-messages" role="region" aria-label={`Messages in ${channelName}`}>
+        <HistoryHeader context={{ hasMore: state.hasMore, loadingOlder: false, loadOlder }} />
+        {messages.slice(-Math.max(20, Math.ceil((typeof window === "undefined" ? 800 : window.innerHeight) / 50))).map((message, index) => renderMessage(index, message))}
+      </div>}
       <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text}`}</p>
     </div>
 
@@ -204,7 +238,6 @@ export default function Chat({ name, signedIn, identityReady, headerActions, onA
     </p>
 
     <div className="chat-composer">
-      {state.phase === "ready" && state.error && <p className="chat-inline-error" role="alert">{state.error}</p>}
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>

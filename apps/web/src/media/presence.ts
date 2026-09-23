@@ -2,7 +2,7 @@ import { EventConnection } from "./event-connection.ts";
 import type { CallSnapshot } from "./types.ts";
 
 /** Read-only roster subscription; it does not join voice or renew anyone's lease. */
-export function watchPresence(snapshot: (value: CallSnapshot) => void, live: (value: boolean) => void) {
+export function watchPresence(snapshot: (value: CallSnapshot) => void, live: (value: boolean) => void, apiRoot = "/api/media") {
   const owner = new AbortController();
   let stream: EventConnection | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -24,7 +24,7 @@ export function watchPresence(snapshot: (value: CallSnapshot) => void, live: (va
       drainRetries = 0;
       snapshot(value);
       live(true);
-    }, () => retry(true));
+    }, () => retry(true), apiRoot);
     // Startup errors use the same lost callback as an established stream failure.
     void current.openPresence(owner.signal).catch(() => undefined);
   };

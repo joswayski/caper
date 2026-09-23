@@ -6,7 +6,7 @@ Adapted from the conventions in `joswayski/captures`.
 
 - Caper is an early-stage space for conversations. Distinguish working features from roadmap ideas; do not describe mockups as shipped functionality.
 - `apps/web`: TanStack Start browser app and same-origin development API adapter.
-- `apps/api`: Rust media control, accounts, and public text demo. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. Voice is one public General channel, not outgoing calls. Text uses Postgres/outbox and the independently deployed `--gateway` WebSocket role with Valkey fanout. No user-created spaces/channels, camera, or screen sharing.
+- `apps/api`: Rust media control, accounts, spaces and unified text/voice channels. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. The public General demo remains guest-accessible; account spaces require membership, and private channels have explicit member grants. Owners manage spaces/channels and add existing accounts by username. Text uses Postgres/outbox and the independently deployed `--gateway` WebSocket role with Valkey fanout. No invite links, custom roles, camera, or screen sharing.
 - `shared/design.css`: shared visual tokens. `docs/brand` contains the owner's reference images and style guidance.
 - `docs/media.md`: configuration, deployment, privacy, validation matrix, and call runbook.
 

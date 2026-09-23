@@ -1,13 +1,15 @@
-# Public voice-channel MVP
+# Channels, messaging, and voice
 
 ## Scope and architecture
 
-One shared **General voice channel**, available to guests while the service is
-enabled. Accounts are optional. Signed-in participants use their account display
-name; guests receive a random name. This is not a dial/invite/call flow.
-No camera, screen sharing, channel creation, or server-side voice recording.
-An independently enabled [public text demo](#public-text-demo) shares the page;
-reading and sending messages do not require an account or joining voice.
+The **Public demo / General** channel remains available to guests while the
+service is enabled. Account-owned spaces contain unified text/voice channels;
+their history, live messages, presence and calls require membership. See
+[spaces and channel access](#spaces-and-channel-access). Signed-in participants
+use their account display name; guests receive a random name. This is not an
+outgoing-call flow. No camera, screen sharing, or server-side voice recording.
+The independently enabled [public text demo](#public-text-demo) shares the public `general` channel in `/spaces`;
+demo reads and sends do not require an account or joining voice.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 Input/output device lists open directly beside the profile's microphone/headphone
@@ -59,9 +61,9 @@ arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 ### Public text demo
 
 Implemented behind `CHAT_ENABLED=true`; production activation is separate. The
-temporary **Public demo** space contains one **General** text channel. No space or
-channel creation, private membership, rich content, edits, deletion, moderation
-rules, or message notifications ship in this slice. Typing indicators are
+temporary **Public demo** space contains one **General** unified channel. Account
+spaces are separate from this guest demo. Rich content, message edits/deletion,
+moderation rules, and message notifications are not implemented. Typing indicators are
 best-effort ephemeral presence, not saved messages. This demo is not a
 permanent public space when the product launches. Voice remains SSE/WebRTC.
 
@@ -249,11 +251,140 @@ second commit-to-client, including routine rolls. Orb handoff timing is **not** 
 measurement of that production SLO. Database durability depends on the provider's
 storage/failover guarantees; this protocol does not claim exactly-once transport.
 
+## Spaces and channel access
+
+Accounts with completed profiles can create spaces and unified text/voice
+channels. The creator owns the space and manages its name, channels and members.
+New spaces start with `general`. Public channels are visible to all members of
+that space, not to anonymous visitors or unrelated accounts. Private channels
+are visible to their explicitly selected space members and the owner. The public
+demo cannot be managed through these APIs.
+
+Owners add existing accounts by exact username and can remove them. This is a
+direct membership change, not an invitation awaiting acceptance. There are no
+invite links, custom roles, ownership transfers or public space discovery yet.
+Non-owner members can leave a space themselves. Removing a space member also
+removes their private-channel grants. The owner cannot be removed.
+Counts include active resources only. Defaults are 20 owned spaces per
+account (`SPACE_OWNED_LIMIT`), 100 total memberships including owned spaces
+(`SPACE_MEMBERSHIP_LIMIT`), and 100 channels per space (`SPACE_CHANNEL_LIMIT`).
+All three accept positive integers from the API environment or the existing
+Secrets Manager record (which takes precedence). Invalid values fail startup.
+Restart all API replicas with the same settings after changing them; the browser
+reads current limits from `/api/spaces` on load. Lowering a limit does not remove
+existing resources or access; it blocks new creates/additions until below that
+limit. Quota checks and creation run under database locks to prevent racing
+requests exceeding those limits.
+
+Space and channel external IDs use the existing 12-character cryptographically
+random alphanumeric generator with database uniqueness constraints; internal
+joins use bigint IDs. Names are not authorization tokens. Space names contain
+1–80 Unicode characters after trimming and no control characters. New channel
+names contain 1–80 characters matching `[a-z]+(-[a-z]+)*`: lowercase ASCII
+letters with single dashes between segments. Channel names are unique among
+active channels of one space. Renaming does not change IDs. Deletion is a
+soft delete: it removes access and frees the quota, but retained message rows
+are not physically purged by this feature. There is no restore UI.
+
+The account APIs live at `/api/spaces`, `/api/spaces/{space}`, and their
+`/channels`, `/members`, and `/channels/{channel}/members` subresources. Browser
+cookies or account bearer authentication are required. Only owners manage these
+resources, except a member removing their own membership. Text history and
+commands use `/api/chat/channels/{channel}/...`;
+WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
+paths check membership and channel visibility, including replay and live delivery.
+
+Account voice uses `/api/channels/{channel}/media/*`, with the same operation
+names as the guest `/api/media/*` endpoints. Every request needs a valid account
+session and channel access; in-call commands also need the room's
+`x-caper-media-token`. That capability is bound to its original account session.
+Each room has separate participants, tokens, sequences, join limits, tracks,
+monitor sessions and cleanup work. Existing 12-participant voice limits apply
+per channel. Account channels cannot access the demo's voice registry or vice
+versa. SSE checks access again on each emission. The expiry worker also checks
+active account sessions/membership and queues SFU track closure and TURN
+revocation after access is removed. Provider cleanup is asynchronous and may
+retry; access removal is not a claim of instantaneous media disconnection.
+
+In shared mode, the demo keeps `caper:{general}:v1:state`; account rooms use
+`:channel:<external-id>` suffixes. An `:active` set in the same Redis hash slot is
+updated atomically with room writes so another pod can recover cleanup without
+a new visitor opening that channel. Idle rooms leave that set but retain their
+small metadata record so revisions never reset under connected spectators.
+One bounded connection pool and notification subscription serve the rooms;
+notifications contain no channel
+payloads. This first implementation shares one Redis hash slot and is not a
+claim of horizontally sharded voice state.
+
+### Local data, CI, and production rollout
+
+Standard local Postgres and Valkey are sufficient. No paid hosted staging
+database, TIN, or Lead extension is required. Exact usernames use the existing
+unique B-tree index. TIN is a possible future full-text message-search tool;
+Lead provides its SQL/search compatibility in local/CI environments but not its
+performance. Neither is part of this feature. Cloudflare SFU/TURN and AWS email
+integration checks remain separate from database tests.
+
+The ignored database tests create/drop fresh databases on a disposable loopback
+server. CI also exercises them with Postgres 17 and cluster-mode Valkey:
+
+```bash
+# All URLs below must point to disposable local services, never production.
+CHAT_TEST_DATABASE_URL="$DATABASE_URL" \
+CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+cargo test --locked -p caper-api -- --ignored --skip tests::shared
+```
+
+Channel voice tests use a mocked SFU with real SQL and, for shared-mode tests,
+real Valkey. They cover isolated rosters/tokens/tracks, account binding, privacy
+changes, membership/session revocation, and fresh-pod cleanup discovery. They do
+not validate live Cloudflare calls, sustained audio, TURN across networks, or
+physical devices. Those still need an operator smoke test with two accounts in
+two different channels and a private channel, including removal during a call.
+
+September 22, 2026 local verification: 85 default Rust tests, 17 explicitly
+enabled integration tests on disposable Postgres 15 and cluster-mode Redis, and
+222 web tests passed. The integration tests include concurrent quota creation
+and a send blocked behind private-grant removal (authorization uses a fresh
+snapshot after acquiring the space lock). Real local API/gateway/browser checks
+covered creation, username membership, private visibility, cross-account live
+messages, channel-switch isolation, rename/delete, duplicate-name errors,
+self-leave, and desktop/390px narrow layouts. Browser voice was disabled; media
+tests used a mock provider. This is not physical-mobile or live SFU validation.
+
+Deploy the **API first** (startup applies the migration and runtime
+grants), **gateway second**, **web last**. Do not expose the new UI while old
+gateways are still serving. No new secrets are needed; use the existing database,
+auth, `CHAT_ENABLED`, `MEDIA_ENABLED`, and shared `VALKEY_URL` settings. Commands
+for an operator after merge and image publication:
+
+```bash
+MERGED_SHA=<full-merged-caper-commit>
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+# Wait for that workflow to succeed before proceeding.
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+# Wait for that workflow to succeed and every gateway pod to use the new image.
+kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+```
+
+These are instructions, not deployments performed during development. Existing
+guest URLs and their room key are retained. Rollbacks must keep a channel-aware
+API/gateway pair once account spaces are in use; older APIs do not maintain or
+revoke the new channel rooms. The migration replaces the channel-name unique
+constraint with an active-channel partial index. Old API/gateway startup seed
+queries are incompatible with that index, so do not restart or roll back to a
+pre-spaces image after migration; complete the forward rollout instead.
+
 ## Shared call state and rolling deployments
 
-This implements shared state for **General only**, still capped at 12 participants.
-Voice state adds no Postgres tables. The separate text demo stores its space,
-channel, and history in Postgres; typing indicators are transient Pub/Sub events.
+The original shared-state rollout below covers the public General room. Account
+channels use the same protocol with the isolated room keys described above, each
+capped at 12 participants. Membership and history live in Postgres; active voice
+state lives in Valkey. Typing indicators are transient Pub/Sub events.
 
 - Valkey stores the call capability hash, Caper-to-Cloudflare session mapping,
   track/subscription metadata, mute/deafen state, leases, operation ownership,
@@ -520,7 +651,8 @@ or proof of gapless audio. Safari/Firefox and restrictive TCP/TLS networks still
 need their own renewal acceptance checks.
 
 The hash is a bounded channel unit, not a global blob for every future channel.
-Adding spaces/channels will require routing and per-channel keys/subscriptions.
+Account channels now use separate keys with a shared notification subscription;
+see [spaces and channel access](#spaces-and-channel-access).
 Do not remove the 12-person limit and call this a thousand-speaker media system:
 all-to-all audio needs separate active-speaker/subscription limits and load tests.
 Changing Valkey endpoints or losing its data loses live calls; API replacement
@@ -996,7 +1128,7 @@ physical microphone, multi-network/TURN, or sustained-voice validation.
 
 ## Join startup and preparation
 
-The enabled `/live` screen starts one DPDFNet-8 worker before Join. It downloads
+The enabled channel screen starts one DPDFNet-8 worker before Join. It downloads
 the model/runtime, initializes ONNX inference, and runs the existing synthetic
 warm-up before acknowledging readiness. Its live recurrent and overlap-add state
 start fresh after warm-up. The marketing page does not start this work, and the
@@ -1580,10 +1712,14 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts
 
-The `/live` demo remains public. For guests, the browser uses
+The public demo in `/spaces` remains guest-accessible. For guests, the browser uses
 `unique-names-generator` to assign a readable color-and-animal name for each visit
-and keeps it through reconnects. No account, profile, or database is needed for
-guest voice. The API accepts guest names of 1–64 Unicode characters after trimming,
+and keeps it through reconnects. No account or profile is needed. The guest voice
+API is database-independent, but the unified browser screen requires chat storage
+to resolve the demo space/channel IDs. Existing `General` seed rows retain their
+IDs and stored spelling for compatibility; the API returns `general`, and new
+seeds use lowercase. No data migration is required.
+The API accepts guest names of 1–64 Unicode characters after trimming,
 with no control characters. Guest names are unverified, nonunique, and not reserved.
 When a valid account bearer token or browser session cookie accompanies a join, the
 API uses the stored display name instead of the submitted name. Country flags use
@@ -1638,7 +1774,7 @@ After the approved deployment, verify:
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 curl --fail --silent --show-error https://caper.chat/api/media/status
-# Expected: enabled is true. Then open /live in two browsers and test audio/leave.
+# Expected: enabled is true. Then open the public demo in /spaces in two browsers and test audio/leave.
 ```
 
 Guest restoration validation: Rust provider mocks cover unauthenticated joins,

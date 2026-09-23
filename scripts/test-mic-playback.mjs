@@ -12,8 +12,8 @@ function browser(...args) {
 function evaluate(code) { return browser("eval", `(async()=>{${code}})()`); }
 
 try {
-  browser("open", new URL("/live", origin).href);
-  browser("wait", "--fn", "!!document.querySelector('.huddle-button:not(:disabled)') || document.body.textContent.includes('Huddles are currently unavailable')");
+  browser("open", new URL("/spaces", origin).href);
+  browser("wait", ".chat-panel, .spaces-state, .spaces-empty");
   evaluate(`
     const {default: React} = await import('/node_modules/.vite/deps/react.js');
     const {default: {createRoot}} = await import('/node_modules/.vite/deps/react-dom_client.js');

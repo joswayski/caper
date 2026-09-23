@@ -16,12 +16,14 @@ export class CallEvents {
   private readonly snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void;
   private readonly draining?: () => void;
   private readonly migrating?: () => void;
-  constructor(changed: () => void, lost: (error: Error, draining: boolean) => void, snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void, draining?: () => void, migrating?: () => void) {
+  private readonly apiRoot: string;
+  constructor(changed: () => void, lost: (error: Error, draining: boolean) => void, snapshot?: (snapshot: CallSnapshot & { revision?: number }) => void, draining?: () => void, migrating?: () => void, apiRoot = "/api/media") {
     this.changed = changed;
     this.lost = lost;
     this.snapshot = snapshot;
     this.draining = draining;
     this.migrating = migrating;
+    this.apiRoot = apiRoot;
   }
 
   open(token: string, signal: AbortSignal): Promise<void> {
@@ -45,7 +47,7 @@ export class CallEvents {
       };
       watchdog(START_TIMEOUT_MS);
       const run = async () => {
-        const path = token === undefined ? "/api/media/presence/events" : "/api/media/events?snapshots=1";
+        const path = token === undefined ? `${this.apiRoot}/presence/events` : `${this.apiRoot}/events?snapshots=1`;
         const response = await fetch(path + (this.migrating ? `${token === undefined ? "?" : "&"}handoff=1` : ""), {
           headers: { accept: "text/event-stream", ...(token === undefined ? {} : { "x-caper-media-token": token }) },
           signal: this.controller.signal,

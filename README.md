@@ -72,15 +72,21 @@ requests directly to that Rust service. Run `cargo run -p caper-api` alongside
 `npm run dev:web`; Vite forwards development `/api` requests to port `3001`.
 The exception is `/api/chat/events`, which goes to the independent WebSocket
 gateway on `3002` (`cargo run -p caper-api -- --gateway`). With `CHAT_ENABLED=true`,
-Postgres, and Valkey, `/live` also offers a temporary public space and General
-text channel. Guests can read/send without joining voice or signing in. Messages
+Postgres, and Valkey, `/spaces` offers messaging in the public demo's `general`
+channel. Guests can read/send without joining voice or signing in. Messages
 are persisted; the [text runbook](docs/media.md#public-text-demo) covers limits,
 replay, and staged production activation. Compose includes the gateway.
-The `/live` demo offers one public General voice channel: guests get a random name,
+Signed-in users can create spaces with unified text/voice channels, add existing
+accounts by username, and restrict private channels to selected space members.
+Owners can rename/delete spaces and channels. Default limits are 20 owned spaces,
+100 total space memberships, and 100 channels per space. Invite links, custom
+roles, and screen sharing are not implemented. See
+[space access and rollout](docs/media.md#spaces-and-channel-access).
+Voice in the same public `general` channel gives guests a random name,
 while signed-in people use their display name. No account is required to join. Set `MEDIA_ENABLED=true` and the four
 server-only Cloudflare variables in `.env.example` in the API environment to
-enable calls. No database is required; leave database URLs unset for local voice
-testing. The account API supports email sign-in codes when its database, SES, and
+enable calls. The guest voice API needs no database, but the unified browser
+screen requires chat storage to resolve the demo's space/channel IDs. The account API supports email sign-in codes when its database, SES, and
 `AUTH_SECRET` settings are configured. Codes contain six uppercase letters or digits,
 allow three attempts, and expire after 10 minutes. The website supports email-code sign-in and
 required username/display-name onboarding. Guest names remain unverified and are

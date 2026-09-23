@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { ChatClient, type ChatViewState } from "../chat/client.ts";
-import type { ChatEvent, ChatMessage, ChatTypingEvent } from "../chat/types.ts";
+import { ChatClient, initialChatView, loadChatHistory, type ChatViewState } from "../chat/client.ts";
+import type { ChatEvent, ChatMessage, ChatTypingEvent, GeneralChatHistory } from "../chat/types.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 class TestSocket extends EventTarget {
   url: string;
+  closed = false;
   constructor(url: string) { super(); this.url = url; }
   frame(event: ChatEvent) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(event) })); }
   message(message: ChatMessage) { this.frame({ type: "message.created", channelId: message.channelId, seq: message.seq, message }); }
-  close() {}
+  close() { this.closed = true; }
 }
 
 function installBrowser(t: TestContext) {
@@ -45,6 +46,7 @@ test("pressing Send again after an unknown outcome preserves the original UUID a
   let sendAttempts = 0;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
+    if (url === "/api/chat/presence") return Response.json({ presence: [] });
     if (url === "/api/chat/session") return Response.json({ token: "opaque-token", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (url === "/api/chat/general") return Response.json({
       space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" }, messages: [], cursor: "0", hasMore: false,
@@ -85,6 +87,7 @@ test("signed-in startup does not reuse another account's capability with the sam
   }));
   let sessions = 0;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
     if (String(input) === "/api/chat/session") {
       sessions++;
       return Response.json({ token: "current-account-token", author: { id: "current-account", name: "Shared Name", isGuest: false } });
@@ -115,6 +118,7 @@ test("public history loads before identity and remains visible while the send se
   let finishSession!: (response: Response) => void;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const path = String(input);
+    if (path === "/api/chat/presence") return Response.json({ presence: [] });
     requests.push(path);
     if (path === "/api/chat/session") return new Promise<Response>((resolve) => { finishSession = resolve; });
     assert.equal(path, "/api/chat/general");
@@ -163,6 +167,7 @@ async function sendingFixture(t: TestContext) {
   const posts: { body: SendBody; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   const typingPosts: { active: boolean; resolve: (response: Response) => void; reject: (error: Error) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
     if (String(input) === "/api/chat/session") return Response.json({ token: "opaque", author: { id: "guest", name: "Test Guest", isGuest: true } });
     if (String(input) === "/api/chat/general") return Response.json({
       space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" },
@@ -413,6 +418,7 @@ async function paginationFixture(t: TestContext) {
   const requests: { url: string; resolve: (response: Response) => void }[] = [];
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const url = String(input);
+    if (url === "/api/chat/presence") return Response.json({ presence: [] });
     if (url === "/api/chat/general") return Response.json({ ...history, space: { id: "space", name: "Caper" }, channel: { id: "general", name: "General" } });
     return new Promise<Response>((resolve) => requests.push({ url, resolve }));
   });
@@ -478,3 +484,158 @@ for (const status of [200, 503]) {
     assert.deepEqual(f.state.messages, [f.message(7), f.message(8), f.message(9)]);
   });
 }
+
+test("channel clients isolate history, websocket URLs, and late events across a switch", async (t) => {
+  const sockets = installBrowser(t);
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "/api/chat/presence") return Response.json({ presence: [] });
+    requests.push(url);
+    const channelId = url.includes("alpha") ? "alphaChannel" : "bravoChannel";
+    return Response.json({
+      space: { id: "space1234567", name: "Studio" },
+      channel: { id: channelId, name: channelId === "alphaChannel" ? "alpha" : "bravo" },
+      messages: [], cursor: "0", hasMore: false,
+    });
+  });
+
+  let alpha!: ChatViewState;
+  const first = new ChatClient((state) => { alpha = state; }, "alphaChannel");
+  first.start();
+  await tick();
+  assert.equal(requests[0], "/api/chat/channels/alphaChannel/messages");
+  assert.equal(new URL(sockets[0].url).searchParams.get("channelId"), "alphaChannel");
+  first.stop();
+  assert.equal(sockets[0].closed, true);
+
+  let bravo!: ChatViewState;
+  const second = new ChatClient((state) => { bravo = state; }, "bravoChannel");
+  t.after(() => second.stop());
+  second.start();
+  await tick();
+  assert.equal(requests[1], "/api/chat/channels/bravoChannel/messages");
+  assert.equal(new URL(sockets[1].url).searchParams.get("channelId"), "bravoChannel");
+
+  const stale: ChatMessage = {
+    id: "stale", channelId: "alphaChannel", seq: "1", author: { id: "peer", name: "Peer", isGuest: false },
+    content: { version: 1, type: "text", text: "wrong room" }, createdAt: "2026-09-22T12:00:00Z", clientMessageId: "stale-command",
+  };
+  sockets[0].message(stale);
+  assert.deepEqual(alpha.messages, []);
+  assert.deepEqual(bravo.messages, [], "an old channel cannot leak messages into the replacement client");
+});
+
+test("prepared history is ready on the first render and starts live replay without another history fetch", (t) => {
+  const sockets = installBrowser(t);
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    requests.push(String(input));
+    return Response.json({ presence: [] });
+  });
+  const message: ChatMessage = {
+    id: "seven", channelId: "alphaChannel", seq: "7", author: { id: "peer", name: "Peer", isGuest: false },
+    content: { version: 1, type: "text", text: "Prepared message" }, createdAt: "2026-09-23T12:00:00Z", clientMessageId: "command-seven",
+  };
+  const history: GeneralChatHistory = {
+    space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" },
+    messages: [message], cursor: "7", hasMore: true,
+  };
+  const firstRender = initialChatView(history);
+  assert.equal(firstRender.phase, "ready");
+  assert.deepEqual(firstRender.messages, [message]);
+  const states: ChatViewState[] = [];
+  const client = new ChatClient((state) => states.push(state), "alphaChannel");
+  t.after(() => client.stop());
+  client.start(history);
+  assert.deepEqual(requests, ["/api/chat/presence"], "only presence refreshes; prepared messages never refetch");
+  assert.ok(states.every((state) => state.phase === "ready"));
+  assert.equal(new URL(sockets[0].url).searchParams.get("after"), "7");
+  sockets[0].message({ ...message, id: "eight", seq: "8", clientMessageId: "command-eight", content: { version: 1, type: "text", text: "Arrived during navigation" } });
+  assert.deepEqual(states.at(-1)?.messages.map((item) => item.content.text), ["Prepared message", "Arrived during navigation"]);
+  client.stop();
+  assert.equal(sockets[0].closed, true);
+});
+
+test("prefetch rejects a history payload containing another channel's messages", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" },
+    messages: [{ id: "one", channelId: "bravoChannel", seq: "1", author: { id: "peer", name: "Peer", isGuest: false },
+      content: { version: 1, type: "text", text: "Wrong channel" }, createdAt: "2026-09-23T12:00:00Z", clientMessageId: "command-one" }],
+    cursor: "1", hasMore: false,
+  }));
+  await assert.rejects(loadChatHistory("alphaChannel"), /another channel/);
+});
+
+test("a prepared history failure renders once and retries only when requested", async (t) => {
+  const sockets = installBrowser(t);
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
+    requests++;
+    return Response.json({ space: { id: "space", name: "Studio" }, channel: { id: "alphaChannel", name: "general" }, messages: [], cursor: "0", hasMore: false });
+  });
+  let view = initialChatView(undefined, "Messaging unavailable");
+  assert.equal(view.phase, "error");
+  const client = new ChatClient((next) => { view = next; }, "alphaChannel");
+  t.after(() => client.stop());
+  client.start(undefined, "Messaging unavailable");
+  assert.equal(requests, 0);
+  assert.equal(sockets.length, 0);
+  client.retryLoad();
+  await tick();
+  assert.equal(requests, 1);
+  assert.equal(view.phase, "ready");
+  assert.equal(sockets.length, 1);
+});
+
+test("snapshots include older pages and live messages; returning replays the missing tail without loading", async (t) => {
+  const f = await paginationFixture(t);
+  const older = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({ messages: [f.message(2), f.message(3)], cursor: f.message(5).seq, hasMore: false }));
+  await older;
+  f.sockets[0].message(f.message(6));
+  const snapshot = f.client.snapshotHistory()!;
+  f.client.stop();
+  assert.deepEqual(snapshot.messages, [2, 3, 4, 5, 6].map(f.message));
+  assert.equal(snapshot.cursor, f.message(6).seq);
+  assert.equal(snapshot.hasMore, false);
+  const states: ChatViewState[] = [];
+  const returning = new ChatClient((state) => states.push(state), "general");
+  t.after(() => returning.stop());
+  returning.start(snapshot);
+  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), f.message(6).seq);
+  assert.deepEqual(states.at(-1)?.messages, snapshot.messages);
+  f.sockets[1].message(f.message(7));
+  assert.deepEqual(states.at(-1)?.messages, [2, 3, 4, 5, 6, 7].map(f.message));
+  assert.ok(states.every((state) => state.phase === "ready"));
+  assert.equal(f.requests.length, 1, "return does not request another history page");
+});
+
+test("resync retains visible messages through transient failures but clears them on access denial", async (t) => {
+  const f = await paginationFixture(t);
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    if (String(input) === "/api/chat/presence") return Response.json({ presence: [] });
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  f.sockets[0].frame({ type: "resync_required" });
+  assert.equal(f.state.phase, "ready");
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message));
+  finish(Response.json({ error: "Temporary outage" }, { status: 503 }));
+  await tick();
+  assert.equal(f.state.phase, "ready");
+  assert.equal(f.state.error, "Temporary outage");
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message));
+  f.client.retryLoad();
+  finish(Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(6).seq, hasMore: true }));
+  await tick();
+  assert.deepEqual(f.state.messages, [4, 5, 6].map(f.message), "a contiguous refresh retains saved pages");
+  assert.equal(f.state.error, undefined);
+  f.client.retryLoad();
+  finish(Response.json({ error: "Access removed" }, { status: 403 }));
+  await tick();
+  assert.equal(f.state.phase, "error");
+  assert.deepEqual(f.state.messages, []);
+  assert.equal(f.client.snapshotHistory(), undefined);
+});

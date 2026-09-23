@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { ChevronDown, Hash, Headphones, Mic, MicOff, Settings, Speech, VolumeX, X } from "lucide-react";
+import { ChevronDown, Hash, Headphones, Menu, Mic, MicOff, Speech, Settings, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import Chat from "../chat/Chat";
-import type { ChatAuthor } from "../chat/types";
+import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import Slider from "../components/Slider";
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
@@ -13,6 +13,7 @@ import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback from "./MicPlayback";
 import VoiceActivity from "./VoiceActivity";
+import ChannelSidebar from "./ChannelSidebar";
 import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
@@ -141,12 +142,24 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
     {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
 
-export default function Call() {
+interface CallProps {
+  channel?: { id: string; name: string; spaceName: string; demo?: boolean };
+  spaceRail?: ReactNode;
+  channelNavigation?: ReactNode;
+  navigationOpen?: boolean;
+  onNavigationToggle?: () => void;
+  initialAccount?: Account;
+  initialHistory?: GeneralChatHistory;
+  initialHistoryError?: string;
+  onHistoryChange?: (history: GeneralChatHistory) => void;
+}
+
+export default function Call({ channel, spaceRail, channelNavigation, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange }: CallProps = {}) {
   const [state, setState] = useState(initialState);
-  const [name, setName] = useState("");
-  const [account, setAccount] = useState<Account | null>(null);
+  const [name, setName] = useState(initialAccount?.displayName ?? "");
+  const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
   const [chatAuthor, setChatAuthor] = useState<ChatAuthor>();
-  const [identityReady, setIdentityReady] = useState(false);
+  const [identityReady, setIdentityReady] = useState(!!initialAccount);
   const [available, setAvailable] = useState<boolean>();
   const [joinTooltipDismissed, setJoinTooltipDismissed] = useState(false);
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection">();
@@ -170,7 +183,8 @@ export default function Call() {
   const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
   const [activeAuthorIds, setActiveAuthorIds] = useState<string[]>([]);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
-  if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState);
+  const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
+  if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState, mediaRoot);
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
   const joinDisabled = !identityReady || state.phase === "leaving" || (idle && (available !== true || actionPending));
@@ -181,8 +195,8 @@ export default function Call() {
 
   useEffect(() => {
     let current = true;
-    setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
-    void getAccount()
+    if (!initialAccount) setName(uniqueNamesGenerator({ dictionaries: [colors, animals], separator: " ", style: "capital" }));
+    void (initialAccount ? Promise.resolve(initialAccount) : getAccount())
       .then((account) => {
         if (!current) return;
         setAccount(account);
@@ -190,7 +204,7 @@ export default function Call() {
       })
       .catch(() => undefined)
       .finally(() => { if (current) setIdentityReady(true); });
-    fetch("/api/media/status", { signal: AbortSignal.timeout(10_000) })
+    fetch(`${mediaRoot}/status`, { credentials: "same-origin", signal: AbortSignal.timeout(10_000) })
       .then(async (response) => response.ok ? response.json() as Promise<{ enabled: boolean }> : { enabled: false })
       .then((result) => {
         if (!current) return;
@@ -205,8 +219,8 @@ export default function Call() {
 
   useEffect(() => {
     if (!idle || available !== true) return;
-    return watchPresence((snapshot) => setPublicParticipants(snapshot.participants), () => undefined);
-  }, [idle, available]);
+    return watchPresence((snapshot) => setPublicParticipants(snapshot.participants), () => undefined, mediaRoot);
+  }, [idle, available, mediaRoot]);
 
   useEffect(() => {
     if (!navigator.mediaDevices) return;
@@ -282,13 +296,13 @@ export default function Call() {
       <header className="call-header">
         <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
       </header>
-      <section className="call-room">
-        <aside className="people-panel">
+      <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}>
+        {spaceRail}
+        <ChannelSidebar>
           <div className="sidebar-channels">
-          <div className="panel-heading"><h1>Channels</h1></div>
-          <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span></a>
+          {channelNavigation ?? <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span></a>}
           {roster.length > 0 && <p className="voice-roster-label">In voice · {roster.length}</p>}
-          <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label="People talking in general">
+          <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label={`People talking in ${channel?.name ?? "general"}`}>
             {roster.map((participant) => {
               const self = participant.id === state.selfId;
               const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
@@ -377,11 +391,12 @@ export default function Call() {
               {identityReady && (account ? <button type="button" onClick={() => void logout().then(() => window.location.assign("/"))}>Log out</button> : <a href="/login">Sign in</a>)}
             </AudioMenu>
           </div>
-        </aside>
+        </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {!audioPanel && (state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          <Chat name={name} signedIn={!!account} identityReady={identityReady} onAuthorChange={setChatAuthor} onPresenceChange={setActiveAuthorIds} headerActions={<div className="voice-actions">
+          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} onPresenceChange={setActiveAuthorIds} headerActions={<div className="voice-actions">
+            {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
               if (event.key === "Escape") setJoinTooltipDismissed(true);
             }}>
