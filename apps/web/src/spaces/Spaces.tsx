@@ -136,7 +136,7 @@ function DeleteConfirmation({ kind, name, onClose, onDelete }: {
   return (
     <Dialog title={`Delete ${kind}`} dismissOnBackdrop onClose={() => { if (!submitting.current) onClose(); }}>
       <div className="delete-confirmation">
-        <p>Delete <strong>{kind === "channel" ? "#" : ""}{name}</strong>{kind === "space" ? " and all its channels" : ""} for everyone? This cannot be undone.</p>
+        <p>Delete <strong>{kind === "channel" ? "#" : ""}{name}</strong> for everyone? {kind === "space" ? "All its channels and their messages will disappear from the space." : "This channel and its messages will disappear from the space."} This cannot be undone.</p>
         {error && <p className="space-form-error" role="alert">{error}</p>}
         <div className="space-dialog-actions">
           <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>Cancel</button>
@@ -192,7 +192,7 @@ function NameField({
             onChange(normalizeChannelName(input.value));
             requestAnimationFrame(() => input.setSelectionRange(caret, caret));
           }}
-          onBlur={() => { if (channel) onChange(value.replace(/-$/, "")); }}
+          onBlur={() => onChange(channel ? value.replace(/-$/, "") : value.trim())}
         />
       </span>
     </label>
@@ -511,20 +511,23 @@ function ManageSpaceDialog({
           if (invalid) return setError(invalid);
           void run(async () => {
             const space = await updateSpace(detail.space.id, name);
+            setName(space.name);
             onChanged({ ...detail, space, members });
           }).catch((reason) => setError(errorMessage(reason)));
         }}
       >
-        <NameField label="Space name" value={name} onChange={setName} />
-        <div className="inline-save">
-          <button
-            className="secondary"
-            disabled={pending || name.trim() === detail.space.name}
-            type="submit"
-          >
-            Save name
-          </button>
-        </div>
+        <fieldset disabled={pending}>
+          <NameField label="Space name" value={name} onChange={setName} />
+          <div className="inline-save">
+            <button
+              className="secondary"
+              disabled={pending || name.trim() === detail.space.name}
+              type="submit"
+            >
+              Save name
+            </button>
+          </div>
+        </fieldset>
       </form>
       {error && (
         <p className="space-form-error" role="alert">

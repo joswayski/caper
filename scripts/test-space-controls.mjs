@@ -17,12 +17,19 @@ function fixture() {
   const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner' };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: true };
-  const control = window.spaceControlFixture = { deletes: [], fail: false, release: null, frames: [] };
+  const control = window.spaceControlFixture = { deletes: [], updates: [], fail: false, release: null, frames: [] };
   let deletedChannel = false, deletedSpace = false;
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input, options = {}) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
     if (!path.startsWith('/api/')) return originalFetch(input, options);
+    if (options.method === 'PATCH') {
+      const body = JSON.parse(options.body);
+      control.updates.push({ path, body });
+      const target = path.includes('/channels/') ? channel : space;
+      Object.assign(target, body);
+      return Response.json(target);
+    }
     if (options.method === 'DELETE') {
       control.deletes.push(path);
       await new Promise(resolve => { control.release = resolve; });
@@ -41,7 +48,6 @@ function fixture() {
     if (path.endsWith('/messages')) return Response.json({ space, channel, messages: [], cursor: '0', hasMore: false });
     return Response.json({ error: 'Disabled in UI fixture' }, { status: 503 });
   };
-  const start = performance.now();
   function sample() {
     const room = document.querySelector('.call-room');
     if (room) {
@@ -52,7 +58,7 @@ function fixture() {
       const frame = { loading: !!document.querySelector('.spaces-loading'), geometry: ['.call-header', '.call-room', '.space-rail', '.people-panel'].map(bounds) };
       if (JSON.stringify(frame) !== JSON.stringify(control.frames.at(-1))) control.frames.push(frame);
     }
-    if (performance.now() - start < 5000) requestAnimationFrame(sample);
+    if (!control.frames.some(frame => !frame.loading)) requestAnimationFrame(sample);
   }
   requestAnimationFrame(sample);
 }
@@ -79,6 +85,7 @@ try {
     browser('set', 'viewport', String(viewport), '900', '2');
     browser('open', `${url}?space=space1234567&channel=channel12345&width=${saved}`);
     wait('!!document.querySelector(".channel-navigation")');
+    wait('spaceControlFixture.frames.some(frame => !frame.loading)');
     const frames = evaluate('spaceControlFixture.frames');
     assert.ok(frames.some(f => f.loading) && frames.some(f => !f.loading));
     for (const f of frames) {
@@ -89,9 +96,19 @@ try {
   openOverview();
   assert.equal(opens(), 2);
   assert.equal(evaluate('document.activeElement.textContent'), 'Cancel');
+  assert.equal(evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid');
+  browser('press', 'Enter');
+  assert.equal(opens(), 1, 'Immediate Enter must cancel, not delete');
+  assert.equal(evaluate('spaceControlFixture.deletes.length'), 0);
+  browser('click', '.danger-outline');
   browser('press', 'Escape');
   assert.equal(opens(), 1, 'Escape must close only the confirmation');
   assert.equal(evaluate('document.activeElement.className'), 'danger-outline');
+  browser('fill', '.space-field input', '   Fresh Plans   ');
+  browser('press', 'Enter');
+  wait('!document.querySelector(".channel-save-bar")');
+  assert.equal(evaluate('document.querySelector(".space-field input").value'), 'fresh-plans');
+  assert.deepEqual(evaluate('spaceControlFixture.updates.at(-1).body'), { name: 'fresh-plans', private: true });
   browser('click', '.danger-outline');
   browser('mouse', 'move', '10', '10');
   browser('mouse', 'down', 'left');
@@ -121,14 +138,25 @@ try {
   assert.deepEqual(evaluate('spaceControlFixture.deletes'), Array(2).fill('/api/spaces/space1234567/channels/channel12345'));
   browser('click', '.space-menu summary');
   browser('click', '.space-actions button');
+  browser('fill', '.space-field input', '   Renamed studio   ');
+  browser('press', 'Enter');
+  wait('document.querySelector(".space-field input").value === "Renamed studio"');
+  assert.deepEqual(evaluate('spaceControlFixture.updates.at(-1).body'), { name: 'Renamed studio' });
+  browser('fill', '.space-field input', '   Renamed studio   ');
+  browser('press', 'Tab');
+  assert.equal(evaluate('document.querySelector(".space-field input").value'), 'Renamed studio', 'Whitespace-only edits normalize on blur even without saving');
   browser('click', '.danger-outline');
-  assert.match(evaluate('document.querySelector(".delete-confirmation").textContent'), /and all its channels for everyone\? This cannot be undone/);
+  assert.match(evaluate('document.querySelector(".delete-confirmation").textContent'), /All its channels and their messages will disappear from the space\. This cannot be undone/);
+  browser('press', 'Enter');
+  assert.equal(opens(), 1, 'Immediate Enter also cancels space deletion');
+  assert.equal(evaluate('spaceControlFixture.deletes.length'), 2);
+  browser('click', '.danger-outline');
   browser('click', `${modal} .danger`);
   wait('spaceControlFixture.deletes.length === 3');
   evaluate('spaceControlFixture.release()');
   wait('!document.querySelector(".space-dialog[open]")');
   assert.equal(evaluate('spaceControlFixture.deletes.at(-1)'), '/api/spaces/space1234567');
-  console.log('PASS: stable loading geometry, safe confirmation focus/dismissal/double-click, pending/failure/retry, channel and space deletion (mock API).');
+  console.log('PASS: stable loading geometry, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API).');
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }
 }
