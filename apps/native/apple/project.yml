@@ -57,8 +57,6 @@ targets:
       - package: WebRTC
         product: WebRTC
         link: true
-        embed: true
-        codeSign: true
     info:
       path: Configuration/macOS-Info.plist
       properties:
@@ -83,8 +81,6 @@ targets:
       - package: WebRTC
         product: WebRTC
         link: true
-        embed: true
-        codeSign: true
     info:
       path: Configuration/iOS-Info.plist
       properties:
