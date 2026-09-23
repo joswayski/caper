@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Slider from "../components/Slider";
+import Tooltip from "../components/Tooltip";
 import { createVoiceComparison, MAX_RECORDING_SECONDS, recordReceivedAudio, type ReceivedRecording } from "../media/recording";
 
 const INPUT_METER_SEGMENTS = 40;
@@ -107,21 +108,9 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
 }
 
 function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
-  const tooltip = useRef<HTMLSpanElement>(null);
-  const show = (button: HTMLButtonElement) => {
-    const element = tooltip.current;
-    if (!element) return;
-    element.showPopover();
-    const anchor = button.getBoundingClientRect();
-    const bounds = element.getBoundingClientRect();
-    element.style.left = `${Math.max(8, Math.min(anchor.right - bounds.width, window.innerWidth - bounds.width - 8))}px`;
-    element.style.top = `${anchor.top >= bounds.height + 8 ? anchor.top - bounds.height - 8 : anchor.bottom + 8}px`;
-  };
-  const hide = () => tooltip.current?.hidePopover();
   return <span className="processing-detail">
     {label}
-    <button type="button" aria-label={`About ${label}`} aria-describedby={id} popoverTarget={id} popoverTargetAction="show" onMouseEnter={(event) => show(event.currentTarget)} onMouseLeave={(event) => { if (document.activeElement !== event.currentTarget) hide(); }} onFocus={(event) => show(event.currentTarget)} onBlur={hide} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); hide(); } }}>?</button>
-    <span ref={tooltip} id={id} role="tooltip" popover="auto">{children}</span>
+    <Tooltip id={id} content={children}><button type="button" aria-label={`About ${label}`}>?</button></Tooltip>
   </span>;
 }
 

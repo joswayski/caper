@@ -13,9 +13,6 @@
 .call-settings summary::-webkit-details-marker { display: none; }
 .call-settings summary:is(:hover, :focus-visible), .call-settings[open] summary { background: var(--surface-composer); color: #fff; }
 .call-settings summary svg { width: 19px; height: 19px; }
-.call-account :is(.voice-icon-button, .call-settings summary) { position: relative; }
-.call-account :is(.voice-icon-button, .call-settings summary)::after { position: absolute; z-index: 6; bottom: calc(100% + 10px); left: 50%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--blackout); box-shadow: 0 8px 20px rgb(0 0 0 / .35); content: attr(data-tooltip); font-size: .7rem; font-weight: 700; line-height: 1; white-space: nowrap; pointer-events: none; opacity: 0; transform: translate(-50%, 3px); transition: opacity 150ms ease-in-out, transform 150ms ease-in-out; }
-.call-account .voice-icon-button:is(:hover, :focus-visible)::after, .call-account .call-settings summary:is(:hover, :focus-visible)::after { opacity: 1; transform: translate(-50%, 0); }
 .call-settings-panel { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 0; width: 100%; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
 .device-menu summary { width: 16px; border-radius: 0 4px 4px 0; }
 .device-menu summary svg { width: 12px; height: 12px; }
@@ -45,9 +42,6 @@
 .voice-roster-label { margin: 24px 9px 0; color: var(--text-muted); font-size: .72rem; }
 .voice-actions { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .voice-join { position: relative; flex-shrink: 0; }
-.voice-tooltip { position: absolute; z-index: 5; top: calc(100% + 6px); left: 0; width: 230px; max-width: calc(100vw - 64px); padding: 9px 10px; visibility: hidden; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--blackout); box-shadow: 0 8px 24px rgb(0 0 0 / .35); font-size: .72rem; line-height: 1.45; }
-.voice-tooltip::before { content: ""; position: absolute; bottom: 100%; left: 0; width: 100%; height: 7px; }
-.voice-join[data-tooltip-dismissed="false"]:is(:hover, :focus-within) .voice-tooltip { visibility: visible; }
 .voice-button { flex-shrink: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--terracotta) 65%, var(--border)); border-radius: var(--radius); color: color-mix(in srgb, var(--terracotta-bright) 65%, var(--text)); background: rgb(182 77 50 / .14); font-size: .78rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
 .voice-button > svg { width: 16px; height: 16px; }
 .voice-button:hover:not([aria-disabled="true"]) { border-color: var(--terracotta-bright); background: rgb(182 77 50 / .24); }
@@ -126,7 +120,6 @@
 .processing-details { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 16px; color: var(--text-muted); font-size: .68rem; }
 .processing-detail { position: relative; display: inline-flex; align-items: center; gap: 5px; }
 .processing-detail > button { width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 50%; color: var(--text-muted); background: transparent; font-size: .6rem; font-weight: 800; cursor: help; }
-.processing-detail > [role="tooltip"] { position: fixed; inset: auto; margin: 0; width: min(280px, calc(100vw - 16px)); padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--blackout); box-shadow: 0 8px 24px rgb(0 0 0 / .35); font-size: .7rem; line-height: 1.45; }
 .call-diagnostics { color: var(--text-muted); }
 .call-diagnostics dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; margin: 12px 0 0; }
 .call-diagnostics dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; padding: 7px 0; border-top: 1px solid var(--border); }
@@ -193,3 +186,7 @@
   .mic-test-action-row { grid-template-columns: 1fr; }
   .mic-test-button { width: 100%; }
 }
+
+.audio-debug { font-size: .75rem; color: var(--text); }
+.audio-debug p { color: var(--muted); line-height: 1.5; }
+.audio-debug pre { max-height: 320px; overflow: auto; padding: 12px; background: var(--blackout); border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }

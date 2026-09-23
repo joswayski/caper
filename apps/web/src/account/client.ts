@@ -2,6 +2,7 @@ export interface Account {
   id: string;
   username: string | null;
   displayName: string | null;
+  debugEnabled?: boolean;
 }
 
 export class AccountApiError extends Error {

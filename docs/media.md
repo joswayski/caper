@@ -914,6 +914,7 @@ Keep this temporary test separate from any future production app/key.
 | `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Startup grants the parsed runtime role access to migrated application tables. Neither DB secret belongs in WEB. |
 | `DATABASE_ALLOW_INSECURE` | Local development only. Set by Compose so the API may connect without TLS to the private `postgres` service. Hosted databases still default to verified TLS. |
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
+| `DEBUG_USERS` | Optional API-only comma-separated username allowlist for authenticated client diagnostics. Exact case-insensitive matches after trimming; blank disables. Restart the API and refresh or log in again after changes. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
 | `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
@@ -2023,6 +2024,50 @@ revealing signup order or the internal sequence. Stored as `external_id` for
 integrations and external references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
+
+`DEBUG_USERS` is an optional, server-only comma-separated username allowlist for
+client diagnostics. Entries are trimmed and compared as exact, case-insensitive
+usernames; blanks disable the allowlist, and wildcards or substring matches are
+not supported. Authenticated own-account payloads from email verification,
+`GET /api/account/me`, and `POST /api/account/profile` include
+`debugEnabled` (default `false`). Public rosters and other users' account data
+never include it. Because usernames can change, eligibility follows the current
+username and can transfer; use immutable public account IDs in a future design if
+eligibility must remain attached to a person.
+
+After merge, preserve every existing property while adding `DEBUG_USERS` to the
+existing `production/apps/caper` Secrets Manager record, then deploy the merged
+API and web images. No database or vendor is required:
+
+```sh
+MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+```
+
+For later allowlist changes, update the same record without deleting other keys
+and restart the API so it reloads configuration from Secrets Manager:
+
+```sh
+kubectl -n default rollout restart deployment/caper-api
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+```
+
+Affected clients must refresh or log in again to consume the updated own-account
+response. Do not expose `DEBUG_USERS` through web configuration or a `VITE_`
+variable.
+
+Eligible accounts see **User Settings → Audio diagnostics**, plus expandable
+diagnostics inside **Mic test**. Reports distinguish no capture, opening, failed,
+active and ended capture; include actual processor/fallback status, capture
+settings, DPDFNet hop counts and mean/max processing time against its 10 ms budget,
+and connection statistics when available. Counters are local and reset on refresh.
+Copying is explicit; no audio, device IDs, credentials or automatic diagnostic
+uploads are included. This controls UI visibility, not access to privileged server
+data. OpenFeature is an evaluation API/provider standard, not a required database
+or service; this single allowlist intentionally has no flag SDK or table.
 
 ### Removed account lifecycle integration
 

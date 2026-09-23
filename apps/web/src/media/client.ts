@@ -91,7 +91,6 @@ export class PublicCallClient {
   private reconnects = 0;
   private muted = false;
   private deafened = false;
-  private mutedBeforeDeafen = false;
   private inputVolume = 100;
   private monitoring = false;
   private monitorStream?: MediaStream;
@@ -114,6 +113,8 @@ export class PublicCallClient {
   private audioSetup: AudioSetup = "headphones";
   private voiceProcessingStrength = DEFAULT_VOICE_PROCESSING_STRENGTH;
   private microphoneStatus?: string;
+  private captureAttempt: "not-started" | "opening" | "opened" | "failed" = "not-started";
+  private captureError?: string;
   private captures = new Map<MediaStreamTrack, Microphone>();
   private captureController = new AbortController();
   private joinTiming?: Omit<ConnectionDiagnostics, "receivedBytes" | "sentBytes" | "receiveBitrate" | "sendBitrate" | "packetsLost" | "maxJitterMs" | "roundTripMs" | "route">;
@@ -133,7 +134,6 @@ export class PublicCallClient {
   copyAudioPreferencesFrom(previous: PublicCallClient) {
     this.muted = previous.muted;
     this.deafened = previous.deafened;
-    this.mutedBeforeDeafen = previous.mutedBeforeDeafen;
     this.inputVolume = previous.inputVolume;
     this.voiceProcessingStrength = previous.voiceProcessingStrength;
     this.noiseSuppression = previous.noiseSuppression;
@@ -509,7 +509,6 @@ export class PublicCallClient {
     if (this.monitoring) return;
     const generation = this.generation;
     if (!muted) this.deafened = false;
-    if (this.deafened) this.mutedBeforeDeafen = muted;
     this.muted = muted;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !muted;
@@ -526,9 +525,7 @@ export class PublicCallClient {
   async setDeafened(deafened: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
-    if (deafened && !this.deafened) this.mutedBeforeDeafen = this.muted;
-    if (deafened) this.muted = true;
-    else if (this.deafened) this.muted = this.mutedBeforeDeafen;
+    if (deafened || this.deafened) this.muted = deafened;
     this.deafened = deafened;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !this.muted;
@@ -615,14 +612,31 @@ export class PublicCallClient {
   }
 
   private async openMicrophone(deviceId?: string, signal = this.captureController.signal) {
+    this.captureAttempt = "opening";
+    this.captureError = undefined;
     let microphone: Microphone;
-    microphone = await captureMicrophone(deviceId, this.noiseSuppression, signal, () => {
-      this.microphoneStatus = microphone.status;
-      this.emit();
-    }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceProcessingStrength);
+    try {
+      microphone = await captureMicrophone(deviceId, this.noiseSuppression, signal, () => {
+        this.microphoneStatus = microphone.status;
+        this.emit();
+      }, this.audioSetup, this.noiseAssets, this.dpdfnet, this.inputVolume, this.voiceProcessingStrength);
+      this.captureAttempt = "opened";
+    } catch (error) {
+      this.captureAttempt = "failed";
+      this.captureError = error instanceof Error ? error.name : "UnknownError";
+      throw error;
+    }
     this.microphoneStatus = microphone.status;
     this.captures.set(microphone.track, microphone);
     return microphone.track;
+  }
+
+  getAudioDiagnostics() {
+    return {
+      captureAttempt: this.captureAttempt, captureError: this.captureError,
+      captures: [...this.captures.values()].map((capture) => capture.diagnostics()),
+      connection: this.diagnostics,
+    };
   }
 
   private stopMicrophone(track: MediaStreamTrack) {

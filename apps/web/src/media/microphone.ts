@@ -16,6 +16,7 @@ export interface Microphone {
   track: MediaStreamTrack;
   naturalTrack: MediaStreamTrack;
   status: string;
+  diagnostics(): object;
   setInputVolume(volume: number): void;
   setVoiceProcessingStrength(strength: number): void;
   pause(): Promise<void>;
@@ -57,6 +58,9 @@ export async function captureMicrophone(
   const fallbackController = new AbortController();
   let stopped = false;
   let bypassing = false;
+  let processedHops = 0;
+  let totalProcessingMs = 0;
+  let maxProcessingMs = 0;
   let processingConnected: boolean | undefined;
   const connectVoicePath = (strength: number) => {
     if (!context || !voiceInput || !destination || !voiceProcessing) return;
@@ -76,6 +80,15 @@ export async function captureMicrophone(
     track: raw,
     naturalTrack: raw,
     status: "Noise suppression off",
+    diagnostics() {
+      const { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl } = raw.getSettings();
+      return {
+        requested: mode, status: microphone.status, stopped,
+        context: context?.state, contextSampleRate: context?.sampleRate,
+        capture: { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl },
+        dpdfnet: { processedHops, meanProcessingMs: processedHops ? totalProcessingMs / processedHops : null, maxProcessingMs, hopBudgetMs: 10 },
+      };
+    },
     setInputVolume(volume) {
       const value = Math.max(0, Math.min(volume, 200)) / 100;
       if (gain) gain.gain.setValueAtTime(value, gain.context.currentTime);
@@ -257,7 +270,12 @@ export async function captureMicrophone(
     if (prepared) {
       const worker = prepared.worker;
       worker.onmessage = ({ data }) => {
-        if (data?.type === "output") node?.port.postMessage(data, [data.samples]);
+        if (data?.type === "output") {
+          processedHops++;
+          totalProcessingMs += data.duration;
+          maxProcessingMs = Math.max(maxProcessingMs, data.duration);
+          node?.port.postMessage(data, [data.samples]);
+        }
         else node?.port.postMessage({ type: "failed" });
       };
       worker.onerror = () => node?.port.postMessage({ type: "failed" });

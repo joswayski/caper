@@ -242,7 +242,8 @@ for (const end of ["cancel", "failed", "timeout"] as const) test(`RNNoise fallba
 });
 
 for (const warmed of [false, true]) test(`capture exclusively consumes DPDFNet preparation (already ready: ${warmed})`, async (t) => {
-  const { preparation, workers } = preparedDpdfnet(t);
+  const { preparation, workers, raw } = preparedDpdfnet(t);
+  raw.settings = { sampleRate: 48000, deviceId: "private-device", groupId: "private-group" };
   const warming = preparation.prepare();
   assert.equal(Context.latest, undefined, "preparation must not open an audio context");
   if (warmed) {
@@ -265,6 +266,11 @@ for (const warmed of [false, true]) test(`capture exclusively consumes DPDFNet p
   const microphone = await capturing;
   assert.equal(microphone.track, Context.latest!.processed);
   assert.match(microphone.status, /DPDFNet-8 HR active/);
+  for (const duration of [4, 14, 6]) workers[0].onmessage!({ data: { type: "output", duration, samples: new ArrayBuffer(4) } });
+  const report = JSON.parse(JSON.stringify(microphone.diagnostics()));
+  assert.deepEqual(report.dpdfnet, { processedHops: 3, meanProcessingMs: 8, maxProcessingMs: 14, hopBudgetMs: 10 });
+  assert.deepEqual(report.capture, { sampleRate: 48000 });
+  assert.equal(report.status, microphone.status);
   preparation.stop();
   assert.equal(workers[0].terminateCalls, 0);
   microphone.stop();

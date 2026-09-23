@@ -16,7 +16,7 @@ function fixture() {
   if (location.protocol === 'about:') return;
   const saved = new URL(location.href).searchParams.get('width') ?? '240';
   localStorage.setItem('caper:channel-sidebar-width', saved);
-  const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner' };
+  const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner', debugEnabled: new URL(location.href).searchParams.has('debug') };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: true };
   const members = [{ ...account, owner: true }, ...Array.from({ length: 29 }, (_, index) => ({
@@ -254,6 +254,20 @@ try {
   evaluate('spaceControlFixture.release()');
   wait('!document.querySelector(".space-dialog[open]")');
   assert.equal(evaluate('spaceControlFixture.deletes.at(-1)'), '/api/spaces/space1234567');
+  for (const enabled of [false, true]) {
+    browser('set', 'viewport', '1280', '900', '2');
+    browser('open', `${url}?space=space1234567&channel=channel12345${enabled ? '&debug' : ''}`);
+    wait('!!document.querySelector(".account-avatar")');
+    browser('click', '[aria-label="User Settings"]');
+    assert.equal(evaluate('[...document.querySelectorAll("button")].some(b => b.textContent === "Audio diagnostics")'), enabled);
+    if (enabled) {
+      browser('find', 'role', 'button', 'click', '--name', 'Audio diagnostics', '--exact');
+      wait('!!document.querySelector(".audio-debug")');
+      assert.match(evaluate('document.querySelector(".audio-debug").textContent'), /No microphone capture started/);
+      assert.equal(evaluate('JSON.parse(document.querySelector(".audio-debug pre").textContent).captureAttempt'), 'not-started');
+    }
+  }
+  console.log('PASS: debug-enabled account sees diagnostics; other accounts do not; unused capture is explicit.');
   console.log('PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).');
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }

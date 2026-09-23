@@ -240,9 +240,11 @@ test("message sounds exclude history, own messages, and duplicate replay", async
   const sounds: string[] = [];
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Audio");
   Object.defineProperty(globalThis, "Audio", { configurable: true, value: class extends EventTarget {
+    volume = 1;
+    playbackRate = 1;
+    preservesPitch = true;
     constructor(src: string) { super(); sounds.push(src); }
-    play() { queueMicrotask(() => this.dispatchEvent(new Event("ended"))); return Promise.resolve(); }
-    pause() {}
+    play() { return Promise.resolve(); }
   } });
   t.after(() => {
     if (descriptor) Object.defineProperty(globalThis, "Audio", descriptor);
