@@ -110,7 +110,7 @@ public enum MessageValidation {
     public static func error(for text: String) -> String? {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Write a message first." }
         if text.unicodeScalars.count > 4_000 { return "Messages can be at most 4,000 characters." }
-        if text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) && $0 != "\n" && $0 != "\t" }) {
+        if text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control && $0 != "\n" && $0 != "\t" }) {
             return "Messages cannot contain control characters."
         }
         return nil

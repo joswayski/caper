@@ -83,6 +83,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(MessageValidation.error(for: String(repeating: "🪐", count: 4_000)))
         XCTAssertEqual(MessageValidation.error(for: String(repeating: "🪐", count: 4_001)), "Messages can be at most 4,000 characters.")
         XCTAssertEqual(MessageValidation.error(for: String(repeating: "e\u{301}", count: 2_001)), "Messages can be at most 4,000 characters.", "Messages count Unicode scalars, not grapheme clusters.")
+        XCTAssertNil(MessageValidation.error(for: String(repeating: "👨‍👩‍👧‍👦", count: 571)), "Joiners are valid message content, not forbidden control characters.")
         XCTAssertEqual(MessageValidation.error(for: String(repeating: "👨‍👩‍👧‍👦", count: 572)), "Messages can be at most 4,000 characters.", "Messages count every scalar in a ZWJ sequence.")
         XCTAssertNil(MessageValidation.error(for: "line one\nline two\tindented"))
         XCTAssertEqual(MessageValidation.error(for: "hidden\u{0007}"), "Messages cannot contain control characters.")

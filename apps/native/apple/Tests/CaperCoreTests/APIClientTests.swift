@@ -40,7 +40,7 @@ final class APIClientTests: XCTestCase {
     private func client(token: String = "account-secret") -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
-        return APIClient(baseURL: URL(string: "https://caper.chat")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
+        return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
     func testAccountAndChatCapabilitiesUseSeparateHeadersAndNeverURLs() async throws {
@@ -77,7 +77,7 @@ final class APIClientTests: XCTestCase {
         let store = MemoryTokenStore("old-token")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
-        let api = APIClient(baseURL: URL(string: "https://caper.chat")!, session: URLSession(configuration: configuration), tokenStore: store)
+        let api = APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: store)
         let verifyStarted = expectation(description: "verification started")
         var delayedVerification: MockURLProtocol?
         MockURLProtocol.deferred = { request, urlRequest in
@@ -114,7 +114,7 @@ final class APIClientTests: XCTestCase {
         let store = MemoryTokenStore("old-token")
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
-        let api = APIClient(baseURL: URL(string: "https://caper.chat")!, session: URLSession(configuration: configuration), tokenStore: store)
+        let api = APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: store)
         let model = AppModel(api: api)
         model.account = Account(id: "user", username: "user", displayName: "User")
         model.phase = .ready
@@ -147,7 +147,7 @@ final class APIClientTests: XCTestCase {
     func testLateChannelOpenCannotReplaceNewerChannelAndStopClearsImmediately() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
-        let api = APIClient(baseURL: URL(string: "https://caper.chat")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore())
+        let api = APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore())
         let chat = ChatModel(api: api)
         let oldHistoryStarted = expectation(description: "old history started")
         var delayedOldHistory: MockURLProtocol?

@@ -102,11 +102,14 @@ public final class VoiceClient {
             track.isEnabled = false
             microphone = track
             guard let transceiver = peer.addTransceiver(with: track, init: RTCRtpTransceiverInit()) else { throw VoiceError.setup }
-            try transceiver.setDirection(.sendOnly)
+            var directionError: NSError?
+            transceiver.setDirection(.sendOnly, error: &directionError)
+            if let directionError { throw directionError }
             let offer = try await peer.offer(for: RTCMediaConstraints(mandatoryConstraints: [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue], optionalConstraints: nil))
             try await peer.setLocalDescription(offer)
             try await Self.waitForGathering(peer)
-            guard let local = peer.localDescription, let mid = transceiver.mid else { throw VoiceError.setup }
+            let mid = transceiver.mid
+            guard let local = peer.localDescription, !mid.isEmpty else { throw VoiceError.setup }
             let published: SignalingResponse = try await api.media(channelID: channelID, operation: "publish", token: joined.token, body: PublishBody(mid: mid, sessionDescription: SDP(type: "offer", sdp: local.sdp)))
             guard let answer = published.sessionDescription else { throw VoiceError.invalidAnswer }
             try await peer.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: answer.sdp))
