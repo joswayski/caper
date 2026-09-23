@@ -1,9 +1,11 @@
 .spaces-room { grid-template-columns: 60px auto minmax(0, 1fr); }
 .space-rail { min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 14px 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--blackout); }
-.space-rail-item { position: relative; width: 100%; display: flex; justify-content: center; flex: 0 0 auto; }
+.space-rail-item { position: relative; isolation: isolate; width: 100%; display: flex; justify-content: center; flex: 0 0 auto; }
 .space-rail :is(button, a) { position: relative; width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 12px; color: var(--text-muted); background: var(--surface); font: inherit; font-size: .8rem; font-weight: 850; text-decoration: none; cursor: pointer; transition: border-radius 150ms ease, border-color 150ms ease, color 150ms ease, background-color 150ms ease; }
 .space-rail :is(button, a):hover, .space-rail button[aria-current="page"] { border-color: #805143; border-radius: 8px; color: #fff; background: #39231e; }
-.space-glow { position: absolute; z-index: 1; left: 0; top: -12px; width: 100%; height: 64px; overflow: hidden; pointer-events: none; }
+.space-rail-item > button { z-index: 1; }
+.space-rail button[aria-current="page"] { background: var(--surface); }
+.space-glow { position: absolute; z-index: 0; left: 0; top: -12px; width: 100%; height: 64px; opacity: .3; overflow: hidden; pointer-events: none; }
 .space-glow-wave { transform-origin: 0 32px; animation: space-glow-drift 14s ease-in-out infinite alternate; }
 @keyframes space-glow-drift {
   from { transform: translateY(-3px) scaleY(.92); opacity: .65; }
