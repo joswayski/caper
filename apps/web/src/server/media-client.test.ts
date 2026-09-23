@@ -479,6 +479,44 @@ test("local mic test explains missing, denied, and busy devices", async (t) => {
   client.stopLocalMicTest();
 });
 
+test("pre-join mute and deafen preserve explicit mute intent without capturing or signaling", async (t) => {
+  const { client, states, calls } = setup(t);
+  await client.setMuted(true);
+  await client.setDeafened(true);
+  await client.setDeafened(false);
+  assert.equal(states.at(-1)?.muted, true, "Undeafen must not undo an explicit mute");
+  assert.equal(states.at(-1)?.deafened, false);
+  await client.setMuted(false);
+  await client.setDeafened(true);
+  await client.setDeafened(false);
+  assert.equal(states.at(-1)?.muted, false, "Undeafen restores a previously live mic");
+  await client.setDeafened(true);
+  await client.setMuted(false);
+  assert.equal(states.at(-1)?.deafened, false, "Explicit unmute also undeafens");
+  assert.deepEqual(calls, [], "Preferences need neither capture nor API calls");
+  await client.setMuted(true);
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.muted, true);
+  assert.equal(Peer.latest.senders[0].track, null, "Pre-join mute must prevent publication of audible audio");
+  await client.leave();
+  assert.equal(states.at(-1)?.muted, true, "Leaving retains mute intent");
+  await client.setMuted(false);
+  await client.setDeafened(true);
+  client.setInputVolume(145);
+  client.setVoiceProcessingStrength(37);
+  const nextStates: CallViewState[] = [];
+  const next = new PublicCallClient((state) => nextStates.push(state), "/api/channels/next00000000/media");
+  next.copyAudioPreferencesFrom(client);
+  assert.equal(nextStates.at(-1)?.phase, "idle");
+  assert.equal(nextStates.at(-1)?.deafened, true);
+  assert.equal(nextStates.at(-1)?.inputVolume, 145);
+  assert.equal(nextStates.at(-1)?.voiceProcessingStrength, 37);
+  assert.equal(nextStates.at(-1)?.selfId, undefined);
+  await next.setDeafened(false);
+  assert.equal(nextStates.at(-1)?.muted, false, "Switching channels retains the pre-deafen intent too");
+});
+
 test("pre-join microphone selection is retained and can be supplied when testing", async (t) => {
   const { client, install } = setup(t);
   const deviceIds: Array<ConstrainDOMString | undefined> = [];

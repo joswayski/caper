@@ -91,6 +91,7 @@ export class PublicCallClient {
   private reconnects = 0;
   private muted = false;
   private deafened = false;
+  private mutedBeforeDeafen = false;
   private inputVolume = 100;
   private monitoring = false;
   private monitorStream?: MediaStream;
@@ -126,6 +127,18 @@ export class PublicCallClient {
     this.changed = changed;
     this.apiRoot = apiRoot;
     this.fetchTransport = fetchTransport;
+  }
+
+  /** Carry user intent to a new channel without sharing session capabilities or media. */
+  copyAudioPreferencesFrom(previous: PublicCallClient) {
+    this.muted = previous.muted;
+    this.deafened = previous.deafened;
+    this.mutedBeforeDeafen = previous.mutedBeforeDeafen;
+    this.inputVolume = previous.inputVolume;
+    this.voiceProcessingStrength = previous.voiceProcessingStrength;
+    this.noiseSuppression = previous.noiseSuppression;
+    this.audioSetup = previous.audioSetup;
+    this.emit();
   }
 
   prepareMicrophone() {
@@ -495,6 +508,8 @@ export class PublicCallClient {
   async setMuted(muted: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
+    if (!muted) this.deafened = false;
+    if (this.deafened) this.mutedBeforeDeafen = muted;
     this.muted = muted;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !muted;
@@ -511,7 +526,9 @@ export class PublicCallClient {
   async setDeafened(deafened: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
-    if (deafened || this.deafened) this.muted = deafened;
+    if (deafened && !this.deafened) this.mutedBeforeDeafen = this.muted;
+    if (deafened) this.muted = true;
+    else if (this.deafened) this.muted = this.mutedBeforeDeafen;
     this.deafened = deafened;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !this.muted;

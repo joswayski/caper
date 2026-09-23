@@ -45,7 +45,7 @@ function fixture() {
           : request.kind === 'presence'
             ? { type: 'snapshot', members: request.userIds.map((userId, index) => ({ userId, status: ['online', 'idle', 'offline'][index % 3] })) }
             : { type: 'snapshot', participants: [], revision: 1 };
-        this.frame({ type: 'event', id: request.id, event });
+        if (request.kind !== 'presence' || !control.holdPresence) this.frame({ type: 'event', id: request.id, event });
         this.frame({ type: 'subscribed', id: request.id });
       }
     }
@@ -128,7 +128,11 @@ try {
     }
   }
   wait('document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")');
+  assert.ok(evaluate('(() => { const a = document.querySelector(".channel-navigation > header").getBoundingClientRect(), b = document.querySelector(".chat-heading").getBoundingClientRect(); return a.top === b.top && a.bottom === b.bottom; })()'), 'Space and channel headers must align');
+  assert.ok(evaluate('document.querySelector(".space-member-presence").getBoundingClientRect().left >= document.querySelector(".stage").getBoundingClientRect().right'), 'Desktop members must be on the right');
   assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence").userIds.length'), 25);
+  assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), '1');
+  assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), '30', 'Member count must include every page');
   screenshot('gateway-merged-members-desktop');
   browser('click', '.member-presence-pages button:last-child');
   wait('document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".member-presence-connecting")');
@@ -136,13 +140,33 @@ try {
   assert.equal(evaluate('Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence").userIds.length'), 5);
   browser('click', '.member-presence-heading');
   wait('!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence")');
+  browser('click', '.channel-section-toggle');
+  assert.ok(evaluate('document.querySelector("#space-channel-list").hidden'));
+  assert.equal(evaluate('document.querySelector(".channel-section-toggle .section-count").textContent'), '1');
+  assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), '30');
+  screenshot('members-collapsed');
+  browser('click', '.channel-section-toggle');
+  evaluate('spaceControlFixture.holdPresence = true');
   browser('click', '.member-presence-heading');
+  assert.ok(evaluate('[...document.querySelectorAll(".space-member-presence small")].every(node => ["online", "idle", "offline"].includes(node.textContent))'), 'Cached statuses must remain visible before the next snapshot');
+  assert.equal(evaluate('document.querySelector(".space-member-presence").textContent.includes("Updating")'), false);
   browser('set', 'viewport', '390', '844', '2');
   browser('click', '.navigation-toggle');
   wait('!!document.querySelector(".spaces-room.navigation-open")');
   assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Narrow member navigation must not overflow');
   screenshot('gateway-merged-members-narrow');
   browser('set', 'viewport', '1280', '900', '2');
+  for (const label of ['Create space', 'Create channel']) {
+    browser('click', `[aria-label="${label}"]`);
+    wait('!!document.querySelector(".space-dialog[open]")');
+    browser('click', '.space-field input');
+    assert.equal(opens(), 1, 'Clicking inside must not dismiss');
+    screenshot(label === 'Create space' ? 'create-space-dialog' : 'create-channel-dialog');
+    browser('mouse', 'move', '10', '10');
+    browser('mouse', 'down', 'left');
+    browser('mouse', 'up', 'left');
+    assert.equal(opens(), 0, `${label} must dismiss on backdrop click`);
+  }
   openOverview();
   assert.equal(opens(), 2);
   assert.equal(evaluate('document.activeElement.textContent'), 'Cancel');

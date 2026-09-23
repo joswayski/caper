@@ -143,6 +143,16 @@
 .voice-icon-button svg { width: 19px; height: 19px; stroke-width: 2.25; }
 .voice-icon-button:hover:not(:disabled), .voice-icon-button.active { border-color: #805143; color: #fff; background: #39231e; }
 .call-account .voice-icon-button:is(:hover, :focus-visible) { color: #fff; background: var(--surface-composer); opacity: 1; }
+.call-account .voice-action-group.active { background: rgb(212 67 85 / .14); }
+.call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary) { color: #ed5265; background: transparent; }
+.call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary):is(:hover, :focus-visible), .call-account .voice-action-group.active .device-menu[open] summary { color: #ff7182; background: rgb(212 67 85 / .18); }
+.connected-channel { display: flex; align-items: center; gap: 6px; margin: 0 12px 8px; padding: 8px 4px; border-top: 1px solid var(--border); }
+.connected-channel button { min-width: 0; display: grid; gap: 4px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); text-align: left; cursor: pointer; }
+.connected-channel button:first-child { flex: 1; }
+.connected-channel button:hover { background: var(--surface-raised); }
+.connected-channel strong { color: var(--text); font-size: .72rem; }
+.connected-channel span { overflow: hidden; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.connected-channel svg { width: 18px; height: 18px; }
 .device-options { min-width: 0; margin: 0; padding: 0; border: 0; }
 .device-options legend { margin-bottom: 8px; color: var(--text-muted); font-size: .72rem; font-weight: 700; }
 .device-options label { display: flex; align-items: center; gap: 8px; padding: 9px 8px; border-radius: 6px; color: var(--text); font-size: .8rem; cursor: pointer; }
