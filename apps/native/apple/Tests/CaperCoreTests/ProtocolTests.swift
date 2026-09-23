@@ -113,4 +113,15 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(IceServer.self, from: Data(#"{"urls":"stun:one"}"#.utf8)).urls, ["stun:one"])
         XCTAssertEqual(try decoder.decode(IceServer.self, from: Data(#"{"urls":["turn:one","turn:two"],"username":"u","credential":"p"}"#.utf8)).urls, ["turn:one", "turn:two"])
     }
+
+    func testSnapshotRevisionCannotMoveBackwardsOrLoseVersioning() {
+        var revisions = MonotonicRevision()
+        XCTAssertTrue(revisions.accept(nil), "unversioned HTTP snapshots work before the server supplies revisions")
+        XCTAssertTrue(revisions.accept(8))
+        XCTAssertFalse(revisions.accept(nil), "an unversioned late HTTP response cannot overwrite a pushed snapshot")
+        XCTAssertFalse(revisions.accept(7))
+        XCTAssertFalse(revisions.accept(8))
+        XCTAssertTrue(revisions.accept(9))
+        XCTAssertEqual(revisions.latest, 9)
+    }
 }

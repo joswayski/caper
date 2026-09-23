@@ -26,9 +26,14 @@ public final class AppModel {
     public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
         self.api = api
         self.preferredInitialSpaceID = preferredInitialSpaceID
-        chat = ChatModel(api: api)
-        voice = VoiceClient(api: api)
+        let chatModel = ChatModel(api: api)
+        let voiceClient = VoiceClient(api: api)
+        chat = chatModel
+        voice = voiceClient
         presence = PresenceModel(api: api)
+        chatModel.onAccessRevoked = { [weak voiceClient] channelID in
+            if let channelID, voiceClient?.isActive(channelID: channelID) == true { voiceClient?.leaveImmediately() }
+        }
     }
 
     public func start() async {
@@ -82,12 +87,12 @@ public final class AppModel {
 
     public func logout() async {
         generation += 1
+        voice.leaveImmediately()
         account = nil; spaces = []; detail = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         limits = nil; navigationOpen = false
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()
-        await voice.leave()
         await chat.stop()
         await presence.stop()
         do { try await revoke } catch { self.error = error.localizedDescription }
@@ -151,7 +156,6 @@ public final class AppModel {
     public func select(channel: Channel) async {
         selectedChannelID = channel.id
         navigationOpen = false
-        await voice.leave()
         await chat.open(channelID: detail?.space.demo == true ? nil : channel.id, displayName: account?.displayName ?? "Guest")
     }
 
@@ -189,6 +193,7 @@ public final class AppModel {
         let attempt = generation
         try await api.deleteSpace(id: id)
         guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        if voice.isActive(spaceID: id) { voice.leaveImmediately() }
         await removeCurrentSpace(id: id)
     }
 
@@ -197,6 +202,7 @@ public final class AppModel {
         let attempt = generation
         try await api.removeSpaceMember(spaceID: id, memberID: account.id)
         guard generation == attempt, self.account?.id == account.id, detail?.space.id == id else { throw CancellationError() }
+        if voice.isActive(spaceID: id) { voice.leaveImmediately() }
         await removeCurrentSpace(id: id)
     }
 
@@ -247,6 +253,7 @@ public final class AppModel {
         let attempt = generation
         try await api.deleteChannel(spaceID: detail.space.id, channelID: channel.id)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
+        if voice.isActive(channelID: channel.id) { voice.leaveImmediately() }
         detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id }, members: detail.members)
         replace(detail: detail)
         if selectedChannelID == channel.id {
@@ -287,9 +294,17 @@ public final class AppModel {
         generation += 1
         spaces.removeAll { $0.id == id }
         detail = nil; selectedSpaceID = nil; selectedChannelID = nil
-        await voice.leave(); await chat.stop()
+        await chat.stop()
         await presence.stop()
         if let first = spaces.first { await select(space: first) }
+    }
+
+    public func openVoiceContext() async {
+        guard let context = voice.context,
+              let space = spaces.first(where: { $0.id == context.spaceID }) else { return }
+        if selectedSpaceID != space.id { await select(space: space) }
+        guard let channel = detail?.channels.first(where: { $0.id == context.channelID }) else { return }
+        if selectedChannelID != channel.id { await select(channel: channel) }
     }
 
     private var needsProfile: Bool { account?.username == nil || account?.displayName == nil }
@@ -318,6 +333,7 @@ public final class ChatModel {
     public var typingNames: [String] = []
     public var currentAuthor: ChatAuthor? { session?.author }
     public var pendingMessage: PendingMessage? { delivery.pending }
+    @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
     private let api: APIClient
     private var channelID: String?
     private var session: ChatSession?
@@ -386,6 +402,7 @@ public final class ChatModel {
             guard generation == requestGeneration else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
                 messages = []; delivery.reset(); session = nil
+                onAccessRevoked?(channelID)
             }
             self.error = error.localizedDescription
         }
@@ -466,6 +483,7 @@ public final class ChatModel {
         guard let type = event["type"] as? String else { return }
         if type == "subscription.error", let status = event["status"] as? Int, [401, 403, 404].contains(status) {
             messages = []; session = nil; delivery.reset(); error = event["error"] as? String ?? "Channel access ended."
+            onAccessRevoked?(eventChannelID)
             return
         }
         if type == "typing.updated",

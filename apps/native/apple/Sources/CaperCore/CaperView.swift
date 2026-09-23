@@ -87,6 +87,7 @@ private struct WorkspaceView: View {
     @Bindable var model: AppModel
     @State private var sheet: WorkspaceSheet?
     @State private var sidebarWidth: CGFloat = 280
+    @State private var membersPreference: Bool?
     private let parityFixture: String?
 
     init(model: AppModel) {
@@ -99,6 +100,7 @@ private struct WorkspaceView: View {
     var body: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
+            let membersVisible = membersPreference ?? !narrow
             VStack(spacing: 0) {
                 HStack {
                     Wordmark()
@@ -111,7 +113,12 @@ private struct WorkspaceView: View {
 
                 Group {
                     if narrow && !model.navigationOpen {
-                        ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true })
+                        ZStack(alignment: .trailing) {
+                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                                membersPreference = !membersVisible
+                            }
+                            if membersVisible { MemberPresenceView(model: model).frame(width: min(280, geometry.size.width - 24)) }
+                        }
                     } else {
                         HStack(spacing: 0) {
                             SpaceRail(model: model, showLogin: { sheet = .login }, create: { sheet = .createSpace })
@@ -132,7 +139,25 @@ private struct WorkspaceView: View {
                                         })
                                 }
                             }
-                            if !narrow { ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }) }
+                            if !narrow {
+                                Group {
+                                    if geometry.size.width >= 1100 {
+                                        HStack(spacing: 0) {
+                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                                                membersPreference = !membersVisible
+                                            }
+                                            if membersVisible { MemberPresenceView(model: model).frame(width: 220) }
+                                        }
+                                    } else {
+                                        VStack(spacing: 0) {
+                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                                                membersPreference = !membersVisible
+                                            }
+                                            if membersVisible { MemberPresenceView(model: model).frame(maxHeight: 240) }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -293,7 +318,6 @@ private struct ChannelSidebar: View {
                     if model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty {
                         VoiceRoster(model: model)
                     }
-                    MemberPresenceView(model: model)
                 }.padding(.horizontal, 16).padding(.top, 20)
             }
             AccountBar(model: model, sheet: $sheet)
@@ -316,12 +340,20 @@ private struct MemberPresenceView: View {
     @Bindable var presence: PresenceModel
     init(model: AppModel) { self.model = model; presence = model.presence }
     var body: some View {
-        if model.detail?.space.demo != true && !(model.detail?.members.isEmpty ?? true) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Members").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                    Spacer(); Text(presence.online ? "Live" : "Connecting…").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Members").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                Spacer()
+                if model.detail?.space.demo != true {
+                    Text("\(model.detail?.members.count ?? 0)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
                 }
+            }.frame(minHeight: 38)
+            if model.detail?.space.demo == true {
+                Text("General is open to everyone. People in voice appear in the channel sidebar.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            } else if model.detail?.members.isEmpty != false {
+                Text("No members to show.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            } else {
                 ForEach(presence.visibleMembers) { member in
                     HStack(spacing: 10) {
                         ZStack(alignment: .bottomTrailing) {
@@ -329,10 +361,7 @@ private struct MemberPresenceView: View {
                             Circle().fill(statusColor(presence.status(for: member))).frame(width: 10, height: 10)
                                 .overlay(Circle().stroke(CaperTheme.sidebar, lineWidth: 2))
                         }
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(member.displayName).font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
-                            Text(presence.status(for: member).rawValue.capitalized).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                        }
+                        Text(member.displayName).font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
                     }.frame(height: 38)
                 }
                 if presence.pageCount > 1 {
@@ -342,8 +371,10 @@ private struct MemberPresenceView: View {
                         Spacer(); Button("Next") { Task { await presence.showPage(presence.page + 1) } }.disabled(presence.page + 1 >= presence.pageCount)
                     }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 }
-            }.padding(.top, 18).overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-        }
+            }
+        }.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(CaperTheme.sidebar)
+            .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
     }
     private func statusColor(_ status: PresenceStatus) -> Color {
         switch status { case .online: CaperTheme.green; case .idle: Color(red: 0.72, green: 0.60, blue: 0.35); case .offline, .unknown: CaperTheme.border }
@@ -360,10 +391,8 @@ private struct VoiceRoster: View {
                 Text("Voice").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
                 Spacer()
                 switch voice.phase {
-                case .idle, .failed:
-                    Button("Join") { Task { await voice.join(channelID: model.detail?.space.demo == true ? nil : model.selectedChannelID, name: model.account?.displayName ?? "Guest") } }
-                        .buttonStyle(VoiceJoinButton())
-                case .joining: ProgressView().controlSize(.small); Button("Cancel") { voice.leaveImmediately() }.font(CaperTheme.font(11))
+                case .idle, .failed: EmptyView()
+                case .joining: Text("Joining…").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 case .connected: Text("Connected").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.green)
                 case .reconnecting: Text("Recovering…").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 case .leaving: ProgressView().controlSize(.small)
@@ -380,6 +409,20 @@ private struct VoiceRoster: View {
                     if participant.muted { Image(systemName: "mic.slash.fill").foregroundStyle(CaperTheme.muted) }
                     if participant.deafened { Image(systemName: "speaker.slash.fill").foregroundStyle(CaperTheme.muted) }
                 }.padding(9).background(CaperTheme.raised.opacity(0.45)).clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            if let context = voice.context {
+                HStack(spacing: 8) {
+                    Button { Task { await model.openVoiceContext() } } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(voice.phase == .connected ? "Voice connected" : "Connecting voice…")
+                                .font(CaperTheme.font(11, weight: .bold))
+                            Text("\(context.spaceName) / \(context.channelName)")
+                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.buttonStyle(.plain)
+                    Button { voice.leaveImmediately() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
+                }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
             }
             if let error = voice.error { Text(error).font(CaperTheme.font(10)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
         }.padding(.vertical, 16)
@@ -437,6 +480,8 @@ private struct ConversationStage: View {
     @Bindable var model: AppModel
     let narrow: Bool
     let browse: () -> Void
+    let membersVisible: Bool
+    let toggleMembers: () -> Void
     var body: some View {
         if model.selectedChannelID == nil {
             VStack(spacing: 8) {
@@ -446,7 +491,7 @@ private struct ConversationStage: View {
                 Text(model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
                     .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.conversation)
-        } else { ChatView(model: model, narrow: narrow, browse: browse) }
+        } else { ChatView(model: model, narrow: narrow, browse: browse, membersVisible: membersVisible, toggleMembers: toggleMembers) }
     }
 }
 
@@ -456,8 +501,11 @@ private struct ChatView: View {
     @Bindable var voice: VoiceClient
     let narrow: Bool
     let browse: () -> Void
-    init(model: AppModel, narrow: Bool, browse: @escaping () -> Void) {
+    let membersVisible: Bool
+    let toggleMembers: () -> Void
+    init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
+        self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -465,11 +513,17 @@ private struct ChatView: View {
                 if narrow {
                     Button(action: browse) { Label("Browse", systemImage: "line.3.horizontal") }.buttonStyle(.bordered).controlSize(.small)
                     VoiceHeaderButton(model: model, voice: voice)
+                    Button(action: toggleMembers) { Image(systemName: "person.2.fill") }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
                 }
                 Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                 Spacer()
                 if !narrow { VoiceHeaderButton(model: model, voice: voice) }
                 if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
+                if !narrow {
+                    Button(action: toggleMembers) { Image(systemName: "person.2.fill") }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
+                }
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
@@ -531,17 +585,40 @@ private struct VoiceHeaderButton: View {
     @Bindable var voice: VoiceClient
     var body: some View {
         if ProcessInfo.processInfo.environment["CAPER_EXPERIMENTAL_VOICE"] == "1" {
-            switch voice.phase {
-            case .idle, .failed:
-                Button { Task { await voice.join(channelID: model.detail?.space.demo == true ? nil : model.selectedChannelID, name: model.account?.displayName ?? "Guest") } } label: {
-                    Label("Join", systemImage: "headphones")
-                }.buttonStyle(VoiceJoinButton())
-            case .joining:
+            if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
                 Button("Cancel") { voice.leaveImmediately() }.buttonStyle(VoiceJoinButton())
-            case .connected, .reconnecting:
+            } else if sameChannel, voice.phase == .connected {
                 Button { voice.leaveImmediately() } label: { Label("Leave", systemImage: "phone.down.fill") }.buttonStyle(VoiceJoinButton())
-            case .leaving: ProgressView().controlSize(.small)
+            } else if voice.phase == .leaving {
+                ProgressView().controlSize(.small)
+            } else {
+                Button(action: joinSelectedChannel) { Label("Join", systemImage: "headphones") }
+                    .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil)
             }
+        }
+    }
+
+    private var selectedContext: VoiceContext? {
+        guard let detail = model.detail,
+              let channelID = model.selectedChannelID,
+              let channel = detail.channels.first(where: { $0.id == channelID }) else { return nil }
+        return VoiceContext(channelID: channel.id, channelName: channel.name, spaceID: detail.space.id, spaceName: detail.space.name)
+    }
+
+    private var sameChannel: Bool {
+        guard let selectedContext else { return false }
+        return voice.context?.channelID == selectedContext.channelID
+    }
+
+    private func joinSelectedChannel() {
+        guard let context = selectedContext else { return }
+        if voice.phase != .idle && voice.phase != .failed { voice.leaveImmediately() }
+        Task {
+            await voice.join(
+                channelID: model.detail?.space.demo == true ? nil : context.channelID,
+                context: context,
+                name: model.account?.displayName ?? "Guest"
+            )
         }
     }
 }

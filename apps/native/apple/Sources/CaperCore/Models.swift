@@ -212,3 +212,19 @@ public struct ChatDeliveryState: Sendable {
         if !preservingPending { pending = nil }
     }
 }
+
+/// Accepts only snapshots that cannot move an already-versioned view
+/// backwards. Unversioned snapshots remain usable until a revision is seen.
+struct MonotonicRevision: Sendable {
+    private(set) var latest: Int?
+
+    mutating func accept(_ revision: Int?) -> Bool {
+        if let latest {
+            guard let revision, revision > latest else { return false }
+            self.latest = revision
+        } else if let revision {
+            latest = revision
+        }
+        return true
+    }
+}

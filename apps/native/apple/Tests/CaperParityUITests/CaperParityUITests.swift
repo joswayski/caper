@@ -26,8 +26,25 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         XCTAssertTrue(app.staticTexts["Fixture Studio"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["general"].exists)
+        #if os(macOS)
+        XCTAssertTrue(app.buttons["Hide members"].exists)
+        XCTAssertTrue(app.staticTexts["Members"].exists)
+        #endif
         capture("populated", app: app)
     }
+
+    #if os(macOS)
+    func testMembersCanBeHiddenWithoutChangingConversation() {
+        let app = launch()
+        let toggle = app.buttons["Hide members"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        toggle.tap()
+        XCTAssertTrue(app.buttons["Show members"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["general"].exists)
+        XCTAssertFalse(app.staticTexts["Members"].exists)
+        capture("members-hidden", app: app)
+    }
+    #endif
 
     func testLogin() {
         let app = launch(fixture: "login", signedIn: false)

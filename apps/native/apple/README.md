@@ -5,7 +5,7 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 ## Current implementation
 
 - Guest access to public General plus passwordless email sign-in, onboarding/profile, logout, and origin-namespaced Keychain sessions.
-- The caper.chat shell at desktop and narrow widths: space rail, channel/member sidebar, Browse navigation, conversation stage, Satoshi typography, and the web color/spacing tokens.
+- The caper.chat shell at desktop and narrow widths: space rail, channel sidebar, toggleable responsive member panel, Browse navigation, conversation stage, Satoshi typography, and the web color/spacing tokens.
 - Space/channel/member owner workflows: create/delete/rename spaces and channels, add/remove existing accounts by username, private-channel toggle and grants.
 - HTTP chat history and pagination, idempotent sends, ordered gateway delivery/replay, reconnect/error state, typing, and paginated member presence.
 - Generation fences for account/channel transitions, immediate revoked-data clearing, separate in-memory chat/media capabilities, and same-origin-only credential redirects.
@@ -41,10 +41,12 @@ The scripts launch only the explicit loopback fixture; fixture data can never be
 ./apps/native/apple/parity-screenshots.sh ios
 ```
 
-The macOS suite captures populated, login, actionable login error, Manage space, and private Channel overview states. The iOS suite adds narrow conversation and Browse-open states on an `iPhone 16` simulator. Screenshots are exported from the XCTest result into ignored `apps/native/apple/parity-artifacts/`. Tests also assert fixture content and required controls before capture.
+The macOS suite captures populated, members-hidden, login, actionable login error, Manage space, and private Channel overview states. The iOS suite adds narrow conversation and Browse-open states on an `iPhone 16` simulator. Screenshots are exported from the XCTest result into ignored `apps/native/apple/parity-artifacts/`. Tests also assert fixture content and required controls before capture.
 
 ## Experimental voice: implemented, not accepted
 
 Native audio is hidden unless `CAPER_EXPERIMENTAL_VOICE=1`. The implementation requests microphone permission before capture; starts muted until publish, remote answer, transport readiness, and generation checks complete; supports gateway snapshots, lease snapshots, roster subscribe/close, immediate local mute/deafen/leave, bounded rejoin, TURN credential renewal with restart/ack, and iOS `RTCAudioSession` interruption/route handling. The iOS app declares the audio background mode so an active audio session can continue while locked.
+
+Browsing another space or text channel preserves the active call and its displayed `space / channel` context. Opening that context navigates back to it; an explicit Join in another channel synchronously tears down the old transport before starting the replacement. Logout, active-context deletion, and active-channel access loss also tear down locally before any network cleanup.
 
 This is **not yet shipped calling support**. The fixture deliberately returns media 503 and cannot validate Cloudflare. Required acceptance remains: exact-head Apple compilation, two-party Cloudflare calls, TURN-only/network handoff, route/interruption recovery, and sustained locked-iPhone capture/playback on physical hardware. The system route is used; selectable per-device routing, browser noise suppression/mic test, per-participant local volume, and connection diagnostics are not yet parity-complete. There is no incoming-call PushKit/CallKit behavior because the server has no incoming-call signaling.

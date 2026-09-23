@@ -51,6 +51,18 @@ public struct AudioDevice: Identifiable, Hashable, Sendable {
     public let name: String
 }
 
+public struct VoiceContext: Equatable, Sendable {
+    public let channelID: String
+    public let channelName: String
+    public let spaceID: String
+    public let spaceName: String
+
+    public init(channelID: String, channelName: String, spaceID: String, spaceName: String) {
+        self.channelID = channelID; self.channelName = channelName
+        self.spaceID = spaceID; self.spaceName = spaceName
+    }
+}
+
 @MainActor @Observable
 public final class VoiceClient {
     public enum Phase: Equatable { case idle, joining, connected, reconnecting, leaving, failed }
@@ -64,6 +76,7 @@ public final class VoiceClient {
     public var availableOutputs: [AudioDevice] = []
     public var selectedInputID: String?
     public var selectedOutputID: String?
+    public internal(set) var context: VoiceContext?
 
     private let api: APIClient
     private var channelID: String?
@@ -81,7 +94,7 @@ public final class VoiceClient {
     private var mediaSubscriptionID: String?
     private var stateSequence = 0
     private var restartSequence = 0
-    private var snapshotRevision: Int?
+    private var snapshotRevisions = MonotonicRevision()
     private var reconnectAttempts = 0
     private var joinName = "Guest"
     private var signalingBusy = false
@@ -100,17 +113,19 @@ public final class VoiceClient {
         gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { _, _ in }
     }
 
-    public func join(channelID: String?, name: String) async {
+    public func join(channelID: String?, context: VoiceContext, name: String) async {
         guard phase == .idle || phase == .failed else { return }
         generation += 1
         let attempt = generation
         joinName = name
+        self.context = context
         phase = .joining; error = nil; self.channelID = channelID
         do {
             guard await Self.microphonePermission() else { throw VoiceError.permission }
+            guard generation == attempt, phase == .joining else { return }
             #if os(iOS)
             try activateAudioSession()
-            installAudioObservers()
+            installAudioObservers(generation: attempt)
             #endif
             let joined: JoinResponse = try await api.media(channelID: channelID, operation: "join", body: JoinBody(name: name, muted: muted, deafened: deafened))
             guard generation == attempt, phase == .joining else {
@@ -180,7 +195,7 @@ public final class VoiceClient {
             phase = .connected
             track.isEnabled = !muted
             reconnectAttempts = 0
-            startLeaseRenewal()
+            startLeaseRenewal(generation: attempt, peer: peer)
             if let turn = joined.turn { scheduleTurnRenewal(turn, generation: attempt, peer: peer) }
         } catch {
             guard generation == attempt else { return }
@@ -217,13 +232,23 @@ public final class VoiceClient {
         }
     }
 
-    private func startLeaseRenewal() {
+    public func isActive(channelID: String) -> Bool {
+        context?.channelID == channelID && phase != .idle && phase != .failed
+    }
+
+    public func isActive(spaceID: String) -> Bool {
+        context?.spaceID == spaceID && phase != .idle && phase != .failed
+    }
+
+    private func startLeaseRenewal(generation attempt: Int, peer expectedPeer: RTCPeerConnection) {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(15))
-                guard let self, let peer = self.peer else { return }
-                await self.refreshRoster(expectedGeneration: self.generation, expectedPeer: peer)
+                do { try await Task.sleep(for: .seconds(15)) }
+                catch { return }
+                guard !Task.isCancelled, let self, self.generation == attempt,
+                      self.peer === expectedPeer, self.phase == .connected else { return }
+                await self.refreshRoster(expectedGeneration: attempt, expectedPeer: expectedPeer)
             }
         }
     }
@@ -253,9 +278,6 @@ public final class VoiceClient {
         guard event["type"] as? String == "snapshot",
               let data = try? JSONSerialization.data(withJSONObject: event),
               let snapshot = try? JSONDecoder().decode(VoiceSnapshot.self, from: data) else { return }
-        if let revision = snapshot.revision, let current = snapshotRevision, revision <= current { return }
-        if let revision = snapshot.revision { snapshotRevision = revision }
-        participants = snapshot.participants
         Task { [weak self, weak expectedPeer] in
             guard let self, let expectedPeer, let token = self.token,
                   self.generation == attempt, self.peer === expectedPeer else { return }
@@ -268,6 +290,7 @@ public final class VoiceClient {
         guard generation == attempt, self.peer === peer else { return }
         try await acquireSignaling(generation: attempt, peer: peer)
         defer { signalingBusy = false }
+        guard snapshotRevisions.accept(snapshot.revision) else { return }
         participants = snapshot.participants
         let liveTracks = Set(snapshot.participants.filter { $0.id != selfID }.flatMap(\.tracks).filter { $0.kind == "microphone" }.map(\.id))
         for departed in Set(subscribed.keys).subtracting(liveTracks) {
@@ -298,10 +321,23 @@ public final class VoiceClient {
     }
 
     private func syncState() async {
-        guard phase == .connected, let token else { return }
+        guard phase == .connected, let token, let expectedPeer = peer else { return }
+        let attempt = generation
+        let expectedChannelID = channelID
         stateSequence += 1
-        do { try await api.media(channelID: channelID, operation: "state", token: token, body: StateBody(muted: muted, deafened: deafened, sequence: stateSequence)) }
-        catch { self.error = "Voice state did not sync: \(error.localizedDescription)" }
+        let body = StateBody(muted: muted, deafened: deafened, sequence: stateSequence)
+        do {
+            try await api.media(channelID: expectedChannelID, operation: "state", token: token, body: body)
+            guard generation == attempt, peer === expectedPeer else { return }
+        }
+        catch let failure as APIError where failure.status == 401 || failure.status == 403 {
+            guard generation == attempt, peer === expectedPeer else { return }
+            generation += 1
+            detachLocal(); phase = .failed; error = "Voice access ended. Rejoin to recover."
+        } catch {
+            guard generation == attempt, peer === expectedPeer else { return }
+            self.error = "Voice state did not sync: \(error.localizedDescription)"
+        }
     }
 
     private func teardown(sendLeave: Bool) async {
@@ -311,7 +347,7 @@ public final class VoiceClient {
         if sendLeave, let oldToken { try? await api.media(channelID: oldChannelID, operation: "leave", token: oldToken, body: EmptyBody()) }
     }
 
-    private func detachLocal() {
+    private func detachLocal(preservingContext: Bool = false) {
         pollTask?.cancel(); pollTask = nil
         turnTask?.cancel(); turnTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
@@ -323,8 +359,9 @@ public final class VoiceClient {
         peer = nil; delegate = nil; microphone = nil
         remoteAudio = []; remoteAudioByMID = [:]
         token = nil; selfID = nil; subscribed = [:]; participants = []
-        publishedMID = nil; snapshotRevision = nil; signalingBusy = false
+        publishedMID = nil; snapshotRevisions = MonotonicRevision(); signalingBusy = false
         channelID = nil
+        if !preservingContext { context = nil }
         #if os(iOS)
         removeAudioObservers()
         let audio = RTCAudioSession.sharedInstance()
@@ -343,10 +380,10 @@ public final class VoiceClient {
             return
         }
         let nextAttempt = attempt + 1
-        let oldToken = token, oldChannelID = channelID, oldName = joinName
+        let oldToken = token, oldChannelID = channelID, oldName = joinName, oldContext = context
         generation = nextAttempt
         phase = .reconnecting
-        detachLocal()
+        detachLocal(preservingContext: true)
         phase = .reconnecting
         if let oldToken { Task { [api] in try? await api.media(channelID: oldChannelID, operation: "leave", token: oldToken, body: EmptyBody()) } }
         reconnectTask = Task { [weak self] in
@@ -354,7 +391,8 @@ public final class VoiceClient {
             guard !Task.isCancelled, let self, self.generation == nextAttempt, self.phase == .reconnecting else { return }
             self.reconnectTask = nil
             self.phase = .idle
-            await self.join(channelID: oldChannelID, name: oldName)
+            guard let oldContext else { return }
+            await self.join(channelID: oldChannelID, context: oldContext, name: oldName)
         }
     }
 
@@ -459,14 +497,36 @@ public final class VoiceClient {
         try audio.setActive(true)
     }
 
-    private func installAudioObservers() {
+    private func installAudioObservers(generation attempt: Int) {
         removeAudioObservers()
         let center = NotificationCenter.default
         audioObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
-            Task { @MainActor in self?.handleAudioInterruption(note) }
+            Task { @MainActor in
+                guard self?.generation == attempt else { return }
+                self?.handleAudioInterruption(note, generation: attempt)
+            }
         })
         audioObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in await self?.refreshAudioDevices() }
+            Task { @MainActor in
+                guard self?.generation == attempt else { return }
+                await self?.refreshAudioDevices()
+            }
+        })
+        audioObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereLostNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.generation == attempt else { return }
+                self.microphone?.isEnabled = false
+            }
+        })
+        audioObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.generation == attempt, self.phase == .connected else { return }
+                do {
+                    try self.activateAudioSession()
+                    guard self.generation == attempt, self.phase == .connected else { return }
+                    self.microphone?.isEnabled = !self.muted
+                } catch { self.scheduleReconnect(generation: attempt) }
+            }
         })
     }
 
@@ -476,13 +536,23 @@ public final class VoiceClient {
         audioObservers = []
     }
 
-    private func handleAudioInterruption(_ note: Notification) {
+    private func handleAudioInterruption(_ note: Notification, generation attempt: Int) {
         guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         if type == .began { microphone?.isEnabled = false }
-        else if phase == .connected {
+        else if phase == .connected,
+                let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+                AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume) {
             do { try activateAudioSession(); microphone?.isEnabled = !muted }
-            catch { scheduleReconnect(generation: generation) }
+            catch { scheduleReconnect(generation: attempt) }
+        } else if phase == .connected {
+            muted = true
+            microphone?.isEnabled = false
+            error = "Audio was interrupted. Unmute when you are ready to resume."
+            Task { [weak self] in
+                guard let self, self.generation == attempt else { return }
+                await self.syncState()
+            }
         }
     }
     #endif

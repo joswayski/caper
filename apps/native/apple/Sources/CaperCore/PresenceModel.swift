@@ -8,7 +8,7 @@ public final class PresenceModel {
     public var error: String?
     public private(set) var statuses: [String: PresenceStatus] = [:]
 
-    public let pageSize = 100
+    public let pageSize = 25
     private let api: APIClient
     @ObservationIgnored private lazy var gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, message in
         self?.online = state == .connected

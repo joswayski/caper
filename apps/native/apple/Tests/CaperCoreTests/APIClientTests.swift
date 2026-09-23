@@ -228,4 +228,66 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(model.account)
         XCTAssertFalse(model.spaces.contains { $0.id == "space0000009" })
     }
+
+    @MainActor
+    func testBrowsingAnotherSpacePreservesActiveVoiceContext() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let api = APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore("account-token"))
+        let model = AppModel(api: api)
+        model.voice.phase = .connected
+        model.voice.context = VoiceContext(channelID: "chan00000001", channelName: "general", spaceID: "space0000001", spaceName: "First")
+        model.selectedSpaceID = "space0000001"
+        model.selectedChannelID = "chan00000001"
+        let detailStarted = expectation(description: "new space detail started")
+        var delayedDetail: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/spaces/space0000002" else { return false }
+            delayedDetail = request
+            detailStarted.fulfill()
+            return true
+        }
+        MockURLProtocol.handler = { _ in throw URLError(.badURL) }
+
+        let selection = Task {
+            await model.select(space: Space(id: "space0000002", name: "Next", ownerId: "owner0000001", demo: nil))
+        }
+        await fulfillment(of: [detailStarted], timeout: 1)
+        XCTAssertEqual(model.voice.phase, .connected)
+        XCTAssertEqual(model.voice.context, VoiceContext(channelID: "chan00000001", channelName: "general", spaceID: "space0000001", spaceName: "First"))
+        XCTAssertEqual(model.selectedSpaceID, "space0000002")
+        delayedDetail?.respond(status: 200, data: Data(#"{"space":{"id":"space0000002","name":"Next","ownerId":"owner0000001"},"channels":[],"members":[]}"#.utf8))
+        await selection.value
+        XCTAssertEqual(model.voice.phase, .connected)
+        XCTAssertEqual(model.voice.context?.channelID, "chan00000001")
+    }
+
+    @MainActor
+    func testOnlyDeletingOrRevokingActiveVoiceContextStopsCall() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let api = APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore("account-token"))
+        let model = AppModel(api: api)
+        let active = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let other = Channel(id: "chan00000002", spaceId: "space0000001", name: "design", private: false)
+        let space = Space(id: "space0000001", name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [active, other], members: [])
+        model.selectedSpaceID = space.id
+        model.selectedChannelID = active.id
+        model.voice.phase = .connected
+        model.voice.context = VoiceContext(channelID: active.id, channelName: active.name, spaceID: space.id, spaceName: space.name)
+        MockURLProtocol.handler = { request in
+            guard request.httpMethod == "DELETE" else { throw URLError(.badURL) }
+            return (204, Data())
+        }
+
+        try await model.deleteChannel(other)
+        XCTAssertEqual(model.voice.phase, .connected, "deleting a browsed non-active channel must preserve the active call")
+        model.chat.onAccessRevoked?(other.id)
+        XCTAssertEqual(model.voice.phase, .connected, "revocation from another channel must not tear down voice")
+
+        model.chat.onAccessRevoked?(active.id)
+        XCTAssertEqual(model.voice.phase, .idle, "revoking the active voice channel must tear down synchronously")
+        XCTAssertNil(model.voice.context)
+    }
 }
