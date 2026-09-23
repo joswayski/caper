@@ -93,7 +93,7 @@
 .space-field input, .member-add input { width: 100%; height: 42px; padding: 0 11px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface-composer); font: inherit; }
 .space-field input:focus, .member-add input:focus { border-color: var(--terracotta); outline: 2px solid rgb(182 77 50 / .22); }
 .channel-name-input { position: relative; }
-.channel-name-input > svg { position: absolute; left: 11px; top: 12px; width: 18px; height: 18px; color: var(--text-muted); pointer-events: none; }
+.channel-name-input > svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; color: var(--text-muted); pointer-events: none; }
 .channel-name-input > input { padding-left: 37px; }
 .space-dialog fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .channel-name-guidance { color: var(--text-muted); font-size: .76rem; line-height: 1.5; }
@@ -113,8 +113,8 @@
 .space-dialog-actions, .inline-save { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .space-dialog :is(.primary, .secondary, .danger, .danger-outline), .member-add button { min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface-raised); font: inherit; font-size: .75rem; font-weight: 750; cursor: pointer; }
 .space-dialog .primary { border-color: var(--terracotta); background: var(--terracotta); }
-.space-dialog .danger { border-color: #a84635; background: #a84635; }
-.space-dialog .danger-outline { border-color: #81463d; color: #ff9b82; background: transparent; }
+.space-dialog .danger { border-color: #b93646; background: #b93646; color: #fff; }
+.space-dialog .danger-outline { border-color: #a33b48; color: #ff8c9a; background: transparent; }
 .space-dialog button:disabled { opacity: .45; cursor: not-allowed; }
 .space-form-error { color: #ff9b82; font-size: .72rem; line-height: 1.4; }
 .member-manager, .danger-zone { margin: 0 22px; padding: 20px 0; border-top: 1px solid var(--border); }
@@ -138,6 +138,21 @@
 .channel-save-bar { position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; border-top: 1px solid var(--border); background: var(--blackout); }
 .channel-save-bar > span { font-size: .76rem; }
 .channel-save-bar > div { display: flex; gap: 8px; margin-left: auto; }
+
+:is(.space-dialog, .channel-navigation, .spaces-state, .spaces-empty, .empty-channel) :is(button, summary), .navigation-toggle {
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+.space-dialog .secondary:hover:not(:disabled), .member-add button:hover:not(:disabled) { border-color: var(--text-muted); background: var(--border); }
+.space-dialog .primary:hover:not(:disabled), .spaces-state button:hover:not(:disabled), .spaces-empty section > button:hover:not(:disabled), .empty-channel > button:hover:not(:disabled) { border-color: var(--terracotta-bright); background: var(--terracotta-bright); }
+.space-dialog .danger:hover:not(:disabled) { border-color: #d44355; background: #d44355; }
+.space-dialog .danger-outline:hover:not(:disabled) { border-color: #d44355; color: #ffabb5; background: rgb(185 54 70 / .16); }
+.member-manager li button:hover:not(:disabled) { color: #ff8c9a; background: rgb(185 54 70 / .12); }
+.space-sidebar-error button:hover:not(:disabled), .navigation-toggle:hover:not(:disabled) { color: var(--text); background: var(--surface-raised); }
+.space-dialog button:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 3px; }
+.space-dialog :is(.danger, .danger-outline):focus-visible { outline-color: #ff8c9a; }
+@media (prefers-reduced-motion: reduce) {
+  :is(.space-dialog, .channel-navigation, .space-rail, .spaces-state, .spaces-empty, .empty-channel) :is(button, summary), .navigation-toggle, .channel-section-actions { transition: none; }
+}
 
 @media (max-width: 760px) {
   .call-room.spaces-room { position: relative; grid-template: minmax(0, 1fr) / 1fr; }
