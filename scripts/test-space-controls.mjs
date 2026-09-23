@@ -174,10 +174,13 @@ try {
   browser('click', '.member-list-toggle');
   assert.equal(evaluate('document.querySelector(".space-member-presence")'), null);
   screenshot('members-narrow-hidden');
+  assert.ok(evaluate('Math.abs(document.querySelector(".chat-messages").getBoundingClientRect().bottom - document.querySelector(".chat-typing").getBoundingClientRect().top) < 2'), 'Mobile messages must fill the available grid row without a fixed-height blank gap');
   browser('click', '.navigation-toggle');
   wait('!!document.querySelector(".spaces-room.navigation-open")');
   assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Narrow member navigation must not overflow');
   screenshot('gateway-merged-members-narrow');
+  browser('click', '.channel-select[aria-current="page"]');
+  wait('!document.querySelector(".spaces-room.navigation-open")');
   browser('set', 'viewport', '1280', '900', '2');
   for (const label of ['Create space', 'Create channel']) {
     browser('click', `[aria-label="${label}"]`);

@@ -1050,7 +1050,7 @@ export default function Spaces() {
         )}
       </header>
       <div className="channel-section-heading">
-        <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => { playSound(channelsExpanded ? "toggle-off" : "toggle-on"); setChannelsExpanded(!channelsExpanded); }}>
+        <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded(!channelsExpanded)}>
           <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
         </button>
         {owner && <div className="channel-section-actions">
@@ -1087,7 +1087,7 @@ export default function Spaces() {
               aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
               onMouseEnter={() => prefetch(detail.space.id, item.id)}
               onFocus={() => prefetch(detail.space.id, item.id)}
-              onClick={() => choose(detail.space.id, item.id)}
+              onClick={() => { if (item.id === channel?.id) setNavigationOpen(false); else choose(detail.space.id, item.id); }}
             >
               {item.private ? (
                 <LockKeyhole aria-hidden="true" />

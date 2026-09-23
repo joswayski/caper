@@ -110,7 +110,7 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
 function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
   return <span className="processing-detail">
     {label}
-    <Tooltip id={id} content={children}><button type="button" aria-label={`About ${label}`}>?</button></Tooltip>
+    <Tooltip id={id} content={children} touch><button type="button" aria-label={`About ${label}`}>?</button></Tooltip>
   </span>;
 }
 

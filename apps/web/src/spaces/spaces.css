@@ -63,7 +63,14 @@
 .channel-select[aria-current="page"] { color: var(--text); background: rgb(182 77 50 / .16); }
 .channel-select[aria-current="page"] svg { color: var(--terracotta-bright); }
 .channel-manage { position: absolute; z-index: 1; right: 4px; width: 28px; height: 28px; display: grid; place-items: center; padding: 0; opacity: 0; pointer-events: none; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
-.channel-navigation li:hover .channel-manage, .channel-navigation li:has(:focus-visible) .channel-manage, .channel-manage:focus { opacity: 1; pointer-events: auto; }
+@media (hover: hover) and (pointer: fine) {
+  .channel-navigation li:hover .channel-manage { opacity: 1; pointer-events: auto; }
+}
+.channel-navigation li:has(:focus-visible) .channel-manage, .channel-manage:focus { opacity: 1; pointer-events: auto; }
+@media (hover: none), (pointer: coarse) {
+  .channel-select { min-height: 44px; padding-right: 48px; }
+  .channel-manage { width: 44px; height: 44px; opacity: 1; pointer-events: auto; }
+}
 .channel-manage:hover { color: var(--text); background: var(--border); }
 .channel-manage svg { width: 14px; }
 .space-sidebar-error { margin: 14px 5px; color: #ff9b82; font-size: .7rem; line-height: 1.4; }
