@@ -1,4 +1,4 @@
-use crate::{ApiError, AppState, auth::Principal, auth::random_id};
+use crate::{ApiError, AppState, RuntimeEnvironment, auth::Principal, auth::random_id};
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
@@ -9,9 +9,58 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 
-const OWNED_SPACE_LIMIT: i64 = 20;
-const MEMBERSHIP_LIMIT: i64 = 100;
-const CHANNEL_LIMIT: i64 = 100;
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Limits {
+    pub(crate) owned_spaces: i64,
+    pub(crate) total_spaces: i64,
+    pub(crate) channels_per_space: i64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            owned_spaces: 20,
+            total_spaces: 100,
+            channels_per_space: 100,
+        }
+    }
+}
+
+impl Limits {
+    pub(crate) fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
+        let defaults = Self::default();
+        Ok(Self {
+            owned_spaces: limit(
+                environment.get("SPACE_OWNED_LIMIT"),
+                defaults.owned_spaces,
+                "SPACE_OWNED_LIMIT",
+            )?,
+            total_spaces: limit(
+                environment.get("SPACE_MEMBERSHIP_LIMIT"),
+                defaults.total_spaces,
+                "SPACE_MEMBERSHIP_LIMIT",
+            )?,
+            channels_per_space: limit(
+                environment.get("SPACE_CHANNEL_LIMIT"),
+                defaults.channels_per_space,
+                "SPACE_CHANNEL_LIMIT",
+            )?,
+        })
+    }
+}
+
+fn limit(value: Option<String>, default: i64, name: &str) -> Result<i64, String> {
+    match value {
+        None => Ok(default),
+        Some(value) => value
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| format!("{name} must be a positive integer")),
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ChannelAccess {
@@ -201,7 +250,7 @@ async fn list_spaces(
     .map(|(id, name, owner_id)| Space { id, name, owner_id })
     .collect();
     Ok(Json(
-        json!({"spaces":spaces,"limits":{"ownedSpaces":OWNED_SPACE_LIMIT,"totalSpaces":MEMBERSHIP_LIMIT,"channelsPerSpace":CHANNEL_LIMIT}}),
+        json!({"spaces":spaces,"limits":state.config.space_limits}),
     ))
 }
 
@@ -223,7 +272,9 @@ async fn create_space(
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
-    if owned >= OWNED_SPACE_LIMIT || memberships >= MEMBERSHIP_LIMIT {
+    if owned >= state.config.space_limits.owned_spaces
+        || memberships >= state.config.space_limits.total_spaces
+    {
         return Err(conflict("space limit reached"));
     }
     let id = random_id(12);
@@ -357,7 +408,7 @@ async fn create_channel(
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
-    if count >= CHANNEL_LIMIT {
+    if count >= state.config.space_limits.channels_per_space {
         return Err(conflict("channel limit reached"));
     }
     let id = random_id(12);
@@ -450,7 +501,7 @@ async fn add_space_member(
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
-    if !exists && count >= MEMBERSHIP_LIMIT {
+    if !exists && count >= state.config.space_limits.total_spaces {
         return Err(conflict("membership limit reached"));
     }
     if !exists {
@@ -712,6 +763,23 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
+    fn limits_require_positive_integers_and_default_only_when_absent() {
+        assert_eq!(limit(None, 20, "LIMIT").unwrap(), 20);
+        assert_eq!(limit(Some(" 7 ".into()), 20, "LIMIT").unwrap(), 7);
+        for value in ["0", "-1", "", " ", "1.5", "many", "9223372036854775808"] {
+            assert_eq!(
+                limit(Some(value.into()), 20, "LIMIT").unwrap_err(),
+                "LIMIT must be a positive integer",
+                "{value}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(Limits::default()).unwrap(),
+            json!({"ownedSpaces":20,"totalSpaces":100,"channelsPerSpace":100})
+        );
+    }
+
+    #[test]
     fn validates_names_at_exact_boundaries() {
         assert_eq!(space_name("  Café  ").unwrap(), "Café");
         assert!(space_name("\0bad").is_err());
@@ -835,10 +903,20 @@ mod tests {
             .fetch_one(&pool).await.unwrap();
         assert!(channel_access(&pool, &demo, None).await.unwrap().demo);
 
-        let state = AppState::with_database(
-            Config::test(false),
-            Arc::new(Cloudflare::new()),
-            Some(pool.clone()),
+        let mut config = Config::test(false);
+        config.space_limits = Limits {
+            owned_spaces: 3,
+            total_spaces: 7,
+            channels_per_space: 5,
+        };
+        let state =
+            AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
+        let listed = list_spaces(State(state.clone()), Extension(owner.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            listed.0["limits"],
+            json!({"ownedSpaces":3,"totalSpaces":7,"channelsPerSpace":5})
         );
         let incomplete_external = random_id(12);
         let incomplete_id: i64 =
@@ -957,8 +1035,8 @@ mod tests {
             StatusCode::UNAUTHORIZED
         );
 
-        // Exactly one of two concurrent creates can consume the twentieth slot.
-        for index in 0..19 {
+        // Exactly one of two concurrent creates can consume the configured third slot.
+        for index in 0..2 {
             let id: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,$2,$3) RETURNING id")
                 .bind(random_id(12)).bind(format!("owned {index}")).bind(quota_owner.user.id).fetch_one(&pool).await.unwrap();
             sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
@@ -972,14 +1050,14 @@ mod tests {
             State(state.clone()),
             Extension(quota_owner.clone()),
             Json(NameInput {
-                name: "twenty a".into(),
+                name: "third a".into(),
             }),
         );
         let two = create_space(
             State(state.clone()),
             Extension(quota_owner.clone()),
             Json(NameInput {
-                name: "twenty b".into(),
+                name: "third b".into(),
             }),
         );
         let (one, two) = tokio::join!(one, two);
@@ -991,7 +1069,7 @@ mod tests {
             1
         );
 
-        // Channel creation locks the space, so the active count cannot pass 100.
+        // Channel creation locks the space, so the active count cannot pass five.
         let channel_space = random_id(12);
         let channel_space_id:i64=sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Channel quota',$2) RETURNING id")
             .bind(&channel_space).bind(owner.user.id).fetch_one(&pool).await.unwrap();
@@ -1001,7 +1079,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        for index in 0..99 {
+        for index in 0..4 {
             sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,$3)")
                 .bind(random_id(12))
                 .bind(channel_space_id)
@@ -1037,9 +1115,9 @@ mod tests {
             1
         );
 
-        // Membership creation locks the target user, so only one 100th active
+        // Membership creation locks the target user, so only one seventh active
         // membership can be added by concurrent owners.
-        for index in 0..99 {
+        for index in 0..6 {
             let id:i64=sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,$2,$3) RETURNING id")
                 .bind(random_id(12)).bind(format!("membership {index}")).bind(owner.user.id).fetch_one(&pool).await.unwrap();
             sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")

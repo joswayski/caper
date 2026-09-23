@@ -265,9 +265,15 @@ direct membership change, not an invitation awaiting acceptance. There are no
 invite links, custom roles, ownership transfers or public space discovery yet.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed.
-Counts include active resources only: 20 owned spaces per
-account, 100 total memberships (including owned spaces), and 100 channels per
-space. Quota checks and creation run under database locks to prevent racing
+Counts include active resources only. Defaults are 20 owned spaces per
+account (`SPACE_OWNED_LIMIT`), 100 total memberships including owned spaces
+(`SPACE_MEMBERSHIP_LIMIT`), and 100 channels per space (`SPACE_CHANNEL_LIMIT`).
+All three accept positive integers from the API environment or the existing
+Secrets Manager record (which takes precedence). Invalid values fail startup.
+Restart all API replicas with the same settings after changing them; the browser
+reads current limits from `/api/spaces` on load. Lowering a limit does not remove
+existing resources or access; it blocks new creates/additions until below that
+limit. Quota checks and creation run under database locks to prevent racing
 requests exceeding those limits.
 
 Space and channel external IDs use the existing 12-character cryptographically

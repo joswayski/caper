@@ -58,6 +58,7 @@ pub use environment::RuntimeEnvironment;
 pub struct Config {
     pub enabled: bool,
     pub bind: SocketAddr,
+    space_limits: spaces::Limits,
     app_id: Option<String>,
     app_secret: Option<String>,
     turn_key_id: Option<String>,
@@ -75,6 +76,7 @@ impl Config {
         let get = |key| environment.get(key).filter(|v| !v.trim().is_empty());
         let config = Self {
             enabled,
+            space_limits: spaces::Limits::from_env(environment)?,
             bind: environment
                 .get("MEDIA_BIND")
                 .unwrap_or_else(|| "0.0.0.0:3001".into())
@@ -109,6 +111,7 @@ impl Config {
         Self {
             enabled,
             bind: "127.0.0.1:0".parse().unwrap(),
+            space_limits: spaces::Limits::default(),
             app_id: Some("app".into()),
             app_secret: Some("secret".into()),
             turn_key_id: Some("turn".into()),

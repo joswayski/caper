@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -676,6 +677,7 @@ function ManageChannelDialog({
 }
 
 export default function Spaces() {
+  const glowId = useId();
   const [account, setAccount] = useState<Account>();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [limits, setLimits] = useState<SpaceLimits>();
@@ -869,6 +871,26 @@ export default function Spaces() {
           key={space.id}
           data-active={space.id === detail.space.id}
         >
+          {space.id === detail.space.id && (
+            <svg className="space-glow" viewBox="0 0 60 64" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+              <defs>
+                <radialGradient id={`${glowId}-light`} cx=".5" cy=".5" r=".5">
+                  <stop offset="0" stopColor="#eb8b60" stopOpacity=".8" />
+                  <stop offset=".25" stopColor="#d56a43" stopOpacity=".4" />
+                  <stop offset=".7" stopColor="#b64d32" stopOpacity=".12" />
+                  <stop offset="1" stopColor="#b64d32" stopOpacity="0" />
+                </radialGradient>
+                <filter id={`${glowId}-noise`} x="-50%" y="-50%" width="200%" height="200%">
+                  <feTurbulence type="fractalNoise" baseFrequency=".035 .065" numOctaves="2" seed="8" result="noise" />
+                  <feDisplacementMap in="SourceGraphic" in2="noise" scale="14" xChannelSelector="R" yChannelSelector="G" />
+                </filter>
+              </defs>
+              <ellipse cx="0" cy="32" rx="60" ry="30" fill={`url(#${glowId}-light)`} opacity=".45" />
+              <g className="space-glow-wave">
+                <ellipse cx="0" cy="32" rx="57" ry="27" fill={`url(#${glowId}-light)`} filter={`url(#${glowId}-noise)`} />
+              </g>
+            </svg>
+          )}
           <button
             type="button"
             title={space.name}

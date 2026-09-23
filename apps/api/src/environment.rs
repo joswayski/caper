@@ -12,6 +12,9 @@ const SECRET_KEYS: &[&str] = &[
     "AUTH_EMAIL_DAILY_LIMIT",
     "AUTH_IP_HOURLY_LIMIT",
     "AUTH_GLOBAL_HOURLY_LIMIT",
+    "SPACE_OWNED_LIMIT",
+    "SPACE_MEMBERSHIP_LIMIT",
+    "SPACE_CHANNEL_LIMIT",
     "NOTIFICATIONS_WEBHOOK_URL",
     "SES_FROM_ADDRESS",
     "SES_CONFIGURATION_SET",
@@ -106,6 +109,19 @@ impl RuntimeEnvironment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_limits_accept_secret_settings_with_distinct_values() {
+        let environment = RuntimeEnvironment::from_secret_json(
+            r#"{"SPACE_OWNED_LIMIT":"3","SPACE_MEMBERSHIP_LIMIT":"7","SPACE_CHANNEL_LIMIT":"5"}"#,
+        )
+        .unwrap();
+        let limits = crate::spaces::Limits::from_env(&environment).unwrap();
+        assert_eq!(
+            serde_json::to_value(limits).unwrap(),
+            serde_json::json!({"ownedSpaces":3,"totalSpaces":7,"channelsPerSpace":5})
+        );
+    }
 
     #[test]
     fn accepts_only_allowlisted_string_values() {

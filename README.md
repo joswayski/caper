@@ -78,7 +78,7 @@ are persisted; the [text runbook](docs/media.md#public-text-demo) covers limits,
 replay, and staged production activation. Compose includes the gateway.
 Signed-in users can create spaces with unified text/voice channels, add existing
 accounts by username, and restrict private channels to selected space members.
-Owners can rename/delete spaces and channels. Limits are 20 owned spaces,
+Owners can rename/delete spaces and channels. Default limits are 20 owned spaces,
 100 total space memberships, and 100 channels per space. Invite links, custom
 roles, and screen sharing are not implemented. See
 [space access and rollout](docs/media.md#spaces-and-channel-access).
