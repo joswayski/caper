@@ -20,6 +20,7 @@ reusing immutable cached v1 responses. Runtime WASM: 11,905,541 bytes; SHA-256
 Use binary-safe copies when moving WASM or ONNX files; never round-trip through text.
 
 DPDFNet-8 is the preferred microphone filter. Check its active status after joining.
-Startup failure tries DPDFNet-2 HR then RNNoise before allowing publication;
+Startup failure retries once, then tries DPDFNet-2 HR and RNNoise before allowing publication;
 runtime failure/overload keeps tracks live while trying the same recovery order.
+Each engine has one error retry per capture; sustained overload skips retries.
 See `../dpdfnet2-v1/README.md` for the smaller model. Healthy captures stay on 8 HR.

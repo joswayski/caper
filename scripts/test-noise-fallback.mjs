@@ -1,4 +1,5 @@
-// Real browser audio/ONNX/RNNoise with synthetic noise. Stall 8 HR, verify 2 HR,
+// Real browser audio/ONNX/RNNoise with synthetic noise. Fail the first 8 HR startup,
+// verify its retry, then stall 8 HR, verify 2 HR,
 // then stall 2 HR to verify RNNoise. No hardware microphone, API, or SFU is used.
 // node scripts/test-noise-fallback.mjs http://localhost:5174
 import { execFileSync } from 'node:child_process';
@@ -24,8 +25,19 @@ try {
     const { captureMicrophone } = await import('/src/media/microphone.ts');
     const WorkerClass = Worker;
     window.stallTwo = false;
+    window.workerProfiles = [];
     window.Worker = class extends WorkerClass {
-      constructor(url, options) { super(url, options); this.isTwo = String(url).includes('dpdfnet2'); }
+      constructor(url, options) {
+        super(url, options);
+        this.isTwo = String(url).includes('dpdfnet2');
+        window.workerProfiles.push(this.isTwo ? 2 : 8);
+        if (window.workerProfiles.length === 1) this.addEventListener('message', event => {
+          if (event.data?.type === 'ready') {
+            event.stopImmediatePropagation();
+            this.onmessage?.(new MessageEvent('message', {data: {type: 'failed'}}));
+          }
+        });
+      }
       postMessage(message, ...rest) {
         // Only withhold live hops; model loading and warm-up remain real.
         if (message?.type !== 'process' || (this.isTwo && !window.stallTwo)) super.postMessage(message, ...rest);
@@ -47,7 +59,9 @@ try {
       .catch(error => {window.captureError = String(error);});
   `);
   browser('wait', '--fn', '!!window.capture || !!window.captureError', '--timeout', '70000');
+  evaluate(`assert(workerProfiles[0] === 8 && workerProfiles[1] === 8, 'startup failure must retry 8 HR first');`);
   browser('wait', '--fn', "window.capture?.status.includes('DPDFNet-2 HR active')", '--timeout', '70000');
+  evaluate(`assert(JSON.stringify(workerProfiles) === '[8,8,2]', 'overload must move directly to 2 HR');`);
   for (const engine of ['DPDFNet-2 HR', 'RNNoise']) {
     if (engine === 'RNNoise') {
       evaluate('window.stallTwo = true;');
@@ -99,7 +113,7 @@ try {
     browser('press', 'Escape');
     evaluate(`assert(!document.querySelector(':popover-open') && document.querySelector('dialog[open]'), 'Escape should dismiss only the tooltip');`);
   }
-  console.log('PASS: real DPDFNet-2 HR and RNNoise fallback attenuate synthetic noise; stable tracks; desktop/narrow top-layer tooltip and Escape. Not hardware/SFU validation.');
+  console.log('PASS: 8 HR startup retry; overload skips retries; real DPDFNet-2 HR and RNNoise attenuate synthetic noise; stable tracks; desktop/narrow tooltip and Escape. Not hardware/SFU validation.');
 } catch (error) {
   console.error(evaluate(`return {context: window.context?.state, capture: window.capture?.status};`));
   throw error;
