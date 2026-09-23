@@ -134,7 +134,17 @@ final class CaperParityUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["message-composer"]
         XCTAssertTrue(composer.exists)
         let message = "Native parity send \(UUID().uuidString)"
+        #if os(iOS)
+        // The multiline SwiftUI field can be AX-visible before UIKit grants
+        // first responder. Tap its actual center and require keyboard focus.
+        composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        if !app.keyboards.firstMatch.waitForExistence(timeout: 2) {
+            composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        #else
         composer.tap()
+        #endif
         composer.typeText(message)
         XCTAssertEqual(composer.value as? String, message)
         let send = app.buttons["send-message-button"]
@@ -156,7 +166,18 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        #if os(iOS)
+        // SwiftUI's nested Menu Button is visible at the bottom of Browse,
+        // but AX's scroll-to-visible can target an offscreen ancestor.
+        let frame = settings.frame
+        let window = app.windows.firstMatch.frame
+        XCTAssertTrue(window.contains(CGPoint(x: frame.midX, y: frame.midY)))
+        app.coordinate(withNormalizedOffset: CGVector(
+            dx: frame.midX / window.width, dy: frame.midY / window.height
+        )).tap()
+        #else
         settings.tap()
+        #endif
         let preferences = app.descendants(matching: .any)["Audio preferences"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 2))
         preferences.tap()
@@ -165,8 +186,17 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Audio preferences", in: app, timeout: 2)
         let gain = app.sliders["Output gain"]
         XCTAssertTrue(gain.waitForExistence(timeout: 2))
+        XCTAssertEqual(gain.value as? String, "100%")
+        assertStaticText("100%", in: app, timeout: 2)
         gain.adjust(toNormalizedSliderPosition: 0.75)
-        assertStaticText("150%", in: app, timeout: 2)
+        guard let rawGain = gain.value as? String, rawGain.hasSuffix("%"),
+              let displayedGain = Int(rawGain.dropLast()) else {
+            XCTFail("Output gain slider must expose its actual gain percentage")
+            return
+        }
+        XCTAssertTrue((140...160).contains(displayedGain), "A 75% slider gesture should select approximately 150% of the 0–200% range")
+        XCTAssertNotEqual(displayedGain, 100, "The gesture must change the gain")
+        assertStaticText(rawGain, in: app, timeout: 2)
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
         #else

@@ -1,9 +1,62 @@
 package chat.caper.android.voice
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
 
 class CallAttemptGateTest {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `serialized delayed result cannot commit after synchronous stop and replacement`() = runTest {
+        val owner = StandardTestDispatcher(testScheduler)
+        val gate = CallAttemptGate()
+        val old = Any()
+        var current: Any? = old
+        val oldAttempt = gate.begin()
+        var state = VoiceState(phase = VoiceState.Phase.CONNECTING, channelId = "old", muted = true)
+        val notifications = mutableListOf<String?>()
+        val result = CompletableDeferred<Boolean>()
+
+        val pending = launch(owner) {
+            val muted = result.await() // native/HTTP operation completes after stop
+            applyCurrentCallResult(old, current, oldAttempt, gate) {
+                state = state.copy(muted = muted)
+                notifications += state.channelId
+            }
+        }
+        runCurrent()
+
+        // Lifecycle actions and result application run on this same owner.
+        gate.end()
+        current = null
+        state = VoiceState()
+        val replacement = Any()
+        current = replacement
+        val newAttempt = gate.begin()
+        state = VoiceState(phase = VoiceState.Phase.CONNECTING, channelId = "new", muted = true)
+        result.complete(false)
+        advanceUntilIdle()
+        pending.join()
+        assertEquals("new", state.channelId)
+        assertTrue(state.muted)
+        assertTrue(notifications.isEmpty())
+
+        launch(owner) {
+            applyCurrentCallResult(replacement, current, newAttempt, gate) {
+                state = state.copy(muted = false)
+                notifications += state.channelId
+            }
+        }
+        advanceUntilIdle()
+        assertFalse(state.muted)
+        assertEquals(listOf("new"), notifications)
+    }
+
     @Test fun `late result from old call cannot update replacement call`() {
         val gate = CallAttemptGate()
         val oldCall = Any()

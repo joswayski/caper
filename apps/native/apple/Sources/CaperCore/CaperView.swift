@@ -939,7 +939,9 @@ private struct AudioPreferencesView: View {
             AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Output gain").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
-                Slider(value: outputGain, in: 0...200, step: 1).accessibilityLabel("Output gain")
+                Slider(value: outputGain, in: 0...200, step: 1)
+                    .accessibilityLabel("Output gain")
+                    .accessibilityValue("\(voice.outputGain)%")
             }
             #if os(iOS)
             HStack {

@@ -48,7 +48,10 @@ data class VoiceState(
 ) { enum class Phase { IDLE, CONNECTING, CONNECTED, RECONNECTING, FAILED } }
 
 class VoiceCallService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    // Android service lifecycle and explicit stop run on Main. Resume all
+    // asynchronous results here too, so ownership checks and state commits
+    // cannot interleave with a synchronous stop/replacement.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val attempts = CallAttemptGate()
     private var engine: VoiceEngine? = null
     private var activeAttempt: Long? = null
@@ -61,8 +64,8 @@ class VoiceCallService : Service() {
     private lateinit var audio: AudioManager
     private var focus: AudioFocusRequest? = null
     private val deviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = updateRoutes()
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = updateRoutes()
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { scope.launch { updateRoutes() } }
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { scope.launch { updateRoutes() } }
     }
 
     override fun onCreate() {
@@ -90,16 +93,14 @@ class VoiceCallService : Service() {
             ACTION_MUTE -> scope.launch {
                 val (current, attempt) = currentCall() ?: return@launch
                 runCatching { current.setMuted(!state.value.muted) }
-                    .onSuccess { if (callResultIsCurrent(current, engine, attempt, attempts)) update { it.copy(muted = current.muted, error = null) } }
-                    .onFailure { if (callResultIsCurrent(current, engine, attempt, attempts)) update { it.copy(muted = current.muted, error = "Mute is local; voice status will retry.") } }
-                if (callResultIsCurrent(current, engine, attempt, attempts)) notifyState()
+                    .onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted, error = null) } }
+                    .onFailure { commitCallResult(current, attempt) { it.copy(muted = current.muted, error = "Mute is local; voice status will retry.") } }
             }
             ACTION_DEAFEN -> scope.launch {
                 val (current, attempt) = currentCall() ?: return@launch
                 runCatching { current.setDeafened(!state.value.deafened) }
-                    .onSuccess { if (callResultIsCurrent(current, engine, attempt, attempts)) update { it.copy(deafened = current.deafened, muted = current.muted, error = null) } }
-                    .onFailure { if (callResultIsCurrent(current, engine, attempt, attempts)) update { it.copy(deafened = current.deafened, muted = current.muted, error = "Deafen is local; voice status will retry.") } }
-                if (callResultIsCurrent(current, engine, attempt, attempts)) notifyState()
+                    .onSuccess { commitCallResult(current, attempt) { it.copy(deafened = current.deafened, muted = current.muted, error = null) } }
+                    .onFailure { commitCallResult(current, attempt) { it.copy(deafened = current.deafened, muted = current.muted, error = "Deafen is local; voice status will retry.") } }
             }
             ACTION_STOP -> stopCall()
             ACTION_ROUTE -> selectRoute(intent.getIntExtra(EXTRA_ROUTE_ID, -1))
@@ -107,24 +108,21 @@ class VoiceCallService : Service() {
                 val value = intent.getIntExtra(EXTRA_VOLUME, 100).coerceIn(0, 200)
                 val (current, attempt) = currentCall() ?: return@launch
                 current.setOutputVolume(value)
-                if (callResultIsCurrent(current, engine, attempt, attempts)) { update { it.copy(outputVolume = value) }; notifyState() }
+                commitCallResult(current, attempt) { it.copy(outputVolume = value) }
             }
             ACTION_PARTICIPANT_VOLUME -> scope.launch {
                 val id = intent.getStringExtra(EXTRA_PARTICIPANT_ID) ?: return@launch
                 val value = intent.getIntExtra(EXTRA_VOLUME, 100).coerceIn(0, 200)
                 val (current, attempt) = currentCall() ?: return@launch
                 current.setParticipantVolume(id, value)
-                if (callResultIsCurrent(current, engine, attempt, attempts)) { update { it.copy(participantVolumes = it.participantVolumes + (id to value)) }; notifyState() }
+                commitCallResult(current, attempt) { it.copy(participantVolumes = it.participantVolumes + (id to value)) }
             }
             ACTION_PARTICIPANT_MUTE -> scope.launch {
                 val id = intent.getStringExtra(EXTRA_PARTICIPANT_ID) ?: return@launch
                 val muted = id !in state.value.locallyMutedParticipants
                 val (current, attempt) = currentCall() ?: return@launch
                 current.setParticipantLocallyMuted(id, muted)
-                if (callResultIsCurrent(current, engine, attempt, attempts)) {
-                    update { value -> value.copy(locallyMutedParticipants = if (muted) value.locallyMutedParticipants + id else value.locallyMutedParticipants - id) }
-                    notifyState()
-                }
+                commitCallResult(current, attempt) { value -> value.copy(locallyMutedParticipants = if (muted) value.locallyMutedParticipants + id else value.locallyMutedParticipants - id) }
             }
         }
         return START_NOT_STICKY
@@ -156,21 +154,19 @@ class VoiceCallService : Service() {
         }
         connectJob = scope.launch {
             try {
-                current.connect { value -> participants(current, attempt, value) }
+                current.connect { value -> scope.launch { participants(current, attempt, value) } }
                 if (engine !== current || !attempts.isCurrent(attempt)) { current.disconnect(); return@launch }
                 val eventToken = current.eventToken() ?: error("Voice event capability is unavailable.")
                 mediaEvents = MediaEventClient(
                     CaperApi().baseUrl, token, channelId.takeUnless { demo }, eventToken,
                     onSnapshot = { snapshot -> scope.launch {
                         if (engine === current && attempts.isCurrent(attempt)) runCatching {
-                            current.applySnapshot(snapshot) { value -> participants(current, attempt, value) }
+                            current.applySnapshot(snapshot) { value -> scope.launch { participants(current, attempt, value) } }
                         }.onFailure { if (it !is CancellationException) failCall(current, it) }
                     } },
                     onTerminal = { error -> scope.launch { failCall(current, error) } },
                 ).also { it.start() }
-                update { it.copy(phase = VoiceState.Phase.CONNECTED) }
-                update { it.copy(selfId = current.selfParticipantId()) }
-                notifyState()
+                commitCallResult(current, attempt) { it.copy(phase = VoiceState.Phase.CONNECTED, selfId = current.selfParticipantId()) }
                 heartbeat = launch {
                     try {
                         while (isActive) {
@@ -178,7 +174,7 @@ class VoiceCallService : Service() {
                             if (state.value.phase != VoiceState.Phase.RECONNECTING) {
                                 heartbeatWithRecovery(current, attempt)
                                 runCatching { withTimeout(3_000) { current.diagnostics() } }
-                                    .onSuccess { diagnostics -> if (callResultIsCurrent(current, engine, attempt, attempts)) { update { it.copy(diagnostics = diagnostics) }; notifyState() } }
+                                    .onSuccess { diagnostics -> commitCallResult(current, attempt) { it.copy(diagnostics = diagnostics) } }
                             }
                         }
                     } catch (error: Throwable) {
@@ -205,23 +201,20 @@ class VoiceCallService : Service() {
         val started = System.currentTimeMillis()
         while (engine === current && attempts.isCurrent(attempt)) {
             try {
-                current.heartbeat { value -> participants(current, attempt, value) }
-                if (callResultIsCurrent(current, engine, attempt, attempts)) update { it.copy(error = null) }
+                current.heartbeat { value -> scope.launch { participants(current, attempt, value) } }
+                commitCallResult(current, attempt) { it.copy(error = null) }
                 return
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 if (!transientVoiceControlError(error) || System.currentTimeMillis() - started >= 30_000) throw error
-                if (callResultIsCurrent(current, engine, attempt, attempts)) {
-                    update { it.copy(error = "Voice control is reconnecting; audio remains protected.") }
-                    notifyState()
-                }
+                commitCallResult(current, attempt) { it.copy(error = "Voice control is reconnecting; audio remains protected.") }
                 delay(3_000)
             }
         }
     }
 
     private fun transportState(current: VoiceEngine, attempt: Long, transport: org.webrtc.PeerConnection.PeerConnectionState) {
-        if (engine !== current || !attempts.isCurrent(attempt)) return
+        if (!callResultIsCurrent(current, engine, attempt, attempts)) return
         when (transport) {
             org.webrtc.PeerConnection.PeerConnectionState.DISCONNECTED -> recover(current, attempt)
             org.webrtc.PeerConnection.PeerConnectionState.FAILED -> recover(current, attempt)
@@ -239,9 +232,7 @@ class VoiceCallService : Service() {
         recovery = scope.launch {
             try {
                 withTimeout(20_000) { current.recoverIce() }
-                if (engine === current && attempts.isCurrent(attempt)) {
-                    update { it.copy(phase = VoiceState.Phase.CONNECTED) }; notifyState()
-                }
+                commitCallResult(current, attempt) { it.copy(phase = VoiceState.Phase.CONNECTED) }
             } catch (error: Throwable) {
                 if (error !is CancellationException) failCall(current, error)
             }
@@ -260,9 +251,7 @@ class VoiceCallService : Service() {
     }
 
     private fun participants(current: VoiceEngine, attempt: Long, value: List<Participant>) {
-        if (engine !== current || !attempts.isCurrent(attempt)) return
-        update { it.copy(participants = value) }
-        notifyState()
+        commitCallResult(current, attempt) { it.copy(participants = value) }
     }
 
     private fun stopCall(stopService: Boolean = true) {
@@ -291,7 +280,7 @@ class VoiceCallService : Service() {
                     if (change < 0) scope.launch {
                         val (current, attempt) = currentCall() ?: return@launch
                         runCatching { current.setMuted(true) }
-                        if (callResultIsCurrent(current, engine, attempt, attempts)) { update { it.copy(muted = true) }; notifyState() }
+                        commitCallResult(current, attempt) { it.copy(muted = true) }
                     }
                 }.build().also { request ->
                     check(audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "Audio focus unavailable." }
@@ -377,6 +366,13 @@ class VoiceCallService : Service() {
         return if (callResultIsCurrent(current, engine, attempt, attempts)) current to attempt else null
     }
 
+    private fun commitCallResult(current: VoiceEngine, attempt: Long, block: (VoiceState) -> VoiceState) {
+        applyCurrentCallResult(current, engine, attempt, attempts) {
+            update(block)
+            notifyState()
+        }
+    }
+
     companion object {
         const val ACTION_START = "chat.caper.android.voice.START"
         const val ACTION_STOP = "chat.caper.android.voice.STOP"
@@ -436,6 +432,9 @@ internal fun VoiceState.belongsToChannel(id: String) = channelId == id && phase 
 internal fun VoiceState.belongsToSpace(id: String) = spaceId == id && phase != VoiceState.Phase.IDLE
 internal fun callResultIsCurrent(expected: Any, current: Any?, attempt: Long, attempts: CallAttemptGate) =
     expected === current && attempts.isCurrent(attempt)
+internal inline fun applyCurrentCallResult(expected: Any, current: Any?, attempt: Long, attempts: CallAttemptGate, block: () -> Unit) {
+    if (callResultIsCurrent(expected, current, attempt, attempts)) block()
+}
 
 data class VoiceDiagnostics(
     val receivedBytes: Long,
