@@ -95,6 +95,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }
 
+    private func outputGain(of slider: XCUIElement) -> Int? {
+        #if os(macOS)
+        // AppKit exposes the domain value as NSNumber, not the spoken value.
+        return (slider.value as? NSNumber)?.intValue
+        #else
+        guard let value = slider.value as? String, value.hasSuffix("%") else { return nil }
+        return Int(value.dropLast())
+        #endif
+    }
+
     func testPopulatedWorkspace() {
         let app = launch()
         assertElement("selected-channel-name", label: "# general", in: app)
@@ -186,17 +196,16 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Audio preferences", in: app, timeout: 2)
         let gain = app.sliders["Output gain"]
         XCTAssertTrue(gain.waitForExistence(timeout: 2))
-        XCTAssertEqual(gain.value as? String, "100%")
+        XCTAssertEqual(outputGain(of: gain), 100)
         assertStaticText("100%", in: app, timeout: 2)
         gain.adjust(toNormalizedSliderPosition: 0.75)
-        guard let rawGain = gain.value as? String, rawGain.hasSuffix("%"),
-              let displayedGain = Int(rawGain.dropLast()) else {
+        guard let displayedGain = outputGain(of: gain) else {
             XCTFail("Output gain slider must expose its actual gain percentage")
             return
         }
         XCTAssertTrue((140...160).contains(displayedGain), "A 75% slider gesture should select approximately 150% of the 0–200% range")
         XCTAssertNotEqual(displayedGain, 100, "The gesture must change the gain")
-        assertStaticText(rawGain, in: app, timeout: 2)
+        assertStaticText("\(displayedGain)%", in: app, timeout: 2)
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
         #else

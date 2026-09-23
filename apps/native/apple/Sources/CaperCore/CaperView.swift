@@ -935,6 +935,7 @@ private struct AudioPreferencesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Audio preferences").font(CaperTheme.font(20, weight: .bold))
+                .accessibilityIdentifier("audio-preferences-sheet")
             AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
             AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
             VStack(alignment: .leading, spacing: 7) {
@@ -958,7 +959,6 @@ private struct AudioPreferencesView: View {
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             #endif
         }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
-            .accessibilityIdentifier("audio-preferences-sheet")
             .task { await voice.refreshAudioDevices() }
     }
 

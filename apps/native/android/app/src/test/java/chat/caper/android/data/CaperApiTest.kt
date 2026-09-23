@@ -3,8 +3,19 @@ package chat.caper.android.data
 import chat.caper.android.model.TurnResponse
 import chat.caper.android.model.ChatAuthor
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import okhttp3.Call
+import okhttp3.EventListener
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -59,5 +70,42 @@ class CaperApiTest {
         )
         assertEquals(listOf("stun:one"), response.iceServers[0].urls)
         assertEquals(listOf("turn:one", "turns:two"), response.iceServers[1].urls)
+    }
+
+    @Test(timeout = 10000) fun `slow response body does not block owner stop and cancellation`() = runBlocking {
+        // Send the first byte promptly so responseBodyStart fires, then hold
+        // back the rest of the body for four seconds.
+        server.enqueue(MockResponse().setBody("""{"ready":true}""").throttleBody(1, 4, TimeUnit.SECONDS))
+        val owner = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        try {
+            val bodyStarted = CompletableDeferred<Unit>()
+            val client = OkHttpClient.Builder().eventListener(object : EventListener() {
+                override fun responseBodyStart(call: Call) { bodyStarted.complete(Unit) }
+            }).build()
+            val api = CaperApi(client = client, baseUrl = server.url("/").toString())
+            val completed = CompletableDeferred<Unit>()
+            val request = launch(owner) {
+                api.get<JsonObject>("/api/account/me")
+                completed.complete(Unit)
+            }
+            assertNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+            // This event fires when OkHttp begins consuming the response body,
+            // not merely when the server receives a request or sends headers.
+            withTimeout(2000) { bodyStarted.await() }
+            withTimeout(1000) {
+                val stopped = CompletableDeferred<Unit>()
+                launch(owner) {
+                    assertFalse("body must still be pending at stop", completed.isCompleted)
+                    stopped.complete(Unit)
+                    request.cancel()
+                }
+                stopped.await()
+                request.join()
+            }
+            assertTrue(request.isCancelled)
+            assertFalse(completed.isCompleted)
+        } finally {
+            owner.close()
+        }
     }
 }

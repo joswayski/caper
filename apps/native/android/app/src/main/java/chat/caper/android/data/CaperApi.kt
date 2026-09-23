@@ -144,15 +144,14 @@ class CaperApi(
                 ?: if (method in setOf("POST", "PUT", "PATCH")) "{}".toRequestBody("application/json".toMediaType()) else null
             method(method, requestBody)
         }.build()
-        val response = client.newCall(request).await()
-        response.use {
-            val text = it.body.string()
-            if (!it.isSuccessful) {
+        return client.newCall(request).awaitDecoded { response ->
+            val text = response.body.string()
+            if (!response.isSuccessful) {
                 val detail = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
-                throw ApiException(it.code, detail?.error ?: "Request failed (${it.code}).", detail?.code)
+                throw ApiException(response.code, detail?.error ?: "Request failed (${response.code}).", detail?.code)
             }
-            if (T::class == Unit::class || it.code == 204 || text.isBlank()) return Unit as T
-            return json.decodeFromString(text)
+            if (T::class == Unit::class || response.code == 204 || text.isBlank()) Unit as T
+            else json.decodeFromString(text)
         }
     }
 
@@ -162,14 +161,25 @@ class CaperApi(
 private val externalId = Regex("^[A-Za-z0-9]{12}$")
 fun String.pathId(): String = also { require(externalId.matches(it)) { "Invalid resource ID." } }
 
-@PublishedApi internal suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
+// OkHttp invokes onResponse on its IO dispatcher. Keep body reads and JSON
+// decoding there: a slow body must not block the service's Main owner context.
+// Cancellation remains registered until the entire body is consumed, so it
+// cancels the socket even after headers have been delivered.
+@PublishedApi internal suspend fun <T> Call.awaitDecoded(decode: (Response) -> T): T = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, error: IOException) {
             if (continuation.isActive) continuation.resumeWithException(error)
         }
         override fun onResponse(call: Call, response: Response) {
-            continuation.resume(response) { _, value, _ -> value.close() }
+            response.use {
+                try {
+                    val value = decode(it)
+                    if (continuation.isActive) continuation.resume(value)
+                } catch (error: Throwable) {
+                    if (continuation.isActive) continuation.resumeWithException(error)
+                }
+            }
         }
     })
 }
