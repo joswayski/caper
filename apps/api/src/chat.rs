@@ -79,7 +79,7 @@ pub(crate) async fn seed(pool: &PgPool) -> Result<(), sqlx::Error> {
         .await?;
     sqlx::query("INSERT INTO public.spaces (external_id, name, demo) SELECT $1, 'Public demo', true WHERE NOT EXISTS (SELECT 1 FROM public.spaces WHERE demo)")
         .bind(random_id(12)).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO public.channels (external_id, space_id, name) SELECT $1, id, 'General' FROM public.spaces WHERE demo AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.channels c WHERE c.space_id=spaces.id AND c.name='General' AND c.deleted_at IS NULL)")
+    sqlx::query("INSERT INTO public.channels (external_id, space_id, name) SELECT $1, id, 'general' FROM public.spaces WHERE demo AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.channels c WHERE c.space_id=spaces.id AND lower(c.name)='general' AND c.deleted_at IS NULL)")
         .bind(random_id(12)).execute(&mut *tx).await?;
     tx.commit().await
 }
@@ -102,7 +102,7 @@ fn enabled(state: &AppState) -> Result<&Chat, ApiError> {
 async fn general(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
     let (space, name, channel, channel_name): (String, String, String, String) = sqlx::query_as(
-        "SELECT s.external_id, s.name, c.external_id, c.name FROM public.spaces s JOIN public.channels c ON c.space_id = s.id WHERE s.demo AND c.name = 'General'")
+        "SELECT s.external_id, s.name, c.external_id, lower(c.name) FROM public.spaces s JOIN public.channels c ON c.space_id = s.id WHERE s.demo AND lower(c.name) = 'general'")
         .fetch_one(&chat.pool).await.map_err(database_error)?;
     let mut result = history_page(&chat.pool, &channel, None, None).await?;
     // Keep the original demo endpoint's exact metadata source and shape.
@@ -152,7 +152,7 @@ async fn history_page(
 ) -> Result<Value, ApiError> {
     let access = channel_access(pool, channel, user).await?;
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
-        "SELECT s.external_id,s.name,c.name FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND s.demo=$3 AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
+        "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND s.demo=$3 AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
     )
     .bind(access.id)
     .bind(access.space_id)
@@ -385,7 +385,7 @@ async fn persist(
     let row: Option<(i64, i64)> = sqlx::query_as(
         "SELECT c.id,c.last_seq FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
          WHERE c.external_id=$1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-           AND ((s.demo AND c.name='General') OR
+           AND ((s.demo AND lower(c.name)='general') OR
                 ($2::bigint IS NOT NULL
                  AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
                  AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))))

@@ -8,7 +8,7 @@ their history, live messages, presence and calls require membership. See
 [spaces and channel access](#spaces-and-channel-access). Signed-in participants
 use their account display name; guests receive a random name. This is not an
 outgoing-call flow. No camera, screen sharing, or server-side voice recording.
-The independently enabled [public text demo](#public-text-demo) shares `/live`;
+The independently enabled [public text demo](#public-text-demo) shares the public `general` channel in `/spaces`;
 demo reads and sends do not require an account or joining voice.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
@@ -1128,7 +1128,7 @@ physical microphone, multi-network/TURN, or sustained-voice validation.
 
 ## Join startup and preparation
 
-The enabled `/live` screen starts one DPDFNet-8 worker before Join. It downloads
+The enabled channel screen starts one DPDFNet-8 worker before Join. It downloads
 the model/runtime, initializes ONNX inference, and runs the existing synthetic
 warm-up before acknowledging readiness. Its live recurrent and overlap-add state
 start fresh after warm-up. The marketing page does not start this work, and the
@@ -1712,10 +1712,14 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts
 
-The `/live` demo remains public. For guests, the browser uses
+The public demo in `/spaces` remains guest-accessible. For guests, the browser uses
 `unique-names-generator` to assign a readable color-and-animal name for each visit
-and keeps it through reconnects. No account, profile, or database is needed for
-guest voice. The API accepts guest names of 1–64 Unicode characters after trimming,
+and keeps it through reconnects. No account or profile is needed. The guest voice
+API is database-independent, but the unified browser screen requires chat storage
+to resolve the demo space/channel IDs. Existing `General` seed rows retain their
+IDs and stored spelling for compatibility; the API returns `general`, and new
+seeds use lowercase. No data migration is required.
+The API accepts guest names of 1–64 Unicode characters after trimming,
 with no control characters. Guest names are unverified, nonunique, and not reserved.
 When a valid account bearer token or browser session cookie accompanies a join, the
 API uses the stored display name instead of the submitted name. Country flags use
@@ -1770,7 +1774,7 @@ After the approved deployment, verify:
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 curl --fail --silent --show-error https://caper.chat/api/media/status
-# Expected: enabled is true. Then open /live in two browsers and test audio/leave.
+# Expected: enabled is true. Then open the public demo in /spaces in two browsers and test audio/leave.
 ```
 
 Guest restoration validation: Rust provider mocks cover unauthenticated joins,

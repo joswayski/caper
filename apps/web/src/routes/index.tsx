@@ -1,13 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getInitialAccount } from "../account/server";
+import { getPublicDemoHref } from "../spaces/server";
 import Home from "../pages/Home";
 
 export const Route = createFileRoute("/")({
-  loader: async () => ({
-    account: await getInitialAccount(),
-    initialNow: Date.now(),
-    latestChanges: __LATEST_CHANGES__,
-  }),
+  loader: async () => {
+    const [account, demoHref] = await Promise.all([getInitialAccount(), getPublicDemoHref()]);
+    return { account, demoHref, initialNow: Date.now(), latestChanges: __LATEST_CHANGES__ };
+  },
   component: HomeRoute,
   head: () => ({
     links: [
@@ -30,6 +30,6 @@ export const Route = createFileRoute("/")({
 });
 
 function HomeRoute() {
-  const { account, initialNow, latestChanges } = Route.useLoaderData();
-  return <Home account={account} initialNow={initialNow} latestChanges={latestChanges} />;
+  const { account, demoHref, initialNow, latestChanges } = Route.useLoaderData();
+  return <Home account={account} demoHref={demoHref} initialNow={initialNow} latestChanges={latestChanges} />;
 }

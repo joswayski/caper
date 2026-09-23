@@ -127,6 +127,17 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .await
         .unwrap();
     assert_eq!(channel.len(), 12);
+    let seeded_name: String =
+        sqlx::query_scalar("SELECT name FROM public.channels WHERE external_id=$1")
+            .bind(&channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(seeded_name, "general");
+    assert_eq!(
+        history_page(&pool, &channel, None, None).await.unwrap()["channel"]["name"],
+        "general"
+    );
     let token = "test-guest-capability";
     sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name) VALUES ($1,$2,'Guest One')").bind(random_id(12)).bind(Sha256::digest(token.as_bytes()).as_slice()).execute(&pool).await.unwrap();
     assert_eq!(
@@ -506,6 +517,25 @@ async fn durable_guest_delivery_replay_and_handoff() {
     assert_eq!(
         typing_command(&app, &private_channel, Some(token), json!({"typing":true})).await,
         StatusCode::NOT_FOUND
+    );
+    // Existing deployments retain their original row/ID; mixed-version readers
+    // can still use it while the new API exposes the canonical lowercase name.
+    sqlx::query("UPDATE public.channels SET name='General' WHERE external_id=$1")
+        .bind(&channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    seed(&pool).await.unwrap();
+    let demo_channels: i64 = sqlx::query_scalar("SELECT count(*) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE s.demo")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(demo_channels, 1);
+    assert_eq!(
+        history_page(&pool, &channel, None, None).await.unwrap()["channel"]["name"],
+        "general"
+    );
+    assert_eq!(
+        persist(&pool, &channel, token, id, "one").await.unwrap(),
+        one
     );
     sqlx::query("UPDATE public.chat_sessions SET expires_at = now() - interval '1 second' WHERE token_hash = $1")
         .bind(Sha256::digest(token.as_bytes()).as_slice()).execute(&pool).await.unwrap();

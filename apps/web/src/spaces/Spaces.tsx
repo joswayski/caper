@@ -102,24 +102,29 @@ function NameField({
   value,
   onChange,
   channel = false,
+  privateChannel = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   channel?: boolean;
+  privateChannel?: boolean;
 }) {
   return (
     <label className="space-field">
       <span>{label}</span>
-      <input
-        autoFocus
-        value={value}
-        maxLength={80}
-        autoComplete="off"
-        spellCheck={!channel}
-        placeholder={channel ? "project-updates" : "Studio"}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <span className={channel ? "channel-name-input" : undefined}>
+        {channel && (privateChannel ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />)}
+        <input
+          autoFocus
+          value={value}
+          maxLength={80}
+          autoComplete="off"
+          spellCheck={!channel}
+          placeholder={channel ? "project-updates" : "Studio"}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </span>
       {channel && <small>Lowercase letters and single dashes only.</small>}
     </label>
   );
@@ -227,22 +232,19 @@ function CreateChannelDialog({
       <form onSubmit={(event) => void submit(event)}>
         <NameField
           channel
+          privateChannel={privateChannel}
           label="Channel name"
           value={name}
           onChange={setName}
         />
         <p className="channel-name-guidance">Channels are where conversations happen around a topic. Use a name that is easy to find and understand.</p>
-        <fieldset className="channel-visibility">
-          <legend>Visibility</legend>
-          <label className="privacy-choice">
-            <input type="radio" name="visibility" checked={!privateChannel} onChange={() => setPrivateChannel(false)} />
-            <span><strong>Public — anyone in {space.space.name}</strong></span>
+        <div className="channel-privacy">
+          <label>
+            <span><LockKeyhole aria-hidden="true" />Private channel</span>
+            <input type="checkbox" role="switch" checked={privateChannel} onChange={(event) => setPrivateChannel(event.target.checked)} aria-describedby="channel-privacy-help" />
           </label>
-          <label className="privacy-choice">
-            <input type="radio" name="visibility" checked={privateChannel} onChange={() => setPrivateChannel(true)} />
-            <span><strong>Private — only specific people</strong><small>Only you and the people you add can view or join.</small></span>
-          </label>
-        </fieldset>
+          <p id="channel-privacy-help">{privateChannel ? "Only you and the people you add can view or join." : `Anyone in ${space.space.name} can view or join this channel.`}</p>
+        </div>
         {error && (
           <p className="space-form-error" role="alert">
             {error}
@@ -576,6 +578,7 @@ function ManageChannelDialog({
       >
         <NameField
           channel
+          privateChannel={privateChannel}
           label="Channel name"
           value={name}
           onChange={setName}

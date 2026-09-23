@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const url = process.env.CHAT_TEST_WEB_URL ?? 'http://localhost:5174/live';
+const url = process.env.CHAT_TEST_WEB_URL ?? 'http://localhost:5174/spaces';
 assert.ok(['localhost', '127.0.0.1'].includes(new URL(url).hostname), 'Use a disposable loopback preview');
 const directory = mkdtempSync(join(tmpdir(), 'caper-history-'));
 const init = join(directory, 'fixture.js');
@@ -27,6 +27,7 @@ function fixture() {
   const sockets = [];
   const control = window.chatHistoryFixture = {
     requests: [], completed: 0, failNext: false, holdNext: false, release: undefined,
+    initialFrames: [],
     append(text = 'Fixture live arrival', id, sender) {
       const next = message(messages.length + 1, text, id, sender);
       messages.push(next);
@@ -41,6 +42,7 @@ function fixture() {
   const originalFetch = window.fetch;
   window.fetch = async (input, options) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href);
+    if (path.pathname === '/api/account/me') return new Response(null, { status: 401 });
     if (path.pathname === '/api/chat/general') return Response.json({ ...page(), space: { id: 'fixture', name: 'History fixture' }, channel: { id: 'general', name: 'General' } });
     if (path.pathname === '/api/chat/session') return Response.json({ token: 'local-test-only', author: ownAuthor });
     if (path.pathname.endsWith('/typing')) return new Response(null, { status: 204 });
@@ -76,6 +78,21 @@ function fixture() {
     close() { const index = sockets.indexOf(this); if (index >= 0) sockets.splice(index, 1); }
   };
   window.localStorage.removeItem('caper.chat.session');
+  // Check painted content, not merely the absence of a loading label. Virtuoso
+  // used to expose an empty list during its initial scroll-to-bottom frames.
+  const sampleInitialPaint = () => {
+    const region = document.querySelector('.chat-messages[aria-busy="false"]');
+    if (region && messages.length) {
+      const bounds = region.getBoundingClientRect();
+      control.initialFrames.push([...region.querySelectorAll('.chat-message')].some(row => {
+        const rect = row.getBoundingClientRect();
+        return row.checkVisibility({ visibilityProperty: true }) && rect.bottom > bounds.top && rect.top < bounds.bottom;
+      }));
+      if (!document.querySelector('.chat-initial-messages')) return;
+    }
+    requestAnimationFrame(sampleInitialPaint);
+  };
+  requestAnimationFrame(sampleInitialPaint);
 }
 
 writeFileSync(init, `(${fixture.toString()})()`);
@@ -107,6 +124,7 @@ try {
   wait('(() => { const s = document.querySelector(".chat-scroller"); return s.scrollHeight - s.clientHeight - s.scrollTop < 2; })()');
   settle();
   assert.ok(metrics().rows < 35);
+  assert.ok(evaluate('chatHistoryFixture.initialFrames.length > 0 && chatHistoryFixture.initialFrames.every(Boolean)'), 'History must be visible on every ready frame, including virtualizer positioning');
   assert.ok(metrics().bottom < 2, JSON.stringify(metrics()));
   assert.equal(evaluate('chatHistoryFixture.requests.length'), 0, 'Initial positioning must not fetch older pages');
   screenshot('chat-history-latest');
@@ -194,6 +212,7 @@ try {
   assert.equal(evaluate('document.querySelector(".chat-message p").textContent'), 'First fixture message');
   assert.equal(evaluate('chatHistoryFixture.requests.length'), 0);
   console.log('PASS: empty history mounts a virtual list on first send without duplication or pagination.');
+  assert.ok(evaluate('chatHistoryFixture.initialFrames.length > 0 && chatHistoryFixture.initialFrames.every(Boolean)'), 'First-message mount must not flash empty');
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }
 }

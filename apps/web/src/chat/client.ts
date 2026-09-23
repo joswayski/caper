@@ -31,7 +31,7 @@ export interface ChatViewState {
 }
 
 const initialState: ChatViewState = {
-  phase: "loading", online: false, spaceName: "Caper", channelName: "General",
+  phase: "loading", online: false, spaceName: "Caper", channelName: "general",
   messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
 };
 

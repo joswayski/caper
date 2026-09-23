@@ -15,9 +15,9 @@ function browser(...args) {
 function evaluate(code) { return browser("eval", `(async()=>{${code}})()`); }
 
 try {
-  browser("open", new URL("/live", origin).href);
+  browser("open", new URL("/spaces", origin).href);
   browser("set", "viewport", "1280", "900", "2");
-  browser("wait", "--fn", "!!document.querySelector('.join-card')");
+  browser("wait", ".chat-panel, .spaces-state, .spaces-empty");
   console.log(evaluate(`
     const {default: React} = await import('/node_modules/.vite/deps/react.js');
     const {default: {createRoot}} = await import('/node_modules/.vite/deps/react-dom_client.js');

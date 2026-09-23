@@ -112,7 +112,7 @@ pub(crate) async fn channel_access(
         "SELECT c.id, c.last_seq, s.id, s.demo
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-           AND ((s.demo AND c.name = 'General') OR
+           AND ((s.demo AND lower(c.name) = 'general') OR
                 ($2::bigint IS NOT NULL
                  AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)
                  AND (s.owner_id = $2 OR NOT c.private OR
