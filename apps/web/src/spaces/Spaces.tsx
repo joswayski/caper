@@ -269,6 +269,7 @@ function CreateSpaceDialog({
   return (
     <Dialog
       title="Create a space"
+      dismissOnBackdrop={!pending}
       onClose={onClose}
     >
       <form onSubmit={(event) => void submit(event)}>
@@ -314,6 +315,7 @@ function CreateChannelDialog({
   return (
     <Dialog
       title="Create a channel"
+      dismissOnBackdrop={!pending}
       onClose={onClose}
     >
       <form onSubmit={(event) => void submit(event)}>
@@ -1040,7 +1042,7 @@ export default function Spaces() {
       </header>
       <div className="channel-section-heading">
         <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded((value) => !value)}>
-          <ChevronDown aria-hidden="true" />Channels
+          <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
         </button>
         {owner && <div className="channel-section-actions">
           <button type="button" aria-label="Create channel" title={canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`} disabled={!canCreateChannel} onClick={() => setDialog("channel")}><Plus aria-hidden="true" /></button>
@@ -1104,7 +1106,6 @@ export default function Spaces() {
           <button type="button" onClick={() => setSelected({ ...selected })}>Retry opening</button>
         </p>
       )}
-      <MemberPresence key={detail.space.id} spaceId={detail.space.id} members={detail.members} />
     </nav>
   );
 
@@ -1198,11 +1199,11 @@ export default function Spaces() {
   return (
     <>
       <Call
-        key={channel.id}
         channel={{
           id: channel.id,
           name: channel.name,
           spaceName: detail.space.name,
+          spaceId: detail.space.id,
           demo: detail.space.demo,
         }}
         initialAccount={account}
@@ -1211,6 +1212,8 @@ export default function Spaces() {
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}
+        membersPanel={<MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} />}
+        onVoiceChannelOpen={(channelId, spaceId) => choose(spaceId, channelId)}
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
       />

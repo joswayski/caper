@@ -29,10 +29,13 @@ async function fixture() {
   const source = await (await fetch('/src/pages/Call.tsx')).text();
   const { PublicCallClient } = await import(source.match(/from "(\/src\/media\/client\.ts[^"]*)"/)[1]);
   const { default: Call } = await import('/src/pages/Call.tsx');
+  const { default: Spaces } = await import('/src/spaces/Spaces.tsx');
   for (const element of document.body.children) element.hidden = true;
   const mount = document.createElement('div'); document.body.append(mount);
-  const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], revision: 0 };
+  const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], commands: [], revision: 0 };
   const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture' };
+  const space = { id: 'workspace123', name: 'Test space', ownerId: account.id };
+  const channels = ['alpha', 'beta'].map(name => ({ id: name.padEnd(12, '0'), name, spaceId: space.id, private: false }));
   const author = { id: account.id, name: account.displayName, isGuest: false };
   const peer = { id: 'peer', name: 'Peach Donkey', isGuest: true };
   const snapshot = () => ({ participants: f.people, revision: f.revision });
@@ -40,6 +43,10 @@ async function fixture() {
   const respond = async (input, options = {}) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
     if (path === '/api/account/me') return Response.json(account);
+    if (path === '/api/spaces') return Response.json({ spaces: [space], limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 } });
+    if (path === '/api/spaces/workspace123') return Response.json({ space, channels, members: [{ ...account, owner: true }] });
+    if (path.startsWith('/api/chat/channels/') && path.endsWith('/messages')) return Response.json({ space, channel: channels.find(channel => path.includes(`/${channel.id}/`)), messages: [], cursor: '0', hasMore: false });
+    if (path.endsWith('/media/status')) return Response.json({ enabled: true });
     if (path === '/api/account/profile') {
       const updated = JSON.parse(options.body);
       if (updated.username === 'taken') return Response.json({ error: 'Taken' }, { status: 409 });
@@ -85,7 +92,7 @@ async function fixture() {
       if (request.type === 'unsubscribe') this.subscriptions.delete(request.id);
       if (request.type === 'subscribe') {
         this.subscriptions.set(request.id, request);
-        const event = request.kind === 'chat' ? { type: 'ready', cursor: request.after } : {
+        const event = request.kind === 'chat' ? { type: 'ready', cursor: request.after } : request.kind === 'presence' ? { type: 'snapshot', members: request.userIds.map(userId => ({ userId, status: 'online' })) } : {
           type: 'snapshot', ...snapshot(),
           participants: request.token ? f.people : f.people.map(({ tracks, ...person }) => person),
         };
@@ -93,6 +100,7 @@ async function fixture() {
         this.frame({ type: 'subscribed', id: request.id });
       }
       if (request.type === 'command') {
+        f.commands.push(request);
         // Reuse fixture responses, without issuing network requests. The real
         // client must reach them through a command on this shared socket.
         const path = request.method === 'typing' ? `/api/chat/channels/${request.channelId}/typing`
@@ -166,7 +174,15 @@ async function fixture() {
   const Recorder = window.MediaRecorder;
   window.MediaRecorder = class extends Recorder { constructor(...args) { super(...args); f.recorders.push(this); } };
   localStorage.removeItem('caper.chat.session');
+  // Isolate the mounted fixture from the hidden app's router. Spaces still uses
+  // real browser history, but must not mount a second copy in the hidden app.
+  history.pushState = History.prototype.pushState.bind(history);
+  history.replaceState = History.prototype.replaceState.bind(history);
   const root = createRoot(mount); root.render(React.createElement(Call));
+  f.showSpaces = () => {
+    history.replaceState({}, '', `/spaces?space=${space.id}&channel=${channels[0].id}`);
+    root.render(React.createElement(Spaces));
+  };
   f.cleanup = async () => { root.unmount(); f.captures.forEach(track => track.stop()); f.remoteStream?.getTracks().forEach(track => track.stop()); await context.close(); };
 }
 
@@ -227,6 +243,16 @@ try {
   screenshot('voice-settings');
   browser('press', 'Escape');
 
+  click('Mute microphone');
+  assert.equal(evaluate(`return document.querySelector('[aria-label="Unmute microphone"]').getAttribute('aria-pressed');`), 'true', 'Mute must work before joining');
+  click('Deafen audio');
+  assert.equal(evaluate(`return document.querySelector('[aria-label="Undeafen audio"]').getAttribute('aria-pressed');`), 'true', 'Deafen must work before joining');
+  browser('hover', '[aria-label="Undeafen audio"]');
+  wait(`getComputedStyle(document.querySelector('[aria-label="Undeafen audio"]')).color === 'rgb(255, 113, 130)'`);
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('[aria-label="Output Options"]')).color;`), 'rgb(237, 82, 101)', 'Dropdown must share the active red state');
+  screenshot('voice-prejoin-deafened-hover');
+  click('Undeafen audio');
+  if (evaluate(`return !!document.querySelector('[aria-label="Unmute microphone"]');`)) click('Unmute microphone');
   click('Join voice');
   wait(`document.querySelector('[aria-label="Leave voice"]')`);
   assert.equal(evaluate(`return voiceFixture.sockets.length;`), 1, 'Chat and joined voice must share one socket');
@@ -334,10 +360,54 @@ try {
   assert.equal(evaluate(`return !!document.querySelector('dialog[open] .mic-test-button');`), true, 'Late cancelled capture must not disturb the successful retry');
   click('Close audio settings');
   assert.equal(evaluate(`return !!document.querySelector('.call-controls') || /huddle/i.test(document.querySelector('.call-page').textContent);`), false);
+  browser('set', 'viewport', '1280', '900', '2');
+  evaluate(`voiceFixture.showSpaces();`);
+  wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
+  click('Mute microphone');
+  click('Join voice');
+  wait(`document.querySelector('[aria-label="Leave voice"]')`);
+  assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').at(-1).body.muted;`), true, 'Join must transmit pre-join mute intent');
+  evaluate(`voiceFixture.joinedClient = voiceFixture.client; voiceFixture.callTrack = voiceFixture.captures.at(-1); voiceFixture.leaveCount = voiceFixture.commands.filter(c => c.method === 'media.leave').length; voiceFixture.settingsNode = document.querySelector('[aria-label="User Settings"]');`);
+  browser('find', 'role', 'button', 'click', '--name', 'beta', '--exact');
+  wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta' && document.querySelector('.voice-button[aria-disabled="false"]')`);
+  assert.ok(evaluate(`return voiceFixture.client === voiceFixture.joinedClient && voiceFixture.callTrack.readyState === 'live';`), 'Browsing beta must keep alpha voice alive');
+  assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`), evaluate(`return voiceFixture.leaveCount;`), 'Navigation must not send Leave');
+  assert.ok(evaluate(`return document.querySelector('.connected-channel').textContent.includes('Test space / alpha');`), 'Connected channel must remain visible');
+  assert.ok(evaluate(`return document.querySelector('[aria-label="User Settings"]') === voiceFixture.settingsNode;`), 'Settings must not remount on navigation');
+  assert.ok(evaluate(`return !!document.querySelector('[aria-label="Join voice"]') && !!document.querySelector('[aria-label="Unmute microphone"]');`));
+  screenshot('voice-browsing-another-channel');
+  browser('click', '.connected-channel button:first-child');
+  wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+  assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice"]');`));
+  browser('find', 'role', 'button', 'click', '--name', 'beta', '--exact');
+  wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta' && document.querySelector('.voice-button[aria-disabled="false"]')`);
+  click('Join voice');
+  wait(`document.querySelector('[aria-label="Leave voice"]')`);
+  assert.equal(evaluate(`return voiceFixture.callTrack.readyState;`), 'ended', 'Explicit Join must release the previous call');
+  assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`), evaluate(`return voiceFixture.leaveCount + 1;`));
+  assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').at(-1).channelId;`), 'alpha0000000');
+  assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').at(-1).channelId;`), 'beta00000000');
+  assert.ok(evaluate(`return document.querySelector('.connected-channel').textContent.includes('Test space / beta') && voiceFixture.client.muted;`), 'Voice switch must preserve mute');
+  click('Disconnect voice');
+  wait(`!document.querySelector('.connected-channel')`);
+  evaluate(`voiceFixture.captureError = 'NotReadableError';`);
+  click('Join voice');
+  wait(`document.querySelector('.room-error')`);
+  assert.ok(evaluate(`return document.querySelector('.room-error').textContent.includes('another app');`), 'Busy microphone errors must be actionable');
+  assert.ok(evaluate(`return document.querySelector('.chat-heading').getBoundingClientRect().top === document.querySelector('.channel-navigation > header').getBoundingClientRect().top;`), 'Voice errors must not shift the channel header');
+  screenshot('voice-device-busy-error');
+  evaluate(`voiceFixture.captureError = undefined; voiceFixture.holdCapture = true; voiceFixture.releaseCapture = undefined;`);
+  click('Join voice');
+  wait(`document.querySelector('[aria-label="Cancel joining voice"]') && voiceFixture.releaseCapture`);
+  click('Cancel joining voice');
+  wait(`document.querySelector('[aria-label="Join voice"]')`);
+  evaluate(`voiceFixture.holdCapture = false; voiceFixture.releaseCapture();`);
+  wait(`voiceFixture.captures.at(-1).readyState === 'ended'`);
+  assert.equal(evaluate(`return voiceFixture.client.phase;`), 'idle', 'Late microphone capture must not resurrect a cancelled join');
   evaluate(`await voiceFixture.cleanup();`);
-  console.log('PASS profile modal save/conflict/focus, aligned composer without Send, 0–200% input/output, master/participant/sample gain and cleanup, device menus, mute/deafen, diagnostics, recording cancellation, reduced motion, and narrow layout');
+  console.log('PASS voice navigation persistence, explicit channel switching, pre-join mute/deafen and red hover/dropdown states, busy-device errors, join cancellation, profile, audio settings, recording cleanup, and narrow layout (mock signaling/WebRTC)');
 } catch (error) {
-  console.error(evaluate(`return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase };`));
+  console.error(evaluate(`return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase, channels: [...document.querySelectorAll('.channel-select')].map(node => [node.textContent, node.getAttribute('aria-current')]), voice: [...document.querySelectorAll('.voice-button')].map(node => [node.textContent, node.getAttribute('aria-disabled')]), pages: document.querySelectorAll('.call-page').length };`));
   throw error;
 } finally {
   browser('close');

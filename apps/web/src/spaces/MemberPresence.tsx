@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { watchPresence } from "../gateway/client";
 import type { Member } from "./client";
 
@@ -6,7 +7,8 @@ const PAGE_SIZE = 25;
 type Status = "online" | "idle" | "offline";
 
 /** Only the current member page has live presence subscriptions. */
-export default function MemberPresence({ spaceId, members }: { spaceId: string; members: Member[] }) {
+export default function MemberPresence({ spaceId, members, demo }: { spaceId: string; members: Member[]; demo?: boolean }) {
+  const contentId = useId();
   const [open, setOpen] = useState(true);
   const [page, setPage] = useState(0);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
@@ -16,30 +18,31 @@ export default function MemberPresence({ spaceId, members }: { spaceId: string; 
   const visible = members.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const ids = visible.map((member) => member.id).join(",");
 
+  useEffect(() => { setPage(0); }, [spaceId]);
+
   useEffect(() => {
-    setStatuses({});
     setLive(false);
     if (!open || !ids) return;
     return watchPresence(spaceId, ids.split(","), (values) => {
-      setStatuses(Object.fromEntries(values.map((value) => [value.userId, value.status])));
+      setStatuses((previous) => ({ ...previous, ...Object.fromEntries(values.map((value) => [value.userId, value.status])) }));
     }, setLive);
   }, [spaceId, ids, open]);
 
-  return <section className="space-member-presence" aria-label="Space members">
-    <button type="button" className="member-presence-heading" aria-expanded={open} onClick={() => setOpen(!open)}>
-      <span>Members</span><span>{members.length}</span>
+  return <aside className="space-member-presence" aria-label="Space members" data-open={open}>
+    <button type="button" className="member-presence-heading" aria-expanded={open} aria-controls={contentId} onClick={() => setOpen(!open)}>
+      <ChevronDown aria-hidden="true" /><span>Members</span>{!demo && <span className="section-count">{members.length}</span>}
     </button>
-    {open && <>
-      {!live && <p className="member-presence-connecting" role="status">Updating statuses…</p>}
+    <div id={contentId} hidden={!open}>
+      {demo ? <p className="member-presence-connecting">General is open to everyone. People in voice appear in the channel sidebar.</p> : !members.length && <p className="member-presence-connecting">No members to show.</p>}
       <ul>
         {visible.map((member) => {
-          const status = live ? statuses[member.id] : undefined;
+          const status = statuses[member.id];
           return <li key={member.id}>
             <span className="member-presence-avatar" aria-hidden="true">
               {member.displayName.slice(0, 1).toUpperCase()}
               <i data-status={status ?? "unknown"} />
             </span>
-            <span><strong title={member.displayName}>{member.displayName}</strong><small>{status ?? "Updating"}</small></span>
+            <span><strong title={member.displayName}>{member.displayName}</strong><small title={!live && status ? "Last known status; reconnecting in the background" : undefined}>{status ?? "Status unavailable"}</small></span>
           </li>;
         })}
       </ul>
@@ -48,6 +51,6 @@ export default function MemberPresence({ spaceId, members }: { spaceId: string; 
         <span>{currentPage + 1} / {lastPage + 1}</span>
         <button type="button" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}>Next</button>
       </div>}
-    </>}
-  </section>;
+    </div>
+  </aside>;
 }
