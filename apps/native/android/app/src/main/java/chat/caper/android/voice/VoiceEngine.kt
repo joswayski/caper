@@ -4,7 +4,6 @@ import android.content.Context
 import chat.caper.android.data.CaperApi
 import chat.caper.android.data.ApiException
 import chat.caper.android.model.*
-import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -45,8 +44,18 @@ class VoiceEngine(
     private var microphone: AudioTrack? = null
     private var mediaToken: String? = null
     private var selfId: String? = null
+    private val remoteLock = Any()
     private val subscriptions = mutableMapOf<String, String>()
-    private val remoteAudio = Collections.synchronizedSet(mutableSetOf<AudioTrack>())
+    private val participantForTrack = mutableMapOf<String, String>()
+    private val remoteAudio = mutableSetOf<AudioTrack>()
+    private val remoteAudioByMid = mutableMapOf<String, MutableSet<AudioTrack>>()
+    private val remoteAudioByParticipant = mutableMapOf<String, MutableSet<AudioTrack>>()
+    private val remoteParticipantForAudio = mutableMapOf<AudioTrack, String>()
+    private val participantVolumes = mutableMapOf<String, Int>()
+    private val locallyMutedParticipants = mutableSetOf<String>()
+    private var outputVolume = 100
+    private val muteIntent = VoiceMuteIntent()
+    private var previousStats: Triple<Long, Long, Long>? = null
     private val connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     private var turn: TurnGeneration? = null
     private var stateSequence = 0L
@@ -136,29 +145,41 @@ class VoiceEngine(
 
     private suspend fun reconcile(snapshot: MediaSnapshot, onParticipants: (List<Participant>) -> Unit, token: String) {
         onParticipants(snapshot.participants)
+        synchronized(remoteLock) {
+            participantForTrack.clear()
+            snapshot.participants.forEach { participant -> participant.tracks.forEach { participantForTrack[it.id] = participant.id } }
+            subscriptions.forEach { (trackId, mid) -> associateRemoteLocked(trackId, mid) }
+        }
         val wanted = snapshot.participants
             .filter { it.id != selfId }
             .flatMap { it.tracks }
             .filter { it.kind == "microphone" }
             .map { it.id }
             .toSet()
-        for ((track, mid) in subscriptions.toMap()) {
+        val currentSubscriptions = synchronized(remoteLock) { subscriptions.toMap() }
+        for ((track, mid) in currentSubscriptions) {
             if (track !in wanted) {
                 runCatching { media<Unit>("close", buildJsonObject { put("mid", mid) }, token) }
-                subscriptions.remove(track)
+                synchronized(remoteLock) { removeSubscriptionLocked(track, mid) }
             }
         }
-        for (track in wanted - subscriptions.keys) subscribe(track, token)
+        val subscribedTracks = synchronized(remoteLock) { subscriptions.keys.toSet() }
+        for (track in wanted - subscribedTracks) subscribe(track, token)
     }
 
     fun eventToken(): String? = mediaToken
+    fun selfParticipantId(): String? = selfId
 
     private suspend fun subscribe(trackId: String, token: String) {
         val response: SignalResponse = media(
             "subscribe", buildJsonObject { put("trackId", trackId) }, token,
         )
         val mid = response.tracks.firstOrNull()?.mid ?: error("Media service did not identify the remote track.")
-        subscriptions[trackId] = mid
+        synchronized(remoteLock) {
+            check(!closed.get()) { "Voice call ended during subscription." }
+            subscriptions[trackId] = mid
+            associateRemoteLocked(trackId, mid)
+        }
         response.sessionDescription?.let { offer ->
             peer!!.setRemoteDescriptionAwait(RtcSessionDescription(RtcSessionDescription.Type.OFFER, offer.sdp))
             peer!!.setLocalDescriptionAwait(peer!!.createAnswerAwait())
@@ -172,19 +193,85 @@ class VoiceEngine(
     }
 
     suspend fun setMuted(value: Boolean) = lock.withLock {
-        muted = value
-        microphone?.setEnabled(connected.get() && !value)
+        muteIntent.setMuted(value)
+        muted = muteIntent.muted
+        microphone?.setEnabled(connected.get() && !muted)
         syncStateLocked()
     }
 
     suspend fun setDeafened(value: Boolean) = lock.withLock {
-        deafened = value
-        if (value) {
-            muted = true
-            microphone?.setEnabled(false)
-        }
-        synchronized(remoteAudio) { remoteAudio.forEach { it.setEnabled(!value) } }
+        muteIntent.setDeafened(value)
+        deafened = muteIntent.deafened
+        muted = muteIntent.muted
+        microphone?.setEnabled(connected.get() && !muted)
+        applyRemoteAudioPreferences()
         syncStateLocked()
+    }
+
+    suspend fun setOutputVolume(value: Int) = lock.withLock {
+        synchronized(remoteLock) {
+            outputVolume = value.coerceIn(0, 200)
+            applyRemoteAudioPreferencesLocked()
+        }
+    }
+
+    suspend fun setParticipantVolume(id: String, value: Int) = lock.withLock {
+        synchronized(remoteLock) {
+            participantVolumes[id] = value.coerceIn(0, 200)
+            applyRemoteAudioPreferencesLocked(id)
+        }
+    }
+
+    suspend fun setParticipantLocallyMuted(id: String, value: Boolean) = lock.withLock {
+        synchronized(remoteLock) {
+            if (value) locallyMutedParticipants += id else locallyMutedParticipants -= id
+            applyRemoteAudioPreferencesLocked(id)
+        }
+    }
+
+    private fun applyRemoteAudioPreferences(onlyParticipant: String? = null) {
+        synchronized(remoteLock) { applyRemoteAudioPreferencesLocked(onlyParticipant) }
+    }
+
+    private fun applyRemoteAudioPreferencesLocked(onlyParticipant: String? = null) {
+        remoteAudioByParticipant.forEach { (participant, tracks) ->
+            if (onlyParticipant == null || onlyParticipant == participant) {
+                val preference = remoteAudioPreference(
+                    mapped = true,
+                    deafened = deafened,
+                    locallyMuted = participant in locallyMutedParticipants,
+                    outputVolume = outputVolume,
+                    participantVolume = participantVolumes[participant] ?: 100,
+                )
+                tracks.forEach { track ->
+                    track.setVolume(preference.gain)
+                    track.setEnabled(preference.enabled)
+                }
+            }
+        }
+    }
+
+    suspend fun diagnostics(): VoiceDiagnostics = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        val current = peer ?: return@suspendCancellableCoroutine continuation.resumeWithException(IllegalStateException("Voice transport is unavailable."))
+        current.getStats { report ->
+            val stats = report.statsMap.values
+            fun numbers(type: String, key: String) = stats.filter { it.type == type }.mapNotNull { (it.members[key] as? Number)?.toLong() }
+            val received = numbers("inbound-rtp", "bytesReceived").sum()
+            val sent = numbers("outbound-rtp", "bytesSent").sum()
+            val lost = numbers("inbound-rtp", "packetsLost").sum()
+            val jitter = stats.filter { it.type == "inbound-rtp" }.mapNotNull { (it.members["jitter"] as? Number)?.toDouble() }.maxOrNull()?.times(1_000)?.toLong() ?: 0
+            val rtt = stats.flatMap { stat -> listOf("roundTripTime", "currentRoundTripTime").mapNotNull { (stat.members[it] as? Number)?.toDouble() } }.maxOrNull()?.times(1_000)?.toLong() ?: 0
+            val selected = stats.firstOrNull { it.type == "candidate-pair" && (it.members["selected"] == true || it.members["nominated"] == true) }
+            val localId = selected?.members?.get("localCandidateId") as? String
+            val route = when (stats.firstOrNull { it.id == localId }?.members?.get("candidateType")) { "relay" -> "relay"; null -> "unknown"; else -> "direct" }
+            val now = (report.timestampUs / 1_000).toLong()
+            val previous = previousStats
+            val elapsed = previous?.let { (now - it.first).coerceAtLeast(1) }
+            previousStats = Triple(now, received, sent)
+            val receiveRate = if (previous == null || elapsed == null) 0 else ((received - previous.second).coerceAtLeast(0) * 8_000 / elapsed)
+            val sendRate = if (previous == null || elapsed == null) 0 else ((sent - previous.third).coerceAtLeast(0) * 8_000 / elapsed)
+            if (continuation.isActive) continuation.resume(VoiceDiagnostics(received, receiveRate, sent, sendRate, lost, jitter, rtt, route))
+        }
     }
 
     private suspend fun syncStateLocked() {
@@ -265,10 +352,16 @@ class VoiceEngine(
         microphone?.setEnabled(false)
         microphone?.dispose(); microphone = null
         source?.dispose(); source = null
+        synchronized(remoteLock) {
+            remoteAudio.forEach { track -> track.setVolume(0.0); track.setEnabled(false) }
+            subscriptions.clear(); participantForTrack.clear(); remoteAudio.clear(); remoteAudioByMid.clear()
+            remoteAudioByParticipant.clear(); remoteParticipantForAudio.clear(); participantVolumes.clear(); locallyMutedParticipants.clear()
+        }
+        // Receiver-owned AudioTrack wrappers may become invalid during peer
+        // disposal. Release remoteLock before close because WebRTC teardown can
+        // synchronously deliver a final callback that also takes this lock.
         peer?.close(); peer?.dispose(); peer = null
         factory?.dispose(); factory = null
-        subscriptions.clear()
-        synchronized(remoteAudio) { remoteAudio.clear() }
         return token
     }
 
@@ -296,19 +389,82 @@ class VoiceEngine(
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) = Unit
         override fun onIceCandidate(candidate: IceCandidate?) = Unit
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) = Unit
-        override fun onAddStream(stream: MediaStream?) = stream?.audioTracks?.forEach {
-            remoteAudio += it
-            it.setEnabled(!deafened)
-        } ?: Unit
+        override fun onAddStream(stream: MediaStream?) = stream?.audioTracks?.forEach { registerRemote(null, it) } ?: Unit
         override fun onRemoveStream(stream: MediaStream?) = Unit
         override fun onDataChannel(channel: DataChannel?) = Unit
         override fun onRenegotiationNeeded() = Unit
         override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-            (receiver?.track() as? AudioTrack)?.let { remoteAudio += it; it.setEnabled(!deafened) }
+            (receiver?.track() as? AudioTrack)?.let { registerRemote(null, it) }
         }
         override fun onTrack(transceiver: RtpTransceiver?) {
-            (transceiver?.receiver?.track() as? AudioTrack)?.let { remoteAudio += it; it.setEnabled(!deafened) }
+            (transceiver?.receiver?.track() as? AudioTrack)?.let { registerRemote(transceiver.mid, it) }
         }
+    }
+
+    private fun registerRemote(mid: String?, track: AudioTrack) {
+        synchronized(remoteLock) {
+            track.setVolume(0.0)
+            track.setEnabled(false)
+            if (closed.get()) return
+            remoteAudio += track
+            if (mid != null) {
+                remoteAudioByMid.getOrPut(mid) { mutableSetOf() } += track
+                subscriptions.entries.firstOrNull { it.value == mid }?.let { (trackId, _) -> associateRemoteLocked(trackId, mid) }
+            }
+        }
+    }
+
+    private fun associateRemoteLocked(trackId: String, mid: String) {
+        val participant = participantForTrack[trackId] ?: return
+        val tracks = remoteAudioByMid[mid] ?: return
+        tracks.forEach { track ->
+            remoteParticipantForAudio[track]?.let { previous -> remoteAudioByParticipant[previous]?.remove(track) }
+            remoteParticipantForAudio[track] = participant
+            remoteAudioByParticipant.getOrPut(participant) { mutableSetOf() } += track
+        }
+        applyRemoteAudioPreferencesLocked(participant)
+    }
+
+    private fun removeSubscriptionLocked(trackId: String, mid: String) {
+        subscriptions.remove(trackId)
+        participantForTrack.remove(trackId)
+        remoteAudioByMid.remove(mid)?.forEach { track ->
+            track.setVolume(0.0)
+            track.setEnabled(false)
+            remoteParticipantForAudio.remove(track)?.let { participant -> remoteAudioByParticipant[participant]?.remove(track) }
+            remoteAudio.remove(track)
+        }
+    }
+}
+
+internal data class RemoteAudioPreference(val gain: Double, val enabled: Boolean)
+internal fun remoteAudioPreference(
+    mapped: Boolean,
+    deafened: Boolean,
+    locallyMuted: Boolean,
+    outputVolume: Int,
+    participantVolume: Int,
+): RemoteAudioPreference = if (!mapped) RemoteAudioPreference(0.0, false) else RemoteAudioPreference(
+    gain = outputVolume.coerceIn(0, 200) * participantVolume.coerceIn(0, 200) / 10_000.0,
+    enabled = !deafened && !locallyMuted,
+)
+
+internal class VoiceMuteIntent(initiallyMuted: Boolean = true) {
+    var muted = initiallyMuted
+        private set
+    var deafened = false
+        private set
+    private var beforeDeafen = initiallyMuted
+
+    fun setMuted(value: Boolean) {
+        beforeDeafen = value
+        if (!deafened) muted = value
+    }
+
+    fun setDeafened(value: Boolean) {
+        if (value == deafened) return
+        if (value) { beforeDeafen = muted; muted = true } else muted = beforeDeafen
+        deafened = value
     }
 }
 

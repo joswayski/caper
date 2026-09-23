@@ -243,17 +243,33 @@ internal data class VoiceJoinIntent(
 
 @Composable private fun VoiceRoster(voice: VoiceState) {
     if (voice.participants.isEmpty()) return
+    val context = LocalContext.current
+    var audioParticipant by remember { mutableStateOf<String?>(null) }
     Text("IN VOICE · ${voice.participants.size}", Modifier.padding(start = 9.dp, top = 24.dp), color = TextMuted, fontSize = 11.sp)
     voice.participants.forEach { participant ->
-        Row(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(participant.name, 34.dp)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(participant.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                if (participant.deafened || participant.muted) Text(if (participant.deafened) "Deafened" else "Muted", color = TextMuted, fontSize = 10.sp)
+        Column(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Avatar(participant.name, 34.dp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(participant.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    if (participant.deafened || participant.muted) Text(if (participant.deafened) "Deafened" else "Muted", color = TextMuted, fontSize = 10.sp)
+                }
+                if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) TextButton({ audioParticipant = participant.id.takeUnless { it == audioParticipant } }) { Text("Audio", fontSize = 10.sp) }
+                else if (participant.deafened) Icon(Icons.Default.VolumeOff, null, Modifier.size(15.dp), tint = TextMuted)
+                else if (participant.muted) Icon(Icons.Default.MicOff, null, Modifier.size(15.dp), tint = TextMuted)
             }
-            if (participant.deafened) Icon(Icons.Default.VolumeOff, null, Modifier.size(15.dp), tint = TextMuted)
-            else if (participant.muted) Icon(Icons.Default.MicOff, null, Modifier.size(15.dp), tint = TextMuted)
+            if (audioParticipant == participant.id) Surface(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 4.dp), color = Blackout, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                Column(Modifier.padding(10.dp)) {
+                    val volume = voice.participantVolumes[participant.id] ?: 100
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("User volume", fontSize = 11.sp, fontWeight = FontWeight.Bold); Text("$volume%", color = TextMuted, fontSize = 10.sp) }
+                    Slider(volume.toFloat(), { VoiceCallService.setParticipantVolume(context, participant.id, it.toInt()) }, valueRange = 0f..200f)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Mute locally", Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Switch(participant.id in voice.locallyMutedParticipants, { VoiceCallService.toggleParticipantMute(context, participant.id) })
+                    }
+                }
+            }
         }
     }
 }
@@ -611,6 +627,22 @@ internal data class VoiceJoinIntent(
         if (voice.phase == VoiceState.Phase.CONNECTED) {
             Text("Connected to #${voice.channelName}", color = CaperGreen, fontSize = 12.sp)
             Text("Mute and deafen controls remain available in the account bar and ongoing notification.", color = TextMuted, fontSize = 12.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("${voice.outputVolume}%", color = TextMuted, fontSize = 11.sp) }
+            Slider(voice.outputVolume.toFloat(), { VoiceCallService.setOutputVolume(context, it.toInt()) }, valueRange = 0f..200f)
+            Text("Android exposes communication routes rather than independent microphone and speaker selectors. Input gain and the natural/enhanced mic test require a native capture-processing path and are not enabled yet.", color = TextMuted, fontSize = 11.sp)
+            voice.diagnostics?.let { diagnostics ->
+                HorizontalDivider(color = Border)
+                Text("Connection details", fontWeight = FontWeight.Bold)
+                DiagnosticRow("Received", formatBytes(diagnostics.receivedBytes))
+                DiagnosticRow("Live receive", formatBitrate(diagnostics.receiveBitrate))
+                DiagnosticRow("Sent", formatBytes(diagnostics.sentBytes))
+                DiagnosticRow("Live send", formatBitrate(diagnostics.sendBitrate))
+                DiagnosticRow("Packets lost", diagnostics.packetsLost.toString())
+                DiagnosticRow("Max jitter", "${diagnostics.maxJitterMs} ms")
+                DiagnosticRow("RTT", "${diagnostics.roundTripMs} ms")
+                DiagnosticRow("Route", when (diagnostics.route) { "relay" -> "TURN relay"; "direct" -> "Direct"; else -> "Not observed yet" })
+                Text("Local estimates; counters reset when the call ends.", color = TextMuted, fontSize = 10.sp)
+            }
         } else Text("Join voice to inspect an active connection.", color = TextMuted, fontSize = 12.sp)
         if (state.account != null) {
             HorizontalDivider(color = Border)
@@ -620,6 +652,12 @@ internal data class VoiceJoinIntent(
         }
     }
 }
+
+@Composable private fun DiagnosticRow(label: String, value: String) = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+    Text(label, color = TextMuted, fontSize = 11.sp); Text(value, fontSize = 11.sp)
+}
+private fun formatBytes(value: Long) = when { value >= 1_000_000 -> "%.1f MB".format(value / 1_000_000.0); value >= 1_000 -> "%.1f KB".format(value / 1_000.0); else -> "$value B" }
+private fun formatBitrate(value: Long) = "${value / 1_000} kbps"
 
 @Composable private fun PrivacyToggle(value: Boolean, change: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { change(!value) }, verticalAlignment = Alignment.CenterVertically) {
     Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in this space can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, change)
