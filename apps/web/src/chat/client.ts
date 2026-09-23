@@ -60,10 +60,15 @@ function validHistory(value: unknown, general: boolean): value is ChatHistory | 
       && !!history.channel && typeof history.channel.id === "string" && typeof history.channel.name === "string"));
 }
 
+export class ChatHistoryError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+
 export async function loadChatHistory(channelId?: string, signal?: AbortSignal): Promise<GeneralChatHistory> {
   const path = channelId ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages` : "/api/chat/general";
   const response = await fetch(path, { cache: "no-store", signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]) });
-  if (!response.ok) throw await apiError(response, "Messages are unavailable.");
+  if (!response.ok) throw new ChatHistoryError(response.status, (await apiError(response, "Messages are unavailable.")).message);
   const history: unknown = await response.json();
   if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
   if (channelId && history.channel.id !== channelId) throw new Error("The chat service returned the wrong channel.");
@@ -99,6 +104,7 @@ export class ChatClient {
   private readonly typers = new Map<string, { author: ChatAuthor; typing: boolean; revision: bigint; expires: number }>();
   private readonly changed: (state: ChatViewState) => void;
   private readonly channelId?: string;
+  private spaceId?: string;
 
   constructor(changed: (state: ChatViewState) => void, channelId?: string) {
     this.changed = changed;
@@ -108,6 +114,15 @@ export class ChatClient {
   start(history?: GeneralChatHistory, error?: string) {
     if (error) this.update({ phase: "error", error });
     else void this.loadInitial(history);
+  }
+
+  snapshotHistory(): GeneralChatHistory | undefined {
+    if (this.state.phase !== "ready" || !this.spaceId || !this.state.channelId) return;
+    return {
+      space: { id: this.spaceId, name: this.state.spaceName },
+      channel: { id: this.state.channelId, name: this.state.channelName },
+      messages: this.timeline.messages, cursor: this.timeline.cursor, hasMore: this.state.hasMore,
+    };
   }
 
   identify(name: string, signedIn = false) {
@@ -274,22 +289,31 @@ export class ChatClient {
 
   private async loadInitial(prepared?: GeneralChatHistory) {
     const generation = ++this.generation;
+    const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
     this.connection?.stop();
     this.connection = undefined;
     this.typers.clear();
     if (!prepared) {
       this.refreshTypers();
-      this.update({ phase: "loading", online: false, error: undefined, loadingOlder: false, olderError: undefined });
+      this.update({ phase: previous ? "ready" : "loading", online: false, error: undefined, loadingOlder: false, olderError: undefined });
     }
     try {
       const history = prepared ?? await loadChatHistory(this.channelId, this.controller.signal);
       if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
       if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
       if (generation !== this.generation) return;
-      this.timeline.reset(history.messages, history.cursor);
+      this.spaceId = history.space.id;
+      // Retain older pages only when the fresh page joins the saved range.
+      // A resync beyond the replay window must not leave an unpageable gap.
+      const contiguous = previous && history.messages[0]
+        && sequence(history.messages[0].seq) <= sequence(previous.cursor) + 1n;
+      const retainedOlder = previous?.messages[0] && history.messages[0]
+        && contiguous
+        && sequence(previous.messages[0].seq) < sequence(history.messages[0].seq);
+      this.timeline.reset([...(contiguous ? previous.messages : []), ...history.messages], history.cursor);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
-        channelName: history.channel.name, messages: this.timeline.messages, hasMore: history.hasMore,
+        channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
@@ -309,9 +333,15 @@ export class ChatClient {
       });
       this.connection.start();
     } catch (error) {
-      if (!this.controller.signal.aborted && generation === this.generation) this.update({
-        phase: "error", online: false, error: error instanceof Error ? error.message : "Messages are unavailable.",
-      });
+      if (!this.controller.signal.aborted && generation === this.generation) {
+        const denied = error instanceof ChatHistoryError && [401, 403, 404].includes(error.status);
+        if (denied) { this.timeline.reset([], "0"); this.spaceId = undefined; }
+        this.update({
+          phase: previous && !denied ? "ready" : "error", online: false,
+          ...(denied ? { messages: [], channelId: undefined } : {}),
+          error: error instanceof Error ? error.message : "Messages are unavailable.",
+        });
+      }
     }
   }
 

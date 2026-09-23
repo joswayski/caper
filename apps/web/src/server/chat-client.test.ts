@@ -576,3 +576,51 @@ test("a prepared history failure renders once and retries only when requested", 
   assert.equal(view.phase, "ready");
   assert.equal(sockets.length, 1);
 });
+
+test("snapshots include older pages and live messages; returning replays the missing tail without loading", async (t) => {
+  const f = await paginationFixture(t);
+  const older = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({ messages: [f.message(2), f.message(3)], cursor: f.message(5).seq, hasMore: false }));
+  await older;
+  f.sockets[0].message(f.message(6));
+  const snapshot = f.client.snapshotHistory()!;
+  f.client.stop();
+  assert.deepEqual(snapshot.messages, [2, 3, 4, 5, 6].map(f.message));
+  assert.equal(snapshot.cursor, f.message(6).seq);
+  assert.equal(snapshot.hasMore, false);
+  const states: ChatViewState[] = [];
+  const returning = new ChatClient((state) => states.push(state), "general");
+  t.after(() => returning.stop());
+  returning.start(snapshot);
+  assert.equal(new URL(f.sockets[1].url).searchParams.get("after"), f.message(6).seq);
+  assert.deepEqual(states.at(-1)?.messages, snapshot.messages);
+  f.sockets[1].message(f.message(7));
+  assert.deepEqual(states.at(-1)?.messages, [2, 3, 4, 5, 6, 7].map(f.message));
+  assert.ok(states.every((state) => state.phase === "ready"));
+  assert.equal(f.requests.length, 1, "return does not request another history page");
+});
+
+test("resync retains visible messages through transient failures but clears them on access denial", async (t) => {
+  const f = await paginationFixture(t);
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+  f.sockets[0].frame({ type: "resync_required" });
+  assert.equal(f.state.phase, "ready");
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message));
+  finish(Response.json({ error: "Temporary outage" }, { status: 503 }));
+  await tick();
+  assert.equal(f.state.phase, "ready");
+  assert.equal(f.state.error, "Temporary outage");
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message));
+  f.client.retryLoad();
+  finish(Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(6).seq, hasMore: true }));
+  await tick();
+  assert.deepEqual(f.state.messages, [4, 5, 6].map(f.message), "a contiguous refresh retains saved pages");
+  assert.equal(f.state.error, undefined);
+  f.client.retryLoad();
+  finish(Response.json({ error: "Access removed" }, { status: 403 }));
+  await tick();
+  assert.equal(f.state.phase, "error");
+  assert.deepEqual(f.state.messages, []);
+  assert.equal(f.client.snapshotHistory(), undefined);
+});

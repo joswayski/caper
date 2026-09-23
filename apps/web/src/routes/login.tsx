@@ -25,7 +25,7 @@ function Login() {
 
   useEffect(() => {
     void getAccount().then((account) => {
-      if (account) void navigate({ to: account.username ? "/live" : "/profile", replace: true });
+      if (account) void navigate({ to: account.username ? "/spaces" : "/profile", replace: true });
     }).catch(() => undefined);
   }, [navigate]);
 
@@ -56,7 +56,7 @@ function Login() {
     setError(undefined);
     try {
       const account = await verifyEmailCode(challengeId, code);
-      await navigate({ to: account.username ? "/live" : "/profile" });
+      await navigate({ to: account.username ? "/spaces" : "/profile" });
     } catch (verifyError) {
       if (verifyError instanceof AccountApiError) {
         setAttemptsRemaining(verifyError.attemptsRemaining);

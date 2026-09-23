@@ -143,7 +143,7 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
 }
 
 interface CallProps {
-  channel?: { id: string; name: string; spaceName: string };
+  channel?: { id: string; name: string; spaceName: string; demo?: boolean };
   spaceRail?: ReactNode;
   channelNavigation?: ReactNode;
   navigationOpen?: boolean;
@@ -151,9 +151,10 @@ interface CallProps {
   initialAccount?: Account;
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
+  onHistoryChange?: (history: GeneralChatHistory) => void;
 }
 
-export default function Call({ channel, spaceRail, channelNavigation, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError }: CallProps = {}) {
+export default function Call({ channel, spaceRail, channelNavigation, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange }: CallProps = {}) {
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
   const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
@@ -181,7 +182,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
-  const mediaRoot = channel ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
+  const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState, mediaRoot);
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
@@ -293,7 +294,6 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
     <main className="call-page">
       <header className="call-header">
         <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
-        <a className="call-destination" href={channel ? "/live" : "/spaces"}>{channel ? "General demo" : "Your spaces"}</a>
       </header>
       <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}>
         {spaceRail}
@@ -391,7 +391,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {!audioPanel && (state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
+          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
               if (event.key === "Escape") setJoinTooltipDismissed(true);

@@ -3,6 +3,8 @@
 .chat-heading h2 { margin: 0; }
 .chat-channel-title { min-width: 0; flex: 1; overflow: hidden; font-size: .86rem; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .chat-offline { position: absolute; z-index: 1; top: calc(100% + 8px); right: 18px; padding: 3px 6px; border-radius: 4px; background: var(--surface-conversation); color: var(--text-muted); font-size: .7rem; font-weight: 750; }
+.chat-refresh-error { position: absolute; z-index: 2; top: calc(100% + 8px); left: 18px; right: 18px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: #ff9b82; font-size: .72rem; }
+.chat-refresh-error button { border: 0; background: none; color: var(--text); font: inherit; text-decoration: underline; cursor: pointer; }
 .chat-messages { min-height: 0; overflow: hidden; }
 .chat-scroller { overflow-anchor: none; }
 .chat-history { height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 14px; color: var(--text-muted); font-size: .72rem; }

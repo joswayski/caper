@@ -127,3 +127,41 @@ test("a message outage preserves channel navigation and space management", async
   assert.equal(next.history, undefined);
   assert.equal(next.historyError, "Messaging unavailable");
 });
+
+test("returning restores each channel snapshot, rechecks access, and forgets revoked data", async (t) => {
+  const paths: string[] = [];
+  let denied = false;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const path = String(input); paths.push(path);
+    if (path.startsWith("/api/spaces/")) return denied
+      ? Response.json({ error: "Access removed" }, { status: 404 }) : Response.json(spaceDetail);
+    return Response.json(history(path.includes("other") ? "other1234567" : "first1234567"));
+  });
+  const navigation = createSpaceNavigation();
+  navigation.remember(await navigation.take("space1234567", "first1234567"));
+  navigation.remember(await navigation.take("space1234567", "other1234567"));
+  const liveSnapshot = { ...history("first1234567"), cursor: "19", hasMore: true };
+  navigation.rememberHistory(liveSnapshot);
+  assert.deepEqual(navigation.peek("space1234567", "first1234567")?.history, liveSnapshot);
+  const returning = await navigation.take("space1234567", "first1234567");
+  assert.deepEqual(returning.history, liveSnapshot);
+  assert.equal(paths.filter((path) => path.startsWith("/api/chat/")).length, 2, "visited channels resume replay instead of fetching another first page");
+  assert.equal(paths.filter((path) => path.startsWith("/api/spaces/")).length, 3);
+  assert.equal(navigation.peek("space1234567", "other1234567")?.history?.cursor, "7");
+  denied = true;
+  await assert.rejects(navigation.take("space1234567", "first1234567"), /Access removed/);
+  navigation.rememberHistory(liveSnapshot);
+  assert.equal(navigation.peek("space1234567"), undefined, "cleanup must not resurrect revoked snapshots");
+});
+
+test("public demo uses real history IDs and shares navigation without account-space requests", async (t) => {
+  t.mock.method(globalThis, "fetch", () => { throw new Error("Public demo must not call the membership-only API"); });
+  const navigation = createSpaceNavigation();
+  const demo = navigation.setDemo(history("demoChannel1"));
+  assert.equal(demo.detail.space.demo, true);
+  assert.equal(demo.detail.space.id, "space1234567");
+  assert.equal(demo.detail.channels[0].private, false);
+  assert.deepEqual((await navigation.take("space1234567")).history, history("demoChannel1"));
+  navigation.clear();
+  assert.equal(navigation.peek("space1234567"), undefined);
+});

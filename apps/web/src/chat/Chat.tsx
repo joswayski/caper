@@ -29,7 +29,7 @@ function HistoryHeader({ context }: { context?: HistoryContext }) {
 
 const listComponents = { Header: HistoryHeader };
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange, onHistoryChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -82,7 +82,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     }, channelId);
     clientRef.current = client;
     client.start(initialHistory, initialHistoryError);
-    return () => { client.stop(); clientRef.current = undefined; };
+    return () => {
+      const history = client.snapshotHistory();
+      if (history) onHistoryChange?.(history);
+      client.stop();
+      clientRef.current = undefined;
+    };
   }, [channelId]);
 
   useEffect(() => {
@@ -140,6 +145,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}># {channelName}</h2>
       {headerActions}
       {!state.online && showConnectionStatus && <span className="chat-offline" role="status">{state.phase === "error" ? "Offline" : "Connecting…"}</span>}
+      {state.phase === "ready" && state.error && <div className="chat-refresh-error" role="alert">{state.error} <button type="button" onClick={() => clientRef.current?.retryLoad()}>Retry</button></div>}
     </header>
 
     <div className="chat-messages" aria-busy={state.phase === "loading"}>

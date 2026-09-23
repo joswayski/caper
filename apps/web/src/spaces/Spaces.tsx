@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { getAccount, type Account } from "../account/client";
+import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import Call from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
@@ -33,6 +34,7 @@ import {
   spaceNameError,
   updateChannel,
   updateSpace,
+  SpacesApiError,
   type Channel,
   type Member,
   type Space,
@@ -176,7 +178,6 @@ function CreateSpaceDialog({
   return (
     <Dialog
       title="Create a space"
-      description="A general channel is created automatically."
       onClose={onClose}
     >
       <form onSubmit={(event) => void submit(event)}>
@@ -221,7 +222,6 @@ function CreateChannelDialog({
   return (
     <Dialog
       title="Create a channel"
-      description={`Channels in ${space.space.name} combine text and voice.`}
       onClose={onClose}
     >
       <form onSubmit={(event) => void submit(event)}>
@@ -231,19 +231,18 @@ function CreateChannelDialog({
           value={name}
           onChange={setName}
         />
-        <label className="privacy-choice">
-          <input
-            type="checkbox"
-            checked={privateChannel}
-            onChange={(event) => setPrivateChannel(event.target.checked)}
-          />
-          <span>
-            <strong>Private channel</strong>
-            <small>
-              Only the owner and selected space members can access it.
-            </small>
-          </span>
-        </label>
+        <p className="channel-name-guidance">Channels are where conversations happen around a topic. Use a name that is easy to find and understand.</p>
+        <fieldset className="channel-visibility">
+          <legend>Visibility</legend>
+          <label className="privacy-choice">
+            <input type="radio" name="visibility" checked={!privateChannel} onChange={() => setPrivateChannel(false)} />
+            <span><strong>Public — anyone in {space.space.name}</strong></span>
+          </label>
+          <label className="privacy-choice">
+            <input type="radio" name="visibility" checked={privateChannel} onChange={() => setPrivateChannel(true)} />
+            <span><strong>Private — only specific people</strong><small>Only you and the people you add can view or join.</small></span>
+          </label>
+        </fieldset>
         {error && (
           <p className="space-form-error" role="alert">
             {error}
@@ -679,11 +678,10 @@ function SpacesLoading() {
   return <main className="call-page" aria-busy="true">
     <header className="call-header">
       <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
-      <a className="call-destination" href="/live">General demo</a>
     </header>
     <section className="call-room spaces-room spaces-loading">
-      <div className="space-rail" aria-hidden="true"><i /><i /><i /></div>
-      <ChannelSidebar><div className="sidebar-channels" aria-hidden="true"><i /><i /><i /></div></ChannelSidebar>
+      <div className="space-rail" aria-hidden="true" />
+      <ChannelSidebar><div className="sidebar-channels" /></ChannelSidebar>
       <div className="stage"><p className="sr-only" role="status">Loading your spaces…</p></div>
     </section>
   </main>;
@@ -748,17 +746,21 @@ export default function Spaces() {
     void getAccount()
       .then(async (nextAccount) => {
         if (!current) return;
-        if (!nextAccount) return void window.location.assign("/login");
-        if (!nextAccount.username || !nextAccount.displayName)
+        if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
           return void window.location.assign("/profile");
-        const result = await listSpaces();
+        const [result, demoHistory] = await Promise.all([
+          nextAccount ? listSpaces() : Promise.resolve({ spaces: [], limits: undefined }),
+          loadChatHistory().catch((reason) => { if (!nextAccount) throw reason; return undefined; }),
+        ]);
         if (!current) return;
-        setAccount(nextAccount);
-        setSpaces(result.spaces);
+        const demo = demoHistory ? navigation.current.setDemo(demoHistory) : undefined;
+        const available = [...(demo ? [demo.detail.space] : []), ...result.spaces];
+        setAccount(nextAccount ?? undefined);
+        setSpaces(available);
         setLimits(result.limits);
         setLoading(false);
-        if (!result.spaces.some((space) => space.id === selected.spaceId))
-          choose(result.spaces[0]?.id, undefined, true);
+        if (!available.some((space) => space.id === selected.spaceId))
+          choose(available[0]?.id, undefined, true);
       })
       .catch((reason) => {
         if (current) {
@@ -778,11 +780,17 @@ export default function Spaces() {
     let current = true;
     setError(undefined);
     setPending(true);
+    const cached = navigation.current.peek(selected.spaceId, selected.channelId);
+    if (cached) {
+      setView(cached);
+      setNavigationOpen(false);
+    }
     void navigation.current.take(selected.spaceId, selected.channelId)
       .then((next) => {
         if (!current) return;
         // Commit the channel list and first history together. Until this point,
         // the existing Call (including its draft and live connections) stays put.
+        navigation.current.remember(next);
         setView(next);
         setPending(false);
         setNavigationOpen(false);
@@ -792,6 +800,10 @@ export default function Spaces() {
       })
       .catch((reason) => {
         if (current) {
+          if ((reason instanceof SpacesApiError || reason instanceof ChatHistoryError) && [401, 403, 404].includes(reason.status)) {
+            navigation.current.forget(selected.spaceId!);
+            setView((shown) => shown?.detail.space.id === selected.spaceId ? undefined : shown);
+          }
           setError(errorMessage(reason));
           setPending(false);
         }
@@ -811,19 +823,24 @@ export default function Spaces() {
   const canCreateSpace =
     !!limits &&
     ownedCount < limits.ownedSpaces &&
-    spaces.length < limits.totalSpaces;
+    spaces.filter((space) => !space.demo).length < limits.totalSpaces;
   const canCreateChannel =
     !!limits && !!detail && detail.channels.length < limits.channelsPerSpace;
   const replaceDetail = (next: SpaceDetail) => {
-    navigation.current.clear();
-    setView((current) => current && { ...current, detail: next });
+    navigation.current.forget(next.space.id);
+    if (view) {
+      const retained = next.channels.some((item) => item.id === view.channelId);
+      const updated = retained ? { ...view, detail: next } : { detail: next };
+      navigation.current.remember(updated);
+      setView(updated);
+    }
     setSpaces((current) =>
       current.map((space) => (space.id === next.space.id ? next.space : space)),
     );
   };
   const forgetSpace = () => {
     const remaining = spaces.filter((space) => space.id !== detail?.space.id);
-    navigation.current.clear();
+    if (detail) navigation.current.forget(detail.space.id);
     // Explicit removal must tear down the old Call immediately, even if the
     // next space is slow. It is no longer a conversation we can keep showing.
     setView(undefined);
@@ -880,8 +897,8 @@ export default function Spaces() {
         )}
       </main>
     );
-  if ((!detail || !account) && !error) return <SpacesLoading />;
-  if (!detail || !account)
+  if (!detail && !error) return <SpacesLoading />;
+  if (!detail)
     return (
       <main className="spaces-state">
         <a className="wordmark" href="/">
@@ -894,9 +911,6 @@ export default function Spaces() {
 
   const rail = (
     <nav className="space-rail" aria-label="Spaces">
-      <a className="demo-space" href="/live" title="Public General">
-        G
-      </a>
       {spaces.map((space) => (
         <div
           className="space-rail-item"
@@ -921,13 +935,13 @@ export default function Spaces() {
         className="add-space"
         type="button"
         title={
-          canCreateSpace
+          !account ? "Sign in to create a space" : canCreateSpace
             ? "Create space"
             : `Space limit reached (${limits?.ownedSpaces ?? 20} owned, ${limits?.totalSpaces ?? 100} total)`
         }
         aria-label="Create space"
-        disabled={!canCreateSpace}
-        onClick={() => setDialog("space")}
+        disabled={!!account && !canCreateSpace}
+        onClick={() => account ? setDialog("space") : window.location.assign("/login")}
       >
         <Plus aria-hidden="true" />
       </button>
@@ -940,7 +954,7 @@ export default function Spaces() {
       aria-label={`${detail.space.name} channels`}
     >
       <header>
-        <details
+        {detail.space.demo ? <h1 className="demo-space-title">{detail.space.name}</h1> : <details
           ref={spaceMenu}
           className="space-menu"
           onKeyDown={(event) => {
@@ -1002,7 +1016,7 @@ export default function Spaces() {
               </button>
             )}
           </div>
-        </details>
+        </details>}
         {navigationOpen && (
           <button
             type="button"
@@ -1062,9 +1076,6 @@ export default function Spaces() {
             <a className="wordmark" href="/">
               caper<span className="wordmark-dot">.</span>
             </a>
-            <a className="call-destination" href="/live">
-              General demo
-            </a>
           </header>
           <section
             className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
@@ -1074,9 +1085,9 @@ export default function Spaces() {
               <div className="sidebar-channels">{channelNavigation}</div>
               <div className="empty-channel-account">
                 <span className="account-avatar" aria-hidden="true">
-                  {account.displayName?.slice(0, 1).toUpperCase()}
+                  {account?.displayName?.slice(0, 1).toUpperCase()}
                 </span>
-                <strong>{account.displayName}</strong>
+                <strong>{account?.displayName}</strong>
               </div>
             </ChannelSidebar>
             <div className="stage empty-channel">
@@ -1133,7 +1144,7 @@ export default function Spaces() {
             onDeleted={forgetSpace}
           />
         )}
-        {dialog === "leave-space" && (
+        {dialog === "leave-space" && account && (
           <LeaveSpaceDialog
             space={detail.space}
             account={account}
@@ -1152,10 +1163,12 @@ export default function Spaces() {
           id: channel.id,
           name: channel.name,
           spaceName: detail.space.name,
+          demo: detail.space.demo,
         }}
         initialAccount={account}
         initialHistory={view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={view?.channelId === channel.id ? view.historyError : undefined}
+        onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}
         navigationOpen={navigationOpen}
@@ -1194,7 +1207,7 @@ export default function Spaces() {
           onDeleted={forgetSpace}
         />
       )}
-      {dialog === "leave-space" && (
+      {dialog === "leave-space" && account && (
         <LeaveSpaceDialog
           space={detail.space}
           account={account}

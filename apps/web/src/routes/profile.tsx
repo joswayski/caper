@@ -25,9 +25,9 @@ function Profile() {
       <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">{account.username ? "YOUR ACCOUNT" : "ONE LAST THING"}</p>
       <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em]">{account.username ? "Make it yours." : "Choose how you show up."}</h1>
       <p className="leading-[1.65] text-content-muted">Your username is unique. Your display name is what people see in conversations.</p>
-      <ProfileForm account={account} onSaved={() => navigate({ to: "/live" })} />
+      <ProfileForm account={account} onSaved={() => navigate({ to: "/spaces" })} />
       <div className="mt-5 flex items-center justify-between text-[.85rem]">
-        <a className="text-content underline-offset-4 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" href="/live">Go to General</a>
+        <a className="text-content underline-offset-4 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" href="/spaces">Go to spaces</a>
         <button className="cursor-pointer border-0 bg-transparent p-0 text-content-muted focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" type="button" onClick={() => void logout().then(() => window.location.assign("/"))}>Log out</button>
       </div>
     </section>

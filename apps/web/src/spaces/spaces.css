@@ -1,16 +1,11 @@
-.spaces-room { grid-template-columns: 60px auto minmax(0, 1fr); }
+.call-room.spaces-room { grid-template-columns: 60px auto minmax(0, 1fr); }
 .space-rail { min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 14px 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--blackout); }
 .space-rail-item { position: relative; width: 100%; display: flex; justify-content: center; flex: 0 0 auto; }
 .space-rail :is(button, a) { position: relative; width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 12px; color: var(--text-muted); background: var(--surface); font: inherit; font-size: .8rem; font-weight: 850; text-decoration: none; cursor: pointer; transition: border-radius 150ms ease, border-color 150ms ease, color 150ms ease, background-color 150ms ease; }
 .space-rail :is(button, a):hover, .space-rail button[aria-current="page"] { border-color: #805143; border-radius: 8px; color: #fff; background: #39231e; }
 .space-rail-item[data-active="true"]::before { position: absolute; left: 0; top: 8px; width: 3px; height: 24px; border-radius: 0 3px 3px 0; background: var(--terracotta-bright); content: ""; }
-.space-rail button[aria-busy="true"] { outline: 1px dashed var(--terracotta-bright); outline-offset: 3px; }
-.channel-select[aria-busy="true"] { box-shadow: inset 2px 0 var(--terracotta-bright); }
-.spaces-loading .space-rail i { width: 40px; height: 40px; border-radius: 12px; background: var(--surface); }
-.spaces-loading .sidebar-channels i { display: block; width: 70%; height: 16px; margin: 10px 0 24px; border-radius: 4px; background: var(--surface-raised); }
-.spaces-loading .sidebar-channels i:first-child { width: 90%; margin-bottom: 32px; }
 .spaces-loading .stage { background: var(--surface-conversation); }
-.space-rail .demo-space { margin-bottom: 6px; color: var(--text); }
+.demo-space-title { flex: 1; min-height: 38px; margin: 0; padding: 6px 8px; font-size: .94rem; font-weight: 750; letter-spacing: -.02em; }
 .space-rail .add-space { color: var(--terracotta-bright); border-style: dashed; }
 .space-rail .add-space svg { width: 18px; }
 .space-rail button:disabled { opacity: .35; cursor: not-allowed; }
@@ -84,6 +79,10 @@
 .privacy-choice input { width: 16px; height: 16px; flex: 0 0 auto; margin: 2px 0 0; accent-color: var(--terracotta); }
 .privacy-choice span { display: grid; gap: 3px; }
 .privacy-choice strong { font-size: .78rem; }
+.channel-name-guidance { color: var(--text-muted); font-size: .76rem; line-height: 1.5; }
+.channel-visibility { margin: 22px 0 0; padding: 0; border: 0; }
+.channel-visibility legend { font-size: .76rem; font-weight: 750; }
+.channel-visibility .privacy-choice { margin-top: 10px; }
 .space-dialog-actions, .inline-save { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .space-dialog :is(.primary, .secondary, .danger, .danger-outline), .member-add button { min-height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface-raised); font: inherit; font-size: .75rem; font-weight: 750; cursor: pointer; }
 .space-dialog .primary { border-color: var(--terracotta); background: var(--terracotta); }
@@ -111,9 +110,9 @@
 .danger-zone > div { display: flex; gap: 8px; }
 
 @media (max-width: 760px) {
-  .spaces-room { position: relative; grid-template: minmax(0, 1fr) / 1fr; }
+  .call-room.spaces-room { position: relative; grid-template: minmax(0, 1fr) / 1fr; }
   .spaces-room > .space-rail, .spaces-room > .people-panel { display: none; }
-  .spaces-room.navigation-open { grid-template: minmax(0, 1fr) / 60px minmax(0, 1fr); }
+  .call-room.spaces-room.navigation-open { grid-template: minmax(0, 1fr) / 60px minmax(0, 1fr); }
   .spaces-room.navigation-open > .space-rail, .spaces-room.navigation-open > .people-panel { display: flex; }
   .spaces-room.navigation-open > .stage { display: none; }
   .spaces-room .people-panel { border-right: 0; border-bottom: 0; }
