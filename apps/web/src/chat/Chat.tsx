@@ -39,7 +39,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange, onHistoryChange, onPresenceChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onPresenceChange?: (authorIds: string[]) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange, onHistoryChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -119,10 +119,6 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   }, [state.author, onAuthorChange]);
 
   useEffect(() => {
-    onPresenceChange?.(state.activeAuthorIds);
-  }, [state.activeAuthorIds, onPresenceChange]);
-
-  useEffect(() => {
     if (followLatest.current) listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
   }, [state.pendingSend?.clientMessageId, latestMessage?.clientMessageId]);
 
@@ -165,10 +161,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     const pending = !("content" in message);
     const author = message.author;
     return <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId} key={message.clientMessageId}>
-      <div className="chat-avatar-wrap">
-        <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
-        {author && state.activeAuthorIds.includes(author.id) && <span className="chat-presence-indicator" role="img" aria-label="Online" />}
-      </div>
+      <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>

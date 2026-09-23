@@ -1,4 +1,5 @@
 import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppression } from "./microphone.ts";
+import { appGateway, GatewayError } from "../gateway/client.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
 import { EventConnection } from "./event-connection.ts";
@@ -47,6 +48,16 @@ function transientControlError(error: unknown) {
   return error instanceof CallApiError
     ? error.status === 408 || error.status === 429 || error.status >= 500
     : error instanceof TypeError || (error instanceof DOMException && error.name === "AbortError");
+}
+
+const MEDIA_OPERATIONS = new Set([
+  "join", "state", "leave", "snapshot", "publish", "subscribe", "negotiate", "close",
+  "turn", "restart-ice", "restart-ice-ack", "status",
+]);
+
+function channelFromRoot(apiRoot: string) {
+  const match = /^\/api\/channels\/([^/]+)\/media$/.exec(apiRoot);
+  return match ? decodeURIComponent(match[1]) : undefined;
 }
 
 export class PublicCallClient {
@@ -108,11 +119,13 @@ export class PublicCallClient {
   private readonly noiseAssets = new NoiseAssets();
   private readonly dpdfnet = new DpdfnetPreparation();
   private readonly apiRoot: string;
+  private readonly fetchTransport?: typeof fetch;
 
   private readonly changed: (state: CallViewState) => void;
-  constructor(changed: (state: CallViewState) => void, apiRoot = "/api/media") {
+  constructor(changed: (state: CallViewState) => void, apiRoot = "/api/media", fetchTransport?: typeof fetch) {
     this.changed = changed;
     this.apiRoot = apiRoot;
+    this.fetchTransport = fetchTransport;
   }
 
   prepareMicrophone() {
@@ -175,15 +188,27 @@ export class PublicCallClient {
   }
 
   private async api<T = void>(operation: string, body: object = {}, token = this.token, timeout = FETCH_TIMEOUT_MS, ownerSignal?: AbortSignal): Promise<T> {
+    if (!MEDIA_OPERATIONS.has(operation)) throw new Error(`Unsupported media operation: ${operation}.`);
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeout);
     const owned = operation === "join" || operation === "leave" ? [controller.signal] : [controller.signal, this.captureController.signal];
     if (ownerSignal) owned.push(ownerSignal);
     const signal = owned.length === 1 ? owned[0] : AbortSignal.any(owned);
     try {
+      if (!this.fetchTransport) {
+        try {
+          return await appGateway().command({
+            method: `media.${operation}`, channelId: channelFromRoot(this.apiRoot), token,
+            body, timeoutMs: timeout, signal,
+          }) as T;
+        } catch (error) {
+          if (error instanceof GatewayError) throw new CallApiError(error.message, error.status, error.code);
+          throw error;
+        }
+      }
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted();
-        const response = await fetch(`${this.apiRoot}/${operation}`, {
+        const response = await this.fetchTransport(`${this.apiRoot}/${operation}`, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -339,7 +364,9 @@ export class PublicCallClient {
       if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
     }, () => {
       if (generation === this.generation && this.phase === "connected") this.scheduleEventRecovery(generation, true);
-    }, this.apiRoot);
+    }, this.apiRoot, () => {
+      if (generation === this.generation && this.phase === "connected") this.emit();
+    });
     await events.open(this.token!, this.captureController.signal);
     if (generation === this.generation && events === this.events && events.connected) {
       this.eventRetryAttempts = 0;
@@ -351,7 +378,7 @@ export class PublicCallClient {
 
   private scheduleEventRecovery(generation: number, draining = false) {
     // Reconnect control updates with the same capability, not a new voice session.
-    // The authenticated heartbeat owns session validity. Losing SSE alone must
+    // The authenticated heartbeat owns session validity. Losing gateway updates alone must
     // not tear down healthy audio while those renewals still succeed.
     this.emit();
     window.clearTimeout(this.eventRetryTimer);
@@ -386,7 +413,7 @@ export class PublicCallClient {
   }
 
   private get readyToTalk() {
-    // Initial setup requires SSE readiness; an established call can tolerate its
+    // Initial setup requires gateway readiness; an established call can tolerate its
     // bounded recovery window without silencing a healthy media transport.
     return this.phase === "connected" && this.pc?.connectionState === "connected";
   }
@@ -794,7 +821,7 @@ export class PublicCallClient {
   private startPolling() {
     window.clearInterval(this.pollTimer);
     window.clearInterval(this.statsTimer);
-    // SSE handles discovery; snapshots still renew the lease and repair missed state.
+    // Gateway snapshots handle discovery; command snapshots still renew the lease and repair missed state.
     const generation = this.generation;
     if (this.pollAgain) void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
     this.pollTimer = window.setInterval(() => void this.poll(true).catch(() => { if (generation === this.generation) this.scheduleReconnect(); }), 15_000);

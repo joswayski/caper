@@ -21,6 +21,7 @@ import { getAccount, type Account } from "../account/client";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
 import Call from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
+import MemberPresence from "./MemberPresence";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
 import {
   addChannelMember,
@@ -1103,6 +1104,7 @@ export default function Spaces() {
           <button type="button" onClick={() => setSelected({ ...selected })}>Retry opening</button>
         </p>
       )}
+      <MemberPresence key={detail.space.id} spaceId={detail.space.id} members={detail.members} />
     </nav>
   );
 

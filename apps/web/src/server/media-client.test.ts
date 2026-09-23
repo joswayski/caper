@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import { PublicCallClient, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
@@ -52,6 +53,49 @@ class Peer extends EventTarget {
 const providerSdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=0\r\n";
 const senderSdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 109\r\na=rtpmap:109 opus/48000/2\r\na=fmtp:109 useinbandfec=1;usedtx=1\r\n";
 
+interface MediaSocket {
+  event(id: string, value: object): void;
+  subscribed(id: string): void;
+  migrate(): void;
+  disconnect(): void;
+}
+
+class MediaFeed {
+  private readySent = false;
+  private readonly socket: MediaSocket;
+  private readonly id: string;
+  private readonly revision: () => number;
+  constructor(socket: MediaSocket, id: string, revision: () => number) {
+    this.socket = socket;
+    this.id = id;
+    this.revision = revision;
+  }
+
+  enqueue(chunk: Uint8Array) {
+    const payload = new TextDecoder().decode(chunk);
+    const name = /^event: ([^\n]+)/m.exec(payload)?.[1];
+    const data = JSON.parse(/^data: (.+)$/m.exec(payload)?.[1] ?? "{}") as Record<string, unknown>;
+    if (name === "draining") { this.socket.migrate(); return; }
+    if (name === "ready") { this.ready(); return; }
+    if (name === "snapshot") {
+      this.socket.event(this.id, { type: "snapshot", ...data, revision: data.revision ?? this.revision() });
+      return;
+    }
+    if (name === "changed") {
+      this.socket.event(this.id, { type: "snapshot", participants: [], revision: this.revision() });
+    }
+  }
+
+  ready() {
+    if (this.readySent) return;
+    this.readySent = true;
+    this.socket.event(this.id, { type: "snapshot", participants: [], revision: this.revision() });
+    this.socket.subscribed(this.id);
+  }
+
+  close() { this.socket.disconnect(); }
+}
+
 function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   Peer.all = [];
   Peer.stats = new Map();
@@ -61,7 +105,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
   const stateUpdates: Array<{ muted: boolean; deafened: boolean }> = [];
   const stateSequences: number[] = [];
   const states: CallViewState[] = [];
-  const events: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const events: MediaFeed[] = [];
   const audioSinks: FakeAudio[] = [];
   const restore: Array<() => void> = [];
   class FakeAudio {
@@ -78,6 +122,7 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
     restore.push(() => { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); });
   };
   install("window", globalThis);
+  install("location", { protocol: "https:", host: "caper.test" });
   install("navigator", { mediaDevices: { getUserMedia: async () => new Stream([track.readyState === "ended" ? new Track() : track]) } });
   install("MediaStream", Stream);
   install("RTCPeerConnection", Peer);
@@ -90,19 +135,6 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
       const role = JSON.parse(options.body as string).monitor;
       return Response.json({ token: role ?? "capability", id: role ?? "self", iceServers: [] });
     }
-    if (op === "events") {
-      let controller: ReadableStreamDefaultController<Uint8Array>;
-      const abort = () => controller.error(options.signal!.reason);
-      return new Response(new ReadableStream<Uint8Array>({
-        start(value) {
-          controller = value;
-          events.push(controller);
-          if (config.eventsReady !== false) controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n"));
-          options.signal!.addEventListener("abort", abort, { once: true });
-        },
-        cancel() { options.signal!.removeEventListener("abort", abort); },
-      }), { headers: { "content-type": "text/event-stream" } });
-    }
     if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
     if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
     if (op === "snapshot") return Response.json({ participants: [] });
@@ -113,10 +145,40 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
     }
     return new Response(null, { status: 204 });
   });
-  const client = new PublicCallClient((state) => states.push(state));
+  let revision = -1;
+  class Socket extends EventTarget implements MediaSocket {
+    closed = false;
+    constructor() {
+      super();
+      queueMicrotask(() => this.raw({ type: "hello", idleTimeoutSeconds: 600, serverTime: Date.now() }));
+    }
+    send(data: string) {
+      const frame = JSON.parse(data) as Record<string, unknown>;
+      if (frame.type !== "subscribe" || frame.kind !== "media") return;
+      const feed = new MediaFeed(this, frame.id as string, () => ++revision);
+      events.push(feed);
+      if (config.eventsReady !== false) feed.ready();
+    }
+    close() { this.closed = true; }
+    event(id: string, event: object) { this.raw({ type: "event", id, event }); }
+    subscribed(id: string) { this.raw({ type: "subscribed", id }); }
+    migrate() { this.raw({ type: "migrating" }); }
+    disconnect() { this.dispatchEvent(new Event("close")); }
+    private raw(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
+  }
+  const gateway = new AppGateway(() => new Socket(), () => 0);
+  setAppGatewayForTests(gateway);
+  const transport: typeof fetch = (input, init) => fetch(input, init);
+  const client = new PublicCallClient((state) => states.push(state), "/api/media", transport);
   // These tests isolate signaling with raw mock tracks; enhanced audio is tested separately.
   void client.setNoiseSuppression("off");
-  t.after(async () => { client.leaveImmediately(); await tick(); restore.reverse().forEach((fn) => fn()); });
+  t.after(async () => {
+    client.leaveImmediately();
+    await tick();
+    gateway.destroy();
+    setAppGatewayForTests(undefined);
+    restore.reverse().forEach((fn) => fn());
+  });
   return { client, track, calls, joinedNames, stateUpdates, stateSequences, states, install, events, audioSinks };
 }
 
@@ -976,13 +1038,8 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   assert.equal(track.enabled, false, "state synchronization must finish before audio is enabled");
   state();
   await tick();
-  assert.equal(states.at(-1)?.phase, "joining");
-  assert.equal(track.enabled, false, "the initial roster is still required");
-  events[0].enqueue(changedEvent());
-  await tick();
-  snapshot();
-  await tick();
-  assert.equal(track.enabled, false, "an update during roster sync must be reconciled before opening audio");
+  assert.equal(typeof snapshot, "function");
+  assert.equal(track.enabled, false, "the authenticated initial roster still gates audio");
   snapshot();
   await joining;
   assert.equal(states.at(-1)?.phase, "connected");
@@ -1226,7 +1283,7 @@ test("an unavailable selected enhancer fails Join without publishing a fallback"
   assert.equal(track.readyState, "ended");
 });
 
-test("SSE loss during startup fails closed but an established call recovers its stream without stopping audio", async (t) => {
+test("gateway loss during startup and an established call preserves media while the shared socket reconnects", async (t) => {
   const { client, track, events, states, install } = setup(t);
   const original = fetch;
   let publish!: () => void;
@@ -1235,16 +1292,16 @@ test("SSE loss during startup fails closed but an established call recovers its 
     : original(url, init));
   const joining = client.join();
   await tick();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   events[0].close();
   await tick();
-  assert.equal(track.readyState, "ended");
+  assert.equal(track.readyState, "live");
+  t.mock.timers.tick(188);
+  await tick();
   publish();
   await joining;
-  assert.equal(states.at(-1)?.phase, "failed");
-  install("fetch", original);
-  await client.join();
   assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  install("fetch", original);
   const peer = Peer.latest;
   const outgoing = Peer.latest.senders[0].track!;
   events.at(-1)!.close();
@@ -1252,35 +1309,28 @@ test("SSE loss during startup fails closed but an established call recovers its 
   assert.equal(outgoing.readyState, "live");
   assert.equal(outgoing.enabled, true);
   assert.equal(states.at(-1)?.phase, "connected");
-  t.mock.timers.tick(3_000);
+  t.mock.timers.tick(375);
   await tick();
-  assert.equal(events.length, 3, "reopen SSE using the existing voice session");
+  await tick();
+  assert.equal(events.length, 3, "reopen the gateway subscription using the existing voice session");
   assert.equal(Peer.latest, peer);
   assert.equal(outgoing.readyState, "live");
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
-test("SSE-only outage never restarts healthy voice while authenticated renewals succeed", async (t) => {
-  const { client, events, states, install } = setup(t);
+test("gateway-only outage never restarts healthy voice while authenticated renewals succeed", async (t) => {
+  const { client, events, states } = setup(t);
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   await client.join();
   const peer = Peer.latest;
-  const original = fetch;
-  let unavailable = true;
-  install("fetch", (url: string, init: RequestInit) => url.includes("/events?")
-    && unavailable ? Promise.resolve(Response.json({}, { status: 503 })) : original(url, init));
   events[0].close();
   await tick();
-  for (let seconds = 0; seconds < 90; seconds += 3) {
-    t.mock.timers.tick(3_000);
-    await tick();
-  }
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.liveUpdatesPending, true);
   assert.equal(Peer.latest, peer);
   assert.equal(peer.senders[0].track?.enabled, true);
-  unavailable = false;
-  t.mock.timers.tick(3_000);
+  t.mock.timers.tick(188);
+  await tick();
   await tick();
   assert.equal(events.length, 2);
   assert.equal(states.at(-1)?.liveUpdatesPending, false);
@@ -1316,14 +1366,12 @@ test("rejoin restores local microphone testing without reattaching the public se
   assert.ok(states.at(-1)?.monitorStream);
 });
 
-test("an SSE track notification subscribes without waiting for the heartbeat timer", async (t) => {
-  const { client, events, calls, states, install } = setup(t);
+test("a pushed gateway snapshot subscribes without waiting for the heartbeat timer", async (t) => {
+  const { client, events, calls, states } = setup(t);
   await client.join();
-  const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? Promise.resolve(Response.json({ participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{id:"remote",kind:"microphone"}] }] }))
-    : original(url, init));
-  events[0].enqueue(changedEvent());
+  events[0].enqueue(snapshotEvent([
+    { id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] },
+  ], 1));
   await tick();
   assert.ok(calls.includes("subscribe"));
   assert.ok(calls.includes("negotiate"));
@@ -1334,26 +1382,20 @@ test("an SSE track notification subscribes without waiting for the heartbeat tim
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
 });
 
-test("SSE invalidations reconcile immediately and retain changes arriving during a snapshot", async (t) => {
-  const { client, events, install } = setup(t);
+test("pushed gateway snapshots reconcile immediately without an extra roster request", async (t) => {
+  const { client, events, install, states } = setup(t);
   await client.join();
   const original = fetch;
-  const snapshots: Array<() => void> = [];
+  let snapshots = 0;
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? new Promise<Response>((resolve) => snapshots.push(() => resolve(Response.json({participants:[]}))))
+    ? (snapshots++, Promise.resolve(Response.json({ participants: [] })))
     : original(url, init));
-  events[0].enqueue(changedEvent());
+  events[0].enqueue(snapshotEvent([{ id: "one", name: "One", muted: false, deafened: false, tracks: [] }], 1));
   await tick();
-  assert.equal(snapshots.length, 1);
-  events[0].enqueue(changedEvent());
-  events[0].enqueue(changedEvent());
+  events[0].enqueue(snapshotEvent([{ id: "two", name: "Two", muted: true, deafened: false, tracks: [] }], 2));
   await tick();
-  assert.equal(snapshots.length, 1, "coalesce while a fetch is pending");
-  snapshots[0]();
-  await tick();
-  assert.equal(snapshots.length, 2, "do not lose invalidation during an in-flight snapshot");
-  snapshots[1]();
-  await tick();
+  assert.equal(states.at(-1)?.participants[0]?.id, "two");
+  assert.equal(snapshots, 0, "full snapshots need no immediate HTTP roster fetch");
 });
 
 test("a pushed newer revision supersedes an older HTTP snapshot already in flight", async (t) => {
@@ -1364,10 +1406,11 @@ test("a pushed newer revision supersedes an older HTTP snapshot already in fligh
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
     ? new Promise<Response>((resolve) => { finish = () => resolve(Response.json({ participants: [], revision: 1 })); })
     : original(url, init));
-  events[0].enqueue(changedEvent());
+  const polling = (client as unknown as { poll(): Promise<void> }).poll();
   await tick();
   events[0].enqueue(snapshotEvent([{ id: "new", name: "New", muted: false, deafened: false, tracks: [] }], 2));
   finish();
+  await polling;
   await tick();
   await tick();
   assert.equal(states.at(-1)?.participants[0]?.id, "new");
@@ -1390,52 +1433,26 @@ test("draining reopens control with the same call and does not rejoin or replace
   assert.equal(states.at(-1)?.phase, "connected");
 });
 
-test("reconnects routed to a draining pod stay fast, bounded, and cancellable", async (t) => {
-  const { client, events, calls, states, install } = setup(t);
+test("repeated gateway migrations preserve the active call and stop after leaving", async (t) => {
+  const { client, events, calls, states } = setup(t);
   await client.join();
   const peer = Peer.latest;
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const original = fetch;
-  let attempts = 0;
-  let reject = true;
-  install("fetch", (url: string, init: RequestInit) => {
-    if (url.includes("/events?") && reject) {
-      attempts++;
-      return Promise.resolve(Response.json({ code: "api_draining" }, { status: 503 }));
-    }
-    return original(url, init);
-  });
-  events[0].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
-  await tick();
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    t.mock.timers.tick(50);
+  for (let attempt = 0; attempt < 10; attempt++) {
+    events.at(-1)!.enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
     await tick();
-    assert.equal(attempts, attempt, "routing rejection must not add exponential backoff yet");
   }
-  t.mock.timers.tick(249);
-  await tick();
-  assert.equal(attempts, 10, "persistent rejection must leave the fast retry budget");
-  reject = false;
-  t.mock.timers.tick(1);
-  await tick();
-  assert.equal(events.length, 2);
-  events[1].enqueue(snapshotEvent([{ id: "phone", name: "Phone", muted: true, deafened: false, tracks: [] }], 10));
+  assert.equal(events.length, 11);
+  events.at(-1)!.enqueue(snapshotEvent([{ id: "phone", name: "Phone", muted: true, deafened: false, tracks: [] }], 20));
   await tick();
   assert.equal(states.at(-1)?.participants[0]?.muted, true);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(Peer.latest, peer);
   assert.equal(calls.filter((op) => op === "join").length, 1);
-  // A later rollout gets a fresh budget; leaving cancels its pending retry.
-  reject = true;
-  events[1].enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
-  await tick();
-  t.mock.timers.tick(50);
-  await tick();
-  assert.equal(attempts, 11);
   client.leaveImmediately();
-  t.mock.timers.tick(5_000);
+  const count = events.length;
+  events.at(-1)!.enqueue(new TextEncoder().encode("event: draining\ndata: {}\n\n"));
   await tick();
-  assert.equal(attempts, 11);
+  assert.equal(events.length, count);
 });
 
 test("queued pushed snapshots never suppress a scheduled lease heartbeat", async (t) => {

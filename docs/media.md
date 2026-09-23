@@ -33,30 +33,168 @@ mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
 the registry keeps that code for the call and shares it in roster snapshots. Caper
 does not retain the visitor IP itself. Unknown and Tor locations are omitted.
-Visitors see the public roster before joining through the unauthenticated
-`/api/media/presence/events` SSE stream, without joining voice. That projection
+Visitors see the public roster before joining through a `media` subscription on
+the application WebSocket, without joining voice. That projection
 includes each participant's session ID, name, country code when available, mute,
 and deafen state, but never media track IDs, session tokens, or audio.
-The JSON `/api/media/presence` endpoint remains available for inspection and older
-clients; the current browser does not poll it. Spectators never renew call leases.
+The HTTP/SSE endpoints remain available for older clients and inspection, but the
+current browser uses neither SSE nor HTTP polling for live rosters. Spectators
+never renew call leases.
 
-Browser → same-origin `/api/media/*` → Rust Axum API pods → Cloudflare
-control API. Browser ↔ Cloudflare Realtime SFU/TURN for WebRTC audio. No media
-relays through AWS, Workers, Durable Objects, RealtimeKit or PlanetScale.
-Authenticated SSE snapshots provide immediate in-call roster/track discovery.
-Fifteen-second HTTP snapshots renew presence leases and repair missed state; HTTP
-also carries commands. Audio still uses WebRTC, not SSE or WebSockets.
+Browser → same-origin `/api/chat/events` WebSocket → Rust gateway → existing
+authorized media handlers → Cloudflare control API. Fifteen-second `media.snapshot`
+commands renew call leases; pushed snapshots discover roster/track changes.
+Browser ↔ Cloudflare Realtime SFU/TURN still carries audio. No audio relays through
+the gateway, AWS, Workers, Durable Objects, RealtimeKit or PlanetScale.
 
 Production activation is staged: keep the API at one replica until every pod uses
 the same Valkey endpoint and schema. The first switch from process memory requires
 an empty-channel maintenance window; the old binary cannot hand off its state.
 After activation, API pods can be replaced without closing healthy Cloudflare
-media sessions. Their HTTP/SSE connections still reconnect; TCP connections cannot
+media sessions. Their application connections still reconnect; TCP connections cannot
 move between pods. See [shared call state](#shared-call-state-and-rolling-deployments)
 for the rollout and remaining validation. Each tab receives an
 unguessable short-lived call capability. Clients use Caper track IDs, not
 arbitrary SFU session IDs. Cloudflare terminates transport encryption; this is
 **not E2EE**.
+
+### Application gateway and account presence
+
+One WebSocket per tab multiplexes authorized chat, voice-roster, and member-status
+subscriptions. HTTP keeps durable messages/history and space/account management.
+Temporary typing and media commands use the socket, but invoke the same Rust
+handlers and permissions as HTTP. The protocol is not tied to React or browser
+focus and can be implemented by future desktop/mobile clients.
+
+- `hello {idleTimeoutSeconds,serverTime}` establishes the session. Heartbeats carry
+  `activityAgeMs`; input activity is throttled. Focus, visibility, incoming audio
+  and heartbeat traffic do **not** reset activity. Native clients may report their
+  own actual input activity. The browser exports `reportActivity()` for future
+  local speech detection; merely sending audio packets is not treated as speech.
+- `subscribe {id,kind,channelId?,after?,token?,spaceId?,userIds?}` opens one logical
+  stream. `event {id,event}` routes updates to it; `subscribed {id}` follows its
+  initial snapshot/replay. `unsubscribe {id}` releases interest. There are at most
+  32 subscriptions per socket and 100 users per presence subscription. Credentials
+  never appear in the URL. Sessions and memberships are checked again during use.
+- Account presence is **online** if any live session has recent input, **idle**
+  otherwise, and **offline** only after every session lease expires. Default
+  `PRESENCE_IDLE_TIMEOUT_SECONDS=600` is ten minutes; valid values are 1–86400.
+  Each socket renews its own 40-second lease. The per-user hash expires within
+  80 seconds of its last renewal and has at most 32 socket records. A user staying
+  online reuses those records indefinitely; no status history accumulates.
+  Records represent connected sessions, not installed devices. Multiple browser
+  tabs each have a connection. A suspended phone whose heartbeats stop loses its
+  lease; native background/voice execution still needs platform-specific support.
+- The space member list watches only its current 25-member page. Pagination swaps
+  the subscription; collapsing releases it. Initial member *metadata* still comes
+  from the space detail endpoint, but presence never loads the entire population.
+  Gateways batch expiration checks once per watched user per pod every two seconds,
+  then push only changed snapshots. Heartbeats do not broadcast user lists. During
+  an outage the UI shows unknown/updating rather than inventing offline status.
+- Chat/typing and room invalidations use channel-specific broker topics. Each pod
+  subscribes only where it has local interest, and releases unused subscriptions.
+  Committed chat cursors repair missed messages; versioned room snapshots repair
+  current mute/deafen/roster state. Typing expires and is intentionally not replayed.
+
+Typing is best-effort: it is sent only over an already connected socket, never
+queued/replayed after reconnect, and never stored in the command ledger. Lost
+start/stop pulses are harmless; the receiving UI expires typing after six seconds.
+Authorization and one-second per-author/per-channel rate counters still apply.
+
+Media commands include a UUID and fixed `issuedAt`. A shared Valkey ledger binds the
+request to its identity and body, and retains the result for 150 seconds; requests
+older than 120 seconds are rejected rather than executed again. Reconnects retry
+the **same** command, including pending/draining responses. Accepted commands
+continue after socket loss. Mute/deafen also retain their existing monotonic
+intent sequence. This is bounded retry/deduplication, **not an exactly-once claim
+across a Valkey data loss or a crash during a Cloudflare operation**. An unknown
+outcome is surfaced for current-state recovery, not blindly executed twice.
+Use a non-evicting, monitored shared broker; losing it clears temporary leases and
+command receipts, not Postgres messages. Memory grows with current sockets and
+recent commands, not account age. Capacity at 10k concurrent users is not measured.
+
+**Rollout on top of spaces/channels:** PR #144 is merged and included in this
+branch. Merge [infrastructure PR #120](https://github.com/joswayski/infrastructure/pull/120)
+first and wait for Flux's in-place gateway rollout so gateway pods receive
+`MEDIA_ENABLED` and the four Cloudflare settings, but **not** email-login signing,
+SES or migration credentials. Existing opaque sessions are verified from the DB.
+Then merge Caper PR #146 into `main`, wait for both immutable images, and deploy
+that merged SHA **API first**, **gateway second**, **web last**, matching the existing
+deployment workflow's API-image prerequisite. The API rollout includes outstanding
+spaces/channel migrations; the gateway does not run migrations. New gateways accept old chat clients.
+Between the first two steps, old gateways repair durable messages from Postgres,
+but old tabs can miss typing pulses as publications move to scoped topics.
+Do not expose new web clients to old gateways. Old SSE endpoints remain solely for
+compatibility; mixed old API pods may delay old-tab roster updates until repair.
+The older SSE-specific sections below describe that compatibility path and its
+historical validation, not the new browser transport.
+
+**No Terraform/OpenTofu apply is needed for these two PRs.** The production
+cluster, cache, secrets and deployment permissions already exist. Staging has no
+hosted app cluster/cache: it uses local Compose with staging AWS secrets and SES.
+The Compose/CI/orb pin is Valkey 9.1.2; the existing AWS-managed cache reports
+Valkey major version 9, not a verified 9.1.2 patch. No hosted upgrade is requested.
+
+Before merging, verify staging from the Caper PR checkout:
+
+```bash
+gh pr checkout 146 --repo joswayski/caper
+npm ci
+aws sso login --profile staging
+npm run secrets:check
+docker compose -f compose.staging.yaml config --images | grep -Fx 'valkey/valkey:9.1.2-alpine'
+npm run dev -- --scale api=2 --scale chat-gateway=2
+```
+
+In another terminal, confirm `PONG`/the engine version, exercise calls and member
+presence, and restart application containers while leaving Postgres/Valkey intact:
+
+```bash
+docker compose -f compose.staging.yaml exec valkey valkey-cli ping
+docker compose -f compose.staging.yaml exec valkey valkey-cli INFO server
+docker compose -f compose.staging.yaml ps
+docker compose -f compose.staging.yaml restart api chat-gateway
+# After testing, Ctrl-C the dev command, then stop containers without deleting data:
+docker compose -f compose.staging.yaml down
+```
+
+For production, follow the [copy-paste infrastructure runbook](https://github.com/joswayski/infrastructure/blob/main/docs/caper-chat-gateway.md#merge-and-production-rollout-order).
+It contains guarded PR merge commands, Flux environment/replica verification,
+production authentication and ECR image checks, and exact API → gateway → web
+workflow commands with pinned-image checks after each rollout. Use the immutable
+PR #146 merge SHA, not a moving `main` tip. Watch the exact run URL returned by
+each dispatch; do not select the latest run or let an already-ready old Deployment
+stand in for workflow completion. No manual `kubectl apply` or production restart
+is needed.
+
+These are operator instructions, not actions performed in development. Keep two
+ready gateways, `maxUnavailable: 0`, and the existing 65-second termination grace.
+Rolling replacement of an application pod is different from losing the shared
+broker. Durable replay, lease expiry and command dedup tests use disposable local
+services; they do not establish production capacity or physical-device behavior.
+
+Validation for this transport change:
+- After merging the latest PR #144 website, `cargo test --workspace` passed 91
+  tests; all 23 explicitly enabled ignored integrations passed against disposable
+  loopback Postgres 15 and Valkey 9.1.2. Another 14 tests passed against Valkey
+  9.1.2 in cluster mode. The gateway test holds Join inside a mocked
+  provider while the original socket disappears, retries on another gateway, and
+  verifies one participant and the original result. The outbox test locks one
+  claimed row and verifies a second publisher can publish the remaining rows.
+- `npm run check`, all 222 web tests, Rust formatting/Clippy, and the API release
+  build passed. Typing regressions cover start/stop publication without receipts,
+  authorization, and dropping interrupted pulses rather than retrying them.
+  Orb setup completed twice with the pinned native Valkey binaries. The Docker
+  daemon was unavailable; the web and Rust image build stages were executed
+  directly, not claimed as built Docker images.
+- Chromium exercised real member presence with seeded local accounts: online/idle,
+  25-to-5 member pagination, collapse/unsubscribe, and desktop/narrow layouts.
+  After the website merge, `scripts/test-space-controls.mjs` and
+  `scripts/test-voice-controls.mjs` passed with mocked HTTP/WebSocket/WebRTC and
+  synthetic audio, including deletion confirmation/focus/retry, member
+  subscriptions, voice menus, and narrow layouts. No live SFU, physical mobile,
+  mass reconnect, authenticated staging-secret, or production capacity test was
+  performed for this change.
 
 ### Public text demo
 
@@ -65,13 +203,16 @@ temporary **Public demo** space contains one **General** unified channel. Accoun
 spaces are separate from this guest demo. Rich content, message edits/deletion,
 moderation rules, and message notifications are not implemented. Typing indicators are
 best-effort ephemeral presence, not saved messages. This demo is not a
-permanent public space when the product launches. Voice remains SSE/WebRTC.
+permanent public space when the product launches. Voice control shares the
+application gateway; audio remains WebRTC.
 
 The same Rust image has two independently deployable roles:
 
 - `caper-api`: HTTP commands/history plus transactional-outbox publishing (3001).
-- `caper-api --gateway`: WebSocket delivery (3002, `CHAT_GATEWAY_BIND`). It uses
-  `DATABASE_URL` only, never `MIGRATION_DATABASE_URL` or media provider credentials.
+- `caper-api --gateway`: application WebSocket sessions and media/typing commands
+  (3002, `CHAT_GATEWAY_BIND`). It uses the runtime `DATABASE_URL`, never
+  `MIGRATION_DATABASE_URL` or email-login signing credentials. It requires `MEDIA_ENABLED`
+  and four Cloudflare media settings as the API, with the same shared `VALKEY_URL`.
   `/health` is liveness; `/readyz` requires DB/broker readiness and no drain.
 
 Both need Postgres, the **same** authenticated TLS `VALKEY_URL`, and
@@ -113,6 +254,10 @@ control characters other than newline/tab are rejected). Content is versioned
 `{version:1,type:"text",text}`. `prepare_text` is the pre-publication boundary for
 future replacement rules such as BO2 → Wardogs: transform once before persistence
 and broadcast, not by deleting and reposting. No example replacement is enabled.
+An eventual transformation feature must separately retain the submitted original
+in restricted audit storage while publishing only the transformed content. The
+current hash is not an audit copy. Stable message IDs and channel event sequences
+permit later same-ID updates; audit history, integrations and edits are not implemented.
 Message bodies, guest capabilities, and account credentials are never logged.
 Messages and author snapshots are saved in Postgres and visible to everyone;
 there is no automatic retention purge in this demo. Browser tokens use local
@@ -137,15 +282,15 @@ sequence. Provisional rows never advance the replay cursor. Ambiguous failures
 retain the exact command for retry; definitive rejections retain the text for
 Edit/Dismiss. A late HTTP failure cannot undo WebSocket confirmation.
 
-Typing uses a separate `caper:chat:v1:typing` Pub/Sub topic and a bounded
-64-event gateway buffer; it never enters the transactional outbox, history, or
-message sequence. Gateways deliver `typing.updated {channelId,author,typing,revision}`
-only to sockets that request `&typing=true`. This protects already-open older
-browser tabs and older gateways during rollout. Deploy API, gateway, then web;
-no configuration or infrastructure change is needed for typing.
+Typing uses channel-scoped `caper:chat:v1:typing:{channelId}` Pub/Sub topics; it
+never enters the transactional outbox, history, or message sequence. Gateways
+subscribe only for locally interested channels and deliver `typing.updated`
+on that channel's logical chat subscription. The old `&typing=true` protocol is
+retained for already-open tabs. Follow the application-gateway rollout above;
+the initial protocol cutover can miss ephemeral pulses on old gateways.
 
 Typing publications are limited across API replicas to four per author/channel
-per second and 120 globally per second. The browser pulses at most every 500ms
+per second and 120 per channel per second. The browser pulses at most every 500ms
 while editing, stops on clear/blur/send or 500ms of inactivity,
 and expires peer indicators after six seconds without a newer signal. Broker
 microsecond `revision` strings deduplicate overlapping socket events independently
@@ -160,34 +305,39 @@ Delivery and recovery:
 1. One transaction writes message, channel position, and full event payload.
    HTTP success means **durably accepted**, not delivered to every browser.
 2. The API wakes its publisher immediately; a one-second pending-row scan repairs
-   a lost wakeup. A transaction advisory lock serializes demo publishers across
-   API replicas without locking the sending channel row during broker I/O.
+   a lost wakeup. `FOR UPDATE SKIP LOCKED` claims disjoint outbox batches across
+   API replicas without a global publisher lock. Publication can arrive out of
+   order; committed per-channel sequences remain the ordering authority.
 3. Publisher sends the full event on Valkey Pub/Sub, then marks it published.
    The event remains in Postgres for replay. A crash in between may republish it;
    gateway/client sequence deduplication prevents a second visible message.
-4. `GET /api/chat/events?channelId={id}&after={cursor}` upgrades to a WebSocket.
-   It needs no login/token for this public demo. Each socket subscribes/buffers
+4. `GET /api/chat/events` upgrades to the application WebSocket. The browser sends
+   `subscribe {id,kind:"chat",channelId,after}`. The public demo requires no login;
+   account channels require current membership. Each subscription buffers
    before reading the committed high-water mark, replays through it, emits
    `ready {cursor}`, then merges live events in order. Sends still use HTTP.
 5. One DB head check per gateway every two seconds repairs missed events even if
    the final Pub/Sub event was lost and no later message arrives. Broker outage
    does not erase accepted messages. Normal delivery uses full broker payloads,
-   not a per-recipient database fetch.
+   not a per-recipient payload fetch. Session/membership authorization is still
+   checked per subscription; this is not a claim of zero per-recipient SQL work.
 
 Limits: 30 new messages/guest/minute, 120/channel/minute, and 60 new sender
-sessions/minute globally for this demo. Each gateway admits 128 sockets; its
-broadcast ring holds 256 events. A lagging receiver replays from Postgres.
-Replay reads batches of 16; sockets use 4 KiB read buffers and at most 64 KiB of
-queued writes. Writes time out after three seconds; initial/recovery replay is bounded to ten
-seconds and 2,000 events. Older/impossible cursors or missing retained events get
+sessions/minute globally for this demo. `GATEWAY_MAX_CONNECTIONS` defaults to 4096
+per pod (an admission limit, **not measured capacity**). Each channel has a bounded
+256-event ring. A lagging receiver replays from Postgres in batches of 128.
+Application sockets use 4 KiB read buffers, a 256-frame outgoing queue, and a
+256 KiB WebSocket write-buffer cap. Writes time out after three seconds; replay
+is capped at 2,000 events. Older/impossible cursors or missing retained events get
 `resync_required`, and the UI reloads recent history with older-page access.
-Heartbeat ping/pong runs every ten seconds, with a 30-second inactivity deadline.
+Application heartbeats run every ten seconds, with a 30-second liveness deadline.
 These are pre-launch demo limits, not an internet-scale abuse-prevention system.
 
 **Planned deployment handoff:** keep two ready gateway replicas, maxUnavailable 0,
 maxSurge 1, five-second preStop, and 65-second termination grace. SIGTERM rejects
 new upgrades/readiness and sends `migrating`, but old sockets continue delivering
-for 20 seconds. The runtime remains alive for at least 21 seconds. The browser
+for 20 seconds. The runtime remains alive for at least 36 seconds to finish
+accepted commands bounded to 35 seconds. The browser
 opens a replacement while retaining the old socket and closes the old only after
 the replacement is ready and caught up to the current applied cursor. A stale or
 failed candidate cannot discard a healthy old stream. Unexpected failures use
@@ -217,7 +367,7 @@ Validation matrix for this slice:
 
 | Check | Evidence / limitation |
 | --- | --- |
-| Transaction rollback, concurrent retry/order, replay, duplicate publish, lost last event, overlap | Automated integration test with disposable Postgres and real broker/WebSockets; also runs in CI with Postgres 17 + Valkey 8.1 |
+| Transaction rollback, concurrent retry/order, replay, duplicate publish, lost last event, overlap | Automated integration test with disposable Postgres and real broker/WebSockets; also runs in CI with Postgres 17 + Valkey 9.1.2 |
 | Typing auth/rate limits, cross-gateway fanout, legacy opt-out, unchanged durable cursor | Automated disposable Postgres/broker integration; browser unit tests cover throttling, expiry, overlap and nonblocking sends |
 | Real guest browser send/receive | Two isolated Chromium sessions, real local HTTP/DB/broker/gateway; literal HTML-like text stays text |
 | Real process SIGTERM with replacement | Readiness-aware local test proxy; 12 messages received once, zero offline transitions; old socket closed after replacement ready |
@@ -233,9 +383,9 @@ loopback Postgres (test role can create/drop test databases) and
 cargo test -p caper-api chat::tests::durable_guest_delivery_replay_and_handoff -- --ignored
 ```
 
-CI runs this against cluster-mode Valkey 8.1 with one primary owning all hash
+CI runs this against cluster-mode Valkey 9.1.2 with one primary owning all hash
 slots. This enforces the multi-key Lua restrictions that standalone mode misses:
-the typing rate counters share the `{caper:chat:v1:typing}` hash tag. It tests
+the typing rate counters share a per-channel `{caper:chat:v1:typing:channelId}` hash tag. It tests
 cluster command compatibility, not multi-node failover or managed-service TLS.
 
 With the web dev server running and `agent-browser` installed, run
@@ -673,15 +823,16 @@ Subsequent same-schema deployments use RollingUpdate with `maxUnavailable: 0`,
 `maxSurge: 1`, `/readyz`, and a 65-second termination grace including the five-second
 preStop serving window from the infrastructure companion.
 
-Real disposable Redis integration tests (Redis-compatible protocol) cover independent
+Real disposable Valkey integration tests cover independent
 API instances, cross-pod notifications and capability replacement, full replacement
 with unchanged Cloudflare mappings, capacity/operation races, lease/claim recovery,
 and connection loss/recovery without replay. Cloudflare is mocked in these tests.
-CI runs them against Valkey 8.1. Run locally using a disposable loopback server:
+CI and orb setup use pinned Valkey 9.1.2. Run locally using a disposable loopback server:
 
 ```bash
 # In an orb; do not point TEST_VALKEY_URL at a shared/production service.
-amp orb service start caper-test-redis --command 'redis-server --bind 127.0.0.1 --port 6389 --save "" --appendonly no'
+amp orb service start caper-test-valkey --command 'valkey-server --bind 127.0.0.1 --port 6389 --save "" --appendonly no' --port 6389
+valkey-cli -p 6389 PING # wait for PONG before starting the tests
 TEST_VALKEY_URL=redis://127.0.0.1:6389 cargo test --locked -p caper-api tests::shared -- --ignored
 ```
 
@@ -695,7 +846,7 @@ by the shared-store tests or by HTTP readiness.
 
 ### Local Compose shared-state testing
 
-`npm run dev` starts Valkey 8.1 alongside the API, web, gateway and Postgres.
+`npm run dev` starts Valkey 9.1.2 alongside the API, web, gateway and Postgres.
 The API waits for Valkey's health check and defaults to `redis://valkey:6379`.
 Only Compose sets the process-only `VALKEY_ALLOW_INSECURE=true` opt-in, which
 allows plaintext to the exact service hostname `valkey`, not arbitrary hosts.

@@ -20,7 +20,6 @@ packages=(
   libssl-dev
   pkg-config
   postgresql
-  redis-server
 )
 missing_packages=()
 for package in "${packages[@]}"; do
@@ -32,6 +31,38 @@ if ((${#missing_packages[@]} > 0)); then
   sudo apt-get update
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_packages[@]}"
 fi
+
+step "installing Valkey 9.1.2"
+valkey_version="9.1.2"
+case "$(uname -m)" in
+  x86_64)
+    valkey_arch="x86_64"
+    valkey_sha256="33687af7a5457459a16c207a9c1971fc70f67e6ec1f011a876094b790741bd63"
+    ;;
+  aarch64 | arm64)
+    valkey_arch="arm64"
+    valkey_sha256="a3dcac64815b2ed907b3942343ba51f34877de2d58e809435226f6b03686a5a1"
+    ;;
+  *)
+    printf 'Unsupported architecture for Valkey: %s\n' "$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+valkey_install_dir="/opt/valkey-${valkey_version}-jammy-${valkey_arch}"
+if [[ ! -x "$valkey_install_dir/bin/valkey-server" ]]; then
+  valkey_archive="$(mktemp)"
+  trap 'rm -f "$valkey_archive"' EXIT
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+    --output "$valkey_archive" \
+    "https://download.valkey.io/releases/valkey-${valkey_version}-jammy-${valkey_arch}.tar.gz"
+  printf '%s  %s\n' "$valkey_sha256" "$valkey_archive" | sha256sum --check --status
+  sudo tar --extract --gzip --file "$valkey_archive" --directory /opt
+  rm -f "$valkey_archive"
+  trap - EXIT
+fi
+for executable in "$valkey_install_dir"/bin/valkey-*; do
+  sudo ln -sfn "$executable" "/usr/local/bin/${executable##*/}"
+done
 
 step "checking Node.js and npm"
 if ! command -v npm >/dev/null 2>&1; then
@@ -70,7 +101,8 @@ step "fetching Rust dependencies"
 cargo fetch --locked
 
 step "complete"
-printf '[setup] Node %s, npm %s, Rust %s\n' \
+printf '[setup] Node %s, npm %s, Rust %s, Valkey %s\n' \
   "$(node --version)" \
   "$(npm --version)" \
-  "$(rustc --version | awk '{print $2}')"
+  "$(rustc --version | awk '{print $2}')" \
+  "$(valkey-server --version | sed -n 's/.* v=\([^ ]*\).*/\1/p')"

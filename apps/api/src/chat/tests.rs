@@ -244,6 +244,33 @@ async fn durable_guest_delivery_replay_and_handoff() {
             .await
             .unwrap();
     assert_eq!(pending, 3);
+    // One slow publisher must not block other replicas. Hold the first row as
+    // another worker would, then exercise the real publisher on the remaining
+    // rows. A blocking FOR UPDATE or global publisher lock fails this check.
+    let mut claimed = pool.begin().await.unwrap();
+    sqlx::query("SELECT seq FROM public.channel_events WHERE seq=1 FOR UPDATE")
+        .fetch_all(&mut *claimed)
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), publish_pending(&chat))
+            .await
+            .expect("publisher blocked behind another claim")
+            .unwrap()
+    );
+    let published: Vec<i64> = sqlx::query_scalar(
+        "SELECT seq FROM public.channel_events WHERE published_at IS NOT NULL ORDER BY seq",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(published, [2, 3]);
+    claimed.rollback().await.unwrap();
+    assert!(publish_pending(&chat).await.unwrap());
+    assert!(!publish_pending(&chat).await.unwrap());
+    pool.execute("UPDATE public.channel_events SET published_at = NULL")
+        .await
+        .unwrap();
     let old = crate::gateway::Gateway::new(chat.clone());
     let replacement = crate::gateway::Gateway::new(chat.clone());
     old.start();

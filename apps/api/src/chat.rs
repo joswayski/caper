@@ -25,7 +25,6 @@ use uuid::Uuid;
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
 // Separate from durable events: older gateways require a sequence on that topic.
 pub(crate) const TYPING_TOPIC: &str = "caper:chat:v1:typing";
-pub(crate) const PRESENCE_TOPIC: &str = "caper:chat:v1:presence";
 const PAGE: i64 = 50;
 
 #[derive(Clone)]
@@ -94,7 +93,6 @@ pub(crate) fn routes() -> Router<AppState> {
             get(history).post(send),
         )
         .route("/api/chat/channels/{channel}/typing", post(typing))
-        .route("/api/chat/presence", get(presence_snapshot).post(presence))
 }
 
 fn enabled(state: &AppState) -> Result<&Chat, ApiError> {
@@ -311,75 +309,6 @@ async fn typing(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn presence(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<StatusCode, ApiError> {
-    let chat = enabled(&state)?;
-    let (_, author_id, name, user_id) = {
-        let mut connection = chat.pool.acquire().await.map_err(database_error)?;
-        authorize_sender(&mut connection, sender_token(&headers)?).await?
-    };
-    let event = json!({"type":"presence.updated","author":{"id":author_id,"name":name,"isGuest":user_id.is_none()}});
-    let script = redis::Script::new(
-        r#"
-        local event = cjson.decode(ARGV[2])
-        local clock = redis.call('TIME')
-        event.revision = clock[1] .. string.format('%06d', tonumber(clock[2]))
-        event.expiresAt = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000) + 120000
-        redis.call('HSET', KEYS[1], event.author.id, cjson.encode(event))
-        redis.call('PEXPIRE', KEYS[1], 120000)
-        redis.call('PUBLISH', ARGV[1], cjson.encode(event))
-        return 1
-    "#,
-    );
-    let mut connection = chat
-        .broker
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|_| unavailable())?;
-    script
-        .key(format!("{{{PRESENCE_TOPIC}}}:members"))
-        .arg(PRESENCE_TOPIC)
-        .arg(event.to_string())
-        .invoke_async::<i64>(&mut connection)
-        .await
-        .map_err(|_| unavailable())?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn presence_snapshot(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let chat = enabled(&state)?;
-    let mut connection = chat
-        .broker
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|_| unavailable())?;
-    let members: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
-        .arg(format!("{{{PRESENCE_TOPIC}}}:members"))
-        .query_async(&mut connection)
-        .await
-        .map_err(|_| unavailable())?;
-    let now = Utc::now().timestamp_millis();
-    let mut presence = Vec::new();
-    for (id, value) in members {
-        if let Ok(event) = serde_json::from_str::<Value>(&value)
-            && event["expiresAt"]
-                .as_i64()
-                .is_some_and(|expires| expires > now)
-        {
-            presence.push(event);
-        } else {
-            let _: Result<(), _> = redis::cmd("HDEL")
-                .arg(format!("{{{PRESENCE_TOPIC}}}:members"))
-                .arg(id)
-                .query_async(&mut connection)
-                .await;
-        }
-    }
-    Ok(Json(json!({"presence":presence})))
-}
-
 async fn publish_typing(
     chat: &Chat,
     channel: &str,
@@ -412,12 +341,12 @@ async fn publish_typing(
     );
     let published = tokio::time::timeout(Duration::from_secs(2), async {
         let mut connection = chat.broker.get_multiplexed_async_connection().await?;
-        // Both counters must share a hash slot for Lua on ElastiCache Serverless.
-        // Keep the Pub/Sub topic unchanged so existing gateways still receive it.
+        // Channel-local counters share a hash slot. Unrelated spaces do not
+        // compete for one global typing budget or receive each other's traffic.
         script
-            .key(format!("{{{TYPING_TOPIC}}}:rate:{channel}:{author_id}"))
-            .key(format!("{{{TYPING_TOPIC}}}:rate:global"))
-            .arg(TYPING_TOPIC)
+            .key(format!("{{{TYPING_TOPIC}:{channel}}}:rate:{author_id}"))
+            .key(format!("{{{TYPING_TOPIC}:{channel}}}:rate:channel"))
+            .arg(format!("{TYPING_TOPIC}:{channel}"))
             .arg(event.to_string())
             .invoke_async::<i64>(&mut connection)
             .await
@@ -508,8 +437,8 @@ async fn persist(
     Ok(payload)
 }
 
-/// Every API replica can publish. A transaction-scoped advisory lock prevents
-/// concurrent publishers reordering this demo's events; it never locks sends.
+/// API replicas claim disjoint outbox batches. Broker arrival order is not an
+/// ordering authority: gateways merge/replay the committed channel sequences.
 pub(crate) fn spawn_publisher(chat: Chat) {
     tokio::spawn(async move {
         loop {
@@ -527,14 +456,7 @@ pub(crate) fn spawn_publisher(chat: Chat) {
 }
 async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     let mut tx = chat.pool.begin().await.map_err(|_| ())?;
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(731902, 3)")
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| ())?;
-    if !locked {
-        return Ok(false);
-    }
-    let rows: Vec<(i64, i64, Value)> = sqlx::query_as("SELECT channel_id, seq, payload FROM public.channel_events WHERE published_at IS NULL ORDER BY channel_id, seq LIMIT 64")
+    let rows: Vec<(i64, i64, Value)> = sqlx::query_as("SELECT channel_id, seq, payload FROM public.channel_events WHERE published_at IS NULL ORDER BY channel_id, seq LIMIT 64 FOR UPDATE SKIP LOCKED")
         .fetch_all(&mut *tx).await.map_err(|_| ())?;
     if rows.is_empty() {
         return Ok(false);
@@ -550,7 +472,10 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
         tokio::time::timeout(
             Duration::from_secs(2),
             redis::cmd("PUBLISH")
-                .arg(TOPIC)
+                .arg(format!(
+                    "{TOPIC}:{}",
+                    event["channelId"].as_str().ok_or(())?
+                ))
                 .arg(event.to_string())
                 .query_async::<i64>(&mut connection),
         )

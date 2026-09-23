@@ -16,9 +16,7 @@
 .chat-state small { margin-top: 7px; }
 .chat-state button, .chat-inline-error button { margin-top: 10px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: .72rem; font-weight: 700; cursor: pointer; }
 .chat-message { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 10px 18px; }
-.chat-avatar-wrap { position: relative; width: 34px; height: 34px; }
 .chat-avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: var(--text); background: var(--surface-raised); font-size: .78rem; font-weight: 850; }
-.chat-presence-indicator { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; border: 2px solid var(--surface-conversation); border-radius: 50%; background: var(--caper); box-shadow: 0 0 0 1px rgb(0 0 0 / .2); }
 .chat-message header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px; }
 .chat-message header strong { max-width: 100%; overflow-wrap: anywhere; font-size: .82rem; }
 .chat-message header span { padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted); font-size: .58rem; font-weight: 750; text-transform: uppercase; }

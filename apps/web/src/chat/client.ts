@@ -1,6 +1,7 @@
 import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
-import { isChatAuthor, isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory, type ChatPresenceEvent } from "./types.ts";
+import { appGateway } from "../gateway/client.ts";
+import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -19,7 +20,6 @@ export interface ChatViewState {
   channelName: string;
   messages: ChatMessage[];
   typingAuthors: ChatAuthor[];
-  activeAuthorIds: string[];
   hasMore: boolean;
   loadingOlder: boolean;
   olderError?: string;
@@ -33,7 +33,7 @@ export interface ChatViewState {
 
 const initialState: ChatViewState = {
   phase: "loading", online: false, spaceName: "Caper", channelName: "general",
-  messages: [], typingAuthors: [], activeAuthorIds: [], hasMore: false, loadingOlder: false,
+  messages: [], typingAuthors: [], hasMore: false, loadingOlder: false,
 };
 
 export function initialChatView(history?: GeneralChatHistory, error?: string): ChatViewState {
@@ -77,13 +77,6 @@ export async function loadChatHistory(channelId?: string, signal?: AbortSignal):
   return history;
 }
 
-function isPresenceEvent(value: unknown): value is ChatPresenceEvent {
-  if (!value || typeof value !== "object") return false;
-  const event = value as Partial<ChatPresenceEvent>;
-  try { sequence(event.revision ?? ""); } catch { return false; }
-  return event.type === "presence.updated" && isChatAuthor(event.author);
-}
-
 function storedSession(): ChatSession | undefined {
   try {
     const value = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as Partial<ChatSession> | null;
@@ -109,10 +102,7 @@ export class ChatClient {
   private typingRequest?: Promise<void>;
   private typingIdleTimer?: ReturnType<typeof setTimeout>;
   private typingExpiryTimer?: ReturnType<typeof setTimeout>;
-  private presenceTimer?: ReturnType<typeof setTimeout>;
-  private presenceExpiryTimer?: ReturnType<typeof setTimeout>;
   private readonly typers = new Map<string, { author: ChatAuthor; typing: boolean; revision: bigint; expires: number }>();
-  private readonly activeAuthors = new Map<string, { revision: bigint; expires: number }>();
   private readonly changed: (state: ChatViewState) => void;
   private readonly channelId?: string;
   private spaceId?: string;
@@ -123,10 +113,6 @@ export class ChatClient {
   }
 
   start(history?: GeneralChatHistory, error?: string) {
-    if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", this.refreshPresence);
-      window.addEventListener("focus", this.refreshPresence);
-    }
     if (error) this.update({ phase: "error", error });
     else void this.loadInitial(history);
   }
@@ -156,12 +142,6 @@ export class ChatClient {
     this.controller.abort();
     clearTimeout(this.typingIdleTimer);
     clearTimeout(this.typingExpiryTimer);
-    clearTimeout(this.presenceTimer);
-    clearTimeout(this.presenceExpiryTimer);
-    if (typeof document !== "undefined") {
-      document.removeEventListener("visibilitychange", this.refreshPresence);
-      window.removeEventListener("focus", this.refreshPresence);
-    }
     this.connection?.stop();
   }
 
@@ -184,10 +164,9 @@ export class ChatClient {
     this.typingSentAt = Date.now();
     // Serialize start/stop so a delayed start request cannot overtake its stop.
     // Presence is best-effort: failure must never block or fail a real message.
-    this.typingRequest = fetch(`/api/chat/channels/${encodeURIComponent(channel)}/typing`, {
-      method: "POST", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-      body: JSON.stringify({ typing: active }),
-      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(2_000)]),
+    this.typingRequest = appGateway().command({
+      method: "typing", channelId: channel, chatToken: session.token,
+      body: { typing: active }, timeoutMs: 2_000, signal: this.controller.signal,
     }).then(() => undefined, () => undefined).finally(() => {
       this.typingRequest = undefined;
       if (this.typingActive !== active) this.flushTyping();
@@ -212,37 +191,6 @@ export class ChatClient {
     const entries = [...this.typers.values()];
     this.update({ typingAuthors: entries.filter((entry) => entry.typing && entry.author.id !== this.state.author?.id).map((entry) => entry.author) });
     if (entries.length) this.typingExpiryTimer = setTimeout(() => this.refreshTypers(), Math.min(...entries.map((entry) => entry.expires)) - now);
-  }
-
-  private refreshPresence = () => {
-    clearTimeout(this.presenceTimer);
-    if (typeof document === "undefined" || document.visibilityState === "hidden" || !document.hasFocus()) return;
-    const session = this.session;
-    if (!session || this.controller.signal.aborted) return;
-    void fetch("/api/chat/presence", {
-      method: "POST", headers: { "content-type": "application/json", "x-caper-chat-token": session.token }, body: "{}",
-      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(2_000)]),
-    }).catch(() => undefined);
-    this.presenceTimer = setTimeout(this.refreshPresence, 30_000);
-  };
-
-  private receivePresence(event: ChatPresenceEvent) {
-    const revision = sequence(event.revision);
-    const previous = this.activeAuthors.get(event.author.id);
-    if (previous && revision <= previous.revision) return;
-    const expiresAt = (event as ChatPresenceEvent & { expiresAt?: unknown }).expiresAt;
-    const expires = typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : Date.now() + 120_000;
-    this.activeAuthors.set(event.author.id, { revision, expires });
-    this.refreshActiveAuthors();
-  }
-
-  private refreshActiveAuthors() {
-    clearTimeout(this.presenceExpiryTimer);
-    const now = Date.now();
-    for (const [id, entry] of this.activeAuthors) if (entry.expires <= now) this.activeAuthors.delete(id);
-    this.update({ activeAuthorIds: [...this.activeAuthors.keys()] });
-    const expires = [...this.activeAuthors.values()].map((entry) => entry.expires);
-    if (expires.length) this.presenceExpiryTimer = setTimeout(() => this.refreshActiveAuthors(), Math.min(...expires) - now);
   }
 
   retryLoad() { void this.loadInitial(); }
@@ -367,7 +315,6 @@ export class ChatClient {
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
         channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
       });
-      void this.loadPresence(generation);
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
         message: (message) => {
@@ -382,7 +329,6 @@ export class ChatClient {
           this.update({ online });
         },
         typing: (event) => this.receiveTyping(event),
-        presence: (event) => this.receivePresence(event),
         resync: () => { if (generation === this.generation) void this.loadInitial(); },
       });
       this.connection.start();
@@ -399,17 +345,6 @@ export class ChatClient {
     }
   }
 
-  private async loadPresence(generation: number) {
-    try {
-      const response = await fetch("/api/chat/presence", {
-        cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(5_000)]),
-      });
-      const value: unknown = response.ok ? await response.json() : undefined;
-      if (generation !== this.generation || !value || typeof value !== "object" || !Array.isArray((value as { presence?: unknown }).presence)) return;
-      for (const event of (value as { presence: unknown[] }).presence) if (isPresenceEvent(event)) this.receivePresence(event);
-    } catch { /* Presence must not block chat history. */ }
-  }
-
   private async createSession() {
     this.update({ sessionError: undefined });
     try {
@@ -423,7 +358,6 @@ export class ChatClient {
       this.session = session as ChatSession;
       try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* The in-memory response still permits this page to render. */ }
       this.update({ author: session.author, sessionError: undefined });
-      this.refreshPresence();
     } catch (error) {
       if (!this.controller.signal.aborted) this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
     }

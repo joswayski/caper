@@ -48,6 +48,7 @@ mod environment;
 pub mod gateway;
 mod media_store;
 mod notifications;
+mod presence;
 mod spaces;
 use media_store::Timestamp;
 
@@ -644,6 +645,8 @@ pub struct AppState {
     database: Option<PgPool>,
     chat: Option<chat::Chat>,
     events: watch::Sender<()>,
+    room_events: Arc<std::sync::Mutex<HashMap<Option<String>, watch::Sender<()>>>>,
+    room_interest: Arc<Notify>,
     shutting_down: watch::Sender<bool>,
     cleanup_wakeup: Arc<Notify>,
     cleanup_lock: Arc<Mutex<()>>,
@@ -681,6 +684,8 @@ impl AppState {
             database,
             chat: None,
             events,
+            room_events: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            room_interest: Arc::new(Notify::new()),
             shutting_down,
             cleanup_wakeup: Arc::new(Notify::new()),
             cleanup_lock: Arc::new(Mutex::new(())),
@@ -1320,7 +1325,7 @@ async fn event_stream(
     let connection = Uuid::new_v4();
     let updates = {
         // Listen before registration; the initial snapshot reads current shared state.
-        let mut updates = s.events.subscribe();
+        let mut updates = s.room_updates();
         if let Some(token) = &token {
             s.update(|r| {
                 let id = authenticate(r, token)?;

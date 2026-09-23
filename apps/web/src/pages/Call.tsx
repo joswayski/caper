@@ -181,7 +181,6 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const [publicParticipants, setPublicParticipants] = useState<PublicPresence["participants"]>([]);
-  const [activeAuthorIds, setActiveAuthorIds] = useState<string[]>([]);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
   if (!clientRef.current && typeof window !== "undefined") clientRef.current = new PublicCallClient(setState, mediaRoot);
@@ -356,10 +355,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
           </div>
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
-              <span className="account-avatar-wrap">
-                <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
-                {chatAuthor && activeAuthorIds.includes(chatAuthor.id) && <span className="presence-indicator" role="img" aria-label="Online" />}
-              </span>
+              <span className="account-avatar" aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span>
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className="voice-action-group">
@@ -395,7 +391,7 @@ export default function Call({ channel, spaceRail, channelNavigation, navigation
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           {!audioPanel && (state.error || actionError) && <p className="call-error room-error" role="alert">{state.error || actionError}</p>}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} onPresenceChange={setActiveAuthorIds} headerActions={<div className="voice-actions">
+          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} headerActions={<div className="voice-actions">
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join" data-tooltip-dismissed={joinTooltipDismissed} onMouseLeave={() => setJoinTooltipDismissed(false)} onBlur={() => setJoinTooltipDismissed(false)} onKeyDown={(event) => {
               if (event.key === "Escape") setJoinTooltipDismissed(true);

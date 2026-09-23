@@ -29,17 +29,20 @@ use std::{
 };
 use tokio::sync::{Semaphore, broadcast, watch};
 
+mod application;
+
 pub const HANDOFF_WINDOW: Duration = Duration::from_secs(20);
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(35);
 const SEND_TIMEOUT: Duration = Duration::from_secs(3);
 const REPLAY_LIMIT: i64 = 2000;
 
 #[derive(Clone)]
 pub struct Gateway {
     chat: Chat,
+    application: Arc<application::Application>,
     events: broadcast::Sender<Value>,
     typing: broadcast::Sender<Value>,
     repair: watch::Sender<u64>,
-    presence: broadcast::Sender<Value>,
     drain: watch::Sender<bool>,
     slots: Arc<Semaphore>,
     broker_ready: Arc<AtomicBool>,
@@ -54,20 +57,30 @@ impl Gateway {
         let chat = Chat::from_env(pool, environment)
             .await?
             .ok_or("gateway requires CHAT_ENABLED=true")?;
-        Ok(Self::new(chat))
+        let mut state = Self::new(chat);
+        state.application =
+            Arc::new(application::Application::from_env(&state.chat, environment).await?);
+        let sockets = environment
+            .get("GATEWAY_MAX_CONNECTIONS")
+            .unwrap_or_else(|| "4096".into())
+            .parse::<usize>()
+            .ok()
+            .filter(|v| (1..=100_000).contains(v))
+            .ok_or("GATEWAY_MAX_CONNECTIONS must be between 1 and 100000")?;
+        state.slots = Arc::new(Semaphore::new(sockets));
+        Ok(state)
     }
     pub(crate) fn new(chat: Chat) -> Self {
         let (events, _) = broadcast::channel(256);
         let (typing, _) = broadcast::channel(64);
         let (repair, _) = watch::channel(0);
-        let (presence, _) = broadcast::channel(64);
         let (drain, _) = watch::channel(false);
         Self {
             chat,
+            application: Arc::new(application::Application::default()),
             events,
             typing,
             repair,
-            presence,
             drain,
             slots: Arc::new(Semaphore::new(128)),
             broker_ready: Arc::new(AtomicBool::new(false)),
@@ -79,6 +92,7 @@ impl Gateway {
     }
 
     pub fn start(&self) {
+        self.application.start(self.chat.clone());
         let state = self.clone();
         tokio::spawn(async move {
             loop {
@@ -90,34 +104,49 @@ impl Gateway {
                     && matches!(
                         tokio::time::timeout(
                             Duration::from_secs(3),
-                            pubsub.subscribe(&[
-                                chat::TOPIC,
-                                chat::TYPING_TOPIC,
-                                chat::PRESENCE_TOPIC
-                            ])
+                            pubsub.subscribe(&[chat::TOPIC, chat::TYPING_TOPIC])
                         )
                         .await,
                         Ok(Ok(()))
                     )
                 {
                     state.broker_ready.store(true, Ordering::Release);
-                    let mut stream = pubsub.on_message();
-                    while let Some(message) = stream.next().await {
-                        if let Ok(text) = message.get_payload::<String>()
-                            && let Ok(event) = serde_json::from_str::<Value>(&text)
-                        {
-                            let sender = if message.get_channel_name() == chat::TYPING_TOPIC {
-                                &state.typing
-                            } else if message.get_channel_name() == chat::PRESENCE_TOPIC {
-                                &state.presence
-                            } else {
-                                &state.events
-                            };
-                            let _ = sender.send(event);
+                    let (mut sink, mut stream) = pubsub.split();
+                    let mut topics = std::collections::HashSet::<String>::new();
+                    let mut refresh = tokio::time::interval(Duration::from_secs(2));
+                    loop {
+                        tokio::select! {
+                            message = stream.next() => {
+                                let Some(message) = message else { break; };
+                                if let Ok(text) = message.get_payload::<String>()
+                                    && let Ok(event) = serde_json::from_str::<Value>(&text) {
+                                    state.application.dispatch(&event);
+                                    let sender = if event["type"] == "typing.updated" { &state.typing } else { &state.events };
+                                    let _ = sender.send(event);
+                                }
+                            }
+                            _ = async {
+                                tokio::select! { _ = refresh.tick() => {}, _ = state.application.interests.notified() => {} }
+                            } => {
+                                let next = state.application.topics();
+                                let added: Vec<_> = next.difference(&topics).cloned().collect();
+                                let removed: Vec<_> = topics.difference(&next).cloned().collect();
+                                let result = tokio::time::timeout(Duration::from_secs(3), async {
+                                    if !added.is_empty() { sink.subscribe(added).await?; }
+                                    if !removed.is_empty() { sink.unsubscribe(removed).await?; }
+                                    sink.ping::<Vec<String>>().await
+                                }).await;
+                                if !matches!(result, Ok(Ok(_))) { break; }
+                                topics = next;
+                                state.application.registered(&topics);
+                            }
                         }
                     }
                 }
                 state.broker_ready.store(false, Ordering::Release);
+                state
+                    .application
+                    .registered(&std::collections::HashSet::new());
                 tracing::warn!(
                     event_name = "chat_broker_reconnect",
                     "gateway reconnecting to broker"
@@ -151,7 +180,7 @@ pub fn router(state: Gateway) -> Router {
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/readyz", get(ready))
-        .route("/api/chat/events", get(upgrade))
+        .route("/api/chat/events", get(application::upgrade))
         .with_state(state)
 }
 
@@ -174,8 +203,6 @@ struct Subscription {
     // Older browser parsers reject unknown events. Typing is explicitly opt-in.
     #[serde(default)]
     typing: bool,
-    #[serde(default)]
-    presence: bool,
 }
 
 async fn upgrade(
@@ -232,7 +259,16 @@ async fn upgrade(
         .max_frame_size(1024)
         .on_upgrade(move |socket| async move {
             let _slot = slot;
-            let _ = serve(socket, state, channel, query, token_hash, after).await;
+            let _ = serve(
+                socket,
+                state,
+                channel,
+                query.channel_id,
+                token_hash,
+                after,
+                query.typing,
+            )
+            .await;
         })
         .into_response())
 }
@@ -301,18 +337,14 @@ async fn serve(
     mut socket: WebSocket,
     state: Gateway,
     channel: i64,
-    subscription: Subscription,
+    external_id: String,
     token_hash: Option<Vec<u8>>,
     mut after: i64,
+    with_typing: bool,
 ) -> Result<(), ()> {
-    let Subscription {
-        channel_id: external_id,
-        typing: with_typing,
-        presence: with_presence,
-        ..
-    } = subscription;
     // Buffer live before capturing a DB high-water mark. Replay then merge by
     // sequence. Lagging bounded buffers trigger another replay, never a skip.
+    let _feed = state.application.channel(&external_id);
     let mut events = state.events.subscribe();
     let mut repair = state.repair.subscribe();
     let mut drain = state.drain.subscribe();
@@ -336,7 +368,6 @@ async fn serve(
     // No replay or initial buffer for ephemeral presence; dropping it must
     // never consume durable buffer space or alter the delivery cursor.
     let mut typing = state.typing.subscribe();
-    let mut presence = state.presence.subscribe();
     if *drain.borrow_and_update() {
         write(&mut socket, json!({"type":"migrating"})).await?;
         deadline = Some(tokio::time::Instant::now() + HANDOFF_WINDOW);
@@ -374,11 +405,6 @@ async fn serve(
                 let access = authorized(&state, &external_id, token_hash.as_deref()).await?;
                 if access.last_seq > after {
                     tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??;
-                }
-            }
-            event = presence.recv(), if with_presence => {
-                if let Ok(event) = event {
-                    write(&mut socket, event).await?;
                 }
             }
             _ = heartbeat.tick() => {

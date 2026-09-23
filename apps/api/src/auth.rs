@@ -423,7 +423,9 @@ impl AuthVerifier {
                 token_hash: vec![],
             });
         }
-        self.enabled()?;
+        // Existing sessions are opaque database-backed credentials. Validating
+        // them does not require the email-code signing key or an SES client;
+        // the gateway must not gain login-issuance capabilities just to verify.
         let pool = pool.ok_or_else(unavailable)?;
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
         let user = sqlx::query_as(
