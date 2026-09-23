@@ -1,0 +1,40 @@
+[package]
+name = "caper-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "Apache-2.0"
+description = "Native Caper desktop client"
+
+[workspace]
+
+[dependencies]
+eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts"] }
+keyring = { version = "3.6.3", default-features = false }
+reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+url = "2.5"
+uuid = { version = "1.18", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "dx12"] }
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = "debuginfo"
+lto = "thin"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"

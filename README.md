@@ -9,9 +9,19 @@ its earliest stage today (and an active work in progress)!
 
 - `apps/web` - TanStack Start website and health endpoint
 - `apps/api` - Rust voice-control, accounts, and text commands; separate WebSocket gateway role
+- `apps/native` - browser-free desktop/mobile development clients and packaging
 - `shared` - framework-neutral design tokens
 
 Brand references and the owner's style guide are in [docs/brand](docs/brand).
+
+## Native apps
+
+[Native development builds](apps/native/README.md) target macOS, Windows, Linux,
+iPhone, and Android without Tauri or Electron. GitHub Actions produces platform
+development artifacts with checksums and source revision metadata. These are not
+feature-parity releases: native voice, locked-screen calling, physical-device
+acceptance, and trusted distribution remain release gates. The unsigned iOS
+artifact is for Simulator, not installation on an iPhone.
 
 ## Development
 

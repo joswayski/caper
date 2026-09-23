@@ -1,0 +1,164 @@
+name: Native development builds
+
+on:
+  pull_request:
+    paths:
+      - apps/native/**
+      - apps/api/src/**
+      - shared/design.css
+      - scripts/native_artifacts.py
+      - tests/test_native_artifacts.py
+      - .github/workflows/native.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/native/**
+      - apps/api/src/**
+      - shared/design.css
+      - scripts/native_artifacts.py
+      - tests/test_native_artifacts.py
+      - .github/workflows/native.yml
+  workflow_dispatch:
+
+# PRs never receive signing credentials. No release, store upload, or deploy.
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  artifact-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -p test_native_artifacts.py -v
+
+  desktop:
+    name: Desktop / ${{ matrix.target }}
+    needs: artifact-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: windows-2025
+            target: windows-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.94.0
+          components: rustfmt, clippy
+          cache-workspaces: apps/native/desktop
+      - name: Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev libdbus-1-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev libegl1-mesa-dev
+      - name: Build and package Linux
+        if: runner.os == 'Linux'
+        run: bash apps/native/desktop/build.sh
+      - name: Build and package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./apps/native/desktop/build.ps1
+      - name: Record exact checked-out revision and checksums
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python scripts/native_artifacts.py --target "$TARGET" \
+            --revision "$(git rev-parse HEAD)" --source apps/native/desktop/dist \
+            --destination "dist/native/$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caper-development-${{ matrix.target }}-${{ github.sha }}
+          path: dist/native/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  apple:
+    name: Apple / ${{ matrix.target }}
+    needs: artifact-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos
+            target: macos-arm64
+          - os: macos-15-intel
+            platform: macos
+            target: macos-x64
+          - os: macos-15
+            platform: ios
+            target: ios-simulator-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and package Apple development client
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: bash apps/native/apple/build.sh "$PLATFORM"
+      - name: Record exact checked-out revision and checksums
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python scripts/native_artifacts.py --target "$TARGET" \
+            --revision "$(git rev-parse HEAD)" --source apps/native/apple/dist \
+            --destination "dist/native/$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caper-development-${{ matrix.target }}-${{ github.sha }}
+          path: dist/native/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android / development APK
+    needs: artifact-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned Android SDK packages
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Test, lint, build and package Android
+        run: bash apps/native/android/build.sh
+      - name: Record exact checked-out revision and checksums
+        run: |
+          python scripts/native_artifacts.py --target android-debug \
+            --revision "$(git rev-parse HEAD)" --source apps/native/android/dist \
+            --destination dist/native/android-debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caper-development-android-debug-${{ github.sha }}
+          path: dist/native/android-debug/
+          if-no-files-found: error
+          retention-days: 14

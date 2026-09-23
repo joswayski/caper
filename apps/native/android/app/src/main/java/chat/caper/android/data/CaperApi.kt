@@ -1,0 +1,134 @@
+package chat.caper.android.data
+
+import chat.caper.android.BuildConfig
+import chat.caper.android.model.*
+import java.io.IOException
+import java.util.UUID
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+
+class ApiException(val status: Int, override val message: String, val code: String? = null) : IOException(message)
+
+class CaperApi(
+    val client: OkHttpClient = OkHttpClient.Builder()
+        .callTimeout(java.time.Duration.ofSeconds(30))
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build(),
+    baseUrl: String = BuildConfig.API_BASE_URL,
+    @PublishedApi internal val json: Json = Json { ignoreUnknownKeys = true },
+) {
+    val baseUrl = canonicalApiOrigin(baseUrl)
+    suspend fun requestCode(email: String): Challenge = post("/api/auth/email/request", buildJsonObject { put("email", email.trim()) })
+    suspend fun verifyCode(challenge: String, code: String): VerifyResult = post(
+        "/api/auth/email/verify",
+        buildJsonObject { put("challengeId", challenge); put("code", code.trim()); put("tokenTransport", "bearer") },
+    )
+    suspend fun me(token: String): Account = get("/api/account/me", token)
+    suspend fun profile(token: String, username: String, displayName: String): Account = post(
+        "/api/account/profile",
+        buildJsonObject { put("username", username.trim()); put("displayName", displayName.trim()) }, token,
+    )
+    suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
+    suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
+    suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
+    suspend fun history(token: String, channel: String, before: String? = null): ChatHistory {
+        val history: ChatHistory = get(
+            "/api/chat/channels/${channel.pathId()}/messages" + (before?.let { "?before=$it" } ?: ""), token,
+        )
+        require(Regex("^(0|[1-9][0-9]*)$").matches(history.cursor) && history.cursor.toLongOrNull() != null) { "Invalid history cursor." }
+        history.messages.forEach { it.validated(channel) }
+        return history
+    }
+    suspend fun chatSession(token: String, name: String): ChatSession = post(
+        "/api/chat/session", buildJsonObject { put("name", name) }, token,
+    )
+    suspend fun sendMessage(
+        token: String,
+        chatToken: String,
+        channel: String,
+        authorId: String,
+        clientMessageId: UUID,
+        text: String,
+    ): ChatMessage {
+        val message: ChatMessage = post(
+            "/api/chat/channels/${channel.pathId()}/messages",
+            buildJsonObject { put("clientMessageId", clientMessageId.toString()); put("text", text) },
+            token, mapOf("x-caper-chat-token" to chatToken),
+        )
+        return message.validated(channel, authorId, clientMessageId, text)
+    }
+
+    suspend inline fun <reified T> media(
+        accountToken: String,
+        channel: String,
+        operation: String,
+        body: kotlinx.serialization.json.JsonObject = buildJsonObject {},
+        mediaToken: String? = null,
+    ): T = post(
+        "/api/channels/${channel.pathId()}/media/$operation", body, accountToken,
+        mediaToken?.let { mapOf("x-caper-media-token" to it) } ?: emptyMap(),
+    )
+
+    suspend inline fun <reified T> get(path: String, token: String? = null): T = request(path, "GET", token)
+    suspend inline fun <reified T> post(
+        path: String,
+        body: kotlinx.serialization.json.JsonObject? = null,
+        token: String? = null,
+        headers: Map<String, String> = emptyMap(),
+    ): T = request(path, "POST", token, body?.toString(), headers)
+
+    suspend inline fun <reified T> request(
+        path: String,
+        method: String,
+        token: String? = null,
+        body: String? = null,
+        headers: Map<String, String> = emptyMap(),
+    ): T {
+        val request = Request.Builder().url(baseUrl + path).apply {
+            token?.let { header("Authorization", "Bearer $it") }
+            headers.forEach { (name, value) -> header(name, value) }
+            val requestBody = body?.toRequestBody("application/json".toMediaType())
+                ?: if (method in setOf("POST", "PUT", "PATCH")) "{}".toRequestBody("application/json".toMediaType()) else null
+            method(method, requestBody)
+        }.build()
+        val response = client.newCall(request).await()
+        response.use {
+            val text = it.body.string()
+            if (!it.isSuccessful) {
+                val detail = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
+                throw ApiException(it.code, detail?.error ?: "Request failed (${it.code}).", detail?.code)
+            }
+            if (T::class == Unit::class || it.code == 204 || text.isBlank()) return Unit as T
+            return json.decodeFromString(text)
+        }
+    }
+
+    fun json() = json
+}
+
+private val externalId = Regex("^[A-Za-z0-9]{12}$")
+fun String.pathId(): String = also { require(externalId.matches(it)) { "Invalid resource ID." } }
+
+@PublishedApi internal suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
+    continuation.invokeOnCancellation { cancel() }
+    enqueue(object : Callback {
+        override fun onFailure(call: Call, error: IOException) {
+            if (continuation.isActive) continuation.resumeWithException(error)
+        }
+        override fun onResponse(call: Call, response: Response) {
+            continuation.resume(response) { _, value, _ -> value.close() }
+        }
+    })
+}

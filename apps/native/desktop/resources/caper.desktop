@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Caper
+Comment=Conversations with your people
+Exec=caper-desktop
+Icon=caper
+Terminal=false
+Categories=Network;Chat;
+StartupNotify=true

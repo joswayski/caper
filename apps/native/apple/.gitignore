@@ -1,0 +1,7 @@
+/.build/
+/dist/
+/DerivedData/
+/DerivedData-Tests/
+/.swiftpm/
+Package.resolved
+/CaperApple.xcodeproj/
