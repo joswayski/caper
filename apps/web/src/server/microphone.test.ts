@@ -162,7 +162,13 @@ for (const browserSuppression of [true, false]) test(`DPDFNet runtime overload k
   install("Worker", class {
     onmessage?: (event: { data: unknown }) => void;
     terminated = false;
-    constructor(url: string) { assert.equal(url, "/audio/dpdfnet8-v2/worker.js"); worker = this; }
+    constructor(url: string) {
+      if (url === "/audio/dpdfnet8-v2/worker.js") worker = this;
+      else {
+        assert.equal(url, "/audio/dpdfnet2-v1/worker.js");
+        queueMicrotask(() => this.onmessage?.({ data: { type: "failed" } }));
+      }
+    }
     terminate() { this.terminated = true; }
   });
   const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => { changes++; });
@@ -187,7 +193,7 @@ for (const browserSuppression of [true, false]) test(`DPDFNet runtime overload k
   assert.equal(replacement.options.processorOptions.engine, "rnnoise");
   replacement.port.emit("ready");
   await tick();
-  assert.match(microphone.status, /DPDFNet-8 HR unavailable · RNNoise active/);
+  assert.match(microphone.status, /DPDFNet unavailable · RNNoise active/);
   assert.equal(microphone.track, Context.latest!.processed);
   assert.equal(microphone.naturalTrack, Context.latest!.natural);
   assert.equal(microphone.track.enabled, false, "fallback must not unmute outgoing audio");
@@ -222,6 +228,8 @@ for (const end of ["cancel", "failed", "timeout"] as const) test(`RNNoise fallba
   const original = WorkletNode.latest!;
   t.mock.timers.enable({ apis: ["setTimeout"] });
   original.port.emit("bypassed");
+  await tick();
+  workers[1].onmessage!({ data: { type: "failed" } });
   await tick();
   const replacement = WorkletNode.latest!;
   assert.notEqual(replacement, original);
@@ -268,7 +276,8 @@ for (const warmed of [false, true]) test(`capture exclusively consumes DPDFNet p
   assert.match(microphone.status, /DPDFNet-8 HR active/);
   for (const duration of [4, 14, 6]) workers[0].onmessage!({ data: { type: "output", duration, samples: new ArrayBuffer(4) } });
   const report = JSON.parse(JSON.stringify(microphone.diagnostics()));
-  assert.deepEqual(report.dpdfnet, { processedHops: 3, meanProcessingMs: 8, maxProcessingMs: 14, hopBudgetMs: 10 });
+  assert.deepEqual(report.dpdfnet, { profile: 8, processedHops: 3, meanProcessingMs: 8, maxProcessingMs: 14, hopBudgetMs: 10 });
+  assert.equal(workers.length, 1, "healthy 8 HR never initializes a fallback");
   assert.deepEqual(report.capture, { sampleRate: 48000 });
   assert.equal(report.status, microphone.status);
   preparation.stop();
@@ -292,16 +301,81 @@ for (const readyThenAbort of [false, true]) test(`cancel releases the transferre
   assert.equal(Context.latest!.source.connections.length, 0);
 });
 
-test("failed transferred DPDFNet initialization stops capture rather than returning raw audio", async (t) => {
+test("all local initialization failures stop capture rather than returning raw audio", async (t) => {
   const { preparation, workers, raw } = preparedDpdfnet(t);
   const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "headphones", new NoiseAssets(), preparation);
   const rejected = assert.rejects(capturing, /DPDFNet-8 HR could not start/);
   await tick();
   workers[0].onmessage!({ data: { type: "failed" } });
+  await tick();
+  assert.equal(Context.latest!.source.connections.length, 0);
+  workers[1].onmessage!({ data: { type: "failed" } });
+  await tick();
+  WorkletNode.latest!.port.emit("failed");
   await rejected;
   assert.equal(workers[0].terminateCalls, 1);
   assert.equal(raw.readyState, "ended");
   assert.equal(Context.latest!.source.connections.length, 0);
+});
+
+for (const failure of ["startup", "overload", "processorerror"] as const) test(`DPDFNet ${failure} falls back to 2 HR, then RNNoise only if 2 HR fails`, async (t) => {
+  const { preparation, workers, raw } = preparedDpdfnet(t);
+  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "headphones", undefined, preparation, 73);
+  await tick();
+  workers[0].onmessage!({ data: { type: failure === "startup" ? "failed" : "ready" } });
+  if (failure !== "startup") {
+    const microphone = await capturing;
+    microphone.track.enabled = false;
+    if (failure === "overload") WorkletNode.latest!.port.emit("bypassed");
+    else WorkletNode.latest!.onprocessorerror!();
+  }
+  await tick();
+  assert.equal(workers.length, 2);
+  const smaller = WorkletNode.latest!;
+  workers[1].onmessage!({ data: { type: "ready" } });
+  await tick();
+  const microphone = await capturing;
+  assert.match(microphone.status, /DPDFNet-2 HR active/);
+  assert.equal(raw.settings.noiseSuppression, false);
+  assert.equal(Context.latest!.gain.gain.value, .73);
+  assert.equal(microphone.track, Context.latest!.processed);
+  assert.equal(microphone.naturalTrack, Context.latest!.natural);
+  assert.equal(microphone.track.enabled, failure === "startup");
+  assert.deepEqual(Context.latest!.gain.connections, [smaller]);
+  workers[1].onmessage!({ data: { type: "output", duration: 2, samples: new ArrayBuffer(4) } });
+  assert.deepEqual((microphone.diagnostics() as any).dpdfnet, { profile: 2, processedHops: 1, meanProcessingMs: 2, maxProcessingMs: 2, hopBudgetMs: 10 });
+  assert.equal(workers.length, 2);
+  smaller.port.emit("bypassed");
+  await tick();
+  const rnnoise = WorkletNode.latest!;
+  assert.equal(rnnoise.options.processorOptions.engine, "rnnoise");
+  rnnoise.port.emit("ready");
+  await tick();
+  assert.match(microphone.status, /RNNoise active/);
+  assert.equal(workers[1].terminateCalls, 1);
+  assert.equal(microphone.track.enabled, failure === "startup");
+  assert.equal(Context.latest!.gain.gain.value, .73);
+  microphone.stop();
+});
+
+test("stopping during 2 HR initialization cannot reconnect or start RNNoise", async (t) => {
+  const { preparation, workers } = preparedDpdfnet(t);
+  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "headphones", undefined, preparation);
+  await tick();
+  workers[0].onmessage!({ data: { type: "ready" } });
+  const microphone = await capturing;
+  WorkletNode.latest!.port.emit("bypassed");
+  await tick();
+  const smaller = WorkletNode.latest!;
+  const ready = workers[1].onmessage!;
+  microphone.stop();
+  ready({ data: { type: "ready" } });
+  await tick();
+  assert.equal(workers[1].terminateCalls, 1);
+  assert.equal(smaller.port.closed, true);
+  assert.equal(WorkletNode.latest, smaller);
+  assert.equal(microphone.track.readyState, "ended");
+  assert.deepEqual(Context.latest!.gain.connections, []);
 });
 
 test("headphones opt out of echo and automatic level processing; speakers retain both", async (t) => {

@@ -445,8 +445,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
             <AudioMenu label="User Settings" settings open={audioMenu === "settings"} onOpenChange={(open) => setAudioMenu(open ? "settings" : undefined)} menuRef={audioMenu === "settings" ? audioMenuRef : undefined}>
               <strong>Audio settings</strong>
               <fieldset className="device-options">
-                <label><input type="checkbox" role="switch" checked={systemSounds} onChange={(event) => { setSystemSoundsEnabled(event.target.checked); if (event.target.checked) { void preloadSoundEffects(); playSound("toggle-on"); } }} /><span>System sounds</span></label>
-                <p>Saved for this browser. Does not mute voices or mic playback. Effects stay silent on mobile.</p>
+                <label><input type="checkbox" role="switch" checked={systemSounds} onChange={(event) => { setSystemSoundsEnabled(event.target.checked); if (event.target.checked) { void preloadSoundEffects(); playSound("toggle-on"); } }} /><span>Caper sound effects</span></label>
               </fieldset>
               <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
               {state.diagnostics && <button type="button" onClick={() => setAudioPanel("connection")}>Connection details</button>}
