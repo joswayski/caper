@@ -217,25 +217,33 @@
 /* A channel's voice lives on its line: who is in voice, and Join. The line is
    a flex row so the controls take the room they need and the channel name
    gets the rest (truncating), never hidden underneath them. */
-.channel-row, .channel-line { position: relative; min-width: 0; display: flex; align-items: center; gap: 6px; border-radius: 6px; }
+.channel-row, .channel-line { position: relative; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; border-radius: 6px; }
 .channel-row:has(.channel-link[aria-current]) { background: rgb(182 77 50 / .14); }
-.channel-row .channel-link { min-width: 0; flex: 1; background: transparent; }
+.channel-row .channel-link { min-width: 0; flex: 1 1 auto; background: transparent; }
 .channel-row .channel-link > span, .channel-line .channel-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel-navigation li[data-voice] { flex-wrap: wrap; }
 .channel-line { flex: 1 1 100%; }
 .channel-line:has(.channel-select[aria-current="page"]) { background: rgb(182 77 50 / .16); }
 .channel-line:hover:not(:has(.channel-select[aria-current="page"])) { background: var(--surface-raised); }
-.channel-line .channel-select, .channel-line .channel-select:hover, .channel-line .channel-select[aria-current="page"] { min-width: 0; background: transparent; }
-/* Inline voice reserves the settings button's space itself. */
-.channel-line:has(.channel-voice) .channel-select { padding-right: 4px; }
-.channel-voice { flex: none; display: flex; align-items: center; gap: 6px; padding-right: 6px; }
-.channel-line:has(.channel-manage) .channel-voice { padding-right: 34px; }
-/* Who is in voice sits on its own row under the channel name, so the name
-   keeps the full line. The faces line up with the name's first letter. */
-.channel-navigation li { --voice-indent: 31px; }
-.channel-item { --voice-indent: 38px; }
-.channel-voice-row { flex-basis: 100%; min-width: 0; min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 1px 6px 2px var(--voice-indent); }
-.channel-voice-row .channel-join { margin-left: auto; }
+.channel-line .channel-select, .channel-line .channel-select:hover, .channel-line .channel-select[aria-current="page"] { min-width: 0; flex: 1 1 auto; padding-right: 4px; background: transparent; }
+/* The line keeps the settings button's space, on the name's row and on a
+   wrapped voice row alike. */
+.channel-line:has(.channel-manage) { padding-right: 34px; }
+.channel-line:has(.channel-manage) .channel-voice { padding-right: 0; }
+/* Voice sits beside the name. The name's full width is its flex basis, so when
+   name and voice do not fit, voice wraps onto a row of its own; the margin
+   indents that row to the name's first letter (and spaces them when inline).
+   The block margin keeps a wrapped row off the line's edge; inline, the group
+   is exactly as tall as the name. */
+.channel-voice { flex: none; display: flex; align-items: center; gap: 6px; margin: 5px 0 5px calc(var(--voice-indent) - 4px); padding-right: 6px; }
+/* Settings stays on the name's row when voice wraps beneath it. */
+.channel-line .channel-manage { top: 5px; }
+@media (hover: none), (pointer: coarse) {
+  .channel-line:has(.channel-manage) { padding-right: 48px; }
+  .channel-line .channel-manage { top: 0; }
+}
+.channel-navigation li { --voice-indent: 35px; }
+.channel-item { --voice-indent: 42px; }
 .sidebar-channels { container: channels / inline-size; }
 .voice-stack { height: 28px; display: flex; align-items: center; padding: 0 5px 0 4px; border: 0; border-radius: 999px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .voice-stack-faces { display: flex; align-items: center; }
@@ -267,7 +275,9 @@
 .voice-stack-avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 1px var(--caper); }
 .voice-stack-faces small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
 /* The channel name keeps priority: controls step down as the sidebar narrows. */
-@container channels (max-width: 219px) {
+/* Below the homepage room's width, Join drops its icon so voice fits beside
+   more channel names. */
+@container channels (max-width: 299px) {
   .channel-join.voice-button > svg { display: none; }
   .channel-join.voice-button { padding: 0 8px; }
 }
@@ -275,7 +285,7 @@
 .voice-occupants[data-open] { grid-template-rows: 1fr; }
 .voice-occupants-inner { min-height: 0; overflow: hidden; }
 .voice-occupants-inner:has(.volume-menu-open) { overflow: visible; }
-.people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; display: grid; gap: 0; margin: 0 0 6px calc(var(--voice-indent, 31px) - 2px); padding: 0; overflow-y: auto; list-style: none; }
+.people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; display: grid; gap: 0; margin: 2px 0 6px calc(var(--voice-indent, 35px) - 6px); padding: 0; overflow-y: auto; list-style: none; }
 .people-panel .voice-occupants .voice-occupants-inner > ul.volume-menu-open { max-height: none; overflow: visible; }
 .voice-occupants .participant { gap: 8px; padding: 4px 6px; border-radius: 6px; }
 .voice-occupants .participant:hover { background: var(--surface-raised); }
@@ -290,8 +300,6 @@
 .voice-occupants .participant-volume { top: 34px; }
 .voice-elsewhere .voice-roster-label { margin-top: 16px; }
 @media (max-width: 760px) {
-  .channel-line:has(.channel-voice) .channel-select { padding-right: 4px; }
-  .channel-line:has(.channel-manage) .channel-voice { padding-right: 50px; }
   .people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -46,8 +46,13 @@
 
 /* Raised layers. --z is the resting height in logical pixels. */
 .lz { position: relative; transform: translateZ(calc(var(--z, 0) * var(--depth) * 1px)); transform-style: preserve-3d; }
-.live-stage[data-intro] .live-window { animation: live-arrive 1.1s cubic-bezier(.16, 1, .3, 1) both; }
-@keyframes live-arrive { from { transform: translate3d(0, 40px, -80px); } }
+/* Arrival, once, when the window is first shown. It moves the whole scene
+   (translate composes with the pose transform), so the chassis slabs travel
+   with the window and never pass in front of it. */
+.live-stage[data-ready] { animation: live-fade .5s ease-out backwards; }
+.live-stage[data-ready] .live-scene { animation: live-arrive 1.1s cubic-bezier(.16, 1, .3, 1) backwards; }
+@keyframes live-fade { from { opacity: 0; } }
+@keyframes live-arrive { from { translate: 0 40px -80px; } }
 
 /* Chassis: stacked slabs read as the window's thickness when it turns. */
 .live-shadow { position: absolute; inset: 10% 6% -4%; border-radius: 48px; background: rgb(0 0 0 / .6); filter: blur(44px); opacity: var(--depth); transform: translate3d(0, 34px, -90px); pointer-events: none; }
@@ -198,7 +203,7 @@ html.live-sheet-open { overflow: hidden; }
 @keyframes live-talk { from { opacity: .9; transform: scale(1); } to { opacity: .35; transform: scale(1.14); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-stage[data-intro] .live-window,
+  .live-stage[data-ready], .live-stage[data-ready] .live-scene,
   .live-scene[data-mode="sheet"][data-active],
   .live-invite, .live-invite i::after,
   .live-status[data-status="live"] i::after,

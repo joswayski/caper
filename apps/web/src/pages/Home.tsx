@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
+import { liveRestScript } from "../components/liveMotion";
 import type { GeneralChatHistory } from "../chat/types";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
@@ -59,6 +60,8 @@ export default function Home({ account, history, initialNow, latestChanges }: Ho
 
         <LiveWindow account={account} history={history} active={open} onActiveChange={setOpen} />
       </section>
+      {/* Runs during parsing, once the hero it measures is complete. */}
+      <script dangerouslySetInnerHTML={{ __html: liveRestScript }} suppressHydrationWarning />
 
       <section className="latest-changes shell" aria-labelledby="latest-changes-heading">
         <h2 id="latest-changes-heading">Latest changes</h2>

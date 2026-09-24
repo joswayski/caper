@@ -148,10 +148,7 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
     {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
 
-/**
- * Voice for one channel: summary sits on the channel's line (Join, when nobody
- * is in voice there); list goes beneath it (who is in voice, Join, and names).
- */
+/** Voice occupants for one channel: a summary for its line and a list beneath it. */
 export interface VoiceSlot { summary: ReactNode; list: ReactNode }
 
 interface CallProps {
@@ -493,8 +490,9 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     return { people: watched ?? [], own: false };
   };
   const channelLabel = (channelId?: string) => channelId === channel?.id || !channelId ? channel?.name ?? "general" : voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice";
-  // A channel with people in voice gets a row beneath its name: a quiet stack
-  // of who is in it (toggles the list below) and Join, which glows softly.
+  // Each channel line carries its voice: a quiet stack of who is in it (toggles
+  // the list below) and Join, which glows softly while people are in there.
+  // When the name leaves no room, both wrap onto an indented row beneath it.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
     const { people, own } = rosterFor(channelId);
@@ -522,15 +520,11 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
-    if (!stack) return { summary: <span className="channel-voice">{join}</span>, list: null };
     return {
-      summary: null,
-      list: <>
-        <div className="channel-voice-row">{stack}{join}</div>
-        <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
-          <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
-        </div>
-      </>,
+      summary: <span className="channel-voice">{stack}{join}</span>,
+      list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
+        <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
+      </div> : null,
     };
   };
   let navigation: ReactNode;

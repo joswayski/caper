@@ -19,13 +19,69 @@ interface MotionOptions {
   interacted: () => void;
 }
 
-/** Resting pose in degrees. The window turns toward the hero copy on its left. */
-const REST = { x: 11, y: 16, z: -1.6 };
-const NARROW_REST = { x: 8, y: 5, z: -0.8 };
 const LIMIT = 16;
 const HOVER = 2.4;
 const IDLE = { x: 0.9, y: 1.4, z: 0.5, lift: 7 };
-export const EXPAND_MIN_WIDTH = 1024;
+/** Opening and closing run for a fixed time and ease to a stop. */
+const OPEN_MS = 650;
+const easeOut = (t: number) => 1 - (1 - t) ** 4;
+
+/**
+ * Measures the stage, sizes the scene and puts it in its resting pose. It has
+ * no outside references, so the homepage also inlines it (liveRestScript) to
+ * paint the window from the server's HTML before the app hydrates.
+ */
+export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
+  const stageBox = stage.getBoundingClientRect();
+  if (!stageBox.width || !stageBox.height) return null;
+  const viewportWidth = document.documentElement.clientWidth;
+  // innerWidth matches CSS media queries, which include the scrollbar.
+  const mode: LiveMode = window.innerWidth >= 1024 ? "expand" : "sheet";
+  let geometry: { width: number; height: number; left: number; top: number; scale: number; dx: number; dy: number };
+  if (mode === "expand") {
+    const bounds = stage.closest("[data-live-bounds]")?.getBoundingClientRect() ?? stageBox;
+    const width = Math.round(Math.min(bounds.width, 1240));
+    const height = Math.round(Math.max(560, Math.min(bounds.height - 24, 780)));
+    const left = bounds.left - stageBox.left + (bounds.width - width) / 2;
+    const top = bounds.top - stageBox.top + (bounds.height - height) / 2;
+    geometry = {
+      width, height, left, top,
+      scale: Math.min(stageBox.width * 0.92 / width, stageBox.height * 0.9 / height),
+      dx: stageBox.width / 2 - (left + width / 2),
+      dy: stageBox.height / 2 - (top + height / 2),
+    };
+  } else {
+    // The resting card keeps the viewport's width so the app inside already
+    // uses the same layout it will have full screen.
+    const width = viewportWidth;
+    const height = Math.round(width * stageBox.height / stageBox.width);
+    geometry = {
+      width, height, left: (stageBox.width - width) / 2, top: (stageBox.height - height) / 2,
+      scale: Math.min(stageBox.width * 0.93 / width, stageBox.height * 0.93 / height), dx: 0, dy: 0,
+    };
+  }
+  // Resting pose in degrees. The window turns toward the hero copy on its left.
+  const rest = mode === "expand" ? { x: 11, y: 16, z: -1.6 } : { x: 8, y: 5, z: -0.8 };
+  scene.dataset.mode = mode;
+  scene.dataset.size = geometry.width >= 700 ? "wide" : "narrow";
+  scene.style.setProperty("--scene-width", `${geometry.width}px`);
+  scene.style.setProperty("--scene-height", `${geometry.height}px`);
+  scene.style.setProperty("--scene-left", `${geometry.left}px`);
+  scene.style.setProperty("--scene-top", `${geometry.top}px`);
+  // Lets resting-state labels stay a readable size on the shrunken window.
+  scene.style.setProperty("--counter-scale", (1 / geometry.scale).toFixed(4));
+  scene.style.setProperty("--depth", "1");
+  scene.style.transform = `translate3d(${geometry.dx.toFixed(2)}px, ${geometry.dy.toFixed(2)}px, 0) `
+    + `scale3d(${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}) `
+    + `rotateX(${rest.x.toFixed(3)}deg) rotateY(${rest.y.toFixed(3)}deg) rotateZ(${rest.z.toFixed(3)}deg)`;
+  return { mode, geometry, rest };
+}
+
+/**
+ * Inline script for the server's HTML: lays out and shows the resting window
+ * at first paint instead of leaving its space empty until hydration.
+ */
+export const liveRestScript = `try{const s=document.querySelector(".live-stage"),c=s&&s.querySelector(".live-scene");if(c&&(${layoutLiveScene.toString()})(s,c))s.dataset.ready=""}catch{}`;
 
 const clamp = (value: number, limit = LIMIT) => Math.max(-limit, Math.min(limit, value));
 
@@ -39,48 +95,18 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
   let active = false;
   /** 0 at rest, 1 fully open. */
   let open = 0;
-  const geometry = { width: 0, height: 0, left: 0, top: 0, scale: 1, dx: 0, dy: 0 };
+  let tween = { from: 0, to: 0, start: 0 };
+  let geometry = { width: 0, height: 0, left: 0, top: 0, scale: 1, dx: 0, dy: 0 };
+  let rest = { x: 0, y: 0, z: 0 };
   const tilt = { x: 0, y: 0 };
   const target = { x: 0, y: 0 };
   const hover = { x: 0, y: 0, tx: 0, ty: 0 };
   let press: { id: number; x: number; y: number; tiltX: number; tiltY: number; touch: boolean; dragging: boolean } | null = null;
 
   const layout = () => {
-    const stageBox = stage.getBoundingClientRect();
-    if (!stageBox.width || !stageBox.height) return;
-    const viewportWidth = document.documentElement.clientWidth;
-    // innerWidth matches CSS media queries, which include the scrollbar.
-    mode = window.innerWidth >= EXPAND_MIN_WIDTH ? "expand" : "sheet";
-    scene.dataset.mode = mode;
-    if (mode === "expand") {
-      const bounds = options.bounds()?.getBoundingClientRect() ?? stageBox;
-      const width = Math.round(Math.min(bounds.width, 1240));
-      const height = Math.round(Math.max(560, Math.min(bounds.height - 24, 780)));
-      const left = bounds.left - stageBox.left + (bounds.width - width) / 2;
-      const top = bounds.top - stageBox.top + (bounds.height - height) / 2;
-      Object.assign(geometry, {
-        width, height, left, top,
-        scale: Math.min(stageBox.width * 0.92 / width, stageBox.height * 0.9 / height),
-        dx: stageBox.width / 2 - (left + width / 2),
-        dy: stageBox.height / 2 - (top + height / 2),
-      });
-    } else {
-      // The resting card keeps the viewport's width so the app inside already
-      // uses the same layout it will have full screen.
-      const width = viewportWidth;
-      const height = Math.round(width * stageBox.height / stageBox.width);
-      Object.assign(geometry, {
-        width, height, left: (stageBox.width - width) / 2, top: (stageBox.height - height) / 2,
-        scale: Math.min(stageBox.width * 0.93 / width, stageBox.height * 0.93 / height), dx: 0, dy: 0,
-      });
-    }
-    scene.style.setProperty("--scene-width", `${geometry.width}px`);
-    scene.style.setProperty("--scene-height", `${geometry.height}px`);
-    scene.style.setProperty("--scene-left", `${geometry.left}px`);
-    scene.style.setProperty("--scene-top", `${geometry.top}px`);
-    // Lets resting-state labels stay a readable size on the shrunken window.
-    scene.style.setProperty("--counter-scale", (1 / geometry.scale).toFixed(4));
-    scene.dataset.size = geometry.width >= 700 ? "wide" : "narrow";
+    const pose = layoutLiveScene(stage, scene);
+    if (!pose) return;
+    ({ mode, geometry, rest } = pose);
     apply(performance.now());
   };
 
@@ -94,12 +120,11 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     hover.x += (hover.tx - hover.x) * blend * 0.6;
     hover.y += (hover.ty - hover.y) * blend * 0.6;
     const goal = active && mode === "expand" ? 1 : 0;
-    // Opening uses a slightly slower, softer curve than tilting.
-    open = reduced ? goal : open + (goal - open) * (1 - Math.exp(-step / 120));
-    // Snap once the remaining motion is imperceptible, so the window becomes
-    // plain layout promptly instead of easing through an invisible tail.
-    if (Math.abs(goal - open) < 0.02) open = goal;
-    const rest = mode === "expand" ? REST : NARROW_REST;
+    // Opening and closing are timed eases that come to rest exactly on the
+    // goal, so the window is still and centered before it becomes flat layout.
+    if (goal !== tween.to) tween = { from: open, to: goal, start: time };
+    const progress = reduced ? 1 : Math.min(1, Math.max(0, (time - tween.start) / OPEN_MS));
+    open = progress === 1 ? goal : tween.from + (goal - tween.from) * easeOut(progress);
     const closed = 1 - open;
     const elapsed = reduced ? 0 : time - start;
     const idle = reduced ? 0 : closed;
