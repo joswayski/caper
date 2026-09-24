@@ -46,7 +46,7 @@
 
 /* Raised layers. --z is the resting height in logical pixels. */
 .lz { position: relative; transform: translateZ(calc(var(--z, 0) * var(--depth) * 1px)); transform-style: preserve-3d; }
-.live-stage[data-ready]:not([data-active]) .live-window { animation: live-arrive 1.1s cubic-bezier(.16, 1, .3, 1) both; }
+.live-stage[data-intro] .live-window { animation: live-arrive 1.1s cubic-bezier(.16, 1, .3, 1) both; }
 @keyframes live-arrive { from { transform: translate3d(0, 40px, -80px); } }
 
 /* Chassis: stacked slabs read as the window's thickness when it turns. */
@@ -79,7 +79,8 @@
 .live-app .call-page { height: 100%; min-height: 0; background: transparent; transform-style: preserve-3d; }
 .live-app .call-room { width: 100%; height: 100%; min-height: 0; margin: 0; overflow: visible; border: 0; border-radius: 0 0 17px 17px; background: transparent; transform-style: preserve-3d; }
 .live-app .people-panel { border-bottom-left-radius: 17px; transform: translateZ(calc(var(--depth) * 18px)); transform-style: preserve-3d; }
-.live-app .people-panel::before { position: absolute; inset: 0; z-index: -1; content: ""; border-radius: inherit; background: #06080a; transform: translateZ(calc(var(--depth) * -8px)); pointer-events: none; }
+/* Edge plates fade with depth: flat, they would sit in the panel's own plane. */
+.live-app .people-panel::before { position: absolute; inset: 0; z-index: -1; content: ""; border-radius: inherit; background: #06080a; opacity: var(--depth); transform: translateZ(calc(var(--depth) * -8px)); pointer-events: none; }
 .live-app .voice-panel { transform: translateZ(calc(var(--depth) * 18px)); }
 .live-app .stage { overflow: hidden auto; border-bottom-right-radius: 17px; transform: translateZ(calc(var(--depth) * 6px)); }
 @media (max-width: 760px) {
@@ -95,10 +96,9 @@
   .live-stage:not([data-active]) .live-app .voice-panel { display: none; }
 }
 
-/* Fully open: plain layout, so the app is crisp and behaves like the app. */
-.live-scene[data-settled] { transform-style: flat; }
-.live-scene[data-settled] :is(.lz, .live-window, .live-app, .call-page, .call-room, .people-panel, .voice-panel, .stage) { transform: none; transform-style: flat; }
-.live-scene[data-settled] :is(.live-slab, .live-shadow, .live-app .people-panel::before) { display: none; }
+/* Fully open, the scene's own transform is removed (see liveMotion) and every
+   layer sits at depth 0. The layer structure is kept as is: switching it at the
+   end of the animation made the compositor repaint panels out of order. */
 
 /* At rest the whole window is one button: drag to tilt, click or tap to open. */
 .live-activator { position: absolute; inset: 44px 0 0; z-index: 5; display: grid; place-items: center; padding: 0; border: 0; border-radius: 0 0 18px 18px; color: inherit; background: transparent; font: inherit; cursor: inherit; transform: translateZ(calc(var(--depth) * 80px)); }
@@ -132,7 +132,7 @@ html.live-sheet-open { overflow: hidden; }
 .preview-room { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 10px; height: 100%; padding: 10px; transform-style: preserve-3d; }
 .live-scene[data-size="narrow"] .preview-room { grid-template-columns: minmax(0, 1fr); padding: 8px; }
 .live-scene[data-size="narrow"] .preview-sidebar { display: none; }
-.preview-sidebar::before, .preview-main::before, .preview-voice::before, .preview-composer::before { position: absolute; inset: -1px; z-index: -1; content: ""; border-radius: inherit; background: #06080a; transform: translateZ(calc(var(--depth) * -7px)); pointer-events: none; }
+.preview-sidebar::before, .preview-main::before, .preview-voice::before, .preview-composer::before { position: absolute; inset: -1px; z-index: -1; content: ""; border-radius: inherit; background: #06080a; opacity: var(--depth); transform: translateZ(calc(var(--depth) * -7px)); pointer-events: none; }
 .preview-sidebar { display: flex; flex-direction: column; min-height: 0; padding: 14px 10px 10px; border: 1px solid #232b2e; border-radius: 12px; background: var(--surface-sidebar); }
 .preview-space { margin: 0 6px 16px; font-size: 15px; font-weight: 800; letter-spacing: -.02em; }
 .preview-label { margin: 0 6px 7px; color: var(--text-muted); font-size: 11.5px; font-weight: 600; }
@@ -184,7 +184,7 @@ html.live-sheet-open { overflow: hidden; }
 @keyframes live-talk { from { opacity: .9; transform: scale(1); } to { opacity: .35; transform: scale(1.14); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-stage[data-ready]:not([data-active]) .live-window,
+  .live-stage[data-intro] .live-window,
   .live-scene[data-mode="sheet"][data-active],
   .live-invite, .live-invite i::after,
   .live-status[data-status="live"] i::after,

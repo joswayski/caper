@@ -221,10 +221,25 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const joinDisabled = !identityReady || state.phase === "leaving" || ((!viewingVoice || idle) && (available !== true || actionPending));
   const joinUnavailable = (!viewingVoice || idle) && available !== true;
   const controlsDisabled = (!idle && !connected) || actionPending;
-  const roster = idle ? publicParticipants[mediaRoot] ?? [] : state.participants;
+  // Keep the public roster until our own call reports its participants, so
+  // joining (or failing to join) never empties the list for a moment.
+  const roster = idle || (state.phase === "joining" && !state.participants.length) ? publicParticipants[mediaRoot] ?? [] : state.participants;
   const identityName = account?.displayName || chatAuthor?.name || name;
   const accountPresence = !!account && !!channel?.spaceId && !channel.demo;
   const joined = useRef(false);
+  // The client reports an error only on the update where it happens, so keep
+  // it until the next voice action or until it is dismissed.
+  const [voiceError, setVoiceError] = useState<string>();
+  useEffect(() => { if (state.error) setVoiceError(state.error); }, [state.error]);
+  // Show "Connecting…" only if joining takes a moment; an immediate failure
+  // (such as a denied microphone) should not flash it.
+  const [joiningShown, setJoiningShown] = useState(false);
+  useEffect(() => {
+    if (state.phase !== "joining") { setJoiningShown(false); return; }
+    const timer = setTimeout(() => setJoiningShown(true), 200);
+    return () => clearTimeout(timer);
+  }, [state.phase]);
+  const pendingJoin = viewingVoice && state.phase === "joining" && !joiningShown;
   const Root = embedded ? "div" : "main";
 
   useEffect(() => {
@@ -339,6 +354,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     } finally { if (generation === actionGeneration.current) setActionPending(false); }
   };
   const leave = () => {
+    setVoiceError(undefined);
     if (connected) playSound("channel-leave");
     void act(() => clientRef.current!.leave());
   };
@@ -353,8 +369,9 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     setAudioPanel(undefined);
   };
   const joinVoice = () => {
-    if (joinDisabled) return;
+    if (joinDisabled || (viewingVoice && !idle)) return;
     setActionError(undefined);
+    setVoiceError(undefined);
     if (!viewingVoice) {
       const previous = clientRef.current!;
       previous.leaveImmediately();
@@ -365,6 +382,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     void clientRef.current!.join(identityName.trim(), deviceId);
   };
   const openMicTest = () => {
+    setVoiceError(undefined);
     setAudioPanel("mic");
     void act(() => connected ? clientRef.current!.setMonitoring(true) : clientRef.current!.startLocalMicTest(deviceId));
   };
@@ -442,7 +460,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
           </div>
           <div className="voice-panel">
           <div className="voice-dock">
-            {!idle && <div className="connected-channel" data-phase={state.phase} role="status">
+            {!idle && !pendingJoin && <div className="connected-channel" data-phase={state.phase} role="status">
               <button type="button" className="voice-dock-channel" onClick={() => voiceChannel && onVoiceChannelOpen?.(voiceChannel.id, voiceChannel.spaceId)}>
                 <AudioLines aria-hidden="true" />
                 <span>
@@ -452,14 +470,18 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
               </button>
               <Tooltip content={connected ? "Disconnect" : "Cancel"}><button type="button" className="voice-hangup" aria-label={connected ? "Leave voice" : "Cancel joining voice"} onClick={leave}><PhoneOff aria-hidden="true" /></button></Tooltip>
             </div>}
-            {(idle || !viewingVoice) && <div className="voice-join-row">
+            {(idle || !viewingVoice || pendingJoin) && <div className="voice-join-row">
               <Volume2 aria-hidden="true" />
               <span>
                 <strong>{channel?.name ?? "general"}</strong>
-                <small>{!idle ? "Switch voice to this channel" : roster.length ? `${roster.length} in voice` : "No one in voice yet"}</small>
+                <small>{!idle && !viewingVoice ? "Switch voice to this channel" : roster.length ? `${roster.length} in voice` : "No one in voice yet"}</small>
               </span>
-              <Tooltip id="voice-availability" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : undefined}><button className="voice-button" type="button" aria-label="Join voice" aria-disabled={joinDisabled} onClick={joinVoice}><Speech aria-hidden="true" />Join</button></Tooltip>
+              <Tooltip id="voice-availability" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : undefined}><button className="voice-button" type="button" aria-label="Join voice" aria-disabled={joinDisabled || pendingJoin} aria-busy={pendingJoin} onClick={joinVoice}><Speech aria-hidden="true" />Join</button></Tooltip>
             </div>}
+            {voiceError && !audioPanel && <p className="voice-error" role="alert">
+              <span>{voiceError}</span>
+              <button type="button" aria-label="Dismiss voice error" onClick={() => setVoiceError(undefined)}><X aria-hidden="true" /></button>
+            </p>}
           </div>
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
@@ -504,7 +526,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady && engaged} messageSounds={engaged} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
-            {!audioPanel && (state.error || actionError) && <div className="room-error chat-refresh-error" role="alert">{state.error || actionError}</div>}
+            {!audioPanel && actionError && <div className="room-error chat-refresh-error" role="alert">{actionError}</div>}
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />
@@ -524,7 +546,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
           <h2 id="audio-dialog-title">{audioPanel === "mic" ? "Mic test" : audioPanel === "debug" ? "Audio diagnostics" : "Connection details"}</h2>
           <button type="button" className="voice-icon-button" aria-label="Close audio settings" onClick={closeAudioPanel}><X aria-hidden="true" /></button>
         </div>
-        {(actionError || state.error) && <p className="call-error" role="alert">{actionError || state.error}</p>}
+        {audioPanel && (actionError || voiceError) && <p className="call-error" role="alert">{actionError || voiceError}</p>}
         {audioPanel === "mic" && <>
           {actionPending && <p className="noise-status" role="status">Preparing microphone…</p>}
           {actionPending && <p className="noise-status">Allow microphone access if your browser asks. You can close this window to cancel.</p>}

@@ -36,6 +36,8 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
   const [engaged, setEngaged] = useState(false);
   const [online, setOnline] = useState(false);
   const [touched, setTouched] = useState(false);
+  // The arrival animation plays once per page load, never again on close.
+  const [intro, setIntro] = useState(true);
   const status: LiveStatus = !live ? "preview" : online ? "live" : "connecting";
 
   useLayoutEffect(() => {
@@ -55,6 +57,11 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
   useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
 
   useEffect(() => {
+    const timer = setTimeout(() => setIntro(false), 1_300);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     const motion = controller.current;
     if (!motion) return;
     const opening = active && !activeRef.current;
@@ -62,7 +69,7 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
     motion.setActive(active);
     const fullScreen = active && motion.mode === "sheet";
     setSheet(fullScreen);
-    if (active) setEngaged(true);
+    if (active) { setEngaged(true); setIntro(false); }
     document.documentElement.classList.toggle("live-sheet-open", fullScreen);
     if (opening) {
       if (fullScreen) sceneRef.current?.focus({ preventScroll: true });
@@ -92,7 +99,7 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
   }, [active]);
 
   return (
-    <div className="live-stage" ref={stageRef} data-ready={ready ? "" : undefined} data-sheet={sheet ? "" : undefined} data-active={active ? "" : undefined}>
+    <div className="live-stage" ref={stageRef} data-ready={ready ? "" : undefined} data-intro={ready && intro ? "" : undefined} data-sheet={sheet ? "" : undefined} data-active={active ? "" : undefined}>
       <div className="live-glow" aria-hidden="true" />
       <div
         className="live-scene"

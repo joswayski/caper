@@ -4,13 +4,19 @@
 .call-destination:hover { color: var(--text); }
 .voice-panel { flex: 0 0 auto; margin: auto 12px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
 .voice-dock { display: grid; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
-.voice-join-row, .connected-channel { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.voice-join-row, .connected-channel { height: 40px; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.voice-error { display: flex; align-items: flex-start; gap: 6px; margin: 2px 0 0; padding: 7px 4px 3px 8px; border-top: 1px solid var(--border); color: #ff9b82; font-size: .7rem; line-height: 1.4; }
+.voice-error span { flex: 1; }
+.voice-error button { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.voice-error button:hover { color: var(--text); background: var(--surface-composer); }
+.voice-error svg { width: 14px; height: 14px; }
 .voice-join-row > svg, .voice-dock-channel > svg { width: 18px; height: 18px; flex: 0 0 auto; margin-left: 4px; color: var(--text-muted); }
 .voice-join-row > span, .voice-dock-channel > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
 .voice-join-row strong, .voice-dock-channel strong { overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
 .voice-join-row small, .voice-dock-channel small { overflow: hidden; color: var(--text-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
 .voice-join-row .voice-button { min-height: 32px; padding: 5px 10px; }
-.voice-dock-channel { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 0; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.voice-join-row .voice-button[aria-busy="true"] { cursor: progress; }
+.voice-dock-channel { height: 100%; min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 0; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .voice-dock-channel:hover { background: var(--surface-composer); }
 .voice-dock-channel:hover small { text-decoration: underline; text-underline-offset: 2px; }
 .connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) { color: #8cb262; }
