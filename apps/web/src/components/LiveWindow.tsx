@@ -36,8 +36,6 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
   const [engaged, setEngaged] = useState(false);
   const [online, setOnline] = useState(false);
   const [touched, setTouched] = useState(false);
-  // The arrival animation plays once per page load, never again on close.
-  const [intro, setIntro] = useState(true);
   const status: LiveStatus = !live ? "preview" : online ? "live" : "connecting";
 
   useLayoutEffect(() => {
@@ -57,19 +55,15 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
   useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
 
   useEffect(() => {
-    const timer = setTimeout(() => setIntro(false), 1_300);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
     const motion = controller.current;
     if (!motion) return;
     const opening = active && !activeRef.current;
+    const closing = !active && activeRef.current;
     activeRef.current = active;
     motion.setActive(active);
     const fullScreen = active && motion.mode === "sheet";
     setSheet(fullScreen);
-    if (active) { setEngaged(true); setIntro(false); }
+    if (active) setEngaged(true);
     document.documentElement.classList.toggle("live-sheet-open", fullScreen);
     if (opening) {
       if (fullScreen) sceneRef.current?.focus({ preventScroll: true });
@@ -80,7 +74,7 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
         if (Math.abs(top) > 4) window.scrollTo({ top: window.scrollY + top, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
         setTimeout(() => document.getElementById("chat-message")?.focus({ preventScroll: true }), 420);
       }
-    } else if (!active) {
+    } else if (closing) {
       activatorRef.current?.focus({ preventScroll: true });
     }
     return () => document.documentElement.classList.remove("live-sheet-open");
@@ -99,11 +93,14 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
   }, [active]);
 
   return (
-    <div className="live-stage" ref={stageRef} data-ready={ready ? "" : undefined} data-intro={ready && intro ? "" : undefined} data-sheet={sheet ? "" : undefined} data-active={active ? "" : undefined}>
+    // liveRestScript (Home) lays out and reveals the window before hydration,
+    // so the stage and scene carry attributes React did not render.
+    <div className="live-stage" ref={stageRef} suppressHydrationWarning data-ready={ready ? "" : undefined} data-sheet={sheet ? "" : undefined} data-active={active ? "" : undefined}>
       <div className="live-glow" aria-hidden="true" />
       <div
         className="live-scene"
         ref={sceneRef}
+        suppressHydrationWarning
         tabIndex={-1}
         data-active={active ? "" : undefined}
         role={sheet ? "dialog" : undefined}
