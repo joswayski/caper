@@ -609,6 +609,7 @@ async fn batched_pulls_keep_partial_success_and_fail_closed_on_uncertain_results
     // Outcome: Some((allocated first?, allocated second?)) or None for uncertain.
     let allocated = |i: usize| json!({"mid":format!("m{i}")});
     let refused = |code: &str| json!({"errorCode":code,"errorDescription":"source unavailable"});
+    let live_refusal = json!({"mid":"","errorCode":"not_found_track_error","errorDescription":"Track not found on remote peer. Make sure the publisher peer is connected and sending packets for this track"});
     type Case = (Vec<Value>, bool, bool, Option<(bool, bool)>);
     let cases: Vec<Case> = vec![
         (
@@ -634,6 +635,20 @@ async fn batched_pulls_keep_partial_success_and_fail_closed_on_uncertain_results
             false,
             false,
             Some((false, false)),
+        ),
+        // Captured from live Cloudflare (September 24, 2026) for a session that
+        // already has SDP: refusals carry an empty MID, not a missing one.
+        (
+            vec![live_refusal.clone(), live_refusal.clone()],
+            false,
+            false,
+            Some((false, false)),
+        ),
+        (
+            vec![allocated(1), live_refusal.clone()],
+            true,
+            true,
+            Some((true, false)),
         ),
         // An offer without allocations, or allocations without one, is uncertain.
         (
