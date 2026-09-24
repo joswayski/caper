@@ -283,9 +283,10 @@ def main() -> None:
     output = find(audio, description="Output volume")
     left, top, right, bottom = map(int, re.findall(r"\d+", output.attrib["bounds"]))
     # Compose's accessibility bounds include padding outside the touch track.
-    # Drag the current 100% thumb to the minimum instead of tapping that padding.
+    # Drag the current 100% thumb past the minimum instead of tapping padding;
+    # sampled motion events may stop short of the final pointer-up coordinate.
     adb("shell", "input", "swipe", str((left + right) // 2), str((top + bottom) // 2),
-        str(left + 1), str((top + bottom) // 2), "300")
+        str(left - (right - left) // 4), str((top + bottom) // 2), "500")
     wait_for(text="0%")
     tap(description="Close")
     tap(description="Audio and account settings")
