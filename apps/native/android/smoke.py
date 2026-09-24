@@ -297,7 +297,12 @@ def main() -> None:
     tap(description="Edit profile")
     enter_first_field("ab")
     invalid = hierarchy()
-    assert find(invalid, text="Save profile").get("enabled") == "false"
+    # Compose exposes the label separately; disabled belongs to its action node.
+    parents = {child: parent for parent in invalid.iter() for child in parent}
+    submit = find(invalid, text="Save profile")
+    while submit is not None and submit.get("clickable") != "true":
+        submit = parents.get(submit)
+    assert submit is not None and submit.get("enabled") == "false"
     enter_first_field("fixture_owner")
     adb("shell", "input", "keyevent", "KEYCODE_BACK")
     fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503}})
