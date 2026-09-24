@@ -169,7 +169,9 @@ export class PublicCallClient {
       selfId: this.selfId,
       localMedia: this.localMedia,
       participants: this.participants,
-      remoteMedia: [...this.remoteMedia.values()],
+      // Subscriptions are negotiated while joining, but nobody may hear the room
+      // until the join has actually completed and the microphone is live.
+      remoteMedia: this.phase === "connected" ? [...this.remoteMedia.values()] : [],
       diagnostics: this.diagnostics,
       noiseSuppression: this.noiseSuppression,
       audioSetup: this.audioSetup,
