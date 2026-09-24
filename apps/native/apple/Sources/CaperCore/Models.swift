@@ -144,6 +144,21 @@ public enum Sequence: Error, Equatable {
     }
 }
 
+public enum ProfileValidation {
+    public static func error(username: String, displayName: String) -> String? {
+        let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !(3...32).contains(username.utf8.count) || !username.utf8.allSatisfy({
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+        }) { return "Username must be 3–32 letters, numbers, or underscores." }
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !(1...64).contains(name.unicodeScalars.count)
+            || name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
+            return "Display name must be 1–64 characters without control characters."
+        }
+        return nil
+    }
+}
+
 public enum MessageValidation {
     public static func error(for text: String) -> String? {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Write a message first." }
@@ -176,6 +191,7 @@ public struct PendingMessage: Equatable, Sendable {
 public struct ChatDeliveryState: Sendable {
     public private(set) var cursor: String
     public private(set) var pending: PendingMessage?
+    public private(set) var rejected = false
 
     public init(cursor: String = "0") { self.cursor = cursor }
 
@@ -187,17 +203,24 @@ public struct ChatDeliveryState: Sendable {
     }
 
     public mutating func confirmHTTP(id: String) {
-        if pending?.id == id { pending = nil }
+        if pending?.id == id { pending = nil; rejected = false }
     }
 
     public mutating func reject(id: String) {
-        if pending?.id == id { pending = nil }
+        if pending?.id == id { rejected = true }
+    }
+
+    public mutating func discardRejected() -> String? {
+        guard rejected else { return nil }
+        let text = pending?.text
+        pending = nil; rejected = false
+        return text
     }
 
     @discardableResult
     public mutating func confirmGateway(clientMessageID: String, authorID: String, ownAuthorID: String?) -> Bool {
         guard authorID == ownAuthorID, pending?.id == clientMessageID else { return false }
-        pending = nil
+        pending = nil; rejected = false
         return true
     }
 
@@ -210,7 +233,7 @@ public struct ChatDeliveryState: Sendable {
 
     public mutating func reset(cursor: String = "0", preservingPending: Bool = false) {
         self.cursor = cursor
-        if !preservingPending { pending = nil }
+        if !preservingPending { pending = nil; rejected = false }
     }
 }
 

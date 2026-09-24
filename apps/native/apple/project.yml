@@ -99,6 +99,8 @@ targets:
     platform: iOS
     sources: Sources/CaperCore
     dependencies:
+      - target: CaperRTCBridgeIOS
+        embed: false
       - package: WebRTC
         product: WebRTC
         link: true
@@ -110,6 +112,58 @@ targets:
         PRODUCT_MODULE_NAME: CaperCore
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES
+  CaperRTCBridgeIOS:
+    type: framework
+    platform: iOS
+    sources:
+      - path: Sources/CaperRTCBridge/CaperRTCBridgeIOS.h
+        headerVisibility: public
+      - Sources/CaperRTCBridge/CaperIOSRTCBridge.m
+      - path: Sources/CaperRTCBridge/CaperIOSAudioDevice.h
+        headerVisibility: public
+      - Sources/CaperRTCBridge/CaperIOSAudioDevice.m
+      - Sources/CaperRTCBridge/CaperDpdfnet.cpp
+      - Sources/CaperRTCBridge/CaperDenoisePipeline.cpp
+      - Sources/CaperRTCBridge/CaperVoiceDSP.c
+      - .build/rnnoise/src/denoise.c
+      - .build/rnnoise/src/rnn.c
+      - .build/rnnoise/src/pitch.c
+      - .build/rnnoise/src/kiss_fft.c
+      - .build/rnnoise/src/celt_lpc.c
+      - .build/rnnoise/src/nnet.c
+      - .build/rnnoise/src/nnet_default.c
+      - .build/rnnoise/src/parse_lpcnet_weights.c
+      - .build/rnnoise/src/rnnoise_data.c
+      - .build/rnnoise/src/rnnoise_tables.c
+      - path: Sources/CaperRTCBridge/sdk
+        buildPhase: none
+      - path: ../../web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx
+        buildPhase: resources
+      - path: ../../web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0
+        buildPhase: resources
+      - path: .build/onnxruntime-c-ios-1.23.0/LICENSE
+        buildPhase: resources
+      - path: .build/onnxruntime-c-ios-1.23.0/ThirdPartyNotices.txt
+        buildPhase: resources
+      - path: .build/rnnoise/COPYING
+        buildPhase: resources
+    dependencies:
+      - package: WebRTC
+        product: WebRTC
+        link: true
+        embed: false
+      - framework: .build/onnxruntime-c-ios-1.23.0/onnxruntime.xcframework
+        link: true
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.rtc-bridge-ios
+        PRODUCT_MODULE_NAME: CaperRTCBridgeIOS
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: YES
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge $(SRCROOT)/.build/onnxruntime-c-ios-1.23.0/Headers $(SRCROOT)/.build/rnnoise/include $(SRCROOT)/.build/rnnoise/src"
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) RNNOISE_BUILD=1 DISABLE_DEBUG_FLOAT=1"
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
   CaperMacOS:
     type: application
     platform: macOS
@@ -151,6 +205,8 @@ targets:
         buildPhase: resources
     dependencies:
       - target: CaperCoreIOS
+      - target: CaperRTCBridgeIOS
+        embed: true
       - package: WebRTC
         product: WebRTC
         link: true
@@ -185,6 +241,19 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.caper.core-tests
         GENERATE_INFOPLIST_FILE: YES
+  CaperIOSCoreTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: Tests/CaperIOSCoreTests
+    dependencies:
+      - target: CaperCoreIOS
+      - target: CaperRTCBridgeIOS
+      - package: WebRTC
+        product: WebRTC
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.ios-core-tests
+        GENERATE_INFOPLIST_FILE: YES
   CaperMacOSParityTests:
     type: bundle.ui-testing
     platform: macOS
@@ -217,6 +286,9 @@ schemes:
     build:
       targets:
         CaperIOS: all
+        CaperIOSCoreTests: [test]
+    test:
+      targets: [CaperIOSCoreTests]
   CaperMacOSParityTests:
     build:
       targets:

@@ -118,6 +118,48 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(macOS)
+    func testSidebarResizeKeyboardBoundsAndSavedWidth() {
+        let app = launch()
+        let handle = app.buttons["channel-sidebar-resize"]
+        let channelTitle = app.descendants(matching: .any)["selected-channel-name"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        handle.doubleClick()
+        XCTAssertEqual(handle.value as? String, "280 pixels")
+        let initialEdge = channelTitle.frame.minX
+        // The handle moves during resize. Anchor the synthesized pointer path
+        // to the stationary window, not a lazily resolved moving element.
+        let window = app.windows.firstMatch
+        let handleFrame = handle.frame
+        let start = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: handleFrame.midX - window.frame.minX, dy: handleFrame.midY - window.frame.minY
+        ))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
+        let dragged = Int((handle.value as? String ?? "").split(separator: " ").first ?? "") ?? 0
+        XCTAssertTrue((310...320).contains(dragged), "35-point drag should produce width 315, got \(dragged)")
+        XCTAssertEqual(channelTitle.frame.minX - initialEdge, CGFloat(dragged - 280), accuracy: 2,
+                       "the actual conversation edge must follow the reported sidebar width")
+        handle.doubleClick()
+        handle.click()
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "290 pixels")
+        handle.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "220 pixels")
+        handle.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "440 pixels")
+        handle.doubleClick()
+        XCTAssertEqual(handle.value as? String, "280 pixels", "double-click resets after a keyboard resize")
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "290 pixels", "reset keeps the resize handle focused")
+        app.terminate()
+        let reopened = launch()
+        let saved = reopened.buttons["channel-sidebar-resize"]
+        XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        XCTAssertEqual(saved.value as? String, "290 pixels", "resized width survives relaunch")
+        XCTAssertEqual(reopened.descendants(matching: .any)["selected-channel-name"].frame.minX - initialEdge, 10, accuracy: 2)
+        capture("sidebar-resized", app: reopened)
+        saved.doubleClick()
+    }
+
     func testMembersCanBeHiddenWithoutChangingConversation() {
         let app = launch()
         let toggle = app.buttons["Hide members"]
@@ -267,13 +309,9 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-muted", app: app)
         headphones.tap()
         XCTAssertEqual(headphones.value as? String, "On")
-        #if os(macOS)
-        XCTAssertEqual(microphone.value as? String, "On", "Desktop undeafen also unmutes")
-        #else
         XCTAssertEqual(microphone.value as? String, "Muted", "Undeafen must preserve an explicitly muted microphone")
         microphone.tap()
         XCTAssertEqual(microphone.value as? String, "On")
-        #endif
         #if os(macOS)
         app.buttons["Input Options"].tap()
         XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 2))
@@ -305,6 +343,16 @@ final class CaperParityUITests: XCTestCase {
 
         XCTAssertTrue(app.descendants(matching: .any)["audio-preferences-sheet"].waitForExistence(timeout: 5))
         assertStaticText("Audio preferences", in: app, timeout: 2)
+        #if os(macOS)
+        let sounds = app.checkBoxes["sound-effects"]
+        XCTAssertTrue(sounds.waitForExistence(timeout: 2))
+        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 1)
+        sounds.tap()
+        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 0)
+        capture("audio-effects-disabled", app: app)
+        sounds.tap()
+        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 1)
+        #endif
         let gain = app.sliders["Output gain"]
         XCTAssertTrue(gain.waitForExistence(timeout: 2))
         XCTAssertEqual(outputGain(of: gain), 100)
@@ -319,6 +367,10 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("\(displayedGain)%", in: app, timeout: 2)
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
+        XCTAssertTrue(app.sliders["Input gain"].exists)
+        XCTAssertTrue(app.sliders["Live voice processing"].exists)
+        XCTAssertTrue(app.buttons["local-mic-test"].exists)
+        assertStaticText("On-device noise suppression starts when you test or join.", in: app, timeout: 2)
         #else
         XCTAssertTrue(app.descendants(matching: .any)["audio-input-device"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["audio-output-device"].exists)
@@ -345,6 +397,115 @@ final class CaperParityUITests: XCTestCase {
         #endif
         capture("audio-preferences", app: app)
     }
+
+    func testProfileEditRetainsRejectedValuesAndRetries() async throws {
+        let app = launch()
+        #if os(iOS)
+        app.buttons["Open navigation"].tap()
+        #endif
+        let account = app.buttons["account-profile"]
+        XCTAssertTrue(account.waitForExistence(timeout: 10))
+        account.tap()
+        let username = app.textFields["Username"]
+        let displayName = app.textFields["Display name"]
+        let submit = app.buttons["profile-save"]
+        XCTAssertTrue(username.waitForExistence(timeout: 5))
+        let savedUsername = try XCTUnwrap(username.value as? String)
+        let originalName = try XCTUnwrap(displayName.value as? String)
+        XCTAssertFalse(savedUsername.isEmpty)
+        displayName.tap(); displayName.typeText(" UI edit")
+        let editedName = try XCTUnwrap(displayName.value as? String)
+        XCTAssertNotEqual(editedName, originalName)
+        XCTAssertTrue(submit.isEnabled)
+        var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        control.httpMethod = "POST"
+        control.setValue("application/json", forHTTPHeaderField: "content-type")
+        control.httpBody = Data(#"{"failure":{"path":"/api/account/profile","method":"POST","status":503,"error":"TEST FIXTURE: profile save temporarily unavailable."}}"#.utf8)
+        let (_, response) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        submit.tap()
+        assertStaticText("TEST FIXTURE: profile save temporarily unavailable.", in: app)
+        XCTAssertEqual(username.value as? String, savedUsername)
+        XCTAssertEqual(displayName.value as? String, editedName)
+        XCTAssertTrue(submit.isEnabled)
+        capture("profile-rejected-save", app: app)
+        submit.tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: submit)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 10), .completed)
+        // Keep the shared fixture's reference author stable for other UI cases.
+        var restore = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/account/profile")!)
+        restore.httpMethod = "POST"
+        restore.setValue("application/json", forHTTPHeaderField: "content-type")
+        restore.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        restore.httpBody = try JSONSerialization.data(withJSONObject: ["username": savedUsername, "displayName": originalName])
+        let (_, restored) = try await URLSession.shared.data(for: restore)
+        XCTAssertEqual((restored as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func testProfileValidationAndErrorRenderWithoutSubmitting() {
+        let app = launch(fixture: "profile-validation")
+        let username = app.textFields["Username"]
+        let displayName = app.textFields["Display name"]
+        let submit = app.buttons["profile-continue"]
+        XCTAssertTrue(username.waitForExistence(timeout: 5))
+        XCTAssertFalse(submit.isEnabled)
+        username.tap(); username.typeText("ab")
+        displayName.tap(); displayName.typeText("Fixture Name")
+        XCTAssertFalse(submit.isEnabled, "two-letter usernames cannot submit")
+        assertStaticText("TEST FIXTURE — username already taken. Choose another username.", in: app)
+        capture("profile-validation", app: app)
+        username.tap(); username.typeText("_user")
+        XCTAssertTrue(submit.isEnabled)
+    }
+
+    func testRejectedMessageActionsRenderWithoutSending() {
+        let app = launch(fixture: "chat-rejected")
+        assertStaticText("Fixture message that was rejected", in: app)
+        let edit = app.buttons["Edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertTrue(edit.isEnabled)
+        XCTAssertTrue(app.scrollViews["chat-timeline"].frame.contains(edit.frame), "Edit must be inside the visible chat viewport")
+        XCTAssertTrue(app.buttons["Dismiss"].exists)
+        XCTAssertFalse(app.buttons["send-message-button"].isEnabled)
+        capture("chat-rejected-fixture", app: app)
+        edit.tap()
+        XCTAssertFalse(app.buttons["Dismiss"].waitForExistence(timeout: 1))
+        XCTAssertEqual(app.descendants(matching: .any)["message-composer"].value as? String,
+                       "Fixture message that was rejected")
+    }
+
+    #if os(iOS)
+    func testPhoneRecordedComparisonAndStatisticsFixtureWithoutCapture() {
+        for (fixture, label, screenshot) in [
+            ("audio-recorded", "TEST FIXTURE — completed local recording layout only; no microphone or playback.", "ios-audio-recorded-fixture"),
+            ("audio-statistics", "TEST FIXTURE — synthetic statistics layout; no voice connection.", "ios-audio-statistics-fixture"),
+        ] {
+            let app = launch(fixture: fixture)
+            app.buttons["Open navigation"].tap()
+            let settings = app.descendants(matching: .any)["account-settings-menu"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            let frame = settings.frame, window = app.windows.firstMatch.frame
+            app.coordinate(withNormalizedOffset: CGVector(dx: frame.midX / window.width, dy: frame.midY / window.height)).tap()
+            app.descendants(matching: .any)["Audio preferences"].tap()
+            let controls = app.scrollViews["audio-preferences-controls"]
+            XCTAssertTrue(controls.waitForExistence(timeout: 5))
+            controls.swipeUp()
+            assertStaticText(label, in: app)
+            if fixture == "audio-recorded" {
+                for title in ["Play natural", "Play enhanced", "Stop playback"] {
+                    let button = app.buttons[title]
+                    XCTAssertTrue(button.exists)
+                    XCTAssertFalse(button.isEnabled, "Fixture must not play synthetic audio")
+                }
+                XCTAssertTrue(app.sliders["Live voice processing"].exists)
+            } else {
+                assertStaticText("Connection statistics", in: app)
+                assertStaticText("42 ms / TURN relay", in: app)
+            }
+            capture(screenshot, app: app)
+        }
+    }
+    #endif
 
     #if os(macOS)
     func testFailedChannelNavigationKeepsConversationAndDraftThenRetries() async throws {

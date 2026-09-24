@@ -110,7 +110,9 @@ private enum WorkspaceSheet: Identifiable {
 private struct WorkspaceView: View {
     @Bindable var model: AppModel
     @State private var sheet: WorkspaceSheet?
-    @State private var sidebarWidth: CGFloat = 280
+    @AppStorage("caper.channelSidebarWidth") private var sidebarWidth = 280.0
+    @State private var sidebarDragStart: Double?
+    @FocusState private var sidebarFocused: Bool
     @State private var membersPreference: Bool?
     private let parityFixture: String?
 
@@ -155,14 +157,46 @@ private struct WorkspaceView: View {
                                 narrow: narrow,
                                 close: { model.navigationOpen = false }
                             )
-                            .frame(width: narrow ? nil : sidebarWidth)
-                            .frame(maxWidth: narrow ? .infinity : sidebarWidth)
+                            .frame(width: narrow ? nil : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
+                            .frame(maxWidth: narrow ? .infinity : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
                             .overlay(alignment: .trailing) {
                                 if !narrow {
-                                    Rectangle().fill(Color.clear).frame(width: 8).contentShape(Rectangle())
-                                        .gesture(DragGesture().onChanged { value in
-                                            sidebarWidth = min(440, max(220, sidebarWidth + value.translation.width))
+                                    Button { sidebarFocused = true } label: {
+                                        Rectangle().fill(Color.clear).frame(width: 8).contentShape(Rectangle())
+                                    }
+                                        .buttonStyle(.plain)
+                                        .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global).onChanged { value in
+                                            sidebarFocused = true
+                                            if sidebarDragStart == nil { sidebarDragStart = sidebarWidth }
+                                            resizeSidebar((sidebarDragStart ?? sidebarWidth) + Double(value.translation.width), viewport: geometry.size.width)
+                                        }.onEnded { _ in sidebarDragStart = nil })
+                                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                                            resizeSidebar(280, viewport: geometry.size.width)
+                                            sidebarFocused = true
                                         })
+                                        .focusable()
+                                        .focused($sidebarFocused)
+                                        .accessibilityLabel("Channel sidebar width")
+                                        .accessibilityIdentifier("channel-sidebar-resize")
+                                        .accessibilityValue("\(Int(min(sidebarWidth, sidebarMaximum(for: geometry.size.width)))) pixels")
+                                        .accessibilityHint("Drag to resize. Arrow keys adjust by 10 pixels; Home and End select the bounds. Double-click resets.")
+                                        .accessibilityAdjustableAction { direction in
+                                            switch direction {
+                                            case .increment: resizeSidebar(sidebarWidth + 10, viewport: geometry.size.width)
+                                            case .decrement: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
+                                            @unknown default: break
+                                            }
+                                        }
+                                        .onKeyPress { press in
+                                            switch press.key {
+                                            case .leftArrow: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
+                                            case .rightArrow: resizeSidebar(sidebarWidth + 10, viewport: geometry.size.width)
+                                            case .home: resizeSidebar(220, viewport: geometry.size.width)
+                                            case .end: resizeSidebar(sidebarMaximum(for: geometry.size.width), viewport: geometry.size.width)
+                                            default: return .ignored
+                                            }
+                                            return .handled
+                                        }
                                 }
                             }
                             if !narrow {
@@ -205,6 +239,14 @@ private struct WorkspaceView: View {
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
         }
+    }
+
+    private func sidebarMaximum(for viewport: CGFloat) -> Double {
+        max(220, min(440, Double(viewport) - 60 - 320))
+    }
+
+    private func resizeSidebar(_ value: Double, viewport: CGFloat) {
+        sidebarWidth = min(sidebarMaximum(for: viewport), max(220, value.rounded()))
     }
 
     private var modalSheet: Binding<WorkspaceSheet?> {
@@ -536,6 +578,7 @@ private struct AccountBar: View {
                     Spacer()
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
+                .accessibilityIdentifier("account-profile")
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
@@ -706,7 +749,12 @@ private struct ChatView: View {
                         }
                         ForEach(chat.messages) { message in MessageRow(message: message).id(message.id) }
                         if let pending = chat.pendingMessage {
-                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error) { Task { await chat.send() } }
+                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
+                                              rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
+                                              retry: { Task { await chat.send() } },
+                                              edit: { _ = chat.discardRejected(edit: true) },
+                                              dismiss: { _ = chat.discardRejected() })
+                                .id("pending-\(pending.id)")
                         }
                         if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
@@ -716,7 +764,11 @@ private struct ChatView: View {
                         }
                     }
                 }
+                .accessibilityIdentifier("chat-timeline")
                 .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onChange(of: chat.pendingMessage?.id, initial: true) { _, id in
+                    if let id { proxy.scrollTo("pending-\(id)", anchor: .bottom) }
+                }
             }
 
             HStack(spacing: 7) {
@@ -744,7 +796,7 @@ private struct ChatView: View {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
                 }
                 .buttonStyle(PrimaryIconButton())
-                .disabled(chat.sending || chat.pendingMessage != nil || MessageValidation.error(for: chat.draft) != nil)
+                .disabled(chat.sending || chat.sendRejected || (chat.pendingMessage == nil && MessageValidation.error(for: chat.draft) != nil))
                 .accessibilityLabel("Send message")
                 .accessibilityIdentifier("send-message-button")
             }.padding(.horizontal, 18).padding(.vertical, 12)
@@ -803,10 +855,12 @@ private struct VoiceHeaderButton: View {
 }
 
 private struct PrimaryIconButton: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.foregroundStyle(.white).frame(width: 42, height: 42)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
@@ -835,7 +889,8 @@ private struct MessageRow: View {
 }
 
 private struct PendingMessageRow: View {
-    let pending: PendingMessage; let author: ChatAuthor?; let error: String?; let retry: () -> Void
+    let pending: PendingMessage; let author: ChatAuthor?; let error: String?
+    let rejected: Bool; let canEdit: Bool; let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(name: author?.name ?? "Guest", size: 34)
@@ -843,8 +898,16 @@ private struct PendingMessageRow: View {
                 Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
                 Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                 if let error {
-                    HStack { Text("Not confirmed yet. \(error)"); Button("Retry send", action: retry) }
-                        .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
+                        HStack(spacing: 12) {
+                            if rejected {
+                                Button("Edit", action: edit).disabled(!canEdit)
+                                Button("Dismiss", action: dismiss)
+                            } else { Button("Retry send", action: retry) }
+                        }
+                    }
+                    .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
@@ -859,8 +922,16 @@ private struct ProfileView: View {
         VStack(spacing: 22) {
             Wordmark(); Text("Finish your profile").font(CaperTheme.font(28, weight: .bold))
             CaperField(title: "Username", text: $username)
+            Text("3–32 letters, numbers, or underscores. Usernames are saved in lowercase.")
+                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             CaperField(title: "Display name", text: $displayName)
-            Button("Continue") { Task { await model.saveProfile(username: username, displayName: displayName) } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || username.isEmpty || displayName.isEmpty)
+            Text("Display name: 1–64 characters.")
+                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
+            Button(model.busy ? "Saving…" : "Continue") { Task { await model.saveProfile(username: username, displayName: displayName) } }
+                .buttonStyle(CaperPrimaryButton())
+                .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                .accessibilityIdentifier("profile-continue")
         }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
     }
 }
@@ -972,24 +1043,45 @@ private struct LoginError: View {
 }
 
 private struct LoginActionButton: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(16, weight: .medium)).foregroundStyle(.white)
             .padding(.horizontal, 20).frame(maxWidth: .infinity).frame(height: 58)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
 private struct ProfileSheet: View {
     @Bindable var model: AppModel; let close: () -> Void
+    @State private var username = ""
+    @State private var displayName = ""
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: "Account", detail: model.account?.username.map { "@\($0)" }, close: close)
-            VStack(alignment: .leading, spacing: 14) {
-                HStack { Avatar(name: model.account?.displayName ?? "Caper", size: 42); Text(model.account?.displayName ?? "Caper").font(CaperTheme.font(16, weight: .bold)) }
-                Button("Log out", role: .destructive) { Task { await model.logout(); close() } }.buttonStyle(.bordered)
-            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack { Avatar(name: model.account?.displayName ?? "Caper", size: 42); Text(model.account?.displayName ?? "Caper").font(CaperTheme.font(16, weight: .bold)) }
+                    CaperField(title: "Username", text: $username)
+                    CaperField(title: "Display name", text: $displayName)
+                    if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
+                    Button(model.busy ? "Saving…" : "Save profile") {
+                        Task {
+                            await model.saveProfile(username: username, displayName: displayName)
+                            if model.error == nil { close() }
+                        }
+                    }.buttonStyle(CaperPrimaryButton())
+                        .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                        .accessibilityIdentifier("profile-save")
+                    Button("Log out", role: .destructive) { Task { await model.logout(); close() } }.buttonStyle(.bordered)
+                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxHeight: 500).scrollDismissesKeyboard(.interactively)
         }.background(CaperTheme.surface)
+            .onAppear {
+                username = model.account?.username ?? ""
+                displayName = model.account?.displayName ?? ""
+            }
     }
 }
 
@@ -1101,15 +1193,19 @@ private struct CaperTextFieldStyle: TextFieldStyle {
 }
 
 private struct CaperPrimaryButton: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)) }
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)).opacity(isEnabled ? 1 : 0.45) }
 }
 
 private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     var debugEnabled = false
     #if os(macOS)
+    @Bindable private var effects = CaperEffects.shared
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
+    #else
+    @State private var micTest = IOSMicrophoneTest()
     #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1125,18 +1221,19 @@ private struct AudioPreferencesView: View {
                 .accessibilityIdentifier("close-audio-preferences")
                 .keyboardShortcut(.cancelAction)
             }
-            #if os(macOS)
             ScrollView {
                 controls.fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityIdentifier("audio-preferences-controls")
+            #if os(macOS)
             .frame(width: 426, height: 500)
             #else
-            controls
+            .frame(maxHeight: 580)
             #endif
-        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
+        }.padding(22)
+            .frame(minWidth: 360)
+            .background(CaperTheme.surface)
             .task { await voice.refreshAudioDevices() }
-            #if os(macOS)
             .onChange(of: voice.phase) { _, phase in
                 if phase != .idle && phase != .failed { micTest.close() }
             }
@@ -1147,12 +1244,14 @@ private struct AudioPreferencesView: View {
                     do { try await Task.sleep(for: .seconds(2)) } catch { return }
                 }
             }
-            #endif
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 18) {
             #if os(macOS)
+            Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
+                .toggleStyle(.checkbox)
+                .accessibilityIdentifier("sound-effects")
             Picker("Input", selection: inputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableInputs) { route in Text(route.name).tag(route.id) }
@@ -1162,6 +1261,10 @@ private struct AudioPreferencesView: View {
                 ForEach(voice.availableOutputs) { route in Text(route.name).tag(route.id) }
             }.accessibilityIdentifier("audio-output-device")
             if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            #else
+            AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
+            AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+            #endif
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Input gain"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
                 Slider(value: inputGain, in: 0...200, step: 1)
@@ -1178,10 +1281,6 @@ private struct AudioPreferencesView: View {
                 Text(voice.noiseSuppressionStatus)
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
-            #else
-            AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
-            AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
-            #endif
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Output gain").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                 Slider(value: outputGain, in: 0...200, step: 1)
@@ -1201,10 +1300,16 @@ private struct AudioPreferencesView: View {
             #else
             Text("Caper routes this call to the selected devices without changing macOS system defaults.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #endif
             Divider().overlay(CaperTheme.border)
             Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
+            #if os(macOS)
             Text("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #else
+            Text("Record up to 30 seconds from the current mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.")
+                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #endif
             HStack {
                 Button(micTest.recording ? "Stop testing" : "Mic Test") {
                     if micTest.recording { micTest.stopRecording() }
@@ -1244,7 +1349,6 @@ private struct AudioPreferencesView: View {
                     Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 }
             }
-            #endif
         }
     }
 
@@ -1262,6 +1366,7 @@ private struct AudioPreferencesView: View {
             routeError = voice.selectOutput(uid) ? nil : "Could not switch output. The previous route is still selected."
         })
     }
+    #endif
     private var inputGain: Binding<Double> {
         Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
     }
@@ -1275,10 +1380,8 @@ private struct AudioPreferencesView: View {
                          receiveBitrate: 12_800, sendBitrate: 24_000,
                          packetsLost: 3, maxJitterMs: 17, roundTripMs: 42, route: "relay")
     }
-    #endif
 }
 
-#if os(macOS)
 private struct AudioDiagnosticsView: View {
     let voice: VoiceClient
     @State private var copyStatus = ""
@@ -1292,9 +1395,14 @@ private struct AudioDiagnosticsView: View {
                 Text(voice.noiseSuppressionStatus).font(CaperTheme.font(12))
                 HStack {
                     Button("Copy diagnostics") {
+                        #if os(macOS)
                         NSPasteboard.general.clearContents()
                         copyStatus = NSPasteboard.general.setString(report, forType: .string)
                             ? "Copied diagnostics" : "Copy failed; select the report below."
+                        #else
+                        UIPasteboard.general.string = report
+                        copyStatus = "Copied diagnostics"
+                        #endif
                     }
                     Text(copyStatus).font(CaperTheme.font(11))
                 }
@@ -1304,7 +1412,12 @@ private struct AudioDiagnosticsView: View {
     }
 
     private var reportJSON: String {
-        var values: [String: Any] = ["platform": "macOS", "processing": NSNull()]
+        #if os(macOS)
+        let platform = "macOS"
+        #else
+        let platform = "iOS"
+        #endif
+        var values: [String: Any] = ["platform": platform, "processing": NSNull()]
         if let stats = voice.audioProcessingReport {
             values["processing"] = [
                 "mode": stats.mode, "processedHops": stats.processedHops,
@@ -1317,7 +1430,6 @@ private struct AudioDiagnosticsView: View {
         return report
     }
 }
-#endif
 
 private struct AudioRouteRow: View {
     let title: String

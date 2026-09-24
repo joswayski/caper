@@ -7,6 +7,20 @@ import CaperRTCBridge
 
 final class ProtocolTests: XCTestCase {
     @MainActor
+    func testSoundEffectsPreferencePersistsBothDirectionsWithoutOpeningOutput() throws {
+        let suite = "caper-effects-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let effects = CaperEffects(enabled: false, defaults: defaults)
+        XCTAssertTrue(effects.soundsEnabled)
+        effects.soundsEnabled = false
+        let reopened = CaperEffects(enabled: false, defaults: defaults)
+        XCTAssertFalse(reopened.soundsEnabled)
+        reopened.soundsEnabled = true
+        XCTAssertTrue(CaperEffects(enabled: false, defaults: defaults).soundsEnabled)
+    }
+
+    @MainActor
     func testAudioPreviewRequiresExplicitLoopbackParityMode() {
         var environment = ["CAPER_TEST_MODE": "parity", "CAPER_UI_FIXTURE": "audio-recorded", "CAPER_API_BASE_URL": "http://127.0.0.1:3001"]
         XCTAssertTrue(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))
@@ -135,6 +149,9 @@ final class ProtocolTests: XCTestCase {
 
         let rejected = delivery.begin(text: "invalid", makeID: { "client-two" })
         delivery.reject(id: rejected.id)
+        XCTAssertEqual(delivery.pending, rejected)
+        XCTAssertTrue(delivery.rejected)
+        XCTAssertEqual(delivery.discardRejected(), "invalid")
         let edited = delivery.begin(text: "edited", makeID: { "client-three" })
         XCTAssertEqual(edited.id, "client-three")
         XCTAssertEqual(edited.text, "edited")
@@ -160,6 +177,18 @@ final class ProtocolTests: XCTestCase {
             APIClient.sessionService(for: URL(string: "https://caper.chat:444")!),
             APIClient.sessionService(for: URL(string: "https://caper.chat")!)
         )
+    }
+
+    func testProfileValidationMatchesServerScalarAndASCIIBoundaries() {
+        XCTAssertNil(ProfileValidation.error(username: " Jo_ ", displayName: String(repeating: "🪐", count: 64)))
+        XCTAssertNil(ProfileValidation.error(username: String(repeating: "a", count: 32), displayName: " Name "))
+        XCTAssertNotNil(ProfileValidation.error(username: "ab", displayName: "Name"))
+        XCTAssertNotNil(ProfileValidation.error(username: String(repeating: "a", count: 33), displayName: "Name"))
+        XCTAssertNotNil(ProfileValidation.error(username: "Kelvin", displayName: "Name"), "Only ASCII letters are normalized by the server")
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: String(repeating: "🪐", count: 65)))
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: String(repeating: "e\u{301}", count: 33)))
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: " \n "))
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: "Name\u{0007}"))
     }
 
     func testMessageValidationCountsCharactersAndRejectsControls() {
@@ -226,25 +255,29 @@ final class ProtocolTests: XCTestCase {
 
         await voice.setMuted(true)
         await voice.setDeafened(true)
-        await voice.setMuted(false)
-        #if os(macOS)
-        XCTAssertFalse(voice.muted, "unmuting also undeafens on desktop")
-        XCTAssertFalse(voice.deafened)
-        await voice.setMuted(true)
-        await voice.setDeafened(true)
-        #else
-        XCTAssertTrue(voice.muted, "capture remains locally silent while deafened")
-        #endif
+        XCTAssertTrue(voice.muted)
         await voice.setDeafened(false)
-        #if os(macOS)
-        XCTAssertFalse(voice.muted, "desktop undeafen does not restore a prior mute")
-        #else
-        XCTAssertFalse(voice.muted, "an explicit mute change while deafened becomes the restored intent")
-        #endif
+        XCTAssertTrue(voice.muted, "undeafen restores a pre-deafen explicit mute")
+        await voice.setDeafened(false)
+        XCTAssertTrue(voice.muted, "repeated undeafen must not clear that mute")
+
+        await voice.setDeafened(true)
+        await voice.setMuted(false)
+        XCTAssertFalse(voice.muted, "explicit unmute overrides saved deafen intent")
+        XCTAssertFalse(voice.deafened)
+        await voice.setDeafened(false)
+        XCTAssertFalse(voice.muted, "stale pre-deafen intent must not return")
 
         await voice.setMuted(true)
         await voice.setDeafened(false)
         XCTAssertTrue(voice.muted, "repeating an already-false deafen state must not restore stale intent")
+
+        await voice.setDeafened(true)
+        voice.phase = .connected
+        voice.leaveImmediately()
+        XCTAssertTrue(voice.muted)
+        await voice.setDeafened(false)
+        XCTAssertTrue(voice.muted, "transfer teardown retains pre-deafen mute intent")
 
         voice.setOutputGain(250)
         voice.setParticipantGain(-10, participantID: "remote")

@@ -46,6 +46,9 @@ case "$MODE" in
     echo "$ROOT/dist/Caper-macos-$artifact_arch.zip"
     ;;
   ios)
+    xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Debug \
+      -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' -derivedDataPath "$ROOT/DerivedData-iOS-Tests" \
+      CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" test
     rm -rf "$ROOT/DerivedData" "$ROOT/dist/Caper.app"
     xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration Release \
       -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/DerivedData" \
@@ -54,12 +57,15 @@ case "$MODE" in
     cp -R "$product/Caper.app" "$ROOT/dist/Caper.app"
     test -x "$ROOT/dist/Caper.app/Caper"
     test -f "$ROOT/dist/Caper.app/Frameworks/WebRTC.framework/WebRTC"
+    test -f "$ROOT/dist/Caper.app/Frameworks/CaperRTCBridgeIOS.framework/CaperRTCBridgeIOS"
+    test -f "$ROOT/dist/Caper.app/Frameworks/CaperRTCBridgeIOS.framework/dpdfnet8_48khz_hr.onnx"
     test -f "$ROOT/dist/Caper.app/WebRTC-LICENSE.txt"
     test -f "$ROOT/dist/Caper.app/WebRTC-PATENTS.txt"
     test -f "$ROOT/dist/Caper.app/Satoshi-FFL.txt"
     for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Satoshi-$font.otf"; done
     lipo -archs "$ROOT/dist/Caper.app/Caper" | tr ' ' '\n' | grep -qx arm64
     lipo -archs "$ROOT/dist/Caper.app/Frameworks/WebRTC.framework/WebRTC" | tr ' ' '\n' | grep -qx arm64
+    lipo -archs "$ROOT/dist/Caper.app/Frameworks/CaperRTCBridgeIOS.framework/CaperRTCBridgeIOS" | tr ' ' '\n' | grep -qx arm64
     rm -f "$ROOT/dist/Caper-ios-simulator-arm64.zip"
     ditto -c -k --keepParent "$ROOT/dist/Caper.app" "$ROOT/dist/Caper-ios-simulator-arm64.zip"
     echo "$ROOT/dist/Caper-ios-simulator-arm64.zip (simulator only; not installable on a physical device)"

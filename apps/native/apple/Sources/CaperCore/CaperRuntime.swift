@@ -1,6 +1,14 @@
 import Foundation
 
 @MainActor enum CaperRuntime {
+    static func isChatPreview(_ name: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard name == "chat-rejected", environment["CAPER_TEST_MODE"] == "parity",
+              environment["CAPER_UI_FIXTURE"] == name,
+              let rawURL = environment["CAPER_API_BASE_URL"], let baseURL = URL(string: rawURL),
+              ["localhost", "127.0.0.1", "::1"].contains(baseURL.host?.lowercased() ?? "") else { return false }
+        return true
+    }
+
     static func isAudioPreview(_ name: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         guard ["audio-recorded", "audio-statistics"].contains(name),
               environment["CAPER_TEST_MODE"] == "parity",
@@ -19,10 +27,15 @@ import Foundation
             return AppModel()
         }
         let store = FixtureTokenStore(token: environment["CAPER_TEST_BEARER"])
-        return AppModel(
+        let model = AppModel(
             api: APIClient(baseURL: baseURL, tokenStore: store),
             preferredInitialSpaceID: environment["CAPER_TEST_SPACE_ID"]
         )
+        if environment["CAPER_UI_FIXTURE"] == "profile-validation" {
+            model.phase = .onboarding
+            model.error = "TEST FIXTURE — username already taken. Choose another username."
+        }
+        return model
     }
 }
 

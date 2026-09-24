@@ -43,6 +43,200 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    @MainActor
+    func testProfileEditPreservesConversationDraftAndRejectedSend() async throws {
+        var historyRequests = 0
+        var sessionRequests = 0
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                sessionRequests += 1
+                return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Old Name","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/Design123456/messages":
+                if request.httpMethod == "POST" { return (400, Data(#"{"error":"Rejected message"}"#.utf8)) }
+                historyRequests += 1
+                return (200, Data(#"{"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"Design123456","name":"design"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
+            case "/api/account/profile":
+                return (200, Data(#"{"id":"self","username":"new_user","displayName":"New Name"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "old_user", displayName: "Old Name")
+        model.phase = .ready
+        model.selectedSpaceID = "Space1234567"
+        model.selectedChannelID = "Design123456"
+        await model.chat.open(channelID: "Design123456", displayName: "Old Name")
+        model.chat.draft = "rejected first message"
+        await model.chat.send()
+        let pending = try XCTUnwrap(model.chat.pendingMessage)
+        model.chat.draft = "successor draft"
+        await model.saveProfile(username: "new_user", displayName: "New Name")
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.selectedChannelID, "Design123456")
+        XCTAssertEqual(model.chat.draft, "successor draft")
+        XCTAssertEqual(model.chat.pendingMessage?.id, pending.id)
+        XCTAssertTrue(model.chat.sendRejected)
+        XCTAssertEqual(model.chat.currentAuthor?.name, "New Name")
+        XCTAssertEqual(historyRequests, 1)
+        XCTAssertEqual(sessionRequests, 1)
+        await model.chat.stop()
+    }
+
+    @MainActor
+    func testSendClearsOnlySubmittedDraftAcrossHTTPGatewayAndLateError() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages":
+                return (200, Data("""
+                {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "Me")
+        let requested = expectation(description: "first message request")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.httpMethod == "POST", urlRequest.url?.path == "/api/chat/channels/\(channel)/messages" else { return false }
+            held = request; requested.fulfill(); return true
+        }
+        chat.draft = "submitted first"
+        let send = Task { await chat.send() }
+        await fulfillment(of: [requested], timeout: 2)
+        let command = try XCTUnwrap(chat.pendingMessage)
+        XCTAssertEqual(command.text, "submitted first")
+        XCTAssertEqual(chat.draft, "")
+        chat.draft = "new next draft"
+        let payload: [String: Any] = [
+            "id": "message-one", "channelId": channel, "seq": "1", "clientMessageId": command.id,
+            "author": ["id": "self", "name": "Me", "isGuest": false],
+            "content": ["version": 1, "type": "text", "text": command.text], "createdAt": "2026-01-01T00:00:00Z",
+        ]
+        chat.receive(["type": "message.created", "seq": "1", "message": payload], generation: 1, channelID: channel)
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertEqual(chat.draft, "new next draft", "gateway confirmation must not erase the next draft")
+        held?.respond(status: 500, data: Data(#"{"error":"late failure"}"#.utf8))
+        await send.value
+        // The independent WebSocket may report a reconnect while HTTP finishes.
+        // Only this already-confirmed send's late failure must be ignored.
+        XCTAssertNotEqual(chat.error?.contains("late failure"), true)
+        XCTAssertFalse(chat.sendRejected)
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertEqual(chat.draft, "new next draft", "late HTTP failure must not erase confirmed successor")
+        XCTAssertEqual(chat.messages.map(\.content.text), ["submitted first"])
+        await chat.stop()
+    }
+
+    @MainActor
+    func testHTTPConfirmationCannotClearNextDraftBeforeGatewayReplay() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages":
+                return (200, Data("""
+                {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "Me")
+        let requested = expectation(description: "held HTTP confirmation")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.httpMethod == "POST" else { return false }
+            held = request; requested.fulfill(); return true
+        }
+        chat.draft = "submitted first"
+        let send = Task { await chat.send() }
+        await fulfillment(of: [requested], timeout: 2)
+        let command = try XCTUnwrap(chat.pendingMessage)
+        chat.draft = "different new draft"
+        let response = Data("""
+        {"id":"m1","channelId":"\(channel)","seq":"1","clientMessageId":"\(command.id)","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"submitted first"},"createdAt":"2026-01-01T00:00:00Z"}
+        """.utf8)
+        held?.respond(status: 200, data: response)
+        await send.value
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertEqual(chat.draft, "different new draft")
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])
+        chat.receive(["type": "message.created", "seq": "1", "message": payload], generation: 1, channelID: channel)
+        XCTAssertEqual(chat.draft, "different new draft")
+        XCTAssertEqual(chat.messages.count, 1)
+        await chat.stop()
+    }
+
+    @MainActor
+    func testUncertainRetryPreservesEvenIdenticalNextDraft() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages" where request.httpMethod == "GET":
+                return (200, Data("""
+                {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            case "/api/chat/channels/\(channel)/messages": return (500, Data(#"{"error":"unknown outcome"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "Me")
+        chat.draft = "same text"
+        await chat.send()
+        let pending = try XCTUnwrap(chat.pendingMessage)
+        XCTAssertFalse(chat.sendRejected)
+        XCTAssertEqual(chat.draft, "")
+        chat.draft = "same text"
+        await chat.send()
+        XCTAssertEqual(chat.pendingMessage, pending)
+        XCTAssertEqual(chat.draft, "same text", "retry owns the pending command, not a newly typed identical draft")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testRejectedSendRemainsEditableOnlyWithEmptyNextDraft() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages" where request.httpMethod == "GET":
+                return (200, Data("""
+                {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            case "/api/chat/channels/\(channel)/messages": return (422, Data(#"{"error":"Invalid content"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "Me")
+        chat.draft = "rejected old text"
+        await chat.send()
+        let rejected = try XCTUnwrap(chat.pendingMessage)
+        XCTAssertTrue(chat.sendRejected)
+        XCTAssertEqual(chat.draft, "")
+        chat.draft = "unrelated next text"
+        XCTAssertFalse(chat.discardRejected(edit: true))
+        XCTAssertEqual(chat.pendingMessage, rejected)
+        XCTAssertEqual(chat.draft, "unrelated next text")
+        XCTAssertTrue(chat.discardRejected())
+        XCTAssertNil(chat.pendingMessage)
+        XCTAssertEqual(chat.draft, "unrelated next text")
+        chat.draft = "corrected text"
+        await chat.send()
+        XCTAssertNotEqual(chat.pendingMessage?.id, rejected.id, "corrected send must have a new client message ID")
+        XCTAssertTrue(chat.sendRejected)
+        XCTAssertTrue(chat.discardRejected(edit: true))
+        XCTAssertEqual(chat.draft, "corrected text")
+        await chat.stop()
+    }
+
     func testVoiceErrorsPreserveMachineCodeAndDistinguishProviderRetryFromRevocation() async throws {
         for (status, code, retry, revoked) in [
             (403, "ice_restart_retry", true, false),
