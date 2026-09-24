@@ -13,6 +13,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   production credential is never restored for a staging/custom HTTPS origin.
 - Logout revokes the server session and removes the OS credential.
 - Account space/channel navigation, including accessible private channels.
+- Bounded read-only hover prefetch, retained conversation cursors and last-channel
+  restoration. Navigation rechecks access; mutations and revocation discard
+  cached data and fence in-flight completions.
 - HTTP message history and idempotent writes. A timeout or lost response retains
   the same client message UUID and original text for retry; a definitive
   validation rejection unlocks editing and the next send gets a new UUID. A
@@ -33,6 +36,11 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   local mute and 0–200% software playback gain, and aggregate connection
   statistics. Participant mute survives microphone-track replacement and takes
   effect locally even while signaling is waiting for HTTP.
+- Persisted 0–200% input gain and voice-contour strength, with on-device DPDFNet-8
+  HR denoising and RNNoise fallback. Account-enabled audio diagnostics show only
+  local numeric processing counters; ordinary connection details remain public.
+- Native playback of the web client's bundled interaction sounds; no network
+  audio fetch and no sounds in static fixtures.
 - Explicit local microphone recording (30 seconds maximum), natural/enhanced
   comparison playback, and cancellation on dismissal/leave. Samples stay in
   memory, never go to the API, and are discarded when the test ends. During a
@@ -57,7 +65,7 @@ Ubuntu 24.04 CI/build host:
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libwayland-dev \
   libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
-  libdbus-1-dev dbus-x11 libglib2.0-dev clang-21 lld-21
+  libdbus-1-dev dbus-x11 libglib2.0-dev libasound2-dev clang-21 lld-21
 rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
 ./apps/native/desktop/build.sh
 ```
@@ -93,12 +101,32 @@ prove two-client SFU/TURN or actual mic/speaker quality. Playback gain uses a
 narrow bridge to WebRTC's software track volume, not system volume. Independent
 device enumeration does not start capture or alter an active call's ADM. A
 missing saved device fails explicitly rather than silently opening another mic.
-Switching an explicit device works in-call; returning to system default applies
-on the next join because the pinned bridge has no cross-platform live-default
-reset. Input gain and live processing strength remain unsupported. The local
-microphone comparison uses approximate software processing, not web-equivalent
-live-call DSP. Private null-device tests exercise capture, decoded PCM, replay,
-and stop; they do not establish physical recording/listening quality.
+Explicit/default input and output selection applies synchronously to the local
+call, including while signaling is pending. The Linux pinned Pulse ADM exposes
+one dynamic default pseudo-device in the orb, not two explicit monitor GUIDs:
+the two-null-sink regression verifies A→B by changing the private server's default
+and resetting the input, not by selecting two explicit GUIDs.
+
+Mute, route changes, comparison, and zero gain fence publication synchronously.
+Reopening live capture replaces the private ADM, peer pair, and decoder before
+accepting a new publication epoch, then resets denoiser/contour state. Local
+delayed-PCM tests cover that boundary; hardware-driver buffering still requires
+physical-device validation.
+
+Live input and local comparison use gain → bundled DPDFNet-8 HR (or RNNoise)
+→ voice contour. Natural replay is post-gain/post-denoise; enhanced replay adds
+the live contour. The model and native ONNX Runtime 1.23.2 are pinned to the web
+assets/runtime version. FFT/OLA and recurrent-state reference tests pass; the
+contour approximates the browser filters/compressor, not bit-for-bit Web Audio.
+Private null-device speech tests exercise actual capture and positive decoded
+local-peer PCM, replay, and stop. They do not establish physical quality or
+remote SFU reception. Pure sine capture was suppressed while speech succeeded;
+the suppression mechanism is not established.
+
+Linux packages carry the checked native runtime and licenses. Windows also
+stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
+from the installed VS2022 toolchain and are not immutable hash-pinned. Windows
+package execution remains an exact-head CI/platform acceptance requirement.
 No camera, screen sharing, native notifications, installers, signing or updates.
 IME/accessibility and sustained multi-network voice need separate acceptance.
 The `.deb` and archives are unsigned release artifacts, not installers.

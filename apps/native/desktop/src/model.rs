@@ -9,6 +9,8 @@ pub struct Account {
     pub id: String,
     pub username: Option<String>,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub debug_enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

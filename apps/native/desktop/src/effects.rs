@@ -1,0 +1,177 @@
+use rodio::{Decoder, OutputStreamBuilder, Sink, Source, buffer::SamplesBuffer};
+use std::collections::VecDeque;
+use std::io::Cursor;
+use std::sync::mpsc::{self, SyncSender};
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy)]
+pub enum Effect {
+    ToggleOff,
+    ToggleOn,
+    Slider,
+    Leave,
+    Warning,
+    Join,
+    Message,
+    Delete,
+}
+
+const WAVS: [&[u8]; 8] = [
+    include_bytes!("../../../web/public/audio/effects/toggle-off.wav"),
+    include_bytes!("../../../web/public/audio/effects/toggle-on.wav"),
+    include_bytes!("../../../web/public/audio/effects/slider-tick.wav"),
+    include_bytes!("../../../web/public/audio/effects/channel-leave.wav"),
+    include_bytes!("../../../web/public/audio/effects/warning.wav"),
+    include_bytes!("../../../web/public/audio/effects/channel-join.wav"),
+    include_bytes!("../../../web/public/audio/effects/new-message.wav"),
+    include_bytes!("../../../web/public/audio/effects/delete.wav"),
+];
+
+struct Request {
+    effect: Effect,
+    requested: Instant,
+    volume: f32,
+    speed: f32,
+}
+
+impl Request {
+    fn fresh(&self, now: Instant) -> bool {
+        now.duration_since(self.requested) <= Duration::from_millis(120)
+    }
+}
+
+pub struct Effects {
+    sender: Option<SyncSender<Request>>,
+    last_slider: Option<Instant>,
+}
+
+impl Effects {
+    pub fn new(enabled: bool) -> Self {
+        let sender = enabled.then(|| {
+            let (sender, receiver) = mpsc::sync_channel::<Request>(16);
+            std::thread::spawn(move || {
+                let buffers: Vec<_> = WAVS.iter().map(|wav| decode(wav)).collect();
+                let mut stream = None;
+                let mut active: VecDeque<Sink> = VecDeque::new();
+                while let Ok(request) = receiver.recv() {
+                    if !request.fresh(Instant::now()) {
+                        continue;
+                    }
+                    if stream.is_none() {
+                        stream = OutputStreamBuilder::open_default_stream().ok();
+                    }
+                    let Some(stream) = &stream else {
+                        continue;
+                    };
+                    let Some(buffer) = &buffers[request.effect as usize] else {
+                        continue;
+                    };
+                    // Opening a slow output device must not play old clicks later.
+                    if !request.fresh(Instant::now()) {
+                        continue;
+                    }
+                    active.retain(|sink| !sink.empty());
+                    if active.len() == 4
+                        && let Some(oldest) = active.pop_front()
+                    {
+                        oldest.stop();
+                    }
+                    let sink = Sink::connect_new(stream.mixer());
+                    sink.set_volume(request.volume);
+                    sink.set_speed(request.speed);
+                    sink.append(buffer.clone());
+                    active.push_back(sink);
+                }
+            });
+            sender
+        });
+        Self {
+            sender,
+            last_slider: None,
+        }
+    }
+
+    pub fn play(&self, effect: Effect) {
+        self.send(effect, 0.45, 1.0);
+    }
+
+    pub fn toggle(&self, on: bool) {
+        self.play(if on {
+            Effect::ToggleOn
+        } else {
+            Effect::ToggleOff
+        });
+    }
+
+    pub fn slider(&mut self, normalized: f32) {
+        let now = Instant::now();
+        if self
+            .last_slider
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(40))
+        {
+            return;
+        }
+        self.last_slider = Some(now);
+        let value = normalized.clamp(0.0, 1.0);
+        self.send(Effect::Slider, 0.1 + value * 0.22, 0.75 + value * 0.6);
+    }
+
+    fn send(&self, effect: Effect, volume: f32, speed: f32) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.try_send(Request {
+                effect,
+                requested: Instant::now(),
+                volume,
+                speed,
+            });
+        }
+    }
+}
+
+fn decode(wav: &'static [u8]) -> Option<SamplesBuffer> {
+    let decoder = Decoder::try_from(Cursor::new(wav)).ok()?;
+    let channels = decoder.channels();
+    let rate = decoder.sample_rate();
+    Some(SamplesBuffer::new(
+        channels,
+        rate,
+        decoder.collect::<Vec<f32>>(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_web_effects_decode_to_nonzero_finite_pcm_without_opening_devices() {
+        for wav in WAVS {
+            let buffer = decode(wav).expect("bundled WAV");
+            let samples: Vec<_> = buffer.collect();
+            assert!(samples.len() > 100);
+            assert!(
+                samples
+                    .iter()
+                    .all(|value| value.is_finite() && value.abs() <= 1.0)
+            );
+            assert!(samples.iter().any(|value| value.abs() > 0.01));
+        }
+    }
+
+    #[test]
+    fn slider_feedback_is_throttled_and_late_effects_are_discarded() {
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let mut effects = Effects {
+            sender: Some(sender),
+            last_slider: None,
+        };
+        effects.slider(0.8);
+        effects.slider(0.1);
+        let request = receiver.try_recv().unwrap();
+        assert!((request.volume - 0.276).abs() < 0.001);
+        assert!((request.speed - 1.23).abs() < 0.001);
+        assert!(receiver.try_recv().is_err());
+        assert!(request.fresh(request.requested + Duration::from_millis(120)));
+        assert!(!request.fresh(request.requested + Duration::from_millis(121)));
+    }
+}

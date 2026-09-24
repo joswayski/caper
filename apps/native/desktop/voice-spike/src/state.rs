@@ -11,13 +11,13 @@ pub struct CallContext {
 pub struct AudioIntent {
     pub muted: bool,
     pub deafened: bool,
-    mute_before_deafen: bool,
 }
 
 impl AudioIntent {
     pub fn set_muted(&mut self, muted: bool) {
-        if !self.deafened {
-            self.muted = muted;
+        self.muted = muted;
+        if !muted {
+            self.deafened = false;
         }
     }
 
@@ -25,14 +25,8 @@ impl AudioIntent {
         if deafened == self.deafened {
             return;
         }
-        if deafened {
-            self.mute_before_deafen = self.muted;
-            self.muted = true;
-            self.deafened = true;
-        } else {
-            self.deafened = false;
-            self.muted = self.mute_before_deafen;
-        }
+        self.deafened = deafened;
+        self.muted = deafened;
     }
 }
 
@@ -177,18 +171,19 @@ mod tests {
     }
 
     #[test]
-    fn undeafen_restores_prior_mute_intent() {
+    fn unmute_undeafens_and_undeafen_unmutes_but_repeated_false_preserves_mute() {
         let mut audio = AudioIntent::default();
         audio.set_deafened(true);
         assert_eq!((audio.muted, audio.deafened), (true, true));
         audio.set_muted(false);
-        assert!(audio.muted, "deafen owns mute while active");
-        audio.set_deafened(false);
         assert_eq!((audio.muted, audio.deafened), (false, false));
 
         audio.set_muted(true);
         audio.set_deafened(true);
         audio.set_deafened(false);
-        assert!(audio.muted, "explicit pre-deafen mute must be restored");
+        assert_eq!((audio.muted, audio.deafened), (false, false));
+        audio.set_muted(true);
+        audio.set_deafened(false);
+        assert!(audio.muted, "idempotent undeafen preserves mute");
     }
 }

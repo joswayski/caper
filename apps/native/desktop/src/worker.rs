@@ -33,6 +33,14 @@ pub enum Command {
         space: Option<String>,
         channel: Option<String>,
         name: String,
+        cached: Option<History>,
+    },
+    PrefetchNavigation {
+        generation: u64,
+        request: u64,
+        space: Option<String>,
+        channel: Option<String>,
+        token: Option<String>,
     },
     LoadChannel {
         generation: u64,
@@ -179,6 +187,13 @@ pub enum Event {
         navigation: u64,
         result: Result<PreparedNavigation, LoadError>,
     },
+    NavigationPrefetched {
+        generation: u64,
+        request: u64,
+        space: Option<String>,
+        channel: Option<String>,
+        result: Result<crate::navigation::Read, LoadError>,
+    },
     ChannelLoaded {
         generation: u64,
         channel: String,
@@ -220,6 +235,19 @@ pub struct SendFailure {
 pub struct LoadError {
     pub message: String,
     pub access_denied: bool,
+    pub space_access_denied: bool,
+}
+
+impl From<crate::api::ApiError> for LoadError {
+    fn from(error: crate::api::ApiError) -> Self {
+        Self {
+            access_denied: error
+                .status
+                .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
+            space_access_denied: false,
+            message: error.to_string(),
+        }
+    }
 }
 
 pub struct PreparedNavigation {
@@ -233,17 +261,24 @@ fn prepare_navigation(
     space: Option<&str>,
     channel: Option<&str>,
     name: &str,
-) -> Result<PreparedNavigation, crate::api::ApiError> {
+    cached: Option<History>,
+) -> Result<PreparedNavigation, LoadError> {
     let detail = space
         .map(|space| api.space(token.unwrap_or_default(), space))
-        .transpose()?;
+        .transpose()
+        .map_err(|error| {
+            let mut error = LoadError::from(error);
+            error.space_access_denied = error.access_denied;
+            error
+        })?;
     if let Some(detail) = &detail
         && Some(detail.space.id.as_str()) != space
     {
         return Err(crate::api::ApiError {
             status: None,
             message: "Caper returned another space.".into(),
-        });
+        }
+        .into());
     }
     let selected = if let Some(detail) = &detail {
         if let Some(id) = channel {
@@ -264,9 +299,18 @@ fn prepare_navigation(
         None
     };
     let history = if let Some(selected) = selected {
-        Some(api.history(token, &selected.id, None)?)
+        match cached.filter(|history| {
+            history.space.id == detail.as_ref().unwrap().space.id
+                && history.channel.id == selected.id
+        }) {
+            Some(history) => Some(history),
+            None => Some(api.history(token, &selected.id, None)?),
+        }
     } else if space.is_none() {
-        Some(api.general_history(token)?)
+        Some(match cached {
+            Some(history) => history,
+            None => api.general_history(token)?,
+        })
     } else {
         None
     };
@@ -277,7 +321,8 @@ fn prepare_navigation(
         return Err(crate::api::ApiError {
             status: None,
             message: "Caper returned another conversation.".into(),
-        });
+        }
+        .into());
     }
     if let Some(history) = &history {
         if history
@@ -288,7 +333,8 @@ fn prepare_navigation(
             return Err(crate::api::ApiError {
                 status: None,
                 message: "Caper returned messages from another channel.".into(),
-            });
+            }
+            .into());
         }
         crate::model::Timeline::default()
             .reset(history.messages.clone(), &history.cursor)
@@ -307,6 +353,54 @@ fn prepare_navigation(
         detail,
         conversation,
     })
+}
+
+fn prefetch_navigation(
+    api: &Api,
+    token: Option<&str>,
+    space: Option<&str>,
+    channel: Option<&str>,
+) -> Result<crate::navigation::Read, LoadError> {
+    let prepared = prepare_navigation_read(api, token, space, channel)?;
+    Ok(crate::navigation::Read {
+        detail: prepared.0,
+        history: prepared.1,
+    })
+}
+
+fn prepare_navigation_read(
+    api: &Api,
+    token: Option<&str>,
+    space: Option<&str>,
+    channel: Option<&str>,
+) -> Result<(Option<SpaceDetail>, Option<History>), LoadError> {
+    let detail = space
+        .map(|space| api.space(token.unwrap_or_default(), space))
+        .transpose()
+        .map_err(|error| {
+            let mut error = LoadError::from(error);
+            error.space_access_denied = error.access_denied;
+            error
+        })?;
+    let selected = detail.as_ref().and_then(|detail| match channel {
+        Some(id) => detail.channels.iter().find(|entry| entry.id == id),
+        None => detail.channels.first(),
+    });
+    if channel.is_some() && detail.is_some() && selected.is_none() {
+        return Err(LoadError {
+            message: "This channel is no longer accessible.".into(),
+            access_denied: true,
+            space_access_denied: false,
+        });
+    }
+    let history = if let Some(selected) = selected {
+        Some(api.history(token, &selected.id, None)?)
+    } else if space.is_none() {
+        Some(api.general_history(token)?)
+    } else {
+        None
+    };
+    Ok((detail, history))
 }
 
 pub struct Worker {
@@ -455,6 +549,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             space,
             channel,
             name,
+            cached,
         } => Event::NavigationPrepared {
             generation,
             navigation,
@@ -464,13 +559,26 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 space.as_deref(),
                 channel.as_deref(),
                 &name,
-            )
-            .map_err(|error| LoadError {
-                access_denied: error
-                    .status
-                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
-                message: error.to_string(),
-            }),
+                cached,
+            ),
+        },
+        Command::PrefetchNavigation {
+            generation,
+            request,
+            token,
+            space,
+            channel,
+        } => Event::NavigationPrefetched {
+            generation,
+            request,
+            result: prefetch_navigation(
+                api,
+                token.as_deref(),
+                space.as_deref(),
+                channel.as_deref(),
+            ),
+            space,
+            channel,
         },
         Command::LoadChannel {
             generation,
@@ -488,12 +596,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 api.chat_session(token.as_deref(), &name)
                     .map(|session| (history, session))
             })
-            .map_err(|error| LoadError {
-                access_denied: error
-                    .status
-                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
-                message: error.to_string(),
-            });
+            .map_err(LoadError::from);
             Event::ChannelLoaded {
                 generation,
                 channel,
@@ -511,12 +614,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel: channel.clone(),
             result: api
                 .history(token.as_deref(), &channel, Some(&before))
-                .map_err(|error| LoadError {
-                    access_denied: error
-                        .status
-                        .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
-                    message: error.to_string(),
-                }),
+                .map_err(LoadError::from),
         },
         Command::Send {
             generation,
@@ -663,6 +761,7 @@ mod tests {
                     r#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#,
                 ),
                 ("GET /api/spaces/s", detail),
+                ("GET /api/spaces/s", detail),
             ] {
                 let (stream, _) = server.accept().unwrap();
                 stream
@@ -682,16 +781,74 @@ mod tests {
                 write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
-        let prepared =
-            super::prepare_navigation(&api, Some("account"), Some("s"), Some("second"), "User")
-                .unwrap();
+        let prepared = super::prepare_navigation(
+            &api,
+            Some("account"),
+            Some("s"),
+            Some("second"),
+            "User",
+            None,
+        )
+        .unwrap();
         assert_eq!(prepared.detail.unwrap().space.id, "s");
-        assert_eq!(prepared.conversation.unwrap().0.channel.id, "second");
-        let failure =
-            super::prepare_navigation(&api, Some("account"), Some("s"), Some("revoked"), "User")
-                .err()
-                .unwrap();
-        assert_eq!(failure.status, Some(reqwest::StatusCode::NOT_FOUND));
+        let mut warm = prepared.conversation.unwrap().0;
+        assert_eq!(warm.channel.id, "second");
+        warm.channel.id = "revoked".into();
+        let failure = super::prepare_navigation(
+            &api,
+            Some("account"),
+            Some("s"),
+            Some("revoked"),
+            "User",
+            Some(warm),
+        )
+        .err()
+        .unwrap();
+        assert!(failure.access_denied);
+        assert!(!failure.space_access_denied);
+        let speculative =
+            super::prefetch_navigation(&api, Some("account"), Some("s"), Some("revoked"));
+        assert!(
+            speculative.err().unwrap().access_denied,
+            "an explicit revoked target must not fall back to the first channel"
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn speculative_navigation_only_performs_reads_and_creates_no_session() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (path, body) in [
+                (
+                    "GET /api/spaces/s",
+                    r#"{"space":{"id":"s","name":"Space","ownerId":"owner"},"channels":[{"id":"c","spaceId":"s","name":"channel","private":true}],"members":[]}"#,
+                ),
+                (
+                    "GET /api/chat/channels/c/messages",
+                    r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"c","name":"channel"},"messages":[],"cursor":"7","hasMore":false}"#,
+                ),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let read = super::prefetch_navigation(&api, Some("account"), Some("s"), Some("c")).unwrap();
+        assert_eq!(read.history.unwrap().cursor, "7");
         worker.join().unwrap();
     }
 

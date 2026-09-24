@@ -99,52 +99,7 @@ impl NativeAudioSource {
 
         // Fast path: no buffering
         if self.queue_size_samples == 0 {
-            // frame size must be 10ms for fast path
-            let expected_frames_per_ch = (self.sample_rate / 100) as usize;
-            if frame.data.len() % (self.num_channels as usize) != 0 {
-                return Err(RtcError {
-                    error_type: RtcErrorType::InvalidState,
-                    message: "frame.data length not divisible by channel count".to_owned(),
-                });
-            }
-            let nb_frames = frame.data.len() / (self.num_channels as usize);
-            if nb_frames != expected_frames_per_ch {
-                return Err(RtcError {
-                    error_type: RtcErrorType::InvalidState,
-                    message: format!(
-                        "direct capture requires 10ms frames: got {} frames, expected {}",
-                        nb_frames, expected_frames_per_ch
-                    ),
-                });
-            }
-
-            // Define a no-op callback for fast path (queue_size_ms=0)
-            // This is safer than passing null, which can cause UB in release mode optimizations
-            extern "C" fn noop_complete_callback(_ctx: *const sys_at::SourceContext) {
-                // No-op: fast path completes synchronously, no callback needed
-            }
-
-            unsafe {
-                let data: &[i16] = frame.data.as_ref();
-                // Use a valid no-op callback instead of null for safety
-                // In release mode, transmuting null pointers can cause UB
-                let noop_callback = sys_at::CompleteCallback(noop_complete_callback);
-                let ok = self.sys_handle.capture_frame(
-                    data,
-                    self.sample_rate,
-                    self.num_channels,
-                    nb_frames,
-                    std::ptr::null(), // Context is still null - callback won't use it
-                    noop_callback,
-                );
-                if !ok {
-                    return Err(RtcError {
-                        error_type: RtcErrorType::InvalidState,
-                        message: "failed to capture frame without buffering".to_owned(),
-                    });
-                }
-            }
-            return Ok(());
+            return self.capture_frame_direct(frame);
         }
 
         // Buffered path.
@@ -181,6 +136,34 @@ impl NativeAudioSource {
         }
 
         Ok(())
+    }
+
+    /// Complete a 10 ms frame synchronously on a zero-buffer source. Enables
+    /// callers to hold a local publication gate through the native sink write.
+    pub fn capture_frame_direct(&self, frame: &AudioFrame<'_>) -> Result<(), RtcError> {
+        if self.queue_size_samples != 0 || self.sample_rate != frame.sample_rate || self.num_channels != frame.num_channels {
+            return Err(RtcError { error_type: RtcErrorType::InvalidState, message: "direct capture requires a matching zero-buffer source".to_owned() });
+        }
+        let expected = (self.sample_rate / 100) as usize * self.num_channels as usize;
+        if frame.data.len() != expected {
+            return Err(RtcError { error_type: RtcErrorType::InvalidState, message: "direct capture requires a 10 ms frame".to_owned() });
+        }
+        extern "C" fn noop_complete_callback(_ctx: *const sys_at::SourceContext) {}
+        let ok = unsafe {
+            self.sys_handle.capture_frame(
+                frame.data.as_ref(),
+                self.sample_rate,
+                self.num_channels,
+                expected / self.num_channels as usize,
+                std::ptr::null(),
+                sys_at::CompleteCallback(noop_complete_callback),
+            )
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(RtcError { error_type: RtcErrorType::InvalidState, message: "failed to capture frame without buffering".to_owned() })
+        }
     }
 }
 

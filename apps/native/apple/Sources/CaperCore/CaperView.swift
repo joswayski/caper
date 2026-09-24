@@ -1126,6 +1126,33 @@ private struct AudioPreferencesView: View {
                 .keyboardShortcut(.cancelAction)
             }
             #if os(macOS)
+            ScrollView {
+                controls.fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityIdentifier("audio-preferences-controls")
+            .frame(width: 426, height: 500)
+            #else
+            controls
+            #endif
+        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
+            .task { await voice.refreshAudioDevices() }
+            #if os(macOS)
+            .onChange(of: voice.phase) { _, phase in
+                if phase != .idle && phase != .failed { micTest.close() }
+            }
+            .onDisappear { micTest.close() }
+            .task(id: voice.phase) {
+                while !Task.isCancelled && voice.phase == .connected {
+                    await voice.refreshDiagnostics()
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                }
+            }
+            #endif
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            #if os(macOS)
             Picker("Input", selection: inputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableInputs) { route in Text(route.name).tag(route.id) }
@@ -1218,20 +1245,7 @@ private struct AudioPreferencesView: View {
                 }
             }
             #endif
-        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
-            .task { await voice.refreshAudioDevices() }
-            #if os(macOS)
-            .onChange(of: voice.phase) { _, phase in
-                if phase != .idle && phase != .failed { micTest.close() }
-            }
-            .onDisappear { micTest.close() }
-            .task(id: voice.phase) {
-                while !Task.isCancelled && voice.phase == .connected {
-                    await voice.refreshDiagnostics()
-                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
-                }
-            }
-            #endif
+        }
     }
 
     private var outputGain: Binding<Double> {

@@ -44,6 +44,8 @@ class AudioDeviceController {
   bool set_recording_device(uint16_t index) const;
   bool set_playout_device_by_guid(rust::String guid) const;
   bool set_recording_device_by_guid(rust::String guid) const;
+  bool select_default_playout_device() const;
+  bool select_default_recording_device() const;
 
   // Recording control
   bool stop_recording() const;

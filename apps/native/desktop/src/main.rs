@@ -1,16 +1,19 @@
 mod api;
 mod credentials;
+mod effects;
 mod gateway;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
 #[path = "../voice-spike/src/media_gateway.rs"]
 mod media_gateway;
 mod model;
+mod navigation;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
 mod voice;
 mod worker;
 
+use effects::{Effect, Effects};
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use gateway::GatewayEvent;
 use model::{
@@ -94,6 +97,7 @@ enum Dialog {
     Profile,
     Audio,
     Connection,
+    Diagnostics,
     CreateSpace,
     ManageSpace,
     LeaveSpace {
@@ -125,6 +129,8 @@ struct NavigationTarget {
 struct CaperApp {
     worker: Worker,
     voice: Voice,
+    effects: Effects,
+    announced_voice: Option<u64>,
     generation: u64,
     loading: bool,
     loading_older: bool,
@@ -164,6 +170,8 @@ struct CaperApp {
     opening: bool,
     navigation_target: Option<NavigationTarget>,
     navigation_error: Option<String>,
+    navigation_cache: navigation::NavigationCache,
+    navigation_cache_generation: u64,
     dialog: Option<Dialog>,
     form_name: String,
     form_private: bool,
@@ -182,6 +190,8 @@ impl CaperApp {
         let mut app = Self {
             worker,
             voice,
+            effects: Effects::new(fixture.is_none()),
+            announced_voice: None,
             generation: 1,
             loading: fixture.is_none(),
             loading_older: false,
@@ -221,6 +231,8 @@ impl CaperApp {
             opening: false,
             navigation_target: None,
             navigation_error: None,
+            navigation_cache: navigation::NavigationCache::default(),
+            navigation_cache_generation: 1,
             dialog: None,
             form_name: String::new(),
             form_private: false,
@@ -260,6 +272,9 @@ impl CaperApp {
                 } else if name == "parity-member" {
                     app.account.as_mut().unwrap().id = "fixture-maya".into();
                     app.account.as_mut().unwrap().display_name = Some("Maya".into());
+                } else if name == "parity-audio-debug" {
+                    app.account.as_mut().unwrap().debug_enabled = true;
+                    app.dialog = Some(Dialog::Diagnostics);
                 } else if matches!(name, "parity-audio" | "parity-audio-recorded") {
                     app.dialog = Some(Dialog::Audio);
                     if name == "parity-audio-recorded" {
@@ -346,6 +361,7 @@ impl CaperApp {
             id: "fixture-owner".into(),
             username: Some("fixture_owner".into()),
             display_name: Some("Fixture Owner".into()),
+            debug_enabled: false,
         });
         let channels = vec![
             channel.clone(),
@@ -446,6 +462,12 @@ impl CaperApp {
 
     fn receive(&mut self) {
         self.voice.receive();
+        if matches!(self.voice.state.phase, Phase::Connected(_))
+            && self.announced_voice != Some(self.voice.state.generation)
+        {
+            self.announced_voice = Some(self.voice.state.generation);
+            self.effects.play(Effect::Join);
+        }
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
@@ -497,6 +519,33 @@ impl CaperApp {
                     navigation,
                     result,
                 } => self.accept_navigation(generation, navigation, result),
+                Event::NavigationPrefetched {
+                    generation,
+                    request,
+                    space,
+                    channel,
+                    result,
+                } if generation == self.navigation_cache_generation => {
+                    let target = navigation::Target { space, channel };
+                    match result {
+                        Ok(read) => self.navigation_cache.finish_prefetch(
+                            &target,
+                            request,
+                            read,
+                            Instant::now(),
+                        ),
+                        Err(error) if error.access_denied => {
+                            if error.space_access_denied {
+                                if let Some(space) = &target.space {
+                                    self.navigation_cache.forget_space(space);
+                                }
+                            } else if let Some(channel) = &target.channel {
+                                self.navigation_cache.forget_channel(channel);
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
                 Event::ChannelLoaded {
                     generation,
                     channel,
@@ -567,6 +616,7 @@ impl CaperApp {
     }
 
     fn establish(&mut self, token: String, account: Account, spaces: Spaces) {
+        self.invalidate_navigation_cache();
         self.token = Some(token);
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
@@ -583,6 +633,7 @@ impl CaperApp {
     }
 
     fn profiled(&mut self, account: Account, spaces: Spaces) {
+        self.invalidate_navigation_cache();
         self.account = Some(account);
         self.set_spaces(spaces);
         self.dialog = None;
@@ -709,6 +760,25 @@ impl CaperApp {
     }
 
     fn navigate(&mut self, target: NavigationTarget) {
+        self.remember_conversation();
+        let mut cache_target = navigation::Target {
+            space: target.space.clone(),
+            channel: target.channel.clone(),
+        };
+        cache_target = self.navigation_cache.resolve(&cache_target);
+        let target = NavigationTarget {
+            space: cache_target.space.clone(),
+            channel: cache_target.channel.clone(),
+        };
+        let prefetched = self
+            .navigation_cache
+            .take_prefetch(&cache_target, Instant::now());
+        let cached = self.navigation_cache.history(&cache_target).or_else(|| {
+            prefetched.and_then(|read| {
+                let _fresh_detail = read.detail;
+                read.history
+            })
+        });
         self.navigation += 1;
         self.opening = true;
         self.navigation_error = None;
@@ -719,8 +789,76 @@ impl CaperApp {
             space: target.space.clone(),
             channel: target.channel.clone(),
             name: self.identity_name(),
+            cached,
         });
         self.navigation_target = Some(target);
+    }
+
+    fn prefetch(&mut self, target: NavigationTarget) {
+        let target = self.navigation_cache.resolve(&navigation::Target {
+            space: target.space,
+            channel: target.channel,
+        });
+        let Some(request) = self
+            .navigation_cache
+            .begin_prefetch(target.clone(), Instant::now())
+        else {
+            return;
+        };
+        self.worker.send(Command::PrefetchNavigation {
+            generation: self.navigation_cache_generation,
+            request,
+            token: self.token.clone(),
+            space: target.space,
+            channel: target.channel,
+        });
+    }
+
+    fn remember_conversation(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        let (Some(channel), Some(detail)) = (&self.selected_channel, &self.detail) else {
+            return;
+        };
+        let Some(item) = detail.channels.iter().find(|item| item.id == *channel) else {
+            return;
+        };
+        self.navigation_cache.remember(
+            navigation::Target {
+                space: if detail.space.demo {
+                    None
+                } else {
+                    Some(detail.space.id.clone())
+                },
+                channel: if detail.space.demo {
+                    None
+                } else {
+                    Some(channel.clone())
+                },
+            },
+            model::History {
+                messages: self.timeline.messages().cloned().collect(),
+                cursor: self.timeline.cursor(),
+                has_more: self.has_more,
+                space: model::HistoryPlace {
+                    id: detail.space.id.clone(),
+                    name: detail.space.name.clone(),
+                },
+                channel: model::HistoryPlace {
+                    id: item.id.clone(),
+                    name: item.name.clone(),
+                },
+            },
+        );
+    }
+
+    fn invalidate_navigation_cache(&mut self) {
+        self.navigation_cache_generation += 1;
+        self.navigation_cache.clear();
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
     }
 
     fn accept_navigation(
@@ -757,11 +895,32 @@ impl CaperApp {
             }
             Err(error) => {
                 if error.access_denied
+                    && let Some(target) = &self.navigation_target
+                {
+                    if error.space_access_denied {
+                        if let Some(space) = &target.space {
+                            self.navigation_cache.forget_space(space);
+                        }
+                    } else if let Some(channel) = &target.channel {
+                        self.navigation_cache.forget_channel(channel);
+                    }
+                }
+                if error.access_denied
                     && self.navigation_target.as_ref().is_some_and(|target| {
                         target.space == self.selected_space
-                            && (target.channel.is_none() || target.channel == self.selected_channel)
+                            && (error.space_access_denied
+                                || target.channel.is_none()
+                                || target.channel == self.selected_channel)
                     })
                 {
+                    if error.space_access_denied {
+                        if let Some(space) = &self.selected_space {
+                            self.voice.revoke_space(space);
+                        }
+                        self.selected_space = None;
+                        self.detail = None;
+                        self.presence.clear();
+                    }
                     self.clear_channel(&error.message);
                 }
                 self.navigation_error = Some(error.message);
@@ -875,11 +1034,14 @@ impl CaperApp {
                     self.draft.clear();
                     self.error = None;
                 }
-                if matches!(
-                    self.timeline.apply(*message),
-                    Ok(model::Apply::Resync) | Err(_)
-                ) {
-                    self.reload_channel();
+                let remote = self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.author.id != message.author.id);
+                match self.timeline.apply(*message) {
+                    Ok(model::Apply::Applied) if remote => self.effects.play(Effect::Message),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
                 }
             }
             GatewayEvent::Typing {
@@ -1049,6 +1211,7 @@ impl CaperApp {
     }
 
     fn clear_channel(&mut self, message: &str) {
+        self.invalidate_navigation_cache();
         if let Some(channel) = &self.selected_channel {
             self.voice.revoke_channel(channel);
         }
@@ -1085,6 +1248,7 @@ impl CaperApp {
             });
         }
         self.account = None;
+        self.invalidate_navigation_cache();
         self.spaces.clear();
         self.detail = None;
         self.error = None;
@@ -1188,6 +1352,7 @@ impl CaperApp {
             return;
         };
         self.navigation += 1;
+        self.invalidate_navigation_cache();
         self.opening = false;
         self.navigation_target = None;
         self.navigation_error = None;
@@ -1201,6 +1366,12 @@ impl CaperApp {
     }
 
     fn admin_result(&mut self, result: AdminResult) {
+        if matches!(
+            result,
+            AdminResult::SpaceDeleted(_) | AdminResult::ChannelDeleted(_)
+        ) {
+            self.effects.play(Effect::Delete);
+        }
         match result {
             AdminResult::SpaceCreated(space) => {
                 self.spaces.push(space.clone());
@@ -1378,7 +1549,8 @@ impl CaperApp {
                             ui.add_space(4.0);
                             let response = ui.add_sized(
                                 [440.0, 52.0],
-                                egui::TextEdit::singleline(&mut self.code).char_limit(6),
+                                egui::TextEdit::singleline(&mut self.code)
+                                    .vertical_align(egui::Align::Center).char_limit(6),
                             );
                             self.code.make_ascii_uppercase();
                             self.code.retain(|character| {
@@ -1415,6 +1587,7 @@ impl CaperApp {
                             let response = ui.add_sized(
                                 [440.0, 52.0],
                                 egui::TextEdit::singleline(&mut self.email)
+                                    .vertical_align(egui::Align::Center)
                                     .hint_text("you@example.com"),
                             );
                             if let Some(error) = &self.error {
@@ -1676,6 +1849,11 @@ impl CaperApp {
                     }
                     if response.clicked() {
                         self.select_space(id);
+                    } else if response.hovered() || response.has_focus() {
+                        self.prefetch(NavigationTarget {
+                            space: if demo { None } else { Some(id) },
+                            channel: None,
+                        });
                     }
                     ui.add_space(10.0);
                 }
@@ -1902,6 +2080,7 @@ impl CaperApp {
                                 .clicked()
                                 {
                                     self.channels_expanded = !self.channels_expanded;
+                                    self.effects.toggle(self.channels_expanded);
                                 }
                                 ui.label(bold("Channels").size(12.0).color(MUTED));
                                 let count = self
@@ -1949,6 +2128,7 @@ impl CaperApp {
                                                     {
                                                         self.channels_expanded =
                                                             !self.channels_expanded;
+                                                        self.effects.toggle(self.channels_expanded);
                                                         ui.close();
                                                     }
                                                 });
@@ -2018,6 +2198,11 @@ impl CaperApp {
                                 self.dialog = Some(Dialog::ManageChannel(id.clone()));
                             } else if response.clicked() {
                                 self.select_channel(id.clone(), false);
+                            } else if response.hovered() || response.has_focus() {
+                                self.prefetch(NavigationTarget {
+                                    space: self.selected_space.clone(),
+                                    channel: Some(id.clone()),
+                                });
                             }
                             ui.add_space(3.0);
                         }
@@ -2093,6 +2278,10 @@ impl CaperApp {
                                                 NavIcon::More,
                                                 &format!("Audio for {}", participant.name),
                                             );
+                                            if options.clicked() {
+                                                self.effects
+                                                    .toggle(!egui::Popup::menu(&options).is_open());
+                                            }
                                             egui::Popup::menu(&options).width(240.0).show(|ui| {
                                                 ui.label(bold(&participant.name));
                                                 ui.label(
@@ -2112,6 +2301,14 @@ impl CaperApp {
                                                 );
                                                 let muted =
                                                     ui.checkbox(&mut playback.muted, "Mute for me");
+                                                if volume.changed() {
+                                                    self.effects.slider(
+                                                        f32::from(playback.gain_percent) / 200.0,
+                                                    );
+                                                }
+                                                if muted.changed() {
+                                                    self.effects.toggle(!playback.muted);
+                                                }
                                                 if volume.changed() || muted.changed() {
                                                     self.voice.set_participant_playback(
                                                         &participant.id,
@@ -2157,6 +2354,9 @@ impl CaperApp {
                     self.dialog = Some(Dialog::Connection);
                 }
                 if drawn_icon_button(ui, NavIcon::Close, "Disconnect voice").clicked() {
+                    if connected {
+                        self.effects.play(Effect::Leave);
+                    }
                     self.voice.leave();
                 }
             });
@@ -2231,9 +2431,11 @@ impl CaperApp {
                 .clicked()
                 {
                     self.voice.command(VoiceOperation::Mute(!muted));
+                    self.effects.toggle(muted);
                 }
                 let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted);
                 if input.clicked() {
+                    self.effects.toggle(!egui::Popup::menu(&input).is_open());
                     self.voice.refresh_devices();
                 }
                 egui::Popup::menu(&input)
@@ -2260,10 +2462,12 @@ impl CaperApp {
                 .clicked()
                 {
                     self.voice.command(VoiceOperation::Deafen(!deafened));
+                    self.effects.toggle(deafened);
                 }
                 let output =
                     audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened);
                 if output.clicked() {
+                    self.effects.toggle(!egui::Popup::menu(&output).is_open());
                     self.voice.refresh_devices();
                 }
                 egui::Popup::menu(&output)
@@ -2273,6 +2477,9 @@ impl CaperApp {
                 ui.add_space(2.0);
                 let settings =
                     audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false);
+                if settings.clicked() {
+                    self.effects.toggle(!egui::Popup::menu(&settings).is_open());
+                }
                 egui::Popup::menu(&settings)
                     .align(egui::RectAlign::TOP_END)
                     .width(232.0)
@@ -2284,6 +2491,15 @@ impl CaperApp {
                         }
                         if ui.button("Connection details").clicked() {
                             self.dialog = Some(Dialog::Connection);
+                            ui.close();
+                        }
+                        if self
+                            .account
+                            .as_ref()
+                            .is_some_and(|account| account.debug_enabled)
+                            && ui.button("Audio diagnostics").clicked()
+                        {
+                            self.dialog = Some(Dialog::Diagnostics);
                             ui.close();
                         }
                         ui.separator();
@@ -2308,6 +2524,10 @@ impl CaperApp {
     }
 
     fn device_options(&mut self, ui: &mut egui::Ui, input: bool) {
+        if !matches!(self.voice.microphone, MicrophoneState::Idle) {
+            ui.label("End the microphone test to change devices.");
+            return;
+        }
         ui.label(
             bold(if input { "Microphone" } else { "Audio output" })
                 .size(12.0)
@@ -2323,23 +2543,15 @@ impl CaperApp {
         } else {
             &self.voice.preferences.output
         };
-        let active = !matches!(self.voice.state.phase, Phase::Idle);
         if ui
-            .selectable_label(
-                selected.is_none(),
-                if active {
-                    "System default (next join)"
-                } else {
-                    "System default"
-                },
-            )
+            .selectable_label(selected.is_none(), "System default")
             .clicked()
         {
-            if input {
-                self.voice.preferences.input = None;
+            self.voice.command(if input {
+                VoiceOperation::DefaultInput
             } else {
-                self.voice.preferences.output = None;
-            }
+                VoiceOperation::DefaultOutput
+            });
         }
         if self.voice.refreshing_devices {
             ui.label("Finding devices…");
@@ -2376,10 +2588,42 @@ impl CaperApp {
                 ui.close();
             }
         }
-        if !input {
-            ui.separator();
+        ui.separator();
+        if input {
+            self.input_processing(ui);
+        } else {
             self.output_gain(ui);
         }
+    }
+
+    fn input_processing(&mut self, ui: &mut egui::Ui) {
+        let mut gain = self.voice.preferences.input_percent;
+        let mut strength = self.voice.preferences.processing_strength;
+        let gain_label = ui.label(bold("Input volume").size(13.0));
+        let gain_changed = ui
+            .add(egui::Slider::new(&mut gain, 0..=200).suffix("%"))
+            .labelled_by(gain_label.id)
+            .changed();
+        let strength_label = ui.label(bold("Voice processing").size(13.0));
+        let strength_changed = ui
+            .add(egui::Slider::new(&mut strength, 0..=100).suffix("%"))
+            .labelled_by(strength_label.id)
+            .changed();
+        if gain_changed || strength_changed {
+            self.voice.set_input_processing(gain, strength);
+            self.effects.slider(if gain_changed {
+                f32::from(gain) / 200.0
+            } else {
+                f32::from(strength) / 100.0
+            });
+        }
+        ui.label(
+            RichText::new(
+                "Applies to your live microphone. 0% bypasses the contour, not noise suppression.",
+            )
+            .size(11.0)
+            .color(MUTED),
+        );
     }
 
     fn output_gain(&mut self, ui: &mut egui::Ui) {
@@ -2408,10 +2652,13 @@ impl CaperApp {
             .inner;
         if changed {
             self.voice.set_master_gain(gain);
+            self.effects.slider(f32::from(gain) / 200.0);
         }
     }
 
     fn audio_preferences(&mut self, ui: &mut egui::Ui) {
+        self.input_processing(ui);
+        ui.add_space(12.0);
         self.output_gain(ui);
         ui.add_space(12.0);
         for input in [true, false] {
@@ -2453,7 +2700,7 @@ impl CaperApp {
             });
             ui.add_space(12.0);
         }
-        ui.label(RichText::new("Device preferences and output volume are saved on this computer. Returning to the system default during a call takes effect on your next join.").size(11.0).color(MUTED));
+        ui.label(RichText::new("Devices, volume, and processing preferences are saved on this computer. Device changes apply to the current call without changing system settings.").size(11.0).color(MUTED));
         if let Some(error) = &self.voice.device_error {
             ui.label(RichText::new(error).color(ERROR));
         }
@@ -2464,11 +2711,7 @@ impl CaperApp {
         ui.label(RichText::new("Record up to 30 seconds, then compare natural and enhanced playback. Audio stays on this computer and is discarded when you close this panel.").size(12.0).color(MUTED));
         ui.add_space(10.0);
         let idle = matches!(self.voice.microphone, MicrophoneState::Idle);
-        ui.add_enabled_ui(idle, |ui| {
-            ui.label("Comparison strength");
-            ui.add(egui::Slider::new(&mut self.voice.comparison_strength, 0..=100).suffix("%"));
-        });
-        ui.label(RichText::new("Enhanced playback approximates the web processing. It does not change your live-call microphone.").size(11.0).color(MUTED));
+        ui.label(RichText::new("Natural playback includes input gain and on-device noise suppression. Enhanced playback also applies the voice processing strength selected when recording starts.").size(11.0).color(MUTED));
         ui.add_space(12.0);
         if !self.persist_preferences {
             ui.label(
@@ -2536,6 +2779,41 @@ impl CaperApp {
         if let Some(error) = &self.voice.microphone_error {
             ui.label(RichText::new(error).color(ERROR));
         }
+        if self
+            .account
+            .as_ref()
+            .is_some_and(|account| account.debug_enabled)
+        {
+            ui.add_space(12.0);
+            ui.collapsing("Audio diagnostics", |ui| self.audio_diagnostics(ui));
+        }
+    }
+
+    fn audio_diagnostics(&self, ui: &mut egui::Ui) {
+        if !self
+            .account
+            .as_ref()
+            .is_some_and(|account| account.debug_enabled)
+        {
+            return;
+        }
+        ui.label("Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.");
+        let processing = self.voice.audio_processing_report();
+        if processing.is_none() {
+            ui.label(
+                "No live capture worker report. Join voice to start live processing counters.",
+            );
+        }
+        let report = serde_json::to_string_pretty(&serde_json::json!({
+            "platform": std::env::consts::OS,
+            "processing": processing,
+        }))
+        .expect("numeric diagnostics serialize");
+        if ui.button("Copy diagnostics").clicked() {
+            ui.ctx().copy_text(report.clone());
+        }
+        ui.add(egui::Label::new(RichText::new(report).monospace()).selectable(true));
+        ui.ctx().request_repaint_after(Duration::from_secs(1));
     }
 
     fn connection_details(&self, ui: &mut egui::Ui) {
@@ -2701,6 +2979,7 @@ impl CaperApp {
                                     {
                                         if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
                                         else { self.members_visible = !self.members_visible; }
+                                        self.effects.toggle(if narrow { self.narrow_members_visible } else { self.members_visible });
                                     }
                                     let already_here =
                                         self.voice.state.active_channel().is_some_and(|channel| {
@@ -2719,6 +2998,7 @@ impl CaperApp {
                                         && voice_join_button(ui, label).clicked()
                                     {
                                         if already_here {
+                                            if matches!(self.voice.state.phase, Phase::Connected(_)) { self.effects.play(Effect::Leave); }
                                             self.voice.leave();
                                         } else {
                                             self.join_voice();
@@ -2993,6 +3273,7 @@ impl CaperApp {
             Dialog::Profile => "Edit profile",
             Dialog::Audio => "Audio preferences",
             Dialog::Connection => "Connection details",
+            Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
             Dialog::LeaveSpace { .. } => "Leave space?",
@@ -3091,6 +3372,7 @@ impl CaperApp {
                                             Dialog::Profile => self.profile_dialog(ui),
                                             Dialog::Audio => self.audio_preferences(ui),
                                             Dialog::Connection => self.connection_details(ui),
+                                            Dialog::Diagnostics => self.audio_diagnostics(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
                                             Dialog::ConfirmDelete { space, channel, name } => {
@@ -3146,12 +3428,12 @@ impl CaperApp {
         ui.label("Username");
         ui.add_sized(
             [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.username),
+            egui::TextEdit::singleline(&mut self.username).vertical_align(egui::Align::Center),
         );
         ui.label("Display name");
         ui.add_sized(
             [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.display_name),
+            egui::TextEdit::singleline(&mut self.display_name).vertical_align(egui::Align::Center),
         );
         if primary(
             ui,
@@ -3181,7 +3463,9 @@ impl CaperApp {
         ui.label("Space name");
         ui.add_sized(
             [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.form_name).char_limit(80),
+            egui::TextEdit::singleline(&mut self.form_name)
+                .vertical_align(egui::Align::Center)
+                .char_limit(80),
         );
         let disabled = self.loading || self.form_name.trim().is_empty();
         let save = if manage {
@@ -3256,6 +3540,7 @@ impl CaperApp {
             if destructive(ui, "Delete space").clicked()
                 && let Some(space) = self.selected_space.clone()
             {
+                self.effects.play(Effect::Warning);
                 self.dialog = Some(Dialog::ConfirmDelete {
                     space,
                     channel: None,
@@ -3273,10 +3558,17 @@ impl CaperApp {
         ui.label("Channel name");
         ui.add_sized(
             [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.form_name).char_limit(80),
+            egui::TextEdit::singleline(&mut self.form_name)
+                .vertical_align(egui::Align::Center)
+                .char_limit(80),
         );
         self.form_name = normalize_channel(&self.form_name);
-        ui.checkbox(&mut self.form_private, "Private channel");
+        if ui
+            .checkbox(&mut self.form_private, "Private channel")
+            .changed()
+        {
+            self.effects.toggle(self.form_private);
+        }
         ui.label(
             RichText::new(if self.form_private {
                 "Only explicitly granted space members can open this channel."
@@ -3341,6 +3633,7 @@ impl CaperApp {
             if destructive(ui, "Delete channel").clicked()
                 && let Some(space) = self.selected_space.clone()
             {
+                self.effects.play(Effect::Warning);
                 let name = self
                     .detail
                     .as_ref()
@@ -3360,7 +3653,9 @@ impl CaperApp {
         ui.horizontal(|ui| {
             ui.add_sized(
                 [(ui.available_width() - 80.0).max(1.0), 38.0],
-                egui::TextEdit::singleline(&mut self.member_username).hint_text("username"),
+                egui::TextEdit::singleline(&mut self.member_username)
+                    .vertical_align(egui::Align::Center)
+                    .hint_text("username"),
             );
             if ui
                 .add(egui::Button::new(bold("Add").size(12.0)).min_size(egui::vec2(64.0, 38.0)))
@@ -4260,6 +4555,36 @@ mod tests {
     }
 
     #[test]
+    fn processing_diagnostics_require_debug_account_without_hiding_connection_stats() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-audio-debug"),
+        );
+        let contains = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(label))
+        })
+        };
+        render(&mut app, &context, vec![]);
+        assert!(contains(
+            &render(&mut app, &context, vec![]),
+            "Copy diagnostics"
+        ));
+        app.account.as_mut().unwrap().debug_enabled = false;
+        assert!(!contains(
+            &render(&mut app, &context, vec![]),
+            "Copy diagnostics"
+        ));
+        app.dialog = Some(Dialog::Connection);
+        assert!(contains(
+            &render(&mut app, &context, vec![]),
+            "Join voice to see connection details."
+        ));
+    }
+
+    #[test]
     fn native_chrome_matches_web_header_channel_and_composer_geometry() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -4432,6 +4757,7 @@ mod tests {
             id: "account".into(),
             username: profile.then(|| "member".into()),
             display_name: profile.then(|| "Member".into()),
+            debug_enabled: false,
         }
     }
 
@@ -4562,6 +4888,7 @@ mod tests {
             Err(LoadError {
                 message: "History unavailable".into(),
                 access_denied: false,
+                space_access_denied: false,
             }),
         );
         assert_eq!(app.older_error.as_deref(), Some("History unavailable"));
@@ -4610,6 +4937,7 @@ mod tests {
             Err(LoadError {
                 message: "Channel access denied.".into(),
                 access_denied: true,
+                space_access_denied: false,
             }),
         );
         assert!(app.selected_channel.is_none());
@@ -4688,6 +5016,7 @@ mod tests {
             Err(LoadError {
                 message: "Unavailable".into(),
                 access_denied: false,
+                space_access_denied: false,
             }),
         );
         assert_eq!(app.navigation_error.as_deref(), Some("Unavailable"));
@@ -4717,6 +5046,71 @@ mod tests {
         assert!(!app.opening);
         assert!(app.navigation_error.is_none());
         assert!(app.draft.is_empty());
+    }
+
+    #[test]
+    fn revoked_channel_fences_inflight_navigation_and_cached_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.select_channel("next".into(), false);
+        let pending = app.navigation;
+        app.clear_channel("Access revoked");
+        app.accept_navigation(
+            app.generation,
+            pending,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("next"), session())),
+            }),
+        );
+        assert!(app.selected_channel.is_none());
+        assert!(app.session.is_none());
+        assert!(!app.opening);
+        assert_eq!(app.error.as_deref(), Some("Access revoked"));
+    }
+
+    #[test]
+    fn navigation_distinguishes_revoked_space_from_another_private_channel() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let original = app.selected_channel.clone();
+        app.draft = "Private draft".into();
+        app.select_channel("other-private-channel".into(), false);
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Err(LoadError {
+                message: "Channel denied".into(),
+                access_denied: true,
+                space_access_denied: false,
+            }),
+        );
+        assert_eq!(app.selected_channel, original);
+        assert_eq!(app.draft, "Private draft");
+        assert!(app.detail.is_some());
+        app.select_channel("other-private-channel".into(), false);
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Err(LoadError {
+                message: "Space denied".into(),
+                access_denied: true,
+                space_access_denied: true,
+            }),
+        );
+        assert!(app.selected_channel.is_none());
+        assert!(app.selected_space.is_none());
+        assert!(app.detail.is_none());
+        assert!(app.draft.is_empty());
+        assert_eq!(app.timeline.messages().count(), 0);
     }
 
     #[test]

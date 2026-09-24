@@ -12,6 +12,20 @@ Principal UI/network dependencies are eframe/egui/egui_extras (MIT OR Apache-2.0
 (MIT OR Apache-2.0), reqwest (MIT OR Apache-2.0), tungstenite (MIT OR
 Apache-2.0), and keyring (MIT OR Apache-2.0).
 
+## Native audio
+
+The bundled DPDFNet-8 HR model is the same Apache-2.0 asset used by the web
+client (`DPDFNET-LICENSE`). Native ONNX Runtime 1.23.2 uses MIT; packages carry
+`ONNX-RUNTIME-LICENSE` and `ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt`. The `ort` Rust
+wrapper is MIT/Apache-2.0. The pure-Rust RNNoise fallback, nnnoiseless 0.5.2, uses
+BSD-3-Clause (`nnnoiseless-COPYING.md`) and includes rustfft
+(MIT OR Apache-2.0). Native effects playback uses rodio and CPAL
+(MIT OR Apache-2.0) with the existing Caper WAV assets.
+
+Windows packages include Microsoft-signed app-local VC++ runtime DLLs from the
+Visual Studio build toolchain under Microsoft's redistributable terms. These
+are not part of Rust's statically linked runtime or covered by Caper's license.
+
 ## Lucide icons
 
 The bundled vectors are exported from the web client's pinned lucide-react

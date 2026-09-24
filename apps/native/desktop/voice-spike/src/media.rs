@@ -1,8 +1,19 @@
 #![allow(dead_code)]
 
+#[path = "dpdfnet.rs"]
+mod dpdfnet;
+#[path = "dpdfnet_dsp.rs"]
+mod dpdfnet_dsp;
+#[path = "input_processing.rs"]
+mod input_processing;
 #[path = "mic_test.rs"]
 pub mod mic_test;
 
+pub use self::input_processing::AudioProcessingDiagnostics;
+#[cfg(test)]
+use self::input_processing::VoiceProcessor;
+use self::input_processing::{InputProcessing, ProcessedVoice};
+use self::mic_test::{MicTest, MicTestControl};
 use libwebrtc::MediaType;
 use libwebrtc::audio_frame::AudioFrame;
 use libwebrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
@@ -451,6 +462,7 @@ pub struct NativeSession {
     api: MediaApi,
     local_control: JoinControl,
     silence_task: tokio::task::JoinHandle<()>,
+    live_task: tokio::task::JoinHandle<()>,
     factory: PeerConnectionFactory,
     peer: PeerConnection,
     token: String,
@@ -460,7 +472,6 @@ pub struct NativeSession {
     state_sequence: u64,
     muted: bool,
     deafened: bool,
-    mute_before_deafen: bool,
     turn: Option<TurnGeneration>,
     restart_sequence: u64,
     pending_restart: Option<PendingRestart>,
@@ -508,6 +519,8 @@ struct SetupGuard {
     token: String,
     armed: bool,
     silence_task: Option<tokio::task::JoinHandle<()>>,
+    live_task: Option<tokio::task::JoinHandle<()>>,
+    capture: Option<MicTestControl>,
 }
 
 impl Drop for SetupGuard {
@@ -519,6 +532,12 @@ impl Drop for SetupGuard {
         self.factory.set_adm_playout_enabled(false);
         if let Some(task) = self.silence_task.take() {
             task.abort();
+        }
+        if let Some(task) = self.live_task.take() {
+            task.abort();
+        }
+        if let Some(capture) = self.capture.take() {
+            capture.cancel();
         }
         if let Some(peer) = &self.peer {
             peer.close();
@@ -546,7 +565,18 @@ pub struct JoinControl {
     audio: Arc<Mutex<(bool, bool)>>,
     activated: Arc<AtomicBool>,
     testing: Arc<AtomicBool>,
+    capture: Arc<Mutex<Option<MicTestControl>>>,
+    device_intent: Arc<Mutex<DeviceIntent>>,
+    input_processing: Arc<Mutex<InputProcessing>>,
+    processing_diagnostics: Arc<Mutex<Option<AudioProcessingDiagnostics>>>,
     playback: Arc<Mutex<PlaybackState>>,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+struct DeviceIntent {
+    // Outer None means no UI override yet; inner None selects system default.
+    input: Option<Option<String>>,
+    output: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -600,6 +630,8 @@ struct LocalAudio {
     peer: PeerConnection,
     sender: RtpSender,
     microphone: MediaStreamTrack,
+    capture: MicTestControl,
+    source: NativeAudioSource,
     silence: MediaStreamTrack,
     on_microphone: bool,
 }
@@ -607,10 +639,66 @@ struct LocalAudio {
 impl LocalAudio {
     fn silence(&self) {
         self.microphone.set_enabled(false);
+        self.source.clear_buffer();
+        self.capture.cancel();
         self.factory.set_adm_recording_enabled(false);
         self.factory.set_adm_playout_enabled(false);
         self.peer.close();
     }
+}
+
+#[cfg(test)]
+async fn publish_processed_input(
+    source: &NativeAudioSource,
+    processor: &mut VoiceProcessor,
+    frame: &AudioFrame<'_>,
+    settings: InputProcessing,
+) -> Result<(), String> {
+    let data = processor.process(frame.data.as_ref(), settings);
+    source
+        .capture_frame(&AudioFrame {
+            data: data.into(),
+            sample_rate: 48_000,
+            num_channels: 1,
+            samples_per_channel: frame.samples_per_channel,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn publish_denoised_input(
+    source: &NativeAudioSource,
+    processor: ProcessedVoice,
+    frame: &AudioFrame<'_>,
+    settings: InputProcessing,
+    capture: &MicTestControl,
+    epoch: u64,
+) -> Result<ProcessedVoice, String> {
+    let pcm = frame.data.as_ref().to_vec();
+    let started = Instant::now();
+    let (processor, processed) = tokio::task::spawn_blocking(move || {
+        let mut processor = processor;
+        let processed = processor
+            .process(&pcm, settings)
+            .map(|(_, enhanced)| enhanced);
+        (processor, processed)
+    })
+    .await
+    .map_err(|_| "microphone processing worker stopped".to_owned())?;
+    let mut processor = processor;
+    processor.observe_wall_time(started.elapsed());
+    let data = processed?;
+    capture.publish_if_current(
+        source,
+        &AudioFrame {
+            data: data.into(),
+            sample_rate: 48_000,
+            num_channels: 1,
+            samples_per_channel: frame.samples_per_channel,
+        },
+        epoch,
+    )?;
+    Ok(processor)
 }
 
 impl JoinControl {
@@ -622,6 +710,10 @@ impl JoinControl {
             audio: Arc::new(Mutex::new((false, false))),
             activated: Arc::new(AtomicBool::new(false)),
             testing: Arc::new(AtomicBool::new(false)),
+            capture: Arc::new(Mutex::new(None)),
+            device_intent: Arc::new(Mutex::new(DeviceIntent::default())),
+            input_processing: Arc::new(Mutex::new(InputProcessing::default())),
+            processing_diagnostics: Arc::new(Mutex::new(None)),
             playback: Arc::new(Mutex::new(PlaybackState {
                 master_percent: 100,
                 per_track: BTreeMap::new(),
@@ -638,6 +730,11 @@ impl JoinControl {
         self.stop.send_replace(true);
         self.activated.store(false, Ordering::Release);
         self.testing.store(false, Ordering::Release);
+        if let Ok(capture) = self.capture.lock()
+            && let Some(capture) = capture.as_ref()
+        {
+            capture.cancel();
+        }
         if let Ok(local) = self.local.lock()
             && let Some(local) = local.as_ref()
         {
@@ -651,8 +748,144 @@ impl JoinControl {
         }
     }
 
+    /// Sanitized actual denoiser state, updated only by the local PCM worker.
+    /// None means capture processing has not initialized yet.
+    pub fn audio_processing_diagnostics(&self) -> Option<AudioProcessingDiagnostics> {
+        self.processing_diagnostics
+            .lock()
+            .ok()
+            .and_then(|state| *state)
+    }
+
     pub fn is_cancelled(&self) -> bool {
         *self.stop.borrow()
+    }
+
+    pub fn set_input_processing(&self, gain_percent: u16, strength: u8) -> Result<(), String> {
+        if gain_percent > 200 || strength > 100 {
+            return Err("input gain must be 0–200 and processing strength 0–100".into());
+        }
+        let local = self.local.lock().map_err(|_| "local audio unavailable")?;
+        let mut processing = self
+            .input_processing
+            .lock()
+            .map_err(|_| "input processing unavailable")?;
+        let was_zero = processing.gain_percent == 0;
+        if gain_percent == 0 && !was_zero {
+            if let Some(local) = local.as_ref() {
+                local.microphone.set_enabled(false);
+                local.capture.set_live_recording(false)?;
+                local.source.clear_buffer();
+            } else if let Some(capture) = self
+                .capture
+                .lock()
+                .map_err(|_| "local capture unavailable")?
+                .as_ref()
+            {
+                capture.set_live_recording(false)?;
+            }
+        }
+        *processing = InputProcessing {
+            gain_percent,
+            strength,
+        };
+        drop(processing);
+        drop(local);
+        if was_zero != (gain_percent == 0) {
+            self.enforce_local_audio()?;
+        }
+        Ok(())
+    }
+
+    pub fn select_input(&self, guid: &str) -> Result<(), String> {
+        self.select_input_route(Some(guid))
+    }
+
+    pub fn select_default_input(&self) -> Result<(), String> {
+        self.select_input_route(None)
+    }
+
+    fn select_input_route(&self, guid: Option<&str>) -> Result<(), String> {
+        if self.is_cancelled() {
+            return Err("voice call was stopped".into());
+        }
+        let result = {
+            let mut intent = self
+                .device_intent
+                .lock()
+                .map_err(|_| "device intent unavailable")?;
+            let mut local = self.local.lock().map_err(|_| "local audio unavailable")?;
+            let capture = self
+                .capture
+                .lock()
+                .map_err(|_| "local capture unavailable")?;
+            let was_enabled = local
+                .as_ref()
+                .is_some_and(|audio| audio.microphone.enabled());
+            if let Some(audio) = local.as_mut() {
+                audio.microphone.set_enabled(false);
+                audio.source.clear_buffer();
+            }
+            let result = capture.as_ref().map(|capture| match guid {
+                Some(guid) => capture.select_input(guid),
+                None => capture.select_default_input(),
+            });
+            if let Some(audio) = local.as_mut() {
+                audio.source.clear_buffer();
+                if was_enabled && result.as_ref().is_none_or(Result::is_ok) && !self.is_cancelled()
+                {
+                    audio.microphone.set_enabled(true);
+                }
+            }
+            if result.as_ref().is_none_or(Result::is_ok) {
+                intent.input = Some(guid.map(str::to_owned));
+            }
+            result.unwrap_or(Ok(()))
+        };
+        if result.is_err() {
+            self.cancel();
+        }
+        result
+    }
+
+    pub fn select_output(&self, guid: &str) -> Result<(), String> {
+        self.select_output_route(Some(guid))
+    }
+
+    pub fn select_default_output(&self) -> Result<(), String> {
+        self.select_output_route(None)
+    }
+
+    fn select_output_route(&self, guid: Option<&str>) -> Result<(), String> {
+        if self.is_cancelled() {
+            return Err("voice call was stopped".into());
+        }
+        let result = {
+            let mut intent = self
+                .device_intent
+                .lock()
+                .map_err(|_| "device intent unavailable")?;
+            let local = self.local.lock().map_err(|_| "local audio unavailable")?;
+            let result = local.as_ref().map(|local| {
+                if match guid {
+                    Some(guid) => select_device(&local.factory, guid, false),
+                    None => local.factory.select_default_playout_device(),
+                } {
+                    Ok(())
+                } else {
+                    local.factory.set_adm_playout_enabled(false);
+                    Err("selected speaker is unavailable".into())
+                }
+            });
+            if result.as_ref().is_none_or(Result::is_ok) {
+                intent.output = Some(guid.map(str::to_owned));
+            }
+            result.unwrap_or(Ok(()))
+        };
+        if result.is_err() {
+            self.cancel();
+        }
+        result
     }
 
     pub fn set_local_audio(&self, muted: bool, deafened: bool) -> Result<(), String> {
@@ -685,22 +918,30 @@ impl JoinControl {
         let (muted, deafened) = *audio;
         if let Some(local) = local.as_mut() {
             let active = self.activated.load(Ordering::Acquire) && !self.is_cancelled();
-            if active && !muted && !self.testing.load(Ordering::Acquire) {
+            let gain_enabled = self
+                .input_processing
+                .lock()
+                .map_err(|_| "input processing unavailable")?
+                .gain_percent
+                > 0;
+            if active && !muted && gain_enabled && !self.testing.load(Ordering::Acquire) {
                 // Swap to the device only after this exact attempt is ready.
                 if !local.on_microphone {
+                    local.source.clear_buffer();
                     local
                         .sender
                         .set_track(Some(local.microphone.clone()))
                         .map_err(|error| error.to_string())?;
                     local.on_microphone = true;
                 }
+                local.capture.set_live_recording(true)?;
                 local.microphone.set_enabled(true);
-                local.factory.set_adm_recording_enabled(true);
             } else {
                 // Muting stops physical capture, but a zero-PCM source keeps
                 // the published audio MID alive for remote subscription.
                 local.microphone.set_enabled(false);
-                local.factory.set_adm_recording_enabled(false);
+                local.capture.set_live_recording(false)?;
+                local.source.clear_buffer();
                 if !self.is_cancelled() && local.on_microphone {
                     local
                         .sender
@@ -908,16 +1149,54 @@ impl NativeSession {
             token: joined.token.clone(),
             armed: true,
             silence_task: None,
+            live_task: None,
+            capture: None,
         };
         // Create and negotiate with closed local devices. Only the current
         // desktop attempt may activate them after gateway and roster readiness.
         factory.set_adm_playout_enabled(false);
         factory.set_adm_recording_enabled(false);
-        if input_guid.is_some_and(|guid| !select_device(&factory, guid, true)) {
-            return Err("selected microphone is unavailable".into());
-        }
-        if output_guid.is_some_and(|guid| !select_device(&factory, guid, false)) {
-            return Err("selected speaker is unavailable".into());
+        let capture = MicTestControl::new();
+        guard.capture = Some(capture.clone());
+        let mut live_microphone = MicTest::start(capture.clone(), None, None).await?;
+        capture.require_fresh_on_reopen()?;
+        {
+            let intent = control
+                .device_intent
+                .lock()
+                .map_err(|_| "device intent unavailable")?;
+            let input = intent
+                .input
+                .as_ref()
+                .map(|route| route.as_deref())
+                .unwrap_or(input_guid);
+            match input {
+                Some(guid) => capture.select_input(guid)?,
+                None if intent.input.is_some() => capture.select_default_input()?,
+                None => {}
+            }
+            let output = intent
+                .output
+                .as_ref()
+                .map(|route| route.as_deref())
+                .unwrap_or(output_guid);
+            match output {
+                Some(guid) if !select_device(&factory, guid, false) => {
+                    return Err("selected speaker is unavailable".into());
+                }
+                None if intent.output.is_some() && !factory.select_default_playout_device() => {
+                    return Err("system default speaker is unavailable".into());
+                }
+                _ => {}
+            }
+            let mut current = control
+                .capture
+                .lock()
+                .map_err(|_| "local capture unavailable")?;
+            if control.is_cancelled() {
+                return Err("voice join cancelled".into());
+            }
+            *current = Some(capture.clone());
         }
         let mut config = RtcConfiguration::default();
         // The wrapper defaults to GatherContinually, which never transitions to
@@ -956,7 +1235,8 @@ impl NativeSession {
             }
         })));
 
-        let audio = factory.create_device_audio_track("caper-microphone");
+        let processed_source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let audio = factory.create_audio_track("caper-microphone", processed_source.clone());
         audio.set_enabled(false);
         let silence_source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
         let silence = factory.create_audio_track("caper-silence", silence_source.clone());
@@ -994,17 +1274,150 @@ impl NativeSession {
                 }
             }
         }));
-        if let Ok(mut local) = control.local.lock() {
-            *local = Some(LocalAudio {
-                factory: factory.clone(),
-                peer: peer.clone(),
-                sender: transceiver.sender(),
-                microphone: audio.clone().into(),
-                silence: silence.into(),
-                on_microphone: false,
-            });
-            if *control.stop.borrow() {
-                local.as_ref().unwrap().silence();
+        let mut capture_stopped = control.stop.subscribe();
+        let processing = control.input_processing.clone();
+        let processed = processed_source.clone();
+        let capture_gate = capture.clone();
+        let capture_control = control.clone();
+        let diagnostics = control.processing_diagnostics.clone();
+        let initial_input_route = input_guid.map(str::to_owned);
+        guard.live_task = Some(tokio::spawn(async move {
+            let mut processor = None;
+            let mut active_epoch = None;
+            loop {
+                // A request to resume an already used ADM is not a readable
+                // generation. Retire its sender, receiver, decoder and input
+                // factory before accepting another frame; no decoded packet
+                // from the previous peer can enter the new stream.
+                if let Some(requested) = capture_gate.requested_epoch()
+                    && capture_gate.live_epoch().is_none()
+                {
+                    let input_route = match capture_control.device_intent.lock() {
+                        Ok(intent) => intent.input.clone(),
+                        Err(_) => break,
+                    };
+                    let selected_input = input_route.unwrap_or_else(|| initial_input_route.clone());
+                    let rebound = tokio::select! {
+                        biased;
+                        _ = capture_stopped.changed() => break,
+                        result = live_microphone.reconnect_live(requested, selected_input.as_deref()) => result,
+                    };
+                    if !matches!(rebound, Ok(true)) {
+                        if rebound.is_err() && capture_gate.requested_epoch() == Some(requested) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                let epoch = capture_gate.live_epoch();
+                if active_epoch != epoch {
+                    live_microphone.reset_live_stream();
+                    processor = None; // old recurrent state/OLA must not reach a reopened mic
+                    active_epoch = epoch;
+                }
+                if epoch.is_none() {
+                    tokio::select! {
+                        biased;
+                        _ = capture_stopped.changed() => break,
+                        _ = tokio::time::sleep(Duration::from_millis(20)) => continue,
+                    }
+                }
+                if epoch.is_some() && processor.is_none() {
+                    processor = tokio::task::spawn_blocking(ProcessedVoice::new).await.ok();
+                    if processor.is_none() {
+                        break;
+                    }
+                    if let Ok(mut snapshot) = diagnostics.lock() {
+                        *snapshot = processor.as_ref().map(ProcessedVoice::diagnostics);
+                    }
+                    if capture_gate.live_epoch() != epoch {
+                        continue;
+                    }
+                }
+                let frame = tokio::select! {
+                    biased;
+                    _ = capture_stopped.changed() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => continue,
+                    frame = live_microphone.next_live_frame() => frame,
+                };
+                let Some(frame) = frame else {
+                    break;
+                };
+                if capture_gate.live_epoch() != epoch || epoch.is_none() {
+                    continue;
+                }
+                let settings = match processing.lock() {
+                    Ok(settings) => *settings,
+                    Err(_) => break,
+                };
+                if capture_gate.live_epoch() != epoch {
+                    continue;
+                }
+                let result = publish_denoised_input(
+                    &processed,
+                    processor.take().unwrap(),
+                    &frame,
+                    settings,
+                    &capture_gate,
+                    epoch.unwrap(),
+                )
+                .await;
+                processor = match result {
+                    Ok(next) => Some(next),
+                    Err(_) => break,
+                };
+                if let Ok(mut snapshot) = diagnostics.lock() {
+                    *snapshot = processor.as_ref().map(ProcessedVoice::diagnostics);
+                }
+            }
+            capture_gate.cancel();
+            if !*capture_stopped.borrow() {
+                // A failed private capture peer cannot leave a seemingly live
+                // publication behind while the user expects a microphone.
+                capture_control.cancel();
+            }
+        }));
+        {
+            let intent = control
+                .device_intent
+                .lock()
+                .map_err(|_| "device intent unavailable")?;
+            let input = intent
+                .input
+                .as_ref()
+                .map(|route| route.as_deref())
+                .unwrap_or(input_guid);
+            if let Some(guid) = input {
+                capture.select_input(guid)?;
+            } else if intent.input.is_some() {
+                capture.select_default_input()?;
+            }
+            let output = intent
+                .output
+                .as_ref()
+                .map(|route| route.as_deref())
+                .unwrap_or(output_guid);
+            if let Some(guid) = output {
+                if !select_device(&factory, guid, false) {
+                    return Err("selected speaker is unavailable".into());
+                }
+            } else if intent.output.is_some() && !factory.select_default_playout_device() {
+                return Err("system default speaker is unavailable".into());
+            }
+            if let Ok(mut local) = control.local.lock() {
+                *local = Some(LocalAudio {
+                    factory: factory.clone(),
+                    peer: peer.clone(),
+                    sender: transceiver.sender(),
+                    microphone: audio.clone().into(),
+                    capture: capture.clone(),
+                    source: processed_source,
+                    silence: silence.into(),
+                    on_microphone: false,
+                });
+                if *control.stop.borrow() {
+                    local.as_ref().unwrap().silence();
+                }
             }
         }
         let offer = peer
@@ -1038,6 +1451,7 @@ impl NativeSession {
             api,
             local_control: control.clone(),
             silence_task: guard.silence_task.take().unwrap(),
+            live_task: guard.live_task.take().unwrap(),
             factory,
             peer,
             token: joined.token,
@@ -1047,7 +1461,6 @@ impl NativeSession {
             state_sequence: 0,
             muted,
             deafened,
-            mute_before_deafen: muted,
             turn: joined.turn,
             restart_sequence: 1,
             pending_restart: None,
@@ -1075,6 +1488,24 @@ impl NativeSession {
                 )
             })
             .collect()
+    }
+
+    pub fn set_input_processing(&self, gain_percent: u16, strength: u8) -> Result<(), VoiceError> {
+        self.local_control
+            .set_input_processing(gain_percent, strength)
+            .map_err(VoiceError::Local)
+    }
+
+    pub fn select_default_input(&self) -> Result<(), VoiceError> {
+        self.local_control
+            .select_default_input()
+            .map_err(VoiceError::Local)
+    }
+
+    pub fn select_default_output(&self) -> Result<(), VoiceError> {
+        self.local_control
+            .select_default_output()
+            .map_err(VoiceError::Local)
     }
 
     pub fn set_playback_preferences(
@@ -1109,20 +1540,20 @@ impl NativeSession {
     }
 
     pub fn select_input(&self, guid: &str) -> Result<(), VoiceError> {
-        select_device(&self.factory, guid, true)
-            .then_some(())
-            .ok_or_else(|| "selected microphone is unavailable".into())
+        self.local_control
+            .select_input(guid)
+            .map_err(VoiceError::Local)
     }
 
     pub fn select_output(&self, guid: &str) -> Result<(), VoiceError> {
-        select_device(&self.factory, guid, false)
-            .then_some(())
-            .ok_or_else(|| "selected speaker is unavailable".into())
+        self.local_control
+            .select_output(guid)
+            .map_err(VoiceError::Local)
     }
 
     pub async fn set_muted(&mut self, muted: bool) -> Result<(), VoiceError> {
-        if self.deafened && !muted {
-            return Ok(());
+        if !muted {
+            self.deafened = false;
         }
         self.muted = muted;
         self.local_control.enforce_local_audio()?;
@@ -1133,12 +1564,7 @@ impl NativeSession {
         if deafened == self.deafened {
             return Ok(());
         }
-        if deafened {
-            self.mute_before_deafen = self.muted;
-            self.muted = true;
-        } else {
-            self.muted = self.mute_before_deafen;
-        }
+        self.muted = deafened;
         self.deafened = deafened;
         self.local_control.enforce_local_audio()?;
         self.sync_state().await
@@ -1458,6 +1884,7 @@ impl NativeSession {
     fn close_local(&mut self) {
         self.local_control.cancel();
         self.silence_task.abort();
+        self.live_task.abort();
         self.microphone.set_enabled(false);
         self.factory.set_adm_recording_enabled(false);
         self.factory.set_adm_playout_enabled(false);
@@ -1671,6 +2098,344 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    #[ignore = "requires isolated private PulseAudio server with two null sinks"]
+    async fn default_device_reset_routes_to_new_system_default() {
+        assert_eq!(
+            std::env::var("PULSE_SERVER").as_deref(),
+            Ok("unix:/tmp/caper-voice-silent-parity/native")
+        );
+        let pactl = |args: &[&str]| {
+            let result = std::process::Command::new("pactl")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "private PulseAudio command failed");
+            String::from_utf8(result.stdout).unwrap()
+        };
+        let devices = enumerate_audio_devices().unwrap();
+        assert!(
+            devices
+                .inputs
+                .iter()
+                .any(|d| d.name.contains("caper_silent_sink"))
+        );
+        let capture_control = MicTestControl::new();
+        let mut capture = MicTest::start(capture_control.clone(), None, None)
+            .await
+            .unwrap();
+        let route = JoinControl::new();
+        *route.capture.lock().unwrap() = Some(capture_control.clone());
+        capture_control.set_live_recording(true).unwrap();
+        let first_index = pactl(&["list", "short", "sources"])
+            .lines()
+            .find(|line| line.contains("caper_silent_sink.monitor"))
+            .unwrap()
+            .split('\t')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(
+            pactl(&["list", "short", "source-outputs"])
+                .lines()
+                .any(|line| line.split('\t').nth(1) == Some(first_index.as_str()))
+        );
+        let _ = pactl(&["set-default-source", "caper_second_sink.monitor"]);
+        let _ = pactl(&["set-default-sink", "caper_second_sink"]);
+        route.select_default_input().unwrap();
+        assert!(
+            enumerate_audio_devices()
+                .unwrap()
+                .inputs
+                .iter()
+                .any(|d| d.name.contains("caper_second_sink")),
+            "system default recording device did not refresh"
+        );
+        capture_control.set_live_recording(false).unwrap();
+        let fixture = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                "flite=text=Caper private voice verification testing natural microphone capture with several syllables and changing cadence on an isolated null device",
+                "-t", "5", "-af", "apad", "-f", "s16le", "-ar", "48000", "-ac", "1", "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        assert!(fixture.status.success());
+        let mut playback = std::process::Command::new("pacat")
+            .env("PULSE_SERVER", "unix:/tmp/caper-voice-silent-parity/native")
+            .args([
+                "--playback",
+                "--device=caper_second_sink",
+                "--raw",
+                "--rate=48000",
+                "--channels=1",
+                "--format=s16le",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut writer = playback.stdin.take().unwrap();
+        let feeder = std::thread::spawn(move || {
+            use std::io::Write;
+            // Give ADM time to start its monitor source before the synthetic
+            // speech is injected into the otherwise silent private sink.
+            std::thread::sleep(Duration::from_millis(350));
+            writer.write_all(&fixture.stdout).unwrap();
+        });
+        let (recorded, sources) = tokio::join!(capture.record_with_processing(175, 0), async {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let sources = pactl(&["list", "short", "source-outputs"]);
+            capture_control.finish_recording();
+            sources
+        });
+        let recorded = recorded.unwrap();
+        assert_eq!(
+            recorded.enhanced, recorded.natural,
+            "strength zero is exactly natural gain + denoise without contour"
+        );
+        let captured = recorded.raw_fixture.clone();
+        let peak = captured.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+        feeder.join().unwrap();
+        assert!(playback.wait().unwrap().success());
+        assert!(
+            peak > 500,
+            "private speech fixture did not reach decoded capture"
+        );
+        assert!(
+            recorded.natural.iter().any(|sample| *sample != 0),
+            "denoiser suppressed every speech sample"
+        );
+        // Feed the actual decoded ADM sample into the same processed source
+        // used for publication, then inspect a second local peer's decoded PCM.
+        let publisher_factory = PeerConnectionFactory::default();
+        let listener_factory = PeerConnectionFactory::default();
+        let mut config = RtcConfiguration::default();
+        config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+        let publisher = publisher_factory
+            .create_peer_connection(config.clone())
+            .unwrap();
+        let listener = listener_factory.create_peer_connection(config).unwrap();
+        let (track_tx, mut track_rx) = tokio::sync::mpsc::unbounded_channel();
+        listener.on_track(Some(Box::new(move |event| {
+            let _ = track_tx.send(event.track);
+        })));
+        let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let audio = publisher_factory.create_audio_track("private-processed-input", source.clone());
+        let transceiver = publisher
+            .add_transceiver(
+                audio.clone().into(),
+                RtpTransceiverInit {
+                    direction: RtpTransceiverDirection::SendOnly,
+                    stream_ids: vec!["private-test".into()],
+                    send_encodings: vec![],
+                },
+            )
+            .unwrap();
+        let offer = publisher
+            .create_offer(OfferOptions::default())
+            .await
+            .unwrap();
+        publisher.set_local_description(offer).await.unwrap();
+        listener
+            .set_remote_description(
+                local_sdp(&publisher)
+                    .unwrap()
+                    .parse(SdpType::Offer)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let answer = listener
+            .create_answer(AnswerOptions::default())
+            .await
+            .unwrap();
+        listener.set_local_description(answer).await.unwrap();
+        wait_for_ice(&listener).await.unwrap();
+        publisher
+            .set_remote_description(
+                local_sdp(&listener)
+                    .unwrap()
+                    .parse(SdpType::Answer)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_for_connection(&publisher).await.unwrap();
+        let MediaStreamTrack::Audio(track) =
+            tokio::time::timeout(Duration::from_secs(2), track_rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("local audio track");
+        };
+        let mut received =
+            libwebrtc::audio_stream::native::NativeAudioStream::new(track, 48_000, 1);
+        let mut processor = ProcessedVoice::new();
+        let speech = captured
+            .chunks_exact(480)
+            .position(|frame| frame.iter().any(|v| v.unsigned_abs() > 500))
+            .unwrap();
+        let mut reference_processor = ProcessedVoice::new();
+        let mut processed_peak = 0;
+        for frame in captured[speech * 480..].chunks_exact(480).take(100) {
+            let (_, enhanced) = reference_processor
+                .process(
+                    frame,
+                    InputProcessing {
+                        gain_percent: 175,
+                        strength: 0,
+                    },
+                )
+                .unwrap();
+            processed_peak =
+                processed_peak.max(enhanced.iter().map(|v| v.unsigned_abs()).max().unwrap());
+        }
+        assert!(
+            processed_peak > 500,
+            "speech-like fixture did not survive native denoise"
+        );
+        route.set_input_processing(175, 0).unwrap();
+        capture_control.set_live_recording(true).unwrap();
+        let epoch = capture_control.live_epoch().unwrap();
+        for frame in captured[speech * 480..].chunks_exact(480).take(100) {
+            let input = AudioFrame {
+                data: frame.to_vec().into(),
+                sample_rate: 48_000,
+                num_channels: 1,
+                samples_per_channel: 480,
+            };
+            let settings = *route.input_processing.lock().unwrap();
+            processor = publish_denoised_input(
+                &source,
+                processor,
+                &input,
+                settings,
+                &capture_control,
+                epoch,
+            )
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut outbound_peak = 0;
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline && outbound_peak <= 500 {
+            let frame = tokio::time::timeout(Duration::from_secs(2), received.next_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            outbound_peak = outbound_peak.max(
+                frame
+                    .data
+                    .iter()
+                    .map(|v| v.unsigned_abs())
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        assert!(
+            outbound_peak > 500,
+            "captured speech was lost before local processed publication"
+        );
+        let silence_source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let silence =
+            publisher_factory.create_audio_track("private-muted-silence", silence_source.clone());
+        *route.local.lock().unwrap() = Some(LocalAudio {
+            factory: publisher_factory.clone(),
+            peer: publisher.clone(),
+            sender: transceiver.sender(),
+            microphone: audio.into(),
+            capture: capture_control.clone(),
+            source: source.clone(),
+            silence: silence.into(),
+            on_microphone: true,
+        });
+        route.set_local_audio(true, false).unwrap();
+        assert!(!capture_control.live_recording_enabled());
+        let zero = AudioFrame::new(48_000, 1, 480);
+        for _ in 0..80 {
+            silence_source.capture_frame(&zero).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut quiet = false;
+        for _ in 0..100 {
+            let frame = tokio::time::timeout(Duration::from_secs(2), received.next_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            if frame
+                .data
+                .iter()
+                .all(|v| v.unsigned_abs() < outbound_peak / 4)
+            {
+                quiet = true;
+            }
+        }
+        assert!(quiet, "mute must silence the local published receiver");
+        publisher.close();
+        listener.close();
+        let second_index = pactl(&["list", "short", "sources"])
+            .lines()
+            .find(|line| line.contains("caper_second_sink.monitor"))
+            .unwrap()
+            .split('\t')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(
+            sources
+                .lines()
+                .any(|line| line.split('\t').nth(1) == Some(second_index.as_str())),
+            "reset did not route recording to new system default; source outputs: {sources:?}"
+        );
+        assert!(
+            pactl(&["list", "short", "source-outputs"]).is_empty(),
+            "stopped microphone test kept device capture open"
+        );
+        capture_control.set_live_recording(true).unwrap();
+        assert!(route.select_input("missing-private-device").is_err());
+        assert!(route.is_cancelled());
+        assert!(pactl(&["list", "short", "source-outputs"]).is_empty());
+        capture_control.cancel();
+        let _ = pactl(&["set-default-source", "caper_silent_sink.monitor"]);
+        let _ = pactl(&["set-default-sink", "caper_silent_sink"]);
+    }
+
+    #[test]
+    fn blocked_join_device_intent_is_synchronous_and_cancelled_intent_stays_closed() {
+        let control = JoinControl::new();
+        control.select_input("prejoin-mic").unwrap();
+        control.select_output("prejoin-speaker").unwrap();
+        assert_eq!(
+            control.device_intent.lock().unwrap().input,
+            Some(Some("prejoin-mic".into()))
+        );
+        assert_eq!(
+            control.device_intent.lock().unwrap().output,
+            Some(Some("prejoin-speaker".into()))
+        );
+        control.select_default_input().unwrap();
+        control.select_default_output().unwrap();
+        assert_eq!(
+            *control.device_intent.lock().unwrap(),
+            DeviceIntent {
+                input: Some(None),
+                output: Some(None)
+            }
+        );
+        control.cancel();
+        assert!(control.select_input("stale-mic").is_err());
+        assert_eq!(
+            *control.device_intent.lock().unwrap(),
+            DeviceIntent {
+                input: Some(None),
+                output: Some(None)
+            }
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
     #[ignore = "isolated private PulseAudio null device required; no public SFU"]
     async fn local_muted_adm_packet_diagnostic() {
         assert_eq!(std::env::var("CAPER_SILENT_ADM_TEST").as_deref(), Ok("1"));
@@ -1773,11 +2538,15 @@ mod tests {
         assert!(active > enabled);
         assert!(synthetic > active);
         let control = JoinControl::new();
+        let capture = MicTestControl::new();
+        let _live = MicTest::start(capture.clone(), None, None).await.unwrap();
         *control.local.lock().unwrap() = Some(LocalAudio {
             factory: factory.clone(),
             peer: sender.clone(),
             sender: transceiver.sender(),
             microphone: track.clone().into(),
+            capture,
+            source: silence_source,
             silence: silent.into(),
             on_microphone: false,
         });
@@ -2019,6 +2788,10 @@ mod tests {
             .create_peer_connection(config.clone())
             .unwrap();
         let server = server_factory.create_peer_connection(config).unwrap();
+        let (published_tx, published_rx) = std::sync::mpsc::channel();
+        server.on_track(Some(Box::new(move |event| {
+            let _ = published_tx.send(event.track);
+        })));
         let control = JoinControl::new();
         control.activate().unwrap();
         let (remote_tx, remote_rx) = std::sync::mpsc::channel();
@@ -2028,7 +2801,7 @@ mod tests {
             remote_tx.send(event.track).unwrap();
         })));
         let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
-        let publication = client_factory.create_audio_track("publication", source);
+        let publication = client_factory.create_audio_track("publication", source.clone());
         client
             .add_transceiver(
                 publication.into(),
@@ -2058,6 +2831,85 @@ mod tests {
             .await
             .unwrap();
         wait_for_connection(&client).await.unwrap();
+
+        let published_track = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(track) = published_rx.try_recv() {
+                    break track;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let MediaStreamTrack::Audio(published_track) = published_track else {
+            panic!("audio publication")
+        };
+        let mut decoded =
+            libwebrtc::audio_stream::native::NativeAudioStream::new(published_track, 48_000, 1);
+        let raw = AudioFrame {
+            data: (0..480)
+                .map(|n| (3_000.0 * (std::f64::consts::TAU * n as f64 / 48.0).sin()) as i16)
+                .collect(),
+            sample_rate: 48_000,
+            num_channels: 1,
+            samples_per_channel: 480,
+        };
+        let mut processor = VoiceProcessor::default();
+        control.set_input_processing(175, 0).unwrap();
+        for _ in 0..80 {
+            let settings = *control.input_processing.lock().unwrap();
+            publish_processed_input(&source, &mut processor, &raw, settings)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut peak = 0u16;
+        for _ in 0..10 {
+            let frame = tokio::time::timeout(Duration::from_secs(2), decoded.next_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            peak = peak.max(
+                frame
+                    .data
+                    .iter()
+                    .map(|sample| sample.unsigned_abs())
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        assert!(
+            peak > 1_000,
+            "processed live source must reach a decoded local peer"
+        );
+        control.set_input_processing(0, 90).unwrap();
+        for _ in 0..80 {
+            let settings = *control.input_processing.lock().unwrap();
+            publish_processed_input(&source, &mut processor, &raw, settings)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mut quiet = u16::MAX;
+        for _ in 0..20 {
+            let frame = tokio::time::timeout(Duration::from_secs(2), decoded.next_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            quiet = quiet.min(
+                frame
+                    .data
+                    .iter()
+                    .map(|sample| sample.unsigned_abs())
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        assert!(
+            quiet < peak / 4,
+            "zero input gain must silence locally decoded publication"
+        );
 
         let remote_source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
         let remote = server_factory.create_audio_track("subscription", remote_source.clone());
@@ -2280,6 +3132,19 @@ mod tests {
         thread::spawn(move || {
             let request = request_seen.recv_timeout(Duration::from_secs(2)).unwrap();
             assert!(request.starts_with("POST /api/media/join "));
+            cancelling.set_input_processing(175, 85).unwrap();
+            assert_eq!(
+                cancelling.input_processing.lock().unwrap().gain_percent,
+                175
+            );
+            assert_eq!(cancelling.input_processing.lock().unwrap().strength, 85);
+            cancelling.select_input("pending-microphone").unwrap();
+            cancelling.select_default_output().unwrap();
+            assert_eq!(
+                cancelling.device_intent.lock().unwrap().input,
+                Some(Some("pending-microphone".into()))
+            );
+            assert_eq!(cancelling.device_intent.lock().unwrap().output, Some(None));
             cancelling.cancel();
         });
         let started = Instant::now();
@@ -2389,6 +3254,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_mute_and_deafen_match_web_state_contract() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for (sequence, muted, deafened) in [
+                (1, true, false),
+                (2, true, true),
+                (3, false, false),
+                (4, true, true),
+                (5, false, false),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = receive(&mut stream);
+                assert!(request.starts_with("POST /api/media/state "));
+                assert!(request.contains(&format!("\"sequence\":{sequence}")));
+                assert!(request.contains(&format!("\"muted\":{muted}")));
+                assert!(request.contains(&format!("\"deafened\":{deafened}")));
+                stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            }
+        });
+        let factory = PeerConnectionFactory::default();
+        let api = MediaApi::new(
+            &Url::parse(&format!("http://{address}/")).unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        let mut session = NativeSession {
+            api,
+            local_control: JoinControl::new(),
+            silence_task: tokio::spawn(async {}),
+            live_task: tokio::spawn(async {}),
+            peer: factory
+                .create_peer_connection(RtcConfiguration::default())
+                .unwrap(),
+            microphone: factory.create_device_audio_track("test-mic").into(),
+            factory,
+            token: "test-token".into(),
+            self_id: "self".into(),
+            subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
+            state_sequence: 0,
+            muted: false,
+            deafened: false,
+            turn: None,
+            restart_sequence: 1,
+            pending_restart: None,
+            previous_stats: None,
+        };
+        session.set_muted(true).await.unwrap();
+        session.set_deafened(true).await.unwrap();
+        session.set_deafened(false).await.unwrap();
+        session.set_deafened(true).await.unwrap();
+        session.set_muted(false).await.unwrap();
+        assert!(!session.muted && !session.deafened);
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
     async fn departed_track_and_close_retry_preserve_session_until_revoked() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -2433,6 +3356,7 @@ mod tests {
             api,
             local_control: JoinControl::new(),
             silence_task: tokio::spawn(async {}),
+            live_task: tokio::spawn(async {}),
             factory,
             peer: peer.clone(),
             token: "media-token".into(),
@@ -2442,7 +3366,6 @@ mod tests {
             state_sequence: 0,
             muted: false,
             deafened: false,
-            mute_before_deafen: false,
             turn: None,
             restart_sequence: 1,
             pending_restart: None,
@@ -2512,6 +3435,7 @@ mod tests {
             api,
             local_control: JoinControl::new(),
             silence_task: tokio::spawn(async {}),
+            live_task: tokio::spawn(async {}),
             factory: factory.clone(),
             peer,
             token: "local-test-token".into(),
@@ -2521,7 +3445,6 @@ mod tests {
             state_sequence: 0,
             muted: false,
             deafened: false,
-            mute_before_deafen: false,
             turn: None,
             restart_sequence: 1,
             pending_restart: None,

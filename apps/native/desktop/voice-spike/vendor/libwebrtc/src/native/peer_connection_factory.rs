@@ -197,6 +197,14 @@ impl PeerConnectionFactory {
         self.sys_handle.audio_device().set_recording_device_by_guid(guid.to_string())
     }
 
+    pub fn select_default_playout_device(&self) -> bool {
+        self.sys_handle.audio_device().select_default_playout_device()
+    }
+
+    pub fn select_default_recording_device(&self) -> bool {
+        self.sys_handle.audio_device().select_default_recording_device()
+    }
+
     /// Stop recording (clears initialized state, allowing device switch)
     pub fn stop_recording(&self) -> bool {
         self.sys_handle.audio_device().stop_recording()

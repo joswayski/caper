@@ -38,6 +38,8 @@ pub mod ffi {
         fn set_recording_device(self: &AudioDeviceController, index: u16) -> bool;
         fn set_playout_device_by_guid(self: &AudioDeviceController, guid: String) -> bool;
         fn set_recording_device_by_guid(self: &AudioDeviceController, guid: String) -> bool;
+        fn select_default_playout_device(self: &AudioDeviceController) -> bool;
+        fn select_default_recording_device(self: &AudioDeviceController) -> bool;
 
         fn stop_recording(self: &AudioDeviceController) -> bool;
         fn init_recording(self: &AudioDeviceController) -> bool;

@@ -144,6 +144,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.sliders["Live voice processing"].exists)
         assertStaticText("25%", in: app)
         capture("audio-recorded-test-fixture", app: app)
+        let controls = app.scrollViews["audio-preferences-controls"]
+        controls.scroll(byDeltaX: 0, deltaY: -600)
+        XCTAssertTrue(controls.frame.contains(app.buttons["Play enhanced"].frame), "Replay controls must be reachable in the constrained window")
+        let explanation = staticTexts("Natural playback includes input gain and on-device noise suppression. Enhanced playback also applies live voice processing strength.", in: app).firstMatch
+        XCTAssertGreaterThan(explanation.frame.height, 15, "The recording explanation must wrap rather than truncate")
+        XCTAssertTrue(controls.frame.contains(explanation.frame))
+        capture("audio-recorded-scrolled-test-fixture", app: app)
         app.buttons["close-audio-preferences"].tap()
         let closed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == false"),
@@ -161,6 +168,9 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("12800 / 24000 bps", in: app)
         assertStaticText("3 / 17 ms", in: app)
         assertStaticText("42 ms / TURN relay", in: app)
+        let controls = app.scrollViews["audio-preferences-controls"]
+        controls.scroll(byDeltaX: 0, deltaY: -600)
+        XCTAssertTrue(controls.frame.contains(staticTexts("42 ms / TURN relay", in: app).firstMatch.frame))
         capture("audio-statistics-test-fixture", app: app)
     }
     #endif
@@ -312,13 +322,18 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Caper routes this call to the selected devices without changing macOS system defaults.", in: app, timeout: 2)
         XCTAssertTrue(app.sliders["Input gain"].exists)
         XCTAssertTrue(app.sliders["Live voice processing"].exists)
-        app.sliders["Input gain"].adjust(toNormalizedSliderPosition: 0)
-        // XCTest's normalized drag may land a few steps above the endpoint.
-        // Exercise keyboard adjustment too, and still require exact 0/100.
-        for _ in 0..<12 { app.sliders["Input gain"].typeKey(.leftArrow, modifierFlags: []) }
+        // XCTest's normalized drag stops inside the track, and typeKey does
+        // not focus an NSSlider on runners with keyboard navigation disabled.
+        // Grab the centered thumb and drag beyond the track to its real limit.
+        let inputGain = app.sliders["Input gain"]
+        inputGain.adjust(toNormalizedSliderPosition: 0.5)
+        inputGain.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: inputGain.coordinate(withNormalizedOffset: CGVector(dx: -0.1, dy: 0.5)))
         XCTAssertEqual(outputGain(of: app.sliders["Input gain"]), 0)
-        app.sliders["Live voice processing"].adjust(toNormalizedSliderPosition: 1)
-        for _ in 0..<12 { app.sliders["Live voice processing"].typeKey(.rightArrow, modifierFlags: []) }
+        let strength = app.sliders["Live voice processing"]
+        strength.adjust(toNormalizedSliderPosition: 0.5)
+        strength.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.1, dy: 0.5)))
         XCTAssertEqual(outputGain(of: app.sliders["Live voice processing"]), 100)
         assertStaticText("The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.", in: app, timeout: 2)
         assertStaticText("On-device noise suppression starts when you test or join.", in: app, timeout: 2)

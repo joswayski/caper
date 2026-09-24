@@ -79,18 +79,16 @@ bool AudioDeviceController::set_playout_device_by_guid(rust::String guid) const 
     char device_guid[webrtc::kAdmMaxGuidSize] = {0};
     if (adm_proxy_->PlayoutDeviceName(i, name, device_guid) == 0) {
       if (std::string(guid.c_str()) == std::string(device_guid)) {
-        return adm_proxy_->SetPlayoutDevice(i) == 0;
+        const bool active = adm_proxy_->Playing();
+        if (active && adm_proxy_->StopPlayout() != 0) return false;
+        if (adm_proxy_->SetPlayoutDevice(i) != 0) return false;
+        return !active || (adm_proxy_->InitPlayout() == 0 &&
+                           adm_proxy_->StartPlayout() == 0);
       }
     }
   }
 
-  // No match found - fall back to default device (index 0).
-  // This handles mobile platforms (iOS/Android) where:
-  // - GUIDs may be empty or not meaningful
-  // - Device selection is a no-op (system handles routing)
-  if (count > 0) {
-    return adm_proxy_->SetPlayoutDevice(0) == 0;
-  }
+  // An unknown GUID must not silently route audio to another device.
   return false;
 }
 
@@ -103,19 +101,46 @@ bool AudioDeviceController::set_recording_device_by_guid(rust::String guid) cons
     char device_guid[webrtc::kAdmMaxGuidSize] = {0};
     if (adm_proxy_->RecordingDeviceName(i, name, device_guid) == 0) {
       if (std::string(guid.c_str()) == std::string(device_guid)) {
-        return adm_proxy_->SetRecordingDevice(i) == 0;
+        const bool active = adm_proxy_->Recording();
+        if (active && adm_proxy_->StopRecording() != 0) return false;
+        if (adm_proxy_->SetRecordingDevice(i) != 0) return false;
+        return !active || (adm_proxy_->InitRecording() == 0 &&
+                           adm_proxy_->StartRecording() == 0);
       }
     }
   }
 
-  // No match found - fall back to default device (index 0).
-  // This handles mobile platforms (iOS/Android) where:
-  // - GUIDs may be empty or not meaningful
-  // - Device selection is a no-op (system handles routing)
-  if (count > 0) {
-    return adm_proxy_->SetRecordingDevice(0) == 0;
-  }
+  // An unknown GUID must not silently open a different microphone.
   return false;
+}
+
+bool AudioDeviceController::select_default_recording_device() const {
+  const bool active = adm_proxy_->Recording();
+  if (active && adm_proxy_->StopRecording() != 0) return false;
+#if defined(_WIN32)
+  const bool selected = adm_proxy_->SetRecordingDevice(
+      webrtc::AudioDeviceModule::kDefaultDevice) == 0;
+#else
+  // The platform ADM exposes its system-default route at index zero.
+  const bool selected = adm_proxy_->SetRecordingDevice(uint16_t{0}) == 0;
+#endif
+  if (!selected) return false;  // Fail closed rather than capture a stale route.
+  return !active || (adm_proxy_->InitRecording() == 0 &&
+                     adm_proxy_->StartRecording() == 0);
+}
+
+bool AudioDeviceController::select_default_playout_device() const {
+  const bool active = adm_proxy_->Playing();
+  if (active && adm_proxy_->StopPlayout() != 0) return false;
+#if defined(_WIN32)
+  const bool selected = adm_proxy_->SetPlayoutDevice(
+      webrtc::AudioDeviceModule::kDefaultDevice) == 0;
+#else
+  const bool selected = adm_proxy_->SetPlayoutDevice(uint16_t{0}) == 0;
+#endif
+  if (!selected) return false;
+  return !active || (adm_proxy_->InitPlayout() == 0 &&
+                     adm_proxy_->StartPlayout() == 0);
 }
 
 bool AudioDeviceController::stop_recording() const {

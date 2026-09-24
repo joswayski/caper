@@ -195,6 +195,10 @@ pub mod native {
             self.handle.capture_frame(frame).await
         }
 
+        pub fn capture_frame_direct(&self, frame: &AudioFrame<'_>) -> Result<(), RtcError> {
+            self.handle.capture_frame_direct(frame)
+        }
+
         pub fn set_audio_options(&self, options: AudioSourceOptions) {
             self.handle.set_audio_options(options)
         }

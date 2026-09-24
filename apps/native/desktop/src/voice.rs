@@ -17,6 +17,8 @@ pub struct Preferences {
     pub input: Option<String>,
     pub output: Option<String>,
     pub master_percent: u16,
+    pub input_percent: u16,
+    pub processing_strength: u8,
 }
 
 impl Default for Preferences {
@@ -25,6 +27,8 @@ impl Default for Preferences {
             input: None,
             output: None,
             master_percent: 100,
+            input_percent: 100,
+            processing_strength: 25,
         }
     }
 }
@@ -33,6 +37,8 @@ impl Preferences {
     pub fn restore(json: &str) -> Self {
         let mut preferences: Self = serde_json::from_str(json).unwrap_or_default();
         preferences.master_percent = preferences.master_percent.min(200);
+        preferences.input_percent = preferences.input_percent.min(200);
+        preferences.processing_strength = preferences.processing_strength.min(100);
         preferences
     }
 }
@@ -59,7 +65,6 @@ pub struct Voice {
     pub refreshing_devices: bool,
     pub microphone: MicrophoneState,
     pub microphone_error: Option<String>,
-    pub comparison_strength: u8,
     microphone_generation: u64,
     microphone_control: Option<MicTestControl>,
     microphone_commands: Option<Sender<(bool, u16, PlaybackToken)>>,
@@ -77,8 +82,6 @@ pub struct Voice {
 enum Operation {
     Mute(bool),
     Deafen(bool),
-    Input(String),
-    Output(String),
 }
 
 enum Report {
@@ -93,6 +96,20 @@ enum Report {
 }
 
 impl Voice {
+    pub fn audio_processing_report(&self) -> Option<serde_json::Value> {
+        let stats = self.control.as_ref()?.audio_processing_diagnostics()?;
+        Some(serde_json::json!({
+            "engine": stats.engine,
+            "processedHops": stats.processed_hops,
+            "meanProcessingMs": if stats.processed_hops == 0 { 0.0 } else {
+                stats.total_processing_us as f64 / stats.processed_hops as f64 / 1000.0
+            },
+            "maxProcessingMs": stats.max_processing_us as f64 / 1000.0,
+            "hopBudgetMs": 10,
+            "fallbackCount": stats.fallback_count,
+        }))
+    }
+
     pub fn new(base: Url, repaint: egui::Context) -> Self {
         let (events, incoming) = mpsc::channel();
         Self {
@@ -108,7 +125,6 @@ impl Voice {
             refreshing_devices: false,
             microphone: MicrophoneState::Idle,
             microphone_error: None,
-            comparison_strength: 70,
             microphone_generation: 0,
             microphone_control: None,
             microphone_commands: None,
@@ -154,6 +170,12 @@ impl Voice {
                 control.set_participant_playback_preferences(
                     self.preferences.master_percent,
                     &BTreeMap::new(),
+                )
+            })
+            .and_then(|()| {
+                control.set_input_processing(
+                    self.preferences.input_percent,
+                    self.preferences.processing_strength,
                 )
             })
         {
@@ -257,8 +279,6 @@ impl Voice {
                             Operation::Deafen(value) => {
                                 runtime.block_on(session.set_deafened(value))
                             }
-                            Operation::Input(guid) => session.select_input(&guid),
-                            Operation::Output(guid) => session.select_output(&guid),
                         };
                         let result = result.and_then(|()| {
                             control.enforce_local_audio().map_err(VoiceError::Local)
@@ -388,7 +408,8 @@ impl Voice {
         let repaint = self.repaint.clone();
         let input = self.preferences.input.clone();
         let output = self.preferences.output.clone();
-        let strength = self.comparison_strength;
+        let gain = self.preferences.input_percent;
+        let strength = self.preferences.processing_strength;
         std::thread::spawn(move || {
             let send = |state| report(&events, &repaint, Report::Microphone(generation, state));
             let result = (|| -> Result<(), String> {
@@ -403,7 +424,7 @@ impl Voice {
                     output.as_deref(),
                 ))?;
                 send(Ok(MicrophoneState::Recording(Instant::now())));
-                let sample = runtime.block_on(test.record(strength))?;
+                let sample = runtime.block_on(test.record_with_processing(gain, strength))?;
                 let seconds = sample.natural.len() as f32 / sample.sample_rate as f32;
                 send(Ok(MicrophoneState::Ready(seconds)));
                 while let Ok((enhanced, volume, token)) = receiver.recv() {
@@ -514,6 +535,20 @@ impl Voice {
         self.apply_playback();
     }
 
+    pub fn set_input_processing(&mut self, percent: u16, strength: u8) {
+        self.preferences.input_percent = percent.min(200);
+        self.preferences.processing_strength = strength.min(100);
+        if let Some(control) = &self.control
+            && let Err(error) = control.set_input_processing(
+                self.preferences.input_percent,
+                self.preferences.processing_strength,
+            )
+        {
+            self.leave();
+            self.error = Some(error);
+        }
+    }
+
     fn apply_playback(&mut self) {
         if let Some(control) = &self.control
             && let Err(error) = control.set_participant_playback_preferences(
@@ -543,6 +578,28 @@ impl Voice {
         }
     }
 
+    fn select_device(&mut self, input: bool, guid: Option<String>) {
+        if let Some(control) = &self.control {
+            let result = match (input, guid.as_deref()) {
+                (true, Some(guid)) => control.select_input(guid),
+                (false, Some(guid)) => control.select_output(guid),
+                (true, None) => control.select_default_input(),
+                (false, None) => control.select_default_output(),
+            };
+            if let Err(error) = result {
+                self.leave();
+                self.device_error = Some(error);
+                return;
+            }
+        }
+        if input {
+            self.preferences.input = guid;
+        } else {
+            self.preferences.output = guid;
+        }
+        self.device_error = None;
+    }
+
     pub fn command(&mut self, operation: VoiceOperation) {
         let command = match operation {
             VoiceOperation::Mute(value) => {
@@ -553,14 +610,10 @@ impl Voice {
                 self.state.audio.set_deafened(value);
                 Operation::Deafen(value)
             }
-            VoiceOperation::Input(guid) => {
-                self.preferences.input = Some(guid.clone());
-                Operation::Input(guid)
-            }
-            VoiceOperation::Output(guid) => {
-                self.preferences.output = Some(guid.clone());
-                Operation::Output(guid)
-            }
+            VoiceOperation::Input(guid) => return self.select_device(true, Some(guid)),
+            VoiceOperation::Output(guid) => return self.select_device(false, Some(guid)),
+            VoiceOperation::DefaultInput => return self.select_device(true, None),
+            VoiceOperation::DefaultOutput => return self.select_device(false, None),
         };
         if let Some(control) = &self.control
             && let Err(error) =
@@ -664,6 +717,8 @@ pub enum VoiceOperation {
     Deafen(bool),
     Input(String),
     Output(String),
+    DefaultInput,
+    DefaultOutput,
 }
 
 fn report(sender: &Sender<Report>, repaint: &egui::Context, event: Report) {
@@ -692,6 +747,21 @@ mod tests {
         assert_eq!(preferences.input.as_deref(), Some("mic-a"));
         assert_eq!(preferences.output.as_deref(), Some("speaker-b"));
         assert_eq!(preferences.master_percent, 175);
+        assert_eq!(preferences.input_percent, 100);
+        assert_eq!(preferences.processing_strength, 25);
+        let live = Preferences::restore(r#"{"input_percent":163,"processing_strength":71}"#);
+        assert_eq!(live.input_percent, 163);
+        assert_eq!(live.processing_strength, 71);
+        assert_eq!(
+            Preferences::restore(&serde_json::to_string(&live).unwrap()),
+            live
+        );
+        let clamped = Preferences::restore(r#"{"input_percent":201,"processing_strength":101}"#);
+        assert_eq!(clamped.input_percent, 200);
+        assert_eq!(clamped.processing_strength, 100);
+        let zero = Preferences::restore(r#"{"input_percent":0,"processing_strength":0}"#);
+        assert_eq!(zero.input_percent, 0);
+        assert_eq!(zero.processing_strength, 0);
         assert_eq!(
             Preferences::restore(&serde_json::to_string(&preferences).unwrap()),
             preferences
@@ -815,10 +885,28 @@ mod tests {
         voice.command(VoiceOperation::Mute(true));
         voice.command(VoiceOperation::Deafen(true));
         voice.command(VoiceOperation::Deafen(false));
-        assert!(voice.state.audio.muted);
+        assert!(!voice.state.audio.muted);
         assert!(!voice.state.audio.deafened);
+        voice.command(VoiceOperation::Mute(true));
+        voice.command(VoiceOperation::Deafen(false));
+        assert!(
+            voice.state.audio.muted,
+            "an idempotent undeafen preserves mute"
+        );
+        voice.command(VoiceOperation::Deafen(true));
         voice.command(VoiceOperation::Mute(false));
         assert!(!voice.state.audio.muted);
+        assert!(!voice.state.audio.deafened);
+        voice.command(VoiceOperation::Input("mic-b".into()));
+        voice.command(VoiceOperation::Output("speaker-c".into()));
+        voice.command(VoiceOperation::DefaultInput);
+        assert!(voice.preferences.input.is_none());
+        assert_eq!(voice.preferences.output.as_deref(), Some("speaker-c"));
+        voice.command(VoiceOperation::DefaultOutput);
+        assert!(voice.preferences.output.is_none());
+        voice.set_input_processing(157, 63);
+        assert_eq!(voice.preferences.input_percent, 157);
+        assert_eq!(voice.preferences.processing_strength, 63);
         assert_eq!(voice.state.phase, Phase::Idle);
         assert!(voice.control.is_none());
         assert!(voice.commands.is_none());
