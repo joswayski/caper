@@ -545,7 +545,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       </header>}
       <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}>
         {spaceRail}
-        <ChannelSidebar>
+        <ChannelSidebar defaultWidth={embedded ? 330 : undefined}>
           <div className="sidebar-channels">
           {navigation}
           {!rosterPlaced && !publicRoster && roster.length > 0 && <div className="voice-elsewhere">
