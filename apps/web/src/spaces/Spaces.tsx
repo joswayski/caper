@@ -1084,6 +1084,7 @@ export default function Spaces() {
           const voice = voiceFor(item.id);
           return (
           <li key={item.id} data-voice={voice ? "" : undefined}>
+            <div className="channel-line">
             <button
               className="channel-select"
               type="button"
@@ -1111,6 +1112,7 @@ export default function Spaces() {
                 <Settings aria-hidden="true" />
               </button>
             )}
+            </div>
             {voice?.list}
           </li>
           );
@@ -1222,6 +1224,7 @@ export default function Spaces() {
           spaceId: detail.space.id,
           demo: detail.space.demo,
         }}
+        voiceChannels={detail.channels.map((item) => ({ id: item.id, name: item.name }))}
         initialAccount={account}
         initialHistory={view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={view?.channelId === channel.id ? view.historyError : undefined}

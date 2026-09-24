@@ -24,6 +24,7 @@ import "./call.css";
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
 type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+const MAX_WATCHED_CHANNELS = 24;
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { import: "default", query: "?url" });
 
 function formatBytes(bytes: number) {
@@ -155,6 +156,8 @@ interface CallProps {
   membersPanel?: ReactNode;
   onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
+  /** Channels in the current space, whose voice rosters appear under them. */
+  voiceChannels?: Array<{ id: string; name: string }>;
   /** Channel list. As a function it receives voiceFor, to place the voice roster under its channel. */
   channelNavigation?: ReactNode | ((voiceFor: (channelId: string) => VoiceSlot | null) => ReactNode);
   navigationOpen?: boolean;
@@ -173,7 +176,7 @@ interface CallProps {
   onChatOnlineChange?: (online: boolean) => void;
 }
 
-export default function Call({ channel, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
+export default function Call({ channel, voiceChannels, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -206,25 +209,24 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
-  const [rosterOpen, setRosterOpen] = useState(true);
+  const [collapsedRosters, setCollapsedRosters] = useState<ReadonlySet<string>>(() => new Set());
   const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence["participants"]>>({});
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
   const available = availability[mediaRoot];
   const clientRoot = useRef(mediaRoot);
-  const createClient = () => {
-    const client = new PublicCallClient((next) => { if (clientRef.current === client) setState(next); }, mediaRoot);
+  const rootFor = (channelId?: string) => !channelId || channel?.demo ? "/api/media" : `/api/channels/${encodeURIComponent(channelId)}/media`;
+  const createClient = (root = mediaRoot) => {
+    const client = new PublicCallClient((next) => { if (clientRef.current === client) setState(next); }, root);
     clientRef.current = client;
-    clientRoot.current = mediaRoot;
+    clientRoot.current = root;
     return client;
   };
   if (!clientRef.current && typeof window !== "undefined") createClient();
   const connected = state.phase === "connected";
   const idle = state.phase === "idle" || state.phase === "failed" || state.phase === "leaving";
-  const viewingVoice = clientRoot.current === mediaRoot;
-  const joinDisabled = !identityReady || state.phase === "leaving" || ((!viewingVoice || idle) && (available !== true || actionPending));
-  const joinUnavailable = (!viewingVoice || idle) && available !== true;
+  const joinUnavailable = available !== true;
   const controlsDisabled = (!idle && !connected) || actionPending;
   // Keep the public roster until our own call reports its participants, so
   // joining (or failing to join) never empties the list for a moment.
@@ -245,7 +247,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     const timer = setTimeout(() => setJoiningShown(true), 200);
     return () => clearTimeout(timer);
   }, [state.phase]);
-  const pendingJoin = viewingVoice && state.phase === "joining" && !joiningShown;
+  const pendingJoin = state.phase === "joining" && !joiningShown;
   const Root = embedded ? "div" : "main";
 
   useEffect(() => {
@@ -311,6 +313,21 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     return watchPresence((snapshot) => setPublicParticipants((previous) => ({ ...previous, [mediaRoot]: snapshot.participants })), () => undefined, mediaRoot);
   }, [idle, available, mediaRoot]);
 
+  // Who is in voice in each of the space's channels, so people can see where
+  // others are and join them. One spectator subscription per channel, capped
+  // to stay within the gateway's per-connection subscription limit.
+  const [channelRosters, setChannelRosters] = useState<Record<string, PublicPresence["participants"]>>({});
+  const watchedChannels = channel?.demo ? "" : (voiceChannels ?? []).slice(0, MAX_WATCHED_CHANNELS).map((item) => item.id).join(",");
+  useEffect(() => {
+    if (!watchedChannels || available !== true) return;
+    const stops = watchedChannels.split(",").map((id) => watchPresence(
+      (snapshot) => setChannelRosters((previous) => ({ ...previous, [id]: snapshot.participants })),
+      () => undefined,
+      `/api/channels/${encodeURIComponent(id)}/media`,
+    ));
+    return () => stops.forEach((stop) => stop());
+  }, [watchedChannels, available]);
+
   useEffect(() => {
     if (!navigator.mediaDevices) return;
     const update = () => void navigator.mediaDevices.enumerateDevices().then((next) => {
@@ -374,17 +391,23 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     }
     setAudioPanel(undefined);
   };
-  const joinVoice = () => {
-    if (joinDisabled || (viewingVoice && !idle)) return;
+  const joinBlocked = !identityReady || state.phase === "leaving" || available !== true || actionPending;
+  /** Join (or switch voice to) any listed channel without leaving the one being read. */
+  const joinChannel = (channelId?: string) => {
+    const target = channelId === channel?.id ? channel : channel && channelId ? {
+      ...channel, id: channelId, name: voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice",
+    } : channel;
+    const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
+    if (joinBlocked || (!idle && clientRoot.current === root)) return;
     setActionError(undefined);
     setVoiceError(undefined);
-    if (!viewingVoice) {
+    if (clientRoot.current !== root || !idle) {
       const previous = clientRef.current!;
       previous.leaveImmediately();
-      const client = createClient();
+      const client = createClient(root);
       client.copyAudioPreferencesFrom(previous);
     }
-    setVoiceChannel(channel);
+    setVoiceChannel(target);
     void clientRef.current!.join(identityName.trim(), deviceId);
   };
   const openMicTest = () => {
@@ -402,11 +425,9 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     const muted = participant.id === state.selfId ? state.muted : participant.muted;
     return activeParticipants.has(participant.id) && !(muted && !state.monitoring);
   };
-  const rosterChannelId = publicRoster ? channel?.id : voiceChannel?.id;
-  const rosterChannelName = (publicRoster ? channel : voiceChannel)?.name ?? "general";
-  const rosterList = (
-            <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label={`People in voice in ${rosterChannelName}`}>
-              {roster.map((participant) => {
+  const renderRoster = (people: typeof roster, own: boolean, label: string) => (
+    <ul className={own && volumeParticipant ? "volume-menu-open" : undefined} aria-label={`People in voice in ${label}`}>
+              {people.map((participant) => {
                 const self = participant.id === state.selfId;
                 const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
                 const participantMuted = self ? state.muted : participant.muted;
@@ -414,12 +435,12 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
                 const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
                 const activityMuted = participantMuted && !state.monitoring;
                 const speaking = isSpeaking(participant);
-                return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={publicRoster || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
+                return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={!own || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                   <span className="participant-avatar">
                     <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   </span>
                   <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}</span>
-                  {!publicRoster && <VoiceActivity
+                  {own && <VoiceActivity
                     stream={stream}
                     muted={activityMuted}
                     onActivityChange={(active) => setActiveParticipants((current) => {
@@ -429,8 +450,8 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
                       return next;
                     })}
                   />}
-                  {!publicRoster && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
-                  {!publicRoster && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
+                  {own && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
+                  {own && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
                     <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
                     <Slider
                       label={`${participant.name} volume`}
@@ -457,29 +478,49 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
                   </div>}
                 </li>;
               })}
-            </ul>
+    </ul>
   );
-  // Voice occupants render under their channel: a stack of avatars on the
-  // channel row (click to collapse or expand) and a compact list beneath it.
+  const voiceChannelKey = (channelId?: string) => channelId ?? "general";
+  const inVoiceHere = (channelId?: string) => !idle && !pendingJoin && voiceChannel?.id === channelId;
+  /** Who is in voice in a channel; your own call's roster (with controls) when you are in it. */
+  const rosterFor = (channelId?: string) => {
+    if (!publicRoster && voiceChannel?.id === channelId) return { people: state.participants, own: true };
+    const watched = channelId ? channelRosters[channelId] : undefined;
+    if (channelId === channel?.id) return { people: watched ?? publicParticipants[mediaRoot] ?? [], own: false };
+    return { people: watched ?? [], own: false };
+  };
+  const channelLabel = (channelId?: string) => channelId === channel?.id || !channelId ? channel?.name ?? "general" : voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice";
+  // Each channel row carries its voice: a quiet stack of who is in it (toggles
+  // the list below) and Join, which glows softly while people are in there.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
-    const hasRoster = channelId === rosterChannelId && roster.length > 0;
-    // Join sits on the channel being viewed (like a huddle button), unless you
-    // are already in its voice.
-    const showJoin = channelId === channel?.id && (idle || !viewingVoice || pendingJoin);
-    if (!hasRoster && !showJoin) return null;
-    if (hasRoster) rosterPlaced = true;
-    const open = rosterOpen || !!volumeParticipant;
-    const joinButton = showJoin && <Tooltip id="voice-availability" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : !idle && !viewingVoice ? "Switch voice to this channel" : "Join voice"}><button className="voice-button channel-join" type="button" aria-label="Join voice" aria-disabled={joinDisabled || pendingJoin} aria-busy={pendingJoin} onClick={joinVoice}><Speech aria-hidden="true" />Join</button></Tooltip>;
-    const stack = hasRoster && <button className="voice-stack" type="button" aria-expanded={open} aria-controls="voice-occupants" aria-label={`${roster.length} in voice. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => { setRosterOpen(!open); setVolumeParticipant(undefined); }}>
-        {roster.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${isSpeaking(participant) ? " speaking" : ""}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>)}
-        {roster.length > 3 && <small aria-hidden="true">+{roster.length - 3}</small>}
-        <ChevronDown aria-hidden="true" />
-      </button>;
+    const { people, own } = rosterFor(channelId);
+    if (own) rosterPlaced = true;
+    const key = voiceChannelKey(channelId);
+    const label = channelLabel(channelId);
+    const open = !collapsedRosters.has(key) || (own && !!volumeParticipant);
+    const listId = `voice-occupants-${key.replace(/[^\w-]/g, "")}`;
+    const busy = pendingJoin && voiceChannel?.id === channelId;
+    const switching = !idle && !inVoiceHere(channelId);
+    const stack = people.length > 0 && <button className="voice-stack" type="button" aria-expanded={open} aria-controls={listId} aria-label={`${people.length} in voice in ${label}. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => {
+      setCollapsedRosters((current) => { const next = new Set(current); open ? next.add(key) : next.delete(key); return next; });
+      setVolumeParticipant(undefined);
+    }}>
+      <span className="voice-stack-faces" aria-hidden="true">
+        {people.slice(0, people.length > 3 ? 2 : 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && isSpeaking(participant) ? " speaking" : ""}`}>{participant.name.slice(0, 1).toUpperCase()}</span>)}
+        {people.length > 3 && <small>+{people.length - 2}</small>}
+      </span>
+      <span className="voice-stack-total" aria-hidden="true"><Users /><small>{people.length}</small></span>
+      <ChevronDown aria-hidden="true" />
+    </button>;
+    const join = !inVoiceHere(channelId) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
+      <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
+    </Tooltip>;
+    if (!stack && !join) return null;
     return {
-      summary: <span className="channel-voice">{stack}{joinButton}</span>,
-      list: hasRoster ? <div className="voice-occupants" id="voice-occupants" data-open={open ? "" : undefined}>
-        <div className="voice-occupants-inner" inert={!open}>{rosterList}</div>
+      summary: <span className="channel-voice">{stack}{join}</span>,
+      list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
+        <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
       </div> : null,
     };
   };
@@ -507,9 +548,9 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
         <ChannelSidebar>
           <div className="sidebar-channels">
           {navigation}
-          {!rosterPlaced && roster.length > 0 && <div className="voice-elsewhere">
-            <p className="voice-roster-label">In voice · {roster.length} · {rosterChannelName}</p>
-            {rosterList}
+          {!rosterPlaced && !publicRoster && roster.length > 0 && <div className="voice-elsewhere">
+            <p className="voice-roster-label">In voice · {roster.length} · {voiceChannel?.name ?? "general"}</p>
+            {renderRoster(roster, true, voiceChannel?.name ?? "general")}
           </div>}
           </div>
           <div className="voice-panel">
