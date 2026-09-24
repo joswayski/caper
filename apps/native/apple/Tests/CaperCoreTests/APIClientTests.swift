@@ -387,11 +387,46 @@ final class APIClientTests: XCTestCase {
         await fulfillment(of: [detailStarted], timeout: 1)
         XCTAssertEqual(model.voice.phase, .connected)
         XCTAssertEqual(model.voice.context, VoiceContext(channelID: "chan00000001", channelName: "general", spaceID: "space0000001", spaceName: "First"))
-        XCTAssertEqual(model.selectedSpaceID, "space0000002")
+        XCTAssertEqual(model.selectedSpaceID, "space0000001", "keep the current selection while the target loads")
+        XCTAssertEqual(model.openingSpaceID, "space0000002")
         delayedDetail?.respond(status: 200, data: Data(#"{"space":{"id":"space0000002","name":"Next","ownerId":"owner0000001"},"channels":[],"members":[]}"#.utf8))
         await selection.value
+        XCTAssertEqual(model.selectedSpaceID, "space0000002")
+        XCTAssertNil(model.openingSpaceID)
         XCTAssertEqual(model.voice.phase, .connected)
         XCTAssertEqual(model.voice.context?.channelID, "chan00000001")
+    }
+
+    @MainActor
+    func testFailedNavigationKeepsDraftAndRetryIgnoresSupersededTarget() async {
+        let model = AppModel(api: client())
+        model.selectedSpaceID = "space0000001"
+        model.selectedChannelID = "chan00000001"
+        model.chat.draft = "Unsent draft"
+        let target = Space(id: "space0000002", name: "Next", ownerId: "owner0000001", demo: nil)
+        MockURLProtocol.handler = { _ in (503, Data(#"{"error":"Space temporarily unavailable"}"#.utf8)) }
+        await model.select(space: target)
+        XCTAssertEqual(model.selectedSpaceID, "space0000001")
+        XCTAssertEqual(model.selectedChannelID, "chan00000001")
+        XCTAssertEqual(model.chat.draft, "Unsent draft")
+        XCTAssertNotNil(model.navigationError)
+        XCTAssertNil(model.openingSpaceID)
+
+        let retryStarted = expectation(description: "retry requested the failed target")
+        var delayedRetry: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/spaces/space0000002" else { return false }
+            delayedRetry = request; retryStarted.fulfill(); return true
+        }
+        let retry = Task { await model.retryNavigation() }
+        await fulfillment(of: [retryStarted], timeout: 2)
+        MockURLProtocol.handler = { _ in (200, Data(#"{"space":{"id":"space0000003","name":"Latest","ownerId":"owner0000001"},"channels":[],"members":[]}"#.utf8)) }
+        await model.select(space: Space(id: "space0000003", name: "Latest", ownerId: "owner0000001", demo: nil))
+        delayedRetry?.respond(status: 503, data: Data(#"{"error":"Stale failure"}"#.utf8))
+        await retry.value
+        XCTAssertEqual(model.selectedSpaceID, "space0000003")
+        XCTAssertNil(model.navigationError)
+        XCTAssertNil(model.openingSpaceID)
     }
 
     @MainActor

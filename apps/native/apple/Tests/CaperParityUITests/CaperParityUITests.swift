@@ -299,6 +299,32 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-preferences", app: app)
     }
 
+    #if os(macOS)
+    func testFailedChannelNavigationKeepsConversationAndDraftThenRetries() async throws {
+        let app = launch()
+        assertElement("selected-channel-name", label: "# general", in: app)
+        let composer = app.descendants(matching: .any)["message-composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap(); composer.typeText("Keep this draft")
+        var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        control.httpMethod = "POST"
+        control.setValue("application/json", forHTTPHeaderField: "content-type")
+        control.httpBody = Data(#"{"failure":{"path":"/api/spaces/space0000001","method":"GET","status":503,"error":"TEST FIXTURE: space temporarily unavailable."}}"#.utf8)
+        let (_, response) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        app.buttons["channel-chan00000002"].tap()
+        let retry = app.buttons["Retry opening conversation"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        assertElement("selected-channel-name", label: "# general", in: app)
+        XCTAssertEqual(composer.value as? String, "Keep this draft")
+        capture("navigation-retry", app: app)
+        retry.tap()
+        let design = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "# design"), object: app.descendants(matching: .any)["selected-channel-name"])
+        XCTAssertEqual(XCTWaiter.wait(for: [design], timeout: 10), .completed)
+        XCTAssertFalse(retry.exists)
+    }
+    #endif
+
     func testActionableLoginError() async throws {
         var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
         control.httpMethod = "POST"

@@ -116,6 +116,12 @@ struct Typer {
     expires: Instant,
 }
 
+#[derive(Clone)]
+struct NavigationTarget {
+    space: Option<String>,
+    channel: Option<String>,
+}
+
 struct CaperApp {
     worker: Worker,
     voice: Voice,
@@ -154,6 +160,10 @@ struct CaperApp {
     channels_expanded: bool,
     sidebar_width: f32,
     navigation_open: bool,
+    navigation: u64,
+    opening: bool,
+    navigation_target: Option<NavigationTarget>,
+    navigation_error: Option<String>,
     dialog: Option<Dialog>,
     form_name: String,
     form_private: bool,
@@ -207,6 +217,10 @@ impl CaperApp {
             channels_expanded: true,
             sidebar_width: 280.0,
             navigation_open: false,
+            navigation: 0,
+            opening: false,
+            navigation_target: None,
+            navigation_error: None,
             dialog: None,
             form_name: String::new(),
             form_private: false,
@@ -478,29 +492,11 @@ impl CaperApp {
                         Err(error) => self.error = Some(error),
                     }
                 }
-                Event::SpaceLoaded {
+                Event::NavigationPrepared {
                     generation,
-                    space,
+                    navigation,
                     result,
-                } if generation == self.generation
-                    && self.selected_space.as_deref() == Some(&space) =>
-                {
-                    self.loading = false;
-                    match result {
-                        Ok(detail) => {
-                            self.detail = Some(detail);
-                            self.member_page = 0;
-                            if let Some(channel) = self
-                                .detail
-                                .as_ref()
-                                .and_then(|detail| detail.channels.first())
-                            {
-                                self.select_channel(channel.id.clone(), false);
-                            }
-                        }
-                        Err(error) => self.error = Some(error),
-                    }
-                }
+                } => self.accept_navigation(generation, navigation, result),
                 Event::ChannelLoaded {
                     generation,
                     channel,
@@ -600,6 +596,10 @@ impl CaperApp {
     }
 
     fn open_general(&mut self) {
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
+        self.navigation_error = None;
         self.voice.state.browse("general".into());
         self.generation += 1;
         self.loading = true;
@@ -692,27 +692,99 @@ impl CaperApp {
 
     fn select_space(&mut self, id: String) {
         if self.spaces.iter().any(|space| space.id == id && space.demo) {
-            self.open_general();
+            self.navigate(NavigationTarget {
+                space: None,
+                channel: None,
+            });
             return;
         }
-        let Some(token) = self.token.clone() else {
+        if self.token.is_none() {
             self.dialog = Some(Dialog::SignIn);
             return;
-        };
-        self.generation += 1;
-        self.selected_space = Some(id.clone());
-        self.detail = None;
-        self.clear_channel_state();
-        self.loading = true;
-        self.navigation_open = false;
-        self.worker.send(Command::LoadSpace {
-            generation: self.generation,
-            token,
-            space: id,
+        }
+        self.navigate(NavigationTarget {
+            space: Some(id),
+            channel: None,
         });
     }
 
+    fn navigate(&mut self, target: NavigationTarget) {
+        self.navigation += 1;
+        self.opening = true;
+        self.navigation_error = None;
+        self.worker.send(Command::PrepareNavigation {
+            generation: self.generation,
+            navigation: self.navigation,
+            token: self.token.clone(),
+            space: target.space.clone(),
+            channel: target.channel.clone(),
+            name: self.identity_name(),
+        });
+        self.navigation_target = Some(target);
+    }
+
+    fn accept_navigation(
+        &mut self,
+        generation: u64,
+        navigation: u64,
+        result: Result<worker::PreparedNavigation, worker::LoadError>,
+    ) {
+        if generation != self.generation || navigation != self.navigation {
+            return;
+        }
+        self.opening = false;
+        match result {
+            Ok(prepared) => {
+                self.generation += 1;
+                self.clear_channel_state();
+                self.loading = false;
+                self.error = None;
+                self.navigation_error = None;
+                self.navigation_target = None;
+                self.navigation_open = false;
+                self.member_page = 0;
+                let general = prepared.detail.is_none();
+                self.selected_space = prepared
+                    .detail
+                    .as_ref()
+                    .map(|detail| detail.space.id.clone());
+                self.detail = prepared.detail;
+                if let Some((history, session)) = prepared.conversation {
+                    let channel = history.channel.id.clone();
+                    self.voice.state.browse(channel.clone());
+                    self.accept_channel(history, session, general, &channel);
+                }
+            }
+            Err(error) => {
+                if error.access_denied
+                    && self.navigation_target.as_ref().is_some_and(|target| {
+                        target.space == self.selected_space
+                            && (target.channel.is_none() || target.channel == self.selected_channel)
+                    })
+                {
+                    self.clear_channel(&error.message);
+                }
+                self.navigation_error = Some(error.message);
+            }
+        }
+    }
+
     fn select_channel(&mut self, id: String, general: bool) {
+        self.navigate(NavigationTarget {
+            space: if general {
+                None
+            } else {
+                self.selected_space.clone()
+            },
+            channel: Some(id),
+        });
+    }
+
+    fn reload_selected_channel(&mut self, id: String, general: bool) {
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
+        self.navigation_error = None;
         self.voice.state.browse(id.clone());
         self.generation += 1;
         self.selected_channel = Some(id.clone());
@@ -941,7 +1013,7 @@ impl CaperApp {
             if let Some(pending) = &mut pending {
                 pending.sending = false;
             }
-            self.select_channel(channel, general);
+            self.reload_selected_channel(channel, general);
             self.pending = pending;
             self.draft = draft;
         }
@@ -1115,6 +1187,10 @@ impl CaperApp {
             self.dialog = Some(Dialog::SignIn);
             return;
         };
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
+        self.navigation_error = None;
         self.loading = true;
         self.error = None;
         self.worker.send(Command::Admin {
@@ -1173,6 +1249,10 @@ impl CaperApp {
                     detail.channels.retain(|channel| channel.id != id);
                 }
                 self.dialog = None;
+                if self.selected_channel.as_deref() != Some(&id) {
+                    return;
+                }
+                self.clear_channel_state();
                 if let Some(next) = self
                     .detail
                     .as_ref()
@@ -1398,6 +1478,28 @@ impl CaperApp {
 
     fn shell(&mut self, context: &egui::Context) {
         let narrow = context.viewport_rect().width() <= 760.0;
+        if self.opening || self.navigation_error.is_some() {
+            egui::TopBottomPanel::top("navigation-status")
+                .frame(egui::Frame::new().fill(SURFACE).inner_margin(12.0))
+                .show(context, |ui| {
+                    ui.add_enabled_ui(self.dialog.is_none(), |ui| {
+                        if self.opening {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Opening conversation…");
+                            });
+                        }
+                        if let Some(error) = &self.navigation_error {
+                            ui.colored_label(ERROR, error);
+                            if ui.button("Retry opening conversation").clicked()
+                                && let Some(target) = self.navigation_target.clone()
+                            {
+                                self.navigate(target);
+                            }
+                        }
+                    });
+                });
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE))
             .show(context, |ui| {
@@ -4476,7 +4578,7 @@ mod tests {
             Some("Sentinel"),
             "duplicate request must be ignored"
         );
-        app.select_channel("other".into(), false);
+        app.reload_selected_channel("other".into(), false);
         assert!(!app.loading_older);
         assert!(app.older_error.is_none());
         assert!(!app.has_more);
@@ -4565,6 +4667,59 @@ mod tests {
     }
 
     #[test]
+    fn navigation_keeps_visible_conversation_and_rejects_stale_completions() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let original = app.selected_channel.clone();
+        let count = app.timeline.messages().count();
+        app.draft = "Unsent draft".into();
+        app.select_channel("next".into(), false);
+        let old_request = app.navigation;
+        assert_eq!(app.selected_channel, original);
+        assert_eq!(app.timeline.messages().count(), count);
+        assert_eq!(app.draft, "Unsent draft");
+        app.accept_navigation(
+            app.generation,
+            old_request,
+            Err(LoadError {
+                message: "Unavailable".into(),
+                access_denied: false,
+            }),
+        );
+        assert_eq!(app.navigation_error.as_deref(), Some("Unavailable"));
+        assert_eq!(app.selected_channel, original);
+        assert_eq!(app.draft, "Unsent draft");
+        app.navigate(app.navigation_target.clone().unwrap());
+        assert!(app.opening);
+        app.accept_navigation(
+            app.generation,
+            old_request,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("stale"), session())),
+            }),
+        );
+        assert!(app.opening);
+        assert_eq!(app.selected_channel, original);
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("next"), session())),
+            }),
+        );
+        assert_eq!(app.selected_channel.as_deref(), Some("next"));
+        assert!(!app.opening);
+        assert!(app.navigation_error.is_none());
+        assert!(app.draft.is_empty());
+    }
+
+    #[test]
     fn resync_retains_uncertain_send_but_channel_switch_discards_it() {
         let context = eframe::egui::Context::default();
         let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
@@ -4581,6 +4736,19 @@ mod tests {
         assert!(!retry.sending);
         assert_eq!(app.draft, "different draft");
         app.select_channel("two".into(), false);
+        assert_eq!(
+            app.draft, "different draft",
+            "a pending navigation must not discard text"
+        );
+        assert!(app.pending.is_some());
+        app.accept_navigation(
+            app.generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("two"), session())),
+            }),
+        );
         assert!(app.pending.is_none());
         assert!(app.draft.is_empty());
     }

@@ -15,6 +15,9 @@ public final class AppModel {
     public var challengeID: String?
     public var limits: SpaceLimits?
     public var navigationOpen = false
+    public var openingSpaceID: String?
+    public var openingChannelID: String?
+    public var navigationError: String?
     public let api: APIClient
     public let chat: ChatModel
     public let voice: VoiceClient
@@ -22,6 +25,8 @@ public final class AppModel {
     private let preferredInitialSpaceID: String?
     private var generation = 0
     private var demoDetail: SpaceDetail?
+    private var navigationGeneration = 0
+    private var navigationTarget: (space: Space, channelID: String?)?
 
     public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
         self.api = api
@@ -90,6 +95,9 @@ public final class AppModel {
         voice.leaveImmediately()
         account = nil; spaces = []; detail = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
+        navigationGeneration += 1
+        navigationTarget = nil; navigationError = nil
+        openingSpaceID = nil; openingChannelID = nil
         limits = nil; navigationOpen = false
         busy = false; phase = .signedOut
         async let revoke: Void = api.logout()
@@ -129,34 +137,70 @@ public final class AppModel {
     }
 
     private func select(space: Space, preparedDemo: ChatHistory?) async {
-        let attempt = generation
-        selectedSpaceID = space.id
-        navigationOpen = false
-        await work(generation: attempt) {
-            let detail: SpaceDetail
-            if space.demo == true, let demo = self.demoDetail { detail = demo }
-            else { detail = try await self.api.space(space.id) }
-            guard self.selectedSpaceID == space.id, self.generation == attempt else { return }
-            self.detail = detail
-            if detail.space.demo == true { await self.presence.stop() }
-            else { await self.presence.watch(spaceID: detail.space.id, members: detail.members) }
-            if let channel = detail.channels.first {
-                self.selectedChannelID = channel.id
-                if space.demo == true {
-                    if let preparedDemo { await self.chat.open(history: preparedDemo, displayName: self.account?.displayName ?? "Guest") }
-                    else { await self.chat.open(channelID: nil, displayName: self.account?.displayName ?? "Guest") }
-                } else { await self.chat.open(channelID: channel.id, displayName: self.account?.displayName ?? "Guest") }
-            } else {
-                self.selectedChannelID = nil
-                await self.chat.stop()
-            }
-        }
+        await navigate(space: space, channelID: nil, preparedDemo: preparedDemo)
     }
 
     public func select(channel: Channel) async {
-        selectedChannelID = channel.id
-        navigationOpen = false
-        await chat.open(channelID: detail?.space.demo == true ? nil : channel.id, displayName: account?.displayName ?? "Guest")
+        guard let space = detail?.space else { return }
+        await navigate(space: space, channelID: channel.id, preparedDemo: nil)
+    }
+
+    public func retryNavigation() async {
+        guard let target = navigationTarget else { return }
+        await navigate(space: target.space, channelID: target.channelID, preparedDemo: nil)
+    }
+
+    private func navigate(space: Space, channelID: String?, preparedDemo: ChatHistory?) async {
+        navigationGeneration += 1
+        let navigation = navigationGeneration
+        let attempt = generation
+        navigationTarget = (space, channelID)
+        navigationError = nil
+        openingSpaceID = space.id; openingChannelID = channelID
+        defer {
+            if navigationGeneration == navigation {
+                openingSpaceID = nil; openingChannelID = nil
+            }
+        }
+        do {
+            let detail: SpaceDetail
+            if space.demo == true, let demo = self.demoDetail { detail = demo }
+            else { detail = try await self.api.space(space.id) }
+            guard navigationGeneration == navigation, generation == attempt else { return }
+            guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
+            let channel = channelID == nil ? detail.channels.first : detail.channels.first(where: { $0.id == channelID })
+            if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
+            let history: ChatHistory?
+            if let channel {
+                if let preparedDemo, space.demo == true { history = preparedDemo }
+                else { history = try await api.history(channelID: space.demo == true ? nil : channel.id) }
+                guard history?.space?.id == space.id, history?.channel?.id == channel.id else {
+                    throw APIError(status: 502, message: "The service returned another conversation.")
+                }
+            } else { history = nil }
+            guard navigationGeneration == navigation, generation == attempt else { return }
+            // Keep the current conversation, draft and selection until the target is ready.
+            selectedSpaceID = space.id
+            selectedChannelID = channel?.id
+            self.detail = detail
+            navigationOpen = false
+            navigationTarget = nil
+            if let history { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
+            else { await chat.stop() }
+            guard navigationGeneration == navigation, generation == attempt else { return }
+            if detail.space.demo == true { await self.presence.stop() }
+            else { await self.presence.watch(spaceID: detail.space.id, members: detail.members) }
+        } catch {
+            guard navigationGeneration == navigation, generation == attempt else { return }
+            navigationError = error.localizedDescription
+            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status),
+               selectedSpaceID == space.id, channelID == nil || selectedChannelID == channelID {
+                if channelID == nil { detail = nil; selectedSpaceID = nil }
+                selectedChannelID = nil
+                if voice.isActive(spaceID: space.id), channelID.map({ voice.isActive(channelID: $0) }) ?? true { voice.leaveImmediately() }
+                await chat.stop()
+            }
+        }
     }
 
     public var isOwner: Bool { account?.id == detail?.space.ownerId }
@@ -292,6 +336,9 @@ public final class AppModel {
 
     private func removeCurrentSpace(id: String) async {
         generation += 1
+        navigationGeneration += 1
+        navigationTarget = nil; navigationError = nil
+        openingSpaceID = nil; openingChannelID = nil
         spaces.removeAll { $0.id == id }
         detail = nil; selectedSpaceID = nil; selectedChannelID = nil
         await chat.stop()
@@ -361,7 +408,7 @@ public final class ChatModel {
     }
 
     public func open(history: ChatHistory, displayName: String) async {
-        await open(channelID: nil, displayName: displayName, preservingPending: false, prepared: history)
+        await open(channelID: history.channel?.id, displayName: displayName, preservingPending: false, prepared: history)
     }
 
     private func open(channelID: String?, displayName: String, preservingPending: Bool, prepared: ChatHistory?) async {

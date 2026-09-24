@@ -26,10 +26,13 @@ pub enum Command {
         username: String,
         display_name: String,
     },
-    LoadSpace {
+    PrepareNavigation {
         generation: u64,
-        token: String,
-        space: String,
+        navigation: u64,
+        token: Option<String>,
+        space: Option<String>,
+        channel: Option<String>,
+        name: String,
     },
     LoadChannel {
         generation: u64,
@@ -171,10 +174,10 @@ pub enum Event {
         generation: u64,
         result: Result<(Account, Spaces), String>,
     },
-    SpaceLoaded {
+    NavigationPrepared {
         generation: u64,
-        space: String,
-        result: Result<SpaceDetail, String>,
+        navigation: u64,
+        result: Result<PreparedNavigation, LoadError>,
     },
     ChannelLoaded {
         generation: u64,
@@ -217,6 +220,93 @@ pub struct SendFailure {
 pub struct LoadError {
     pub message: String,
     pub access_denied: bool,
+}
+
+pub struct PreparedNavigation {
+    pub detail: Option<SpaceDetail>,
+    pub conversation: Option<(History, ChatSession)>,
+}
+
+fn prepare_navigation(
+    api: &Api,
+    token: Option<&str>,
+    space: Option<&str>,
+    channel: Option<&str>,
+    name: &str,
+) -> Result<PreparedNavigation, crate::api::ApiError> {
+    let detail = space
+        .map(|space| api.space(token.unwrap_or_default(), space))
+        .transpose()?;
+    if let Some(detail) = &detail
+        && Some(detail.space.id.as_str()) != space
+    {
+        return Err(crate::api::ApiError {
+            status: None,
+            message: "Caper returned another space.".into(),
+        });
+    }
+    let selected = if let Some(detail) = &detail {
+        if let Some(id) = channel {
+            Some(
+                detail
+                    .channels
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .ok_or_else(|| crate::api::ApiError {
+                        status: Some(reqwest::StatusCode::NOT_FOUND),
+                        message: "This channel is no longer accessible.".into(),
+                    })?,
+            )
+        } else {
+            detail.channels.first()
+        }
+    } else {
+        None
+    };
+    let history = if let Some(selected) = selected {
+        Some(api.history(token, &selected.id, None)?)
+    } else if space.is_none() {
+        Some(api.general_history(token)?)
+    } else {
+        None
+    };
+    if let (Some(detail), Some(history)) = (&detail, &history)
+        && (detail.space.id != history.space.id
+            || selected.is_none_or(|entry| entry.id != history.channel.id))
+    {
+        return Err(crate::api::ApiError {
+            status: None,
+            message: "Caper returned another conversation.".into(),
+        });
+    }
+    if let Some(history) = &history {
+        if history
+            .messages
+            .iter()
+            .any(|message| message.channel_id != history.channel.id)
+        {
+            return Err(crate::api::ApiError {
+                status: None,
+                message: "Caper returned messages from another channel.".into(),
+            });
+        }
+        crate::model::Timeline::default()
+            .reset(history.messages.clone(), &history.cursor)
+            .map_err(|message| crate::api::ApiError {
+                status: None,
+                message,
+            })?;
+    }
+    let conversation = history
+        .map(|history| {
+            api.chat_session(token, name)
+                .map(|session| (history, session))
+        })
+        .transpose()?;
+    Ok(PreparedNavigation {
+        detail,
+        conversation,
+    })
 }
 
 pub struct Worker {
@@ -358,14 +448,29 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .and_then(|account| api.spaces(&token).map(|spaces| (account, spaces)))
                 .map_err(|error| error.to_string()),
         },
-        Command::LoadSpace {
+        Command::PrepareNavigation {
             generation,
+            navigation,
             token,
             space,
-        } => Event::SpaceLoaded {
+            channel,
+            name,
+        } => Event::NavigationPrepared {
             generation,
-            space: space.clone(),
-            result: api.space(&token, &space).map_err(|error| error.to_string()),
+            navigation,
+            result: prepare_navigation(
+                api,
+                token.as_deref(),
+                space.as_deref(),
+                channel.as_deref(),
+                &name,
+            )
+            .map_err(|error| LoadError {
+                access_denied: error
+                    .status
+                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
+                message: error.to_string(),
+            }),
         },
         Command::LoadChannel {
             generation,
@@ -538,6 +643,57 @@ pub fn current(
 #[cfg(test)]
 mod tests {
     use super::{advance_generation, current};
+
+    #[test]
+    fn navigation_rechecks_access_and_prepares_requested_channel_not_first() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            let detail = r#"{"space":{"id":"s","name":"Space","ownerId":"owner"},"channels":[{"id":"first","spaceId":"s","name":"first","private":false},{"id":"second","spaceId":"s","name":"second","private":true}],"members":[]}"#;
+            for (path, body) in [
+                ("GET /api/spaces/s", detail),
+                (
+                    "GET /api/chat/channels/second/messages",
+                    r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"second","name":"second"},"messages":[],"cursor":"0","hasMore":false}"#,
+                ),
+                (
+                    "POST /api/chat/session",
+                    r#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#,
+                ),
+                ("GET /api/spaces/s", detail),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{path} HTTP/1.1\r\n"));
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(reader.get_mut(), "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let prepared =
+            super::prepare_navigation(&api, Some("account"), Some("s"), Some("second"), "User")
+                .unwrap();
+        assert_eq!(prepared.detail.unwrap().space.id, "s");
+        assert_eq!(prepared.conversation.unwrap().0.channel.id, "second");
+        let failure =
+            super::prepare_navigation(&api, Some("account"), Some("s"), Some("revoked"), "User")
+                .err()
+                .unwrap();
+        assert_eq!(failure.status, Some(reqwest::StatusCode::NOT_FOUND));
+        worker.join().unwrap();
+    }
 
     #[test]
     fn leave_space_removes_only_self_membership_and_propagates_denial() {
