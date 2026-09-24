@@ -20,7 +20,7 @@ import {
 import { getAccount, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
-import Call from "../pages/Call";
+import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
@@ -786,6 +786,8 @@ export default function Spaces() {
         if (!current) return;
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
           return void window.location.assign("/profile");
+        // The public channel lives on the homepage; spaces are for accounts.
+        if (!nextAccount) return void window.location.replace("/");
         const [result, demoHistory] = await Promise.all([
           nextAccount ? listSpaces() : Promise.resolve({ spaces: [], limits: undefined }),
           loadChatHistory().catch((reason) => { if (!nextAccount) throw reason; return undefined; }),
@@ -986,7 +988,7 @@ export default function Spaces() {
       {pending && <span className="sr-only" role="status">Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…</span>}
     </nav>
   );
-  const channelNavigation = (
+  const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
     <nav
       className="channel-navigation"
       aria-label={`${detail.space.name} channels`}
@@ -1078,8 +1080,11 @@ export default function Spaces() {
         </div>}
       </div>
       <ul id="space-channel-list" hidden={!channelsExpanded}>
-        {detail.channels.map((item) => (
-          <li key={item.id}>
+        {detail.channels.map((item) => {
+          const voice = voiceFor(item.id);
+          return (
+          <li key={item.id} data-voice={voice ? "" : undefined}>
+            <div className="channel-line">
             <button
               className="channel-select"
               type="button"
@@ -1096,6 +1101,7 @@ export default function Spaces() {
               )}
               <span>{item.name}</span>
             </button>
+            {voice?.summary}
             {owner && (
               <button
                 className="channel-manage"
@@ -1106,8 +1112,11 @@ export default function Spaces() {
                 <Settings aria-hidden="true" />
               </button>
             )}
+            </div>
+            {voice?.list}
           </li>
-        ))}
+          );
+        })}
       </ul>
       {error && (
         <p className="space-sidebar-error" role="alert">
@@ -1132,7 +1141,7 @@ export default function Spaces() {
           >
             {rail}
             <ChannelSidebar>
-              <div className="sidebar-channels">{channelNavigation}</div>
+              <div className="sidebar-channels">{channelNavigation(() => null)}</div>
               <div className="empty-channel-account">
                 <span className="account-avatar" aria-hidden="true">
                   {account?.displayName?.slice(0, 1).toUpperCase()}
@@ -1215,6 +1224,7 @@ export default function Spaces() {
           spaceId: detail.space.id,
           demo: detail.space.demo,
         }}
+        voiceChannels={detail.channels.map((item) => ({ id: item.id, name: item.name }))}
         initialAccount={account}
         initialHistory={view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={view?.channelId === channel.id ? view.historyError : undefined}

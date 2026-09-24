@@ -40,7 +40,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, onAuthorChange, onHistoryChange, onLocalPresenceChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -50,6 +50,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const listRef = useRef<VirtuosoHandle>(null);
   const initialListRef = useRef<HTMLDivElement>(null);
   const [listReady, setListReady] = useState(false);
+  // Virtuoso needs browser APIs; the server and first client render use the plain list.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
@@ -93,7 +96,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       }
       pendingId = pending?.clientMessageId;
       setState(next);
-    }, channelId);
+    }, channelId, { sounds: messageSounds });
     clientRef.current = client;
     client.start(initialHistory, initialHistoryError);
     return () => {
@@ -118,6 +121,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     const timer = setInterval(update, 1_000);
     return () => clearInterval(timer);
   }, [state.online, onLocalPresenceChange]);
+
+  useEffect(() => { clientRef.current?.setSounds(messageSounds); }, [messageSounds]);
+
+  useEffect(() => { onOnlineChange?.(state.online); }, [state.online, onOnlineChange]);
 
   useEffect(() => {
     if (identityReady) clientRef.current?.identify(name, signedIn);
@@ -172,7 +179,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     return <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId} key={message.clientMessageId}>
       <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
       <div>
-        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{timeLabel(message.createdAt)}</time></header>
+        <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
         {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
           <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
@@ -200,7 +207,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       {state.phase === "loading" && <p className="chat-state" role="status">Loading messages…</p>}
       {state.phase === "error" && <div className="chat-state" role="alert"><p>{state.error}</p><button type="button" onClick={() => clientRef.current?.retryLoad()}>Try again</button></div>}
       {state.phase === "ready" && !messages.length && <div className="chat-state"><p>No messages yet.</p><small>Start the conversation in #{channelName}.</small></div>}
-      {state.phase === "ready" && messages.length > 0 && <Virtuoso
+      {state.phase === "ready" && messages.length > 0 && hydrated && <Virtuoso
         ref={listRef}
         data={messages}
         firstItemIndex={firstItemIndex}

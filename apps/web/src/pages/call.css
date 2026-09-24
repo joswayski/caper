@@ -2,10 +2,31 @@
 .call-header { width: min(1400px, calc(100% - 56px)); height: 80px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
 .call-destination { color: var(--text-muted); font-size: .78rem; font-weight: 700; text-decoration: none; }
 .call-destination:hover { color: var(--text); }
-.call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; margin: auto 12px 12px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
+.voice-panel { flex: 0 0 auto; margin: auto 12px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
+.voice-dock { display: grid; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
+.voice-error { display: flex; align-items: flex-start; gap: 6px; margin: 2px 0 0; padding: 7px 4px 3px 8px; border-top: 1px solid var(--border); color: #ff9b82; font-size: .7rem; line-height: 1.4; }
+.voice-dock > .voice-error:first-child { margin-top: 0; padding-top: 1px; border-top: 0; }
+.voice-error span { flex: 1; }
+.voice-error button { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.voice-error button:hover { color: var(--text); background: var(--surface-composer); }
+.voice-error svg { width: 14px; height: 14px; }
+.connected-channel { height: 40px; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.voice-dock-channel > svg { width: 18px; height: 18px; flex: 0 0 auto; margin-left: 4px; color: var(--text-muted); }
+.voice-dock-channel > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
+.voice-dock-channel strong { overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.voice-dock-channel small { overflow: hidden; color: var(--text-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.voice-dock-channel { height: 100%; min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 0; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.voice-dock-channel:hover { background: var(--surface-composer); }
+.voice-dock-channel:hover small { text-decoration: underline; text-underline-offset: 2px; }
+.connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) { color: #8cb262; }
+.connected-channel:not([data-phase="connected"]) .voice-dock-channel :is(svg, strong) { color: #d9ab5c; }
+.voice-hangup { width: 34px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: var(--surface-composer); cursor: pointer; }
+.voice-hangup:hover, .voice-hangup:focus-visible { color: #ff7182; background: rgb(212 67 85 / .18); }
+.voice-hangup svg { width: 17px; height: 17px; }
+.call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; padding: 4px; }
 .account-profile { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .account-profile:hover { background: var(--surface-composer); }
-.account-avatar { position: relative; width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
+.account-avatar { position: relative; width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: var(--radius-avatar); background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
 .account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 20px; }
 .call-account .voice-icon-button { width: 28px; height: 30px; border: 0; border-radius: 4px 0 0 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .call-settings { flex: 0 0 auto; }
@@ -41,21 +62,21 @@
 .channel-link:hover:not([aria-current]) { background: rgb(182 77 50 / .22); }
 .voice-roster-label { margin: 24px 9px 0; color: var(--text-muted); font-size: .72rem; }
 .voice-actions { min-width: 0; display: flex; align-items: center; gap: 12px; }
-.voice-join { position: relative; flex-shrink: 0; }
 .voice-button { flex-shrink: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--terracotta) 65%, var(--border)); border-radius: var(--radius); color: color-mix(in srgb, var(--terracotta-bright) 65%, var(--text)); background: rgb(182 77 50 / .14); font-size: .78rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
 .voice-button > svg { width: 16px; height: 16px; }
 .voice-button:hover:not([aria-disabled="true"]) { border-color: var(--terracotta-bright); background: rgb(182 77 50 / .24); }
 .voice-button[aria-disabled="true"] { opacity: .5; cursor: default; }
-.voice-status { color: var(--text-muted); font-size: .75rem; }
 .people-panel ul { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
 .participant { position: relative; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: 8px; }
 .participant-avatar { position: relative; flex: 0 0 auto; }
-.avatar { flex: 0 0 auto; width: 38px; height: 38px; display: grid; place-items: center; border: 2px solid var(--border); border-radius: 50%; color: #fff; background: #354027; font-weight: 900; }
+.avatar { flex: 0 0 auto; width: 38px; height: 38px; display: grid; place-items: center; border: 2px solid var(--border); border-radius: var(--radius-avatar); color: #fff; background: #354027; font-weight: 900; }
 .avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 3px rgb(99 122 67 / .2); }
-.participant-name { min-width: 0; display: grid; grid-template-rows: 1.3em 1.2em; flex: 1; }
+.participant-name { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; flex: 1; }
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
-.participant-country { position: absolute; right: -3px; bottom: -1px; width: 16px; height: 12px; border: 1px solid var(--surface); border-radius: 3px; box-shadow: 0 0 0 1px rgb(0 0 0 / .2); }
-.participant-name small { color: var(--text-muted); font-size: .72rem; }
+.participant-country { width: 16px; height: 12px; flex: 0 0 auto; align-self: center; border-radius: 3px; box-shadow: 0 0 0 1px rgb(0 0 0 / .25); }
+/* Mute and deafen show as icons, like Discord; the words stay for screen readers. */
+.participant-status { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; align-self: center; color: var(--text-muted); }
+.participant-status svg { width: 15px; height: 15px; }
 .participant-menu-button { height: 28px; flex: 0 0 auto; padding: 0 7px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font-size: .7rem; font-weight: 700; cursor: pointer; }
 .participant-menu-button:hover, .participant-menu-button[aria-expanded="true"] { color: var(--text); background: var(--border); }
 .participant-volume { position: absolute; z-index: 2; top: 52px; right: 8px; width: 220px; display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
@@ -137,13 +158,6 @@
 .call-account .voice-action-group.active { background: rgb(212 67 85 / .14); }
 .call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary) { color: #ed5265; background: transparent; }
 .call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary):is(:hover, :focus-visible), .call-account .voice-action-group.active .device-menu[open] summary { color: #ff7182; background: rgb(212 67 85 / .18); }
-.connected-channel { display: flex; align-items: center; gap: 6px; margin: 0 12px 8px; padding: 8px 4px; border-top: 1px solid var(--border); }
-.connected-channel button { min-width: 0; display: grid; gap: 4px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); text-align: left; cursor: pointer; }
-.connected-channel button:first-child { flex: 1; }
-.connected-channel button:hover { background: var(--surface-raised); }
-.connected-channel strong { color: var(--text); font-size: .72rem; }
-.connected-channel span { overflow: hidden; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
-.connected-channel svg { width: 18px; height: 18px; }
 .device-options { min-width: 0; margin: 0; padding: 0; border: 0; }
 .device-options legend { margin-bottom: 8px; color: var(--text-muted); font-size: .72rem; font-weight: 700; }
 .device-options label { display: flex; align-items: center; gap: 8px; padding: 9px 8px; border-radius: 6px; color: var(--text); font-size: .8rem; cursor: pointer; }
@@ -197,3 +211,90 @@
 .audio-debug { font-size: .75rem; color: var(--text); }
 .audio-debug p { color: var(--muted); line-height: 1.5; }
 .audio-debug pre { max-height: 320px; overflow: auto; padding: 12px; background: var(--blackout); border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Voice occupants live under their channel: an avatar stack on the row
+   (toggles the list) and a compact, indented list that scrolls past five. */
+/* A channel's voice lives on its line: who is in voice, and Join. The line is
+   a flex row so the controls take the room they need and the channel name
+   gets the rest (truncating), never hidden underneath them. */
+.channel-row, .channel-line { position: relative; min-width: 0; display: flex; align-items: center; gap: 6px; border-radius: 6px; }
+.channel-row:has(.channel-link[aria-current]) { background: rgb(182 77 50 / .14); }
+.channel-row .channel-link { min-width: 0; flex: 1; background: transparent; }
+.channel-row .channel-link > span, .channel-line .channel-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-navigation li[data-voice] { flex-wrap: wrap; }
+.channel-line { flex: 1 1 100%; }
+.channel-line:has(.channel-select[aria-current="page"]) { background: rgb(182 77 50 / .16); }
+.channel-line:hover:not(:has(.channel-select[aria-current="page"])) { background: var(--surface-raised); }
+.channel-line .channel-select, .channel-line .channel-select:hover, .channel-line .channel-select[aria-current="page"] { min-width: 0; background: transparent; }
+/* Inline voice reserves the settings button's space itself. */
+.channel-line:has(.channel-voice) .channel-select { padding-right: 4px; }
+.channel-voice { flex: none; display: flex; align-items: center; gap: 6px; padding-right: 6px; }
+.channel-line:has(.channel-manage) .channel-voice { padding-right: 34px; }
+/* Who is in voice sits on its own row under the channel name, so the name
+   keeps the full line. The faces line up with the name's first letter. */
+.channel-navigation li { --voice-indent: 31px; }
+.channel-item { --voice-indent: 38px; }
+.channel-voice-row { flex-basis: 100%; min-width: 0; min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 1px 6px 2px var(--voice-indent); }
+.channel-voice-row .channel-join { margin-left: auto; }
+.sidebar-channels { container: channels / inline-size; }
+.voice-stack { height: 28px; display: flex; align-items: center; padding: 0 5px 0 4px; border: 0; border-radius: 999px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.voice-stack-faces { display: flex; align-items: center; }
+.channel-join.voice-button { min-height: 28px; gap: 5px; padding: 0 9px; font-size: .72rem; }
+.channel-join.voice-button > svg { width: 14px; height: 14px; }
+.channel-join.voice-button[aria-busy="true"] { cursor: progress; }
+/* Other channels' Join appears on hover or keyboard focus. It keeps its
+   space, so nothing shifts under the cursor. */
+@media (hover: hover) {
+  .channel-join[data-hover-only] { visibility: hidden; opacity: 0; transition: opacity .12s ease, visibility 0s .12s; }
+  :is(.channel-item, .channel-navigation li):is(:hover, :focus-within) .channel-join[data-hover-only] { visibility: visible; opacity: 1; transition: opacity .12s ease; }
+}
+@media (hover: none) {
+  .channel-join[data-hover-only] { display: none; }
+}
+.voice-stack:hover { color: var(--text); background: var(--surface-raised); }
+/* Join glows faintly while people are in the channel's voice: enough to read
+   as live, quiet enough for several live channels at once. */
+.channel-join[data-live] { animation: voice-live 2.8s ease-in-out infinite; }
+@keyframes voice-live {
+  0%, 100% { box-shadow: 0 0 0 1px rgb(140 178 98 / .16), 0 0 5px rgb(140 178 98 / .07); }
+  50% { box-shadow: 0 0 0 1px rgb(140 178 98 / .28), 0 0 8px 1px rgb(140 178 98 / .14); }
+}
+.voice-stack > svg { width: 11px; height: 11px; margin-left: 2px; transition: transform .2s ease; }
+.voice-stack[aria-expanded="false"] > svg { transform: rotate(-90deg); }
+.voice-stack:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 1px; }
+.voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid var(--surface-sidebar); border-radius: var(--radius-avatar); color: #fff; background: #354027; font-size: .55rem; font-weight: 900; }
+.voice-stack-avatar + .voice-stack-avatar { margin-left: -6px; }
+.voice-stack-avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 1px var(--caper); }
+.voice-stack-faces small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+/* The channel name keeps priority: controls step down as the sidebar narrows. */
+@container channels (max-width: 219px) {
+  .channel-join.voice-button > svg { display: none; }
+  .channel-join.voice-button { padding: 0 8px; }
+}
+.voice-occupants { flex-basis: 100%; display: grid; grid-template-rows: 0fr; transition: grid-template-rows .22s ease; }
+.voice-occupants[data-open] { grid-template-rows: 1fr; }
+.voice-occupants-inner { min-height: 0; overflow: hidden; }
+.voice-occupants-inner:has(.volume-menu-open) { overflow: visible; }
+.people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; display: grid; gap: 0; margin: 0 0 6px calc(var(--voice-indent, 31px) - 2px); padding: 0; overflow-y: auto; list-style: none; }
+.people-panel .voice-occupants .voice-occupants-inner > ul.volume-menu-open { max-height: none; overflow: visible; }
+.voice-occupants .participant { gap: 8px; padding: 4px 6px; border-radius: 6px; }
+.voice-occupants .participant:hover { background: var(--surface-raised); }
+.voice-occupants .participant { min-height: 30px; }
+.voice-occupants .avatar { width: 20px; height: 20px; border-width: 1.5px; font-size: .56rem; }
+.voice-occupants .participant-avatar { display: flex; align-items: center; }
+.voice-occupants .participant-country { width: 14px; height: 10px; border-radius: 2px; }
+.voice-occupants .participant-name { display: flex; align-items: baseline; gap: 6px; }
+.voice-occupants .participant-name strong { font-size: .8rem; font-weight: 650; }
+.voice-occupants .participant-status svg { width: 14px; height: 14px; }
+.voice-occupants .participant-menu-button { height: 24px; font-size: .66rem; }
+.voice-occupants .participant-volume { top: 34px; }
+.voice-elsewhere .voice-roster-label { margin-top: 16px; }
+@media (max-width: 760px) {
+  .channel-line:has(.channel-voice) .channel-select { padding-right: 4px; }
+  .channel-line:has(.channel-manage) .channel-voice { padding-right: 50px; }
+  .people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-occupants { transition: none; }
+  .channel-join[data-live] { animation: none; box-shadow: 0 0 0 1px rgb(140 178 98 / .24), 0 0 6px rgb(140 178 98 / .1); }
+}

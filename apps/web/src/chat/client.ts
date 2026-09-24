@@ -106,17 +106,22 @@ export class ChatClient {
   private readonly typers = new Map<string, { author: ChatAuthor; typing: boolean; revision: bigint; expires: number }>();
   private readonly changed: (state: ChatViewState) => void;
   private readonly channelId?: string;
+  private sounds: boolean;
   private spaceId?: string;
 
-  constructor(changed: (state: ChatViewState) => void, channelId?: string) {
+  constructor(changed: (state: ChatViewState) => void, channelId?: string, options: { sounds?: boolean } = {}) {
     this.changed = changed;
     this.channelId = channelId;
+    this.sounds = options.sounds ?? true;
   }
 
   start(history?: GeneralChatHistory, error?: string) {
     if (error) this.update({ phase: "error", error });
     else void this.loadInitial(history);
   }
+
+  /** New-message sounds can be enabled once a visitor engages with an embedded chat. */
+  setSounds(enabled: boolean) { this.sounds = enabled; }
 
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || !this.spaceId || !this.state.channelId) return;
@@ -327,7 +332,7 @@ export class ChatClient {
             const messages = this.timeline.messages;
             this.update({ messages });
             const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
-            if (result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
+            if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
           }
           return result;
         },

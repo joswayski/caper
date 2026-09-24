@@ -8,7 +8,7 @@ their history, live messages, presence and calls require membership. See
 [spaces and channel access](#spaces-and-channel-access). Signed-in participants
 use their account display name; guests receive a random name. This is not an
 outgoing-call flow. No camera, screen sharing, or server-side voice recording.
-The independently enabled [public text demo](#public-text-demo) shares the public `general` channel in `/spaces`;
+The independently enabled [public text demo](#public-text-demo) shares the public `general` channel on the homepage;
 demo reads and sends do not require an account or joining voice.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
@@ -205,6 +205,29 @@ moderation rules, and message notifications are not implemented. Typing indicato
 best-effort ephemeral presence, not saved messages. This demo is not a
 permanent public space when the product launches. Voice control shares the
 application gateway; audio remains WebRTC.
+
+The homepage hero is this channel. `LiveWindow.tsx` embeds the same room as
+the demo page (`pages/Call.tsx` without a `channel`: chat, voice roster, and
+mic/deafen/settings controls) in a tilting 3D window. Clicking the window opens
+it: on screens at least 1024px wide it flattens to full size over the hero; on
+narrower screens it opens full screen. The server render reuses the existing
+`GET /api/chat/general` call and keeps the newest 16 messages. Each visitor
+opens one application-gateway socket with a read-only chat subscription and a
+spectator voice-roster subscription. Until the window is opened, the room is
+read-only: no guest chat session (session creation is limited to 60 per minute
+across all guests), no noise-model downloads, and no sounds. Anything posted
+to General is visible on the homepage, and moderation and deletion do not
+exist yet. Spectators see who is in voice and who is muted, not who is
+speaking; speaking is detected only by call participants. When the channel
+cannot be loaded, the window plays a scripted preview labeled "Preview",
+limited to shipped features (text, typing, voice presence), and cannot be
+opened. Each channel line in the sidebar shows who is in that channel's voice
+and a Join button. In `/spaces` the browser opens one spectator voice-roster
+subscription per channel, up to 24 per space, on the same gateway connection
+(within its 32-subscription limit). A space-level voice presence feed on the
+server would replace these. `/spaces` is for accounts: it sends logged-out visitors to the homepage,
+and the login page's guest link points there too. Signed-in people still see
+the public space in their `/spaces` rail.
 
 The same Rust image has two independently deployable roles:
 
@@ -1902,7 +1925,7 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts
 
-The public demo in `/spaces` remains guest-accessible. For guests, the browser uses
+The public demo on the homepage remains guest-accessible. For guests, the browser uses
 `unique-names-generator` to assign a readable color-and-animal name for each visit
 and keeps it through reconnects. No account or profile is needed. The guest voice
 API is database-independent, but the unified browser screen requires chat storage
@@ -1964,7 +1987,7 @@ After the approved deployment, verify:
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 curl --fail --silent --show-error https://caper.chat/api/media/status
-# Expected: enabled is true. Then open the public demo in /spaces in two browsers and test audio/leave.
+# Expected: enabled is true. Then open the homepage window in two browsers and test audio/leave.
 ```
 
 Guest restoration validation: Rust provider mocks cover unauthenticated joins,

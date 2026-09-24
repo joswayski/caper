@@ -53,9 +53,10 @@
   .channel-section-actions { opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
   .channel-section-heading:hover .channel-section-actions, .channel-section-heading:focus-within .channel-section-actions, .channel-section-actions:has(details[open]) { opacity: 1; pointer-events: auto; }
 }
-.spaces-room .channel-navigation ul { display: grid; gap: 3px; margin: 4px 0 0; padding: 0; list-style: none; }
+/* minmax(0, 1fr): one long channel name must not widen every line past the sidebar. */
+.spaces-room .channel-navigation ul { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; margin: 4px 0 0; padding: 0; list-style: none; }
 .spaces-room .channel-navigation ul[hidden] { display: none; }
-.channel-navigation li { position: relative; display: flex; align-items: center; }
+.channel-navigation li { position: relative; min-width: 0; display: flex; align-items: center; }
 .channel-select { min-width: 0; height: 38px; flex: 1; display: flex; align-items: center; gap: 9px; padding: 0 34px 0 9px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .82rem; font-weight: 650; text-align: left; cursor: pointer; }
 .channel-select svg { width: 17px; height: 17px; flex: 0 0 auto; }
 .channel-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transform: translateY(-1px); }
@@ -93,7 +94,7 @@
 .member-presence-connecting { padding: 0 8px; color: var(--text-muted); font-size: .7rem; }
 .spaces-room .people-panel .space-member-presence ul { max-height: 232px; overflow-y: auto; margin: 8px 0; scrollbar-width: thin; }
 .space-member-presence li { display: flex; gap: 10px; min-height: 44px; padding: 4px 8px; }
-.member-presence-avatar { position: relative; display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 50%; background: var(--surface-raised); font-size: .75rem; }
+.member-presence-avatar { position: relative; display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: var(--radius-avatar); color: #fff; background: #354027; font-size: .75rem; }
 .space-member-presence li > span:last-child { display: grid; align-items: center; min-width: 0; }
 .space-member-presence strong { overflow: hidden; color: var(--text); font-size: .75rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .member-presence-pages { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text-muted); font-size: .65rem; }
@@ -166,7 +167,7 @@
 .member-add button { border-color: #805143; color: var(--terracotta-bright); }
 .member-manager ul { max-height: 238px; display: grid; gap: 2px; margin: 14px 0 0; padding: 0; overflow-y: auto; list-style: none; }
 .member-manager li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 9px; min-height: 44px; padding: 5px 3px; }
-.member-avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: #354027; font-size: .7rem; font-weight: 850; }
+.member-avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--radius-avatar); background: #354027; font-size: .7rem; font-weight: 850; }
 .member-manager li > span:nth-child(2) { min-width: 0; display: grid; }
 .member-manager li strong, .member-manager li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .member-manager li strong { font-size: .76rem; }
