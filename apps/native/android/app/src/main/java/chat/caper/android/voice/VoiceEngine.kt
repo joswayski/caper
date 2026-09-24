@@ -83,7 +83,7 @@ class VoiceEngine(
         capture?.beginComparison()
         microphone?.setEnabled(false)
     } }
-    fun finishMicComparison(): MicComparison? = resources.use {
+    internal fun finishMicComparison(): MicComparison? = resources.use {
         capture?.endComparison()
     }
     fun resumeAfterMicComparison() { localMute.withCurrent { muted ->
