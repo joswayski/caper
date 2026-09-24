@@ -10,7 +10,7 @@ import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
 import Tooltip from "../components/Tooltip";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
-import { acquireAudioContext, releaseAudioContext } from "../media/audio-context";
+import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
 import { PublicCallClient } from "../media/client";
 import { watchPresence } from "../media/presence";
 import type { CallViewState, Participant } from "../media/types";
@@ -98,8 +98,19 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
   const [blocked, setBlocked] = useState(false);
   const [deviceError, setDeviceError] = useState(false);
   useEffect(() => {
+    const key = {};
+    setPlaybackBlocked(key, blocked);
+    return () => setPlaybackBlocked(key, false);
+  }, [blocked]);
+  useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    // Chromium delivers silence from a remote WebRTC stream into Web Audio unless
+    // that stream is also attached to a media element. This muted sink never plays.
+    const sink = new Audio();
+    sink.muted = true;
+    sink.srcObject = stream;
+    void sink.play().catch(() => undefined);
     let context: AudioContext | undefined;
     let source: MediaStreamAudioSourceNode | undefined;
     let gain: GainNode | undefined;
@@ -127,6 +138,8 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
     }
     return () => {
       element.srcObject = null;
+      sink.pause();
+      sink.srcObject = null;
       source?.disconnect();
       gain?.disconnect();
       destination?.stream.getTracks().forEach((track) => track.stop());
@@ -289,6 +302,23 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     window.addEventListener("pagehide", unload);
     return () => { current = false; window.removeEventListener("pagehide", unload); clientRef.current?.leaveImmediately(); };
   }, []);
+
+  // Server-side account flags such as debugEnabled can change while a tab stays
+  // open. Re-read them when the visitor returns or opens User Settings, rather
+  // than requiring a reload or a new login.
+  const signedIn = !!account;
+  const settingsOpen = audioMenu === "settings";
+  useEffect(() => {
+    if (!signedIn) return;
+    let current = true;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void getAccount().then((next) => { if (current && next) setAccount(next); }).catch(() => undefined);
+    };
+    if (settingsOpen) refresh();
+    document.addEventListener("visibilitychange", refresh);
+    return () => { current = false; document.removeEventListener("visibilitychange", refresh); };
+  }, [signedIn, settingsOpen]);
 
   useEffect(() => {
     let current = true;

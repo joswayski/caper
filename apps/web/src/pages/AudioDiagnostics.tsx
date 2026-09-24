@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { PublicCallClient } from "../media/client";
+import { playbackDiagnostics } from "../media/audio-context";
 
 export default function AudioDiagnostics({ client }: { client: PublicCallClient | undefined }) {
   const [snapshot, setSnapshot] = useState(() => client?.getAudioDiagnostics());
@@ -14,6 +15,7 @@ export default function AudioDiagnostics({ client }: { client: PublicCallClient 
     browser: navigator.userAgent,
     logicalProcessors: navigator.hardwareConcurrency,
     ...snapshot,
+    playback: snapshot && playbackDiagnostics(),
   }, null, 2);
   return <section className="audio-debug" aria-label="Audio diagnostics">
     <p>Local diagnostics · refresh resets counters. No audio, device identifiers, or credentials are included. Nothing is uploaded.</p>
