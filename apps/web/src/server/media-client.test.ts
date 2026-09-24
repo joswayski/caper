@@ -357,7 +357,7 @@ test("join, 204 state responses, real sender mute, deafen, undeafen, and immedia
   assert.ok(calls.includes("leave"));
 });
 
-test("undeafen unmutes even when muted before deafening, but an already-undeafened request preserves mute", async (t) => {
+test("undeafen restores the microphone mute state from before deafening", async (t) => {
   const { client, track, states, stateUpdates } = setup(t);
   await client.join("Guest");
   await client.setMuted(true);
@@ -365,10 +365,13 @@ test("undeafen unmutes even when muted before deafening, but an already-undeafen
   assert.equal(track.enabled, false, "a no-op is not an undeafen gesture");
   await client.setDeafened(true);
   await client.setDeafened(false);
-  assert.equal(track.enabled, true);
-  assert.equal(Peer.latest.senders[0].track, track);
-  assert.equal(states.at(-1)?.muted, false);
-  assert.deepEqual(stateUpdates.at(-1), { muted: false, deafened: false });
+  assert.equal(track.enabled, false, "undeafening must preserve the mute that was active before deafening");
+  assert.equal(Peer.latest.senders[0].track, null);
+  assert.equal(states.at(-1)?.muted, true);
+  assert.deepEqual(stateUpdates.at(-1), { muted: true, deafened: false });
+  await client.setMuted(false);
+  assert.equal(track.enabled, true, "explicitly unmuting still restores the microphone");
+  assert.equal(states.at(-1)?.deafened, false, "explicit unmute also undeafens");
   client.leaveImmediately();
 });
 
@@ -498,12 +501,12 @@ test("local mic test explains missing, denied, and busy devices", async (t) => {
   client.stopLocalMicTest();
 });
 
-test("pre-join undeafen unmutes without capturing or signaling", async (t) => {
+test("pre-join undeafen restores the prior mute intent without capturing or signaling", async (t) => {
   const { client, states, calls } = setup(t);
   await client.setMuted(true);
   await client.setDeafened(true);
   await client.setDeafened(false);
-  assert.equal(states.at(-1)?.muted, false, "Undeafen also unmutes an explicitly muted mic");
+  assert.equal(states.at(-1)?.muted, true, "Undeafen preserves an explicitly muted mic");
   assert.equal(states.at(-1)?.deafened, false);
   await client.setMuted(false);
   await client.setDeafened(true);

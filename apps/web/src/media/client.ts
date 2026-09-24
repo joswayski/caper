@@ -91,6 +91,7 @@ export class PublicCallClient {
   private reconnects = 0;
   private muted = false;
   private deafened = false;
+  private mutedBeforeDeafen?: boolean;
   private inputVolume = 100;
   private monitoring = false;
   private monitorStream?: MediaStream;
@@ -134,6 +135,7 @@ export class PublicCallClient {
   copyAudioPreferencesFrom(previous: PublicCallClient) {
     this.muted = previous.muted;
     this.deafened = previous.deafened;
+    this.mutedBeforeDeafen = previous.mutedBeforeDeafen;
     this.inputVolume = previous.inputVolume;
     this.voiceProcessingStrength = previous.voiceProcessingStrength;
     this.noiseSuppression = previous.noiseSuppression;
@@ -508,7 +510,10 @@ export class PublicCallClient {
   async setMuted(muted: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
-    if (!muted) this.deafened = false;
+    if (!muted) {
+      this.deafened = false;
+      this.mutedBeforeDeafen = undefined;
+    }
     this.muted = muted;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !muted;
@@ -525,7 +530,12 @@ export class PublicCallClient {
   async setDeafened(deafened: boolean) {
     if (this.monitoring) return;
     const generation = this.generation;
-    if (deafened || this.deafened) this.muted = deafened;
+    if (deafened && !this.deafened) this.mutedBeforeDeafen = this.muted;
+    if (!deafened && this.deafened) {
+      this.muted = this.mutedBeforeDeafen ?? false;
+      this.mutedBeforeDeafen = undefined;
+    }
+    if (deafened) this.muted = true;
     this.deafened = deafened;
     const microphone = this.senders.get("microphone");
     if (microphone) microphone.track.enabled = this.readyToTalk && !this.muted;
