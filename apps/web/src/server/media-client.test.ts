@@ -1109,7 +1109,7 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   assert.equal(track.enabled, true);
 });
 
-test("early state acknowledgement still waits for transport before roster negotiation or audio", async (t) => {
+test("roster and subscriptions overlap transport setup, but audio waits for it", async (t) => {
   const { client, track, calls, states, install } = setup(t);
   const original = fetch;
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
@@ -1126,13 +1126,16 @@ test("early state acknowledgement still waits for transport before roster negoti
   await tick();
   assert.equal(calls.includes("state"), true);
   assert.equal(calls.includes("snapshot"), true, "the lease renewal overlaps transport setup");
-  assert.equal(calls.includes("subscribe"), false, "subscription negotiation waits for transport");
+  assert.equal(calls.includes("subscribe"), true, "pulls overlap transport setup");
+  assert.equal(calls.includes("negotiate"), true);
   assert.equal(track.enabled, false);
   assert.equal(states.at(-1)?.phase, "joining");
+  assert.equal(states.some((state) => state.remoteMedia.length > 0), false, "received audio is withheld while joining");
   Peer.latest.connectionState = "connected";
   Peer.latest.dispatchEvent(new Event("connectionstatechange"));
   await joining;
-  assert.equal(calls.includes("subscribe"), true);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
   assert.equal(track.enabled, true);
 });
 

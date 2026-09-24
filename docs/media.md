@@ -1432,8 +1432,22 @@ with that response and are applied with `setConfiguration` before the offer is
 set locally, so relay gathering still uses them. The microphone is attached to
 the sender before the answer is applied, preserving the previous invariant that
 transport never connects without the (disabled) microphone. The authenticated
-roster/lease request now overlaps ICE; subscription negotiation and audio still
-wait for the connected transport.
+roster/lease request and subscription negotiation (`tracks/new` pulls plus
+`renegotiate`) now overlap ICE instead of waiting for the connected transport.
+Pulls are provider-side session operations, and applying their offer to a peer
+that is still checking is ordinary renegotiation. Received audio remains
+withheld from playback, and the microphone stays disabled, until transport,
+live updates, roster and state have all completed. Real Chromium accepted a
+remote offer while its connection state was still `new`, then connected and
+received audio; Cloudflare accepting pulls before the listener's own transport
+connects is **not live-verified**. If it refused, subscription would fail the
+join, so check a two-browser join right after deployment.
+
+Pulls stay one track per `tracks/new`. Batching them is not implemented: the
+provider adapter treats any per-track error as an ambiguous outcome and removes
+the listener, and a batch that includes someone who is not sending media yet
+would otherwise force a rejoin. It needs a captured Cloudflare response for a
+partially refused batch before the adapter can classify it safely.
 
 When the provider refuses to pull a listed source that is not sending media yet
 (`track_gone` while the source is still in the roster), the listener re-checks
@@ -1548,8 +1562,8 @@ alone never renews the lease. There is no durable event log or second registry.
 Join/rejoin waits for the selected audio processor before publication. The SSE
 handshake and publication run concurrently; the published track stays disabled
 (silence). After both finish, mute/deafen state synchronization overlaps the
-transport handshake. Snapshot/subscription negotiation still waits for transport
-and the initial state acknowledgement. A newer dirty state is repaired before
+transport handshake. Snapshot/subscription negotiation now also overlaps it (see
+"Combined join and publication"); received audio stays withheld until joined. A newer dirty state is repaired before
 completion, and SSE invalidations during roster synchronization are drained.
 Only after actual SSE readiness, transport connection, initial roster/subscription
 negotiation, state synchronization and a final live-stream/track check does the client enable audio

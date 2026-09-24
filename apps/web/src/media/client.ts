@@ -372,15 +372,15 @@ export class PublicCallClient {
     ]);
     signal.throwIfAborted();
     const signaled = performance.now();
-    // The roster request renews the lease consumed by signaling. It needs no
-    // transport, so overlap it with ICE; subscriptions still wait below.
-    const leased = this.renewLease();
-    leased.catch(() => undefined);
+    // Pulls are provider-side session operations and ordinary renegotiation of
+    // a peer that is still checking, so overlap roster renewal and subscription
+    // with ICE. Received audio stays withheld until the join completes below.
+    const reconciled = this.renewLease().then((renewed) => renewed ? this.poll() : undefined);
+    reconciled.catch(() => undefined);
     await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     const connected = performance.now();
     pc.removeEventListener("iceconnectionstatechange", iceChanged);
-    // Subscription negotiation still waits for transport. Never open audio early.
-    if (await leased) await this.poll();
+    await reconciled;
     if (this.stateDirty) await this.setState();
     if (this.pollAgain) await this.poll();
     signal.throwIfAborted();
