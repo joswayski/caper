@@ -85,7 +85,16 @@ impl Provider for Mock {
         Ok(json!({"tracks":[]}))
     }
     async fn tracks_new(&self, _: &Config, _: &str, body: Value) -> Result<Value, ProviderError> {
-        if body["tracks"][0]["location"] == "remote" {
+        if body["tracks"][0]["location"] == "remote" && body["tracks"].as_array().unwrap().len() > 1
+        {
+            // A batched pull allocates one receiving MID per requested track.
+            let tracks = body["tracks"].as_array().unwrap().iter().enumerate()
+                .map(|(i, t)| json!({"location":"remote","sessionId":t["sessionId"],"trackName":t["trackName"],"mid":format!("remote-mid-{i}")}))
+                .collect::<Vec<_>>();
+            Ok(
+                json!({"requiresImmediateRenegotiation":true,"tracks":tracks,"sessionDescription":{"type":"offer","sdp":"offer"}}),
+            )
+        } else if body["tracks"][0]["location"] == "remote" {
             if self.block_subscription.load(Ordering::SeqCst) {
                 self.subscription_started.notify_one();
                 self.subscription_resume.notified().await;

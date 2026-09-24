@@ -47,6 +47,14 @@ export interface SessionDescriptionResponse {
   requiresImmediateRenegotiation?: boolean;
 }
 
+/** A batched pull: allocated receiving MIDs plus sources that cannot be pulled yet. */
+export interface BatchSubscribeResponse {
+  sessionDescription?: RTCSessionDescriptionInit;
+  tracks?: Array<{ trackId: string; mid: string }>;
+  gone?: string[];
+  requiresImmediateRenegotiation?: boolean;
+}
+
 export interface RemoteMedia {
   trackId: string;
   participantId: string;

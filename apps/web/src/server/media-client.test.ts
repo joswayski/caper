@@ -139,7 +139,11 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
       return Response.json({ token: role ?? "capability", id: role ?? "self", iceServers: [] });
     }
     if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
-    if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
+    if (op === "subscribe") {
+      const { trackIds } = JSON.parse(options.body as string) as { trackIds?: string[] };
+      if (trackIds) return Response.json({ requiresImmediateRenegotiation: true, tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })), gone: [], sessionDescription: { type: "offer", sdp: providerSdp } });
+      return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
+    }
     if (op === "snapshot") return Response.json({ participants: [] });
     if (op === "state") {
       const { muted, deafened, sequence } = JSON.parse(options.body as string);
@@ -1833,15 +1837,42 @@ test("a departure before subscribing skips only that track and retains the calle
   await client.join();
   const peer = Peer.latest;
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/subscribe") && JSON.parse(init.body as string).trackId === "gone"
-    ? Promise.resolve(Response.json({ error: "track not found", code: "track_gone" }, { status: 404 }))
-    : original(url, init));
+  const requests: unknown[] = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/subscribe")) return original(url, init);
+    requests.push(JSON.parse(init.body as string));
+    // One batched pull: the live source is allocated, the departed one is reported gone.
+    return Promise.resolve(Response.json({ requiresImmediateRenegotiation: true, tracks: [{ trackId: "live", mid: "1" }], gone: ["gone"], sessionDescription: { type: "offer", sdp: providerSdp } }));
+  });
   events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "gone", kind: "microphone" }, { id: "live", kind: "microphone" }] }], 1));
   await tick();
+  assert.deepEqual(requests[0], { trackIds: ["gone", "live"] }, "several sources share one pull");
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(Peer.latest, peer);
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "live", "continue subscribing to unaffected tracks");
   assert.equal(calls.includes("leave"), false);
+});
+
+test("an API without batched pulls falls back to one pull per source and remembers it", async (t) => {
+  const { client, install, events, states } = setup(t);
+  await client.join();
+  const original = fetch;
+  const requests: Array<Record<string, unknown>> = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/subscribe")) return original(url, init);
+    const body = JSON.parse(init.body as string);
+    requests.push(body);
+    if (body.trackIds) return Promise.resolve(Response.json({ error: "unknown field `trackIds`" }, { status: 422 }));
+    return original(url, init);
+  });
+  const person = (id: string, tracks: string[]) => ({ id, name: id, muted: false, deafened: false, tracks: tracks.map((track) => ({ id: track, kind: "microphone" as const })) });
+  events[0].enqueue(snapshotEvent([person("a", ["a-mic"]), person("b", ["b-mic"])], 1));
+  await tick();
+  assert.deepEqual(requests, [{ trackIds: ["a-mic", "b-mic"] }, { trackId: "a-mic" }, { trackId: "b-mic" }]);
+  events[0].enqueue(snapshotEvent([person("a", ["a-mic"]), person("b", ["b-mic"]), person("c", ["c-mic"]), person("d", ["d-mic"])], 2));
+  await tick();
+  assert.deepEqual(requests.slice(3), [{ trackId: "c-mic" }, { trackId: "d-mic" }], "no repeated batch attempt");
+  assert.equal(states.at(-1)?.phase, "connected");
 });
 
 test("a source leaving during subscription completes negotiation then closes only that MID", async (t) => {

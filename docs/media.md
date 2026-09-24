@@ -1437,17 +1437,29 @@ roster/lease request and subscription negotiation (`tracks/new` pulls plus
 Pulls are provider-side session operations, and applying their offer to a peer
 that is still checking is ordinary renegotiation. Received audio remains
 withheld from playback, and the microphone stays disabled, until transport,
-live updates, roster and state have all completed. Real Chromium accepted a
-remote offer while its connection state was still `new`, then connected and
-received audio; Cloudflare accepting pulls before the listener's own transport
-connects is **not live-verified**. If it refused, subscription would fail the
-join, so check a two-browser join right after deployment.
+live updates, roster and state have all completed. Cloudflare's own
+[receive recipe](https://developers.cloudflare.com/realtime/sfu/get-started/connection-patterns/#receive-a-published-track)
+pulls on a new, unconnected session and waits for `connected` afterwards. Real
+Chromium accepted a remote offer while its connection state was still `new`,
+then connected and received audio. A live Cloudflare join has not yet exercised it.
 
-Pulls stay one track per `tracks/new`. Batching them is not implemented: the
-provider adapter treats any per-track error as an ambiguous outcome and removes
-the listener, and a batch that includes someone who is not sending media yet
-would otherwise force a rejoin. It needs a captured Cloudflare response for a
-partially refused batch before the adapter can classify it safely.
+When several sources are missing, the browser sends `media.subscribe` with
+`trackIds` instead of one `trackId` per request. The API pulls them in one
+`tracks/new` (Cloudflare accepts up to 64 remote entries, from different
+publishers) and one SDP exchange, and returns
+`{ tracks: [{ trackId, mid }], gone: [trackId], sessionDescription?, requiresImmediateRenegotiation }`.
+Per Cloudflare's [batch operations](https://developers.cloudflare.com/realtime/sfu/api/#batch-resource-operations),
+partial success is reported per track. Each result is matched by its echoed
+`sessionId`/`trackName` and classified: a MID without an error is allocated;
+`not_found_track_error`, `empty_track_error` or `track_error` without a MID
+allocated nothing and is returned in `gone` (as are sources that already left),
+so the browser retries it with the bounded re-check above. Anything else is
+uncertain and takes the existing recovery path: enqueue cleanup of any allocated
+MIDs, discover orphans, and remove the listener. That includes a missing result,
+an error beside a MID, an undocumented code, or an offer that does not match the
+allocations. The single `trackId` request and its response are unchanged, so
+native clients are unaffected. An API that rejects `trackIds` with 422 makes
+the browser fall back to one pull per source for the rest of that call.
 
 When the provider refuses to pull a listed source that is not sending media yet
 (`track_gone` while the source is still in the roster), the listener re-checks
@@ -1477,11 +1489,14 @@ gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main 
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 ```
 
-Validation: Rust unit tests with a mocked provider (combined publication,
+Validation: the real Cloudflare HTTP adapter against a local stub returning
+documented batch results (partial success in both positions, all refused, and six
+uncertain shapes); Rust unit tests with a mocked provider (combined publication,
 invalid offers creating no session, refused publication leaving no participant,
 the 422 contract), the Valkey/Postgres gateway suite, and browser-client tests
 with mocked WebRTC (combined answer, 422 fallback, overlapped lease renewal,
-delayed pull retry). Real Chromium confirmed that an offer created before
+delayed pull retry, batched pull with a departed source, batch fallback after
+422). Real Chromium confirmed that an offer created before
 `setConfiguration` applies unchanged and that TURN allocation requests then reach
 the later-configured server. Live Cloudflare joins, multi-network TURN, Firefox,
 Safari and remote listening latency were **not** measured; compare the new

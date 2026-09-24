@@ -8,6 +8,7 @@ import { TurnRenewal } from "./turn-renewal.ts";
 import { clampVoiceProcessingStrength, DEFAULT_VOICE_PROCESSING_STRENGTH } from "./voice-processing.ts";
 export { waitFor } from "./rtc.ts";
 import type {
+  BatchSubscribeResponse,
   CallSnapshot,
   ConnectionDiagnostics,
   CallViewState,
@@ -87,6 +88,7 @@ export class PublicCallClient {
   private pollRetryTimer?: number;
   private unavailableRetryTimer?: number;
   private unavailableRetries = 0;
+  private batchUnsupported = false;
   private eventRetryTimer?: number;
   private eventRetryAttempts = 0;
   private eventDrainRetries = 0;
@@ -897,6 +899,39 @@ export class PublicCallClient {
     }, generation);
   }
 
+  /** Resolves false when some sources cannot be pulled yet; "unsupported" for an API without batches. */
+  private subscribeMany(trackIds: string[]) {
+    const generation = this.generation;
+    return this.serialize(async (): Promise<boolean | "unsupported"> => {
+      const wanted = trackIds.filter((id) => !this.subscriptions.has(id));
+      if (!wanted.length) return true;
+      const pc = this.requirePc();
+      const token = this.token;
+      let response: BatchSubscribeResponse;
+      try { response = await this.api<BatchSubscribeResponse>("subscribe", { trackIds: wanted }, token); }
+      catch (error) {
+        if (error instanceof CallApiError && error.status === 404 && error.code === "track_gone") return false;
+        // An API without batches rejects the field during deserialization, before any mutation.
+        if (error instanceof CallApiError && error.status === 422) {
+          this.batchUnsupported = true;
+          return "unsupported";
+        }
+        throw error;
+      }
+      if (generation !== this.generation || pc !== this.pc) return true;
+      // Map every allocated MID before applying the offer; ontrack uses it.
+      for (const { trackId, mid } of response.tracks ?? []) this.subscriptions.set(trackId, mid);
+      if (response.sessionDescription) {
+        await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
+        await pc.setLocalDescription(await pc.createAnswer());
+        await this.api("negotiate", { sessionDescription: await localDescription(pc, this.captureController.signal) }, token);
+      } else if (response.requiresImmediateRenegotiation) {
+        throw new Error("The media service requested negotiation without an offer.");
+      }
+      return !response.gone?.length;
+    }, generation);
+  }
+
   private unsubscribe(trackId: string) {
     const generation = this.generation;
     return this.serialize(async () => {
@@ -1080,14 +1115,22 @@ export class PublicCallClient {
           if (!available.has(id)) await this.unsubscribe(id);
         }
         let unavailable = false;
-        for (const participant of snapshot.participants) {
-          if (participant.id === this.selfId) continue;
-          for (const track of participant.tracks) {
-            if (generation !== this.generation) return;
-            if (pushedVersion !== this.pushedSnapshotVersion) break;
-            if (!this.subscriptions.has(track.id) && !await this.subscribe(track.id)) unavailable = true;
+        const missing = snapshot.participants
+          .filter((participant) => participant.id !== this.selfId)
+          .flatMap((participant) => participant.tracks.map((track) => track.id))
+          .filter((id) => !this.subscriptions.has(id));
+        // Several sources share one provider request and one SDP exchange.
+        const batched = missing.length > 1 && !this.batchUnsupported ? await this.subscribeMany(missing) : "unsupported";
+        if (batched === "unsupported") {
+          for (const participant of snapshot.participants) {
+            if (participant.id === this.selfId) continue;
+            for (const track of participant.tracks) {
+              if (generation !== this.generation) return;
+              if (pushedVersion !== this.pushedSnapshotVersion) break;
+              if (!this.subscriptions.has(track.id) && !await this.subscribe(track.id)) unavailable = true;
+            }
           }
-        }
+        } else if (!batched) unavailable = true;
         if (pushedVersion !== this.pushedSnapshotVersion) continue;
         this.retryUnavailable(unavailable, generation);
         if (generation === this.generation) {

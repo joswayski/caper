@@ -334,10 +334,13 @@ impl Provider for Cloudflare {
     }
     async fn tracks_new(&self, c: &Config, s: &str, body: Value) -> Result<Value, ProviderError> {
         self.request(
-            if body["tracks"][0]["location"] == "remote" {
-                "subscribe"
-            } else {
-                "publish"
+            match (
+                body["tracks"][0]["location"].as_str(),
+                body["tracks"].as_array().map(Vec::len),
+            ) {
+                (Some("remote"), Some(1)) => "subscribe",
+                (Some("remote"), _) => "subscribe_batch",
+                _ => "publish",
             },
             reqwest::Method::POST,
             c,
@@ -514,7 +517,13 @@ impl Cloudflare {
                 provider_code(&value),
             ));
         }
-        if validate_provider_envelope(&value).is_err() {
+        let envelope = if operation == "subscribe_batch" {
+            // Per-track errors are partial success here, classified by the handler.
+            pull_batch_envelope(&value)
+        } else {
+            validate_provider_envelope(&value).is_ok()
+        };
+        if !envelope {
             return Err(failure(
                 "provider_error",
                 Some(status.as_u16()),
@@ -2424,7 +2433,10 @@ async fn publish_track(s: &AppState, token: &str, mid: &str, sdp: &str) -> Resul
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Subscribe {
-    track_id: Uuid,
+    track_id: Option<Uuid>,
+    /// Several publications pulled with one provider request and one SDP
+    /// exchange. The single `trackId` form and its response are unchanged.
+    track_ids: Option<Vec<Uuid>>,
 }
 async fn subscribe(
     State(s): State<AppState>,
@@ -2433,6 +2445,16 @@ async fn subscribe(
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
     let token = bearer(&headers)?;
+    match (i.track_id, i.track_ids) {
+        (Some(track_id), None) => subscribe_one(&s, token, track_id).await,
+        (None, Some(ids)) if !ids.is_empty() && ids.len() <= MAX_SUBSCRIPTIONS => {
+            subscribe_many(&s, token, ids).await
+        }
+        _ => Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request")),
+    }
+}
+
+async fn subscribe_one(s: &AppState, token: &str, track_id: Uuid) -> Result<Json<Value>, ApiError> {
     let (me, session, source) = s
         .update(|r| {
             let me = authenticate(r, token)?;
@@ -2442,7 +2464,7 @@ async fn subscribe(
                 .find_map(|p| {
                     p.tracks
                         .values()
-                        .find(|t| t.id == i.track_id)
+                        .find(|t| t.id == track_id)
                         .map(|t| (p.id, p.session.clone(), t.provider_name.clone(), t.kind))
                 })
                 .ok_or_else(|| {
@@ -2475,7 +2497,7 @@ async fn subscribe(
                 return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
             }
             if p.subscriptions.len() >= MAX_SUBSCRIPTIONS
-                || p.subscriptions.values().any(|id| *id == i.track_id)
+                || p.subscriptions.values().any(|id| *id == track_id)
             {
                 p.operation = false;
                 return Err(ApiError::new(StatusCode::CONFLICT, "subscription limit"));
@@ -2515,8 +2537,8 @@ async fn subscribe(
     let Some(mid) = mid else {
         // The mutation may have succeeded. Invalidate locally now, then discover
         // orphan MIDs in the worker; never replace the original provider failure.
-        remove_participant(&s, me).await;
-        enqueue_action(&s, CleanupAction::Discover { session }).await;
+        remove_participant(s, me).await;
+        enqueue_action(s, CleanupAction::Discover { session }).await;
         return Err(result
             .err()
             .unwrap_or_else(|| ProviderError::invalid_response("subscribe"))
@@ -2537,8 +2559,8 @@ async fn subscribe(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if pending != has_offer {
-        enqueue_cleanup(&s, session, mid).await;
-        remove_participant(&s, me).await;
+        enqueue_cleanup(s, session, mid).await;
+        remove_participant(s, me).await;
         return Err(ProviderError::invalid_response("subscribe").into());
     }
     s.update(|r| {
@@ -2556,12 +2578,264 @@ async fn subscribe(
         };
         p.operation = false;
         p.operation_started = None;
-        p.subscriptions.insert(mid.clone(), i.track_id);
+        p.subscriptions.insert(mid.clone(), track_id);
         p.pending_offer = pending;
         Ok(Ok(()))
     })
     .await??;
     Ok(Json(result))
+}
+
+/// One requested pull: the listener-facing track ID and its provider locator.
+struct Pull {
+    track_id: Uuid,
+    session: String,
+    name: String,
+}
+
+enum PullResult {
+    Allocated(String),
+    Refused,
+}
+
+/// Classify every requested pull from a batch response, or None if any result
+/// is unaccounted for. Cloudflare reports partial success per track: a result
+/// with a MID is allocated; one with a documented unavailable-source code and
+/// no MID allocated nothing. Anything else leaves the outcome uncertain.
+fn classify_pulls(pulls: &[Pull], value: &Value) -> Option<Vec<PullResult>> {
+    if !pull_batch_envelope(value) {
+        return None;
+    }
+    let results = value.get("tracks")?.as_array()?;
+    if results.len() != pulls.len() {
+        return None;
+    }
+    pulls
+        .iter()
+        .enumerate()
+        .map(|(index, pull)| {
+            // Match by locator; fall back to request order only when the
+            // provider omits the echo.
+            let result = results
+                .iter()
+                .find(|t| {
+                    t.get("sessionId").and_then(Value::as_str) == Some(pull.session.as_str())
+                        && t.get("trackName").and_then(Value::as_str) == Some(pull.name.as_str())
+                })
+                .or_else(|| {
+                    let t = &results[index];
+                    (t.get("trackName").is_none() && t.get("sessionId").is_none()).then_some(t)
+                })?;
+            let mid = result
+                .get("mid")
+                .and_then(Value::as_str)
+                .filter(|mid| !mid.is_empty());
+            match (mid, result.get("errorCode").filter(|v| !v.is_null())) {
+                (Some(mid), None) => Some(PullResult::Allocated(mid.to_owned())),
+                (None, Some(code)) if unavailable_track_code(code) => Some(PullResult::Refused),
+                _ => None,
+            }
+        })
+        .collect()
+}
+fn unavailable_track_code(code: &Value) -> bool {
+    matches!(
+        code.as_str(),
+        Some("not_found_track_error" | "empty_track_error" | "track_error")
+    )
+}
+/// Request-level validity for a remote batch. Per-track errors are allowed
+/// here and classified by `classify_pulls`.
+fn pull_batch_envelope(value: &Value) -> bool {
+    value.is_object()
+        && value.get("success").and_then(Value::as_bool) != Some(false)
+        && value
+            .get("errors")
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty))
+        && value.get("errorCode").is_none_or(Value::is_null)
+        && value
+            .get("tracks")
+            .and_then(Value::as_array)
+            .is_some_and(|tracks| !tracks.is_empty())
+}
+
+/// The provider may have allocated MIDs. Invalidate locally and discover
+/// orphans, exactly like an uncertain single subscription.
+async fn uncertain_pull(s: &AppState, me: Uuid, session: &str, allocated: Vec<String>) {
+    for mid in allocated {
+        enqueue_cleanup(s, session.to_owned(), mid).await;
+    }
+    remove_participant(s, me).await;
+    enqueue_action(
+        s,
+        CleanupAction::Discover {
+            session: session.to_owned(),
+        },
+    )
+    .await;
+}
+
+async fn subscribe_many(
+    s: &AppState,
+    token: &str,
+    ids: Vec<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    // Deduplicate while keeping the caller's order.
+    let mut seen = std::collections::HashSet::new();
+    let ids = ids
+        .into_iter()
+        .filter(|id| seen.insert(*id))
+        .collect::<Vec<_>>();
+    let (me, session, pulls, departed) = s
+        .update(|r| {
+            let me = authenticate(r, token)?;
+            let subscriber_monitor = r.participants.get(&me).unwrap().monitor;
+            let mut pulls = vec![];
+            let mut departed = vec![];
+            for &track_id in &ids {
+                let Some((owner, owner_session, name, owner_monitor)) =
+                    r.participants.values().find_map(|p| {
+                        p.tracks
+                            .values()
+                            .find(|t| t.id == track_id)
+                            .map(|t| (p.id, p.session.clone(), t.provider_name.clone(), p.monitor))
+                    })
+                else {
+                    departed.push(track_id);
+                    continue;
+                };
+                if owner == me {
+                    return Err(ApiError::new(
+                        StatusCode::CONFLICT,
+                        "cannot subscribe to own track",
+                    ));
+                }
+                let authorized = match (subscriber_monitor, owner_monitor) {
+                    (None, None) => true,
+                    (Some(subscriber), Some(owner)) => {
+                        subscriber.role == MonitorRole::Receiver
+                            && owner.role == MonitorRole::Sender
+                            && subscriber.parent == owner.parent
+                    }
+                    _ => false,
+                };
+                if !authorized {
+                    return Err(ApiError::new(StatusCode::FORBIDDEN, "track is private"));
+                }
+                pulls.push(Pull {
+                    track_id,
+                    session: owner_session,
+                    name,
+                });
+            }
+            if pulls.is_empty() {
+                return Err(
+                    ApiError::new(StatusCode::NOT_FOUND, "track not found").with_code("track_gone")
+                );
+            }
+            let p = r.participants.get_mut(&me).unwrap();
+            begin_operation(p)?;
+            if p.pending_offer {
+                p.operation = false;
+                return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
+            }
+            if p.subscriptions.len() + pulls.len() > MAX_SUBSCRIPTIONS
+                || pulls
+                    .iter()
+                    .any(|pull| p.subscriptions.values().any(|id| *id == pull.track_id))
+            {
+                p.operation = false;
+                return Err(ApiError::new(StatusCode::CONFLICT, "subscription limit"));
+            }
+            Ok((me, p.session.clone(), pulls, departed))
+        })
+        .await?;
+    let tracks = pulls
+        .iter()
+        .map(|pull| json!({"location":"remote","sessionId":pull.session,"trackName":pull.name}))
+        .collect::<Vec<_>>();
+    let result = s
+        .provider
+        .tracks_new(&s.config, &session, json!({ "tracks": tracks }))
+        .await;
+    let classified = result
+        .as_ref()
+        .ok()
+        .and_then(|value| classify_pulls(&pulls, value));
+    let Some(classified) = classified else {
+        uncertain_pull(s, me, &session, vec![]).await;
+        return Err(result
+            .err()
+            .unwrap_or_else(|| ProviderError::invalid_response("subscribe"))
+            .into());
+    };
+    let result = result.unwrap();
+    let allocated = pulls
+        .iter()
+        .zip(&classified)
+        .filter_map(|(pull, result)| match result {
+            PullResult::Allocated(mid) => Some((mid.clone(), pull.track_id)),
+            PullResult::Refused => None,
+        })
+        .collect::<Vec<_>>();
+    let has_offer = result
+        .pointer("/sessionDescription/type")
+        .and_then(Value::as_str)
+        == Some("offer")
+        && result
+            .pointer("/sessionDescription/sdp")
+            .and_then(Value::as_str)
+            .is_some();
+    let pending = result
+        .get("requiresImmediateRenegotiation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // An offer must accompany exactly the batches that allocated something.
+    if pending != has_offer || has_offer == allocated.is_empty() {
+        uncertain_pull(
+            s,
+            me,
+            &session,
+            allocated.into_iter().map(|(mid, _)| mid).collect(),
+        )
+        .await;
+        return Err(ProviderError::invalid_response("subscribe").into());
+    }
+    s.update(|r| {
+        let Some(p) = r.participants.get_mut(&me) else {
+            for (mid, _) in &allocated {
+                enqueue_cleanup_locked(r, session.clone(), mid.clone());
+            }
+            return Ok(Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "session expired",
+            )));
+        };
+        p.operation = false;
+        p.operation_started = None;
+        for (mid, track_id) in &allocated {
+            p.subscriptions.insert(mid.clone(), *track_id);
+        }
+        p.pending_offer = pending;
+        Ok(Ok(()))
+    })
+    .await??;
+    let gone = pulls
+        .iter()
+        .zip(&classified)
+        .filter(|(_, result)| matches!(result, PullResult::Refused))
+        .map(|(pull, _)| pull.track_id)
+        .chain(departed)
+        .collect::<Vec<_>>();
+    let mut response = json!({
+        "tracks": allocated.iter().map(|(mid, track_id)| json!({"trackId":track_id,"mid":mid})).collect::<Vec<_>>(),
+        "gone": gone,
+        "requiresImmediateRenegotiation": pending,
+    });
+    if has_offer {
+        response["sessionDescription"] = result["sessionDescription"].clone();
+    }
+    Ok(Json(response))
 }
 
 #[derive(Deserialize)]
