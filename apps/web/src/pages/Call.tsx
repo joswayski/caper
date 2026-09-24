@@ -148,7 +148,10 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
     {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
 
-/** Voice occupants for one channel: a summary for its row and a list beneath it. */
+/**
+ * Voice for one channel: summary sits on the channel's line (Join, when nobody
+ * is in voice there); list goes beneath it (who is in voice, Join, and names).
+ */
 export interface VoiceSlot { summary: ReactNode; list: ReactNode }
 
 interface CallProps {
@@ -490,8 +493,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     return { people: watched ?? [], own: false };
   };
   const channelLabel = (channelId?: string) => channelId === channel?.id || !channelId ? channel?.name ?? "general" : voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice";
-  // Each channel row carries its voice: a quiet stack of who is in it (toggles
-  // the list below) and Join, which glows softly while people are in there.
+  // A channel with people in voice gets a row beneath its name: a quiet stack
+  // of who is in it (toggles the list below) and Join, which glows softly.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
     const { people, own } = rosterFor(channelId);
@@ -510,7 +513,6 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
         {people.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && isSpeaking(participant) ? " speaking" : ""}`}>{participant.name.slice(0, 1).toUpperCase()}</span>)}
         {people.length > 3 && <small>+{people.length - 3}</small>}
       </span>
-      <span className="voice-stack-total" aria-hidden="true"><Users /><small>{people.length}</small></span>
       <ChevronDown aria-hidden="true" />
     </button>;
     // Join shows on the channel being viewed, and on channels with people in
@@ -520,11 +522,15 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
+    if (!stack) return { summary: <span className="channel-voice">{join}</span>, list: null };
     return {
-      summary: <span className="channel-voice">{stack}{join}</span>,
-      list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
-        <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
-      </div> : null,
+      summary: null,
+      list: <>
+        <div className="channel-voice-row">{stack}{join}</div>
+        <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
+          <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
+        </div>
+      </>,
     };
   };
   let navigation: ReactNode;
@@ -532,13 +538,13 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   else if (channelNavigation) navigation = channelNavigation;
   else {
     const voice = voiceFor(undefined);
-    navigation = <>
+    navigation = <div className="channel-item">
       <div className="channel-row">
         <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span></a>
         {voice?.summary}
       </div>
       {voice?.list}
-    </>;
+    </div>;
   }
 
   return (

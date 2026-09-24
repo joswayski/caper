@@ -225,15 +225,20 @@
 .channel-line { flex: 1 1 100%; }
 .channel-line:has(.channel-select[aria-current="page"]) { background: rgb(182 77 50 / .16); }
 .channel-line:hover:not(:has(.channel-select[aria-current="page"])) { background: var(--surface-raised); }
-.channel-line .channel-select, .channel-line .channel-select:hover, .channel-line .channel-select[aria-current="page"] { min-width: 0; padding-right: 4px; background: transparent; }
+.channel-line .channel-select, .channel-line .channel-select:hover, .channel-line .channel-select[aria-current="page"] { min-width: 0; background: transparent; }
+/* Inline voice reserves the settings button's space itself. */
+.channel-line:has(.channel-voice) .channel-select { padding-right: 4px; }
 .channel-voice { flex: none; display: flex; align-items: center; gap: 6px; padding-right: 6px; }
 .channel-line:has(.channel-manage) .channel-voice { padding-right: 34px; }
+/* Who is in voice sits on its own row under the channel name, so the name
+   keeps the full line. The faces line up with the name's first letter. */
+.channel-navigation li { --voice-indent: 31px; }
+.channel-item { --voice-indent: 38px; }
+.channel-voice-row { flex-basis: 100%; min-width: 0; min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 1px 6px 2px var(--voice-indent); }
+.channel-voice-row .channel-join { margin-left: auto; }
 .sidebar-channels { container: channels / inline-size; }
 .voice-stack { height: 28px; display: flex; align-items: center; padding: 0 5px 0 4px; border: 0; border-radius: 999px; color: var(--text-muted); background: transparent; cursor: pointer; }
-.voice-stack-faces, .voice-stack-total { display: flex; align-items: center; }
-.voice-stack-total { display: none; gap: 3px; }
-.voice-stack-total svg { width: 14px; height: 14px; }
-.voice-stack-total small { font-size: .72rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+.voice-stack-faces { display: flex; align-items: center; }
 .channel-join.voice-button { min-height: 28px; gap: 5px; padding: 0 9px; font-size: .72rem; }
 .channel-join.voice-button > svg { width: 14px; height: 14px; }
 .channel-join.voice-button[aria-busy="true"] { cursor: progress; }
@@ -241,7 +246,7 @@
    space, so nothing shifts under the cursor. */
 @media (hover: hover) {
   .channel-join[data-hover-only] { visibility: hidden; opacity: 0; transition: opacity .12s ease, visibility 0s .12s; }
-  :is(.channel-row, .channel-line):is(:hover, :focus-within) .channel-join[data-hover-only] { visibility: visible; opacity: 1; transition: opacity .12s ease; }
+  :is(.channel-item, .channel-navigation li):is(:hover, :focus-within) .channel-join[data-hover-only] { visibility: visible; opacity: 1; transition: opacity .12s ease; }
 }
 @media (hover: none) {
   .channel-join[data-hover-only] { display: none; }
@@ -262,22 +267,15 @@
 .voice-stack-avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 1px var(--caper); }
 .voice-stack-faces small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
 /* The channel name keeps priority: controls step down as the sidebar narrows. */
-@container channels (max-width: 291px) {
+@container channels (max-width: 219px) {
   .channel-join.voice-button > svg { display: none; }
   .channel-join.voice-button { padding: 0 8px; }
-}
-@container channels (max-width: 239px) {
-  .voice-stack-faces { display: none; }
-  .voice-stack-total { display: flex; }
-}
-@container channels (max-width: 199px) {
-  .voice-stack { display: none; }
 }
 .voice-occupants { flex-basis: 100%; display: grid; grid-template-rows: 0fr; transition: grid-template-rows .22s ease; }
 .voice-occupants[data-open] { grid-template-rows: 1fr; }
 .voice-occupants-inner { min-height: 0; overflow: hidden; }
 .voice-occupants-inner:has(.volume-menu-open) { overflow: visible; }
-.people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; display: grid; gap: 0; margin: 2px 0 6px 20px; padding: 0; overflow-y: auto; list-style: none; }
+.people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; display: grid; gap: 0; margin: 0 0 6px calc(var(--voice-indent, 31px) - 2px); padding: 0; overflow-y: auto; list-style: none; }
 .people-panel .voice-occupants .voice-occupants-inner > ul.volume-menu-open { max-height: none; overflow: visible; }
 .voice-occupants .participant { gap: 8px; padding: 4px 6px; border-radius: 6px; }
 .voice-occupants .participant:hover { background: var(--surface-raised); }
@@ -292,7 +290,7 @@
 .voice-occupants .participant-volume { top: 34px; }
 .voice-elsewhere .voice-roster-label { margin-top: 16px; }
 @media (max-width: 760px) {
-  .channel-line .channel-select { padding-right: 4px; }
+  .channel-line:has(.channel-voice) .channel-select { padding-right: 4px; }
   .channel-line:has(.channel-manage) .channel-voice { padding-right: 50px; }
   .people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; }
 }
