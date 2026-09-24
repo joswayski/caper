@@ -853,10 +853,12 @@ private struct VoiceHeaderButton: View {
 }
 
 private struct PrimaryIconButton: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.foregroundStyle(.white).frame(width: 42, height: 42)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
@@ -1039,11 +1041,13 @@ private struct LoginError: View {
 }
 
 private struct LoginActionButton: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(16, weight: .medium)).foregroundStyle(.white)
             .padding(.horizontal, 20).frame(maxWidth: .infinity).frame(height: 58)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
@@ -1168,7 +1172,8 @@ private struct CaperTextFieldStyle: TextFieldStyle {
 }
 
 private struct CaperPrimaryButton: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)) }
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)).opacity(isEnabled ? 1 : 0.45) }
 }
 
 private struct AudioPreferencesView: View {
