@@ -160,15 +160,18 @@ private struct WorkspaceView: View {
                             .frame(maxWidth: narrow ? .infinity : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
                             .overlay(alignment: .trailing) {
                                 if !narrow {
-                                    Rectangle().fill(Color.clear).frame(width: 8).contentShape(Rectangle())
+                                    Button {} label: {
+                                        Rectangle().fill(Color.clear).frame(width: 8).contentShape(Rectangle())
+                                    }
+                                        .buttonStyle(.plain)
                                         .gesture(DragGesture().onChanged { value in
                                             if sidebarDragStart == nil { sidebarDragStart = sidebarWidth }
                                             resizeSidebar((sidebarDragStart ?? sidebarWidth) + Double(value.translation.width), viewport: geometry.size.width)
                                         }.onEnded { _ in sidebarDragStart = nil })
                                         .onTapGesture(count: 2) { resizeSidebar(280, viewport: geometry.size.width) }
                                         .focusable()
-                                        .accessibilityElement()
                                         .accessibilityLabel("Channel sidebar width")
+                                        .accessibilityIdentifier("channel-sidebar-resize")
                                         .accessibilityValue("\(Int(min(sidebarWidth, sidebarMaximum(for: geometry.size.width)))) pixels")
                                         .accessibilityHint("Drag to resize. Arrow keys adjust by 10 pixels; Home and End select the bounds. Double-click resets.")
                                         .accessibilityAdjustableAction { direction in
@@ -744,6 +747,7 @@ private struct ChatView: View {
                                               retry: { Task { await chat.send() } },
                                               edit: { _ = chat.discardRejected(edit: true) },
                                               dismiss: { _ = chat.discardRejected() })
+                                .id("pending-\(pending.id)")
                         }
                         if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
@@ -753,7 +757,11 @@ private struct ChatView: View {
                         }
                     }
                 }
+                .accessibilityIdentifier("chat-timeline")
                 .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onChange(of: chat.pendingMessage?.id, initial: true) { _, id in
+                    if let id { proxy.scrollTo("pending-\(id)", anchor: .bottom) }
+                }
             }
 
             HStack(spacing: 7) {

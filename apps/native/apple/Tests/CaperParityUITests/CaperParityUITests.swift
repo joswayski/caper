@@ -120,14 +120,18 @@ final class CaperParityUITests: XCTestCase {
     #if os(macOS)
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
         let app = launch()
-        let handle = app.descendants(matching: .any)["Channel sidebar width"]
+        let handle = app.buttons["channel-sidebar-resize"]
+        let channelTitle = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertTrue(handle.waitForExistence(timeout: 5))
         handle.doubleClick()
         XCTAssertEqual(handle.value as? String, "280 pixels")
+        let initialEdge = channelTitle.frame.minX
         let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
         let dragged = Int((handle.value as? String ?? "").split(separator: " ").first ?? "") ?? 0
         XCTAssertTrue((310...320).contains(dragged), "drag translation must be anchored once, not added every frame")
+        XCTAssertEqual(channelTitle.frame.minX - initialEdge, CGFloat(dragged - 280), accuracy: 2,
+                       "the actual conversation edge must follow the reported sidebar width")
         handle.doubleClick()
         handle.click()
         handle.typeKey(.rightArrow, modifierFlags: [])
@@ -140,9 +144,10 @@ final class CaperParityUITests: XCTestCase {
         handle.typeKey(.rightArrow, modifierFlags: [])
         app.terminate()
         let reopened = launch()
-        let saved = reopened.descendants(matching: .any)["Channel sidebar width"]
+        let saved = reopened.buttons["channel-sidebar-resize"]
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
         XCTAssertEqual(saved.value as? String, "290 pixels", "resized width survives relaunch")
+        XCTAssertEqual(reopened.descendants(matching: .any)["selected-channel-name"].frame.minX - initialEdge, 10, accuracy: 2)
         capture("sidebar-resized", app: reopened)
         saved.doubleClick()
     }
@@ -397,13 +402,15 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Open navigation"].tap()
         #endif
         assertStaticText("Fixture message that was rejected", in: app)
-        XCTAssertTrue(app.buttons["Edit"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Edit"].isEnabled)
+        let edit = app.buttons["Edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertTrue(edit.isEnabled)
+        XCTAssertTrue(app.scrollViews["chat-timeline"].frame.contains(edit.frame), "Edit must be inside the visible chat viewport")
         XCTAssertTrue(app.buttons["Dismiss"].exists)
         XCTAssertFalse(app.buttons["send-message-button"].isEnabled)
         capture("chat-rejected-fixture", app: app)
-        app.buttons["Edit"].tap()
-        XCTAssertFalse(app.buttons["Dismiss"].exists)
+        edit.tap()
+        XCTAssertFalse(app.buttons["Dismiss"].waitForExistence(timeout: 1))
         XCTAssertEqual(app.descendants(matching: .any)["message-composer"].value as? String,
                        "Fixture message that was rejected")
     }

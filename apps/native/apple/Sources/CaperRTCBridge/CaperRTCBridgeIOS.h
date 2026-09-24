@@ -1,3 +1,4 @@
+// Match the framework module name so Xcode generates its umbrella module map.
 #import <Foundation/Foundation.h>
 #import <WebRTC/WebRTC.h>
 #import "CaperIOSAudioDevice.h"

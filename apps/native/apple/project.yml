@@ -116,7 +116,7 @@ targets:
     type: framework
     platform: iOS
     sources:
-      - path: Sources/CaperRTCBridge/CaperIOSRTCBridge.h
+      - path: Sources/CaperRTCBridge/CaperRTCBridgeIOS.h
         headerVisibility: public
       - Sources/CaperRTCBridge/CaperIOSRTCBridge.m
       - path: Sources/CaperRTCBridge/CaperIOSAudioDevice.h

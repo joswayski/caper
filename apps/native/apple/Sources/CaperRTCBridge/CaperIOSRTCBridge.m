@@ -1,4 +1,4 @@
-#import "CaperIOSRTCBridge.h"
+#import "CaperRTCBridgeIOS.h"
 #import "CaperDenoisePipeline.h"
 #import "sdk/objc/components/audio/RTCAudioDevice.h"
 #import <math.h>
