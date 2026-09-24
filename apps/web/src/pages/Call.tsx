@@ -159,9 +159,17 @@ interface CallProps {
   initialHistory?: GeneralChatHistory;
   initialHistoryError?: string;
   onHistoryChange?: (history: GeneralChatHistory) => void;
+  /** Rendered inside another page (the homepage window) rather than as the page itself. */
+  embedded?: boolean;
+  /**
+   * False until the visitor engages with an embedded room. Until then the room
+   * stays read-only: no guest chat session, microphone model downloads, or sounds.
+   */
+  engaged?: boolean;
+  onChatOnlineChange?: (online: boolean) => void;
 }
 
-export default function Call({ channel, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange }: CallProps = {}) {
+export default function Call({ channel, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -180,6 +188,9 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const [deviceId, setDeviceId] = useState("");
   const [output, setOutput] = useState("");
   const [outputVolume, setOutputVolume] = useState(100);
+  // Browser capability, so it is read after hydration to match server markup.
+  const [outputSelectable, setOutputSelectable] = useState(false);
+  useEffect(() => setOutputSelectable(typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype), []);
   const [membersVisible, setMembersVisible] = useState(true);
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
@@ -214,11 +225,15 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const identityName = account?.displayName || chatAuthor?.name || name;
   const accountPresence = !!account && !!channel?.spaceId && !channel.demo;
   const joined = useRef(false);
+  const Root = embedded ? "div" : "main";
 
   useEffect(() => {
-    void preloadSoundEffects();
     if (window.matchMedia("(max-width: 760px)").matches) setMembersVisible(false);
   }, []);
+
+  useEffect(() => {
+    if (engaged) void preloadSoundEffects();
+  }, [engaged]);
 
   useEffect(() => {
     setSelfPresence(undefined);
@@ -259,11 +274,16 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
       .then((result) => {
         if (!current) return;
         setAvailability((previous) => ({ ...previous, [mediaRoot]: result.enabled }));
-        if (result.enabled) clientRef.current?.prepareMicrophone();
       })
       .catch(() => { if (current) setAvailability((previous) => ({ ...previous, [mediaRoot]: false })); });
     return () => { current = false; };
   }, [mediaRoot]);
+
+  useEffect(() => {
+    // Download/compile only; never a permission prompt. Deferred for embedded
+    // rooms so homepage visitors who only look do not fetch noise models.
+    if (available === true && engaged) clientRef.current?.prepareMicrophone();
+  }, [available, engaged, mediaRoot]);
 
   useEffect(() => {
     if (!idle || available !== true) return;
@@ -343,10 +363,10 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   }, [profileOpen]);
 
   return (
-    <main className="call-page">
-      <header className="call-header">
+    <Root className={`call-page${embedded ? " call-embedded" : ""}`}>
+      {!embedded && <header className="call-header">
         <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
-      </header>
+      </header>}
       <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}>
         {spaceRail}
         <ChannelSidebar>
@@ -434,7 +454,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
             <div className={`voice-action-group${state.deafened ? " active" : ""}`}>
               <Tooltip content={state.monitoring ? "Stop mic test to change deafen" : state.deafened ? "Undeafen" : "Deafen"}><button type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-disabled={state.monitoring} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} onClick={() => { if (state.monitoring) return; const deafened = !state.deafened; playSound(deafened ? "toggle-off" : "toggle-on"); setActionError(undefined); void clientRef.current!.setDeafened(deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button></Tooltip>
               <AudioMenu label="Output Options" open={audioMenu === "output"} onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)} menuRef={audioMenu === "output" ? audioMenuRef : undefined}>
-                {typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype ? <fieldset className="device-options">
+                {outputSelectable ? <fieldset className="device-options">
                   <legend>Audio output</legend>
                   {deviceOptions(devices, "audiooutput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="output-device" value={device.deviceId} checked={output === device.deviceId} onChange={() => setOutput(device.deviceId)} /><span>{label}</span></label>)}
                   {!deviceOptions(devices, "audiooutput").length && <p>System default · test your mic to see available devices.</p>}
@@ -456,7 +476,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
+          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady && engaged} messageSounds={engaged} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
             {!audioPanel && (state.error || actionError) && <div className="room-error chat-refresh-error" role="alert">{state.error || actionError}</div>}
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             <span className="voice-join">
@@ -504,6 +524,6 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
         {audioPanel === "debug" && account?.debugEnabled && <AudioDiagnostics client={clientRef.current} />}
         {audioPanel === "connection" && (state.diagnostics ? <ConnectionDiagnostics diagnostics={state.diagnostics} /> : <p className="noise-status">Join voice to see connection details.</p>)}
       </dialog>
-    </main>
+    </Root>
   );
 }

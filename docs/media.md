@@ -206,18 +206,22 @@ best-effort ephemeral presence, not saved messages. This demo is not a
 permanent public space when the product launches. Voice control shares the
 application gateway; audio remains WebRTC.
 
-The homepage hero is a live window into this channel (`LiveChannel.tsx`). Its
-server render reuses the existing `GET /api/chat/general` call and keeps the
-newest 16 messages. In the browser it opens one application-gateway socket per
-visitor with a read-only chat subscription and a spectator voice-roster
-subscription. No chat session exists until the visitor focuses the composer.
-Visitors can post from the homepage. Because moderation and deletion do not
-exist yet, anything posted to General is visible on the homepage. Voice is
-joined on the demo page, not on the homepage. Speaking indicators are local
-to call participants, so spectators see who is in voice and who is muted, not
-who is talking. When the channel cannot be loaded, the window plays a scripted
-preview labeled "Preview", limited to shipped features (text, typing, voice
-presence).
+The homepage hero is this channel. `LiveWindow.tsx` embeds the same room as
+the demo page (`pages/Call.tsx` without a `channel`: chat, voice roster, and
+mic/deafen/settings controls) in a tilting 3D window. Clicking the window opens
+it: on screens at least 1024px wide it flattens to full size over the hero; on
+narrower screens it opens full screen. The server render reuses the existing
+`GET /api/chat/general` call and keeps the newest 16 messages. Each visitor
+opens one application-gateway socket with a read-only chat subscription and a
+spectator voice-roster subscription. Until the window is opened, the room is
+read-only: no guest chat session (session creation is limited to 60 per minute
+across all guests), no noise-model downloads, and no sounds. Anything posted
+to General is visible on the homepage, and moderation and deletion do not
+exist yet. Spectators see who is in voice and who is muted, not who is
+speaking; speaking is detected only by call participants. When the channel
+cannot be loaded, the window plays a scripted preview labeled "Preview",
+limited to shipped features (text, typing, voice presence), and cannot be
+opened. `/spaces` still shows the public demo to guests.
 
 The same Rust image has two independently deployable roles:
 

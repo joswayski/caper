@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
-import LiveChannel from "../components/LiveChannel";
+import LiveWindow, { type LiveStatus } from "../components/LiveWindow";
 import type { PublicDemo } from "../spaces/server";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
@@ -19,8 +19,11 @@ type HomeProps = {
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 
 export default function Home({ account, demo, initialNow, latestChanges }: HomeProps) {
-  const demoHref = demo.href;
   const [now, setNow] = useState(initialNow);
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<LiveStatus>(demo.history ? "connecting" : "preview");
+  const live = !!demo.history;
+  const onStatusChange = useCallback((next: LiveStatus) => setStatus(next), []);
 
   useEffect(() => {
     setNow(Date.now());
@@ -32,11 +35,18 @@ export default function Home({ account, demo, initialNow, latestChanges }: HomeP
     <main className="page">
       <header className="site-header shell">
         <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
-        <div className="site-header-actions"><AccountNav account={account} /><a className="login-button" href={demoHref}>Try the demo</a></div>
+        <div className="site-header-actions">
+          <a className="header-github" href={repositoryUrl} target="_blank" rel="noreferrer" aria-label="Caper on GitHub"><GitHubIcon /></a>
+          <AccountNav account={account} />
+        </div>
       </header>
 
-      <section className="hero shell">
-        <div className="hero-copy">
+      <section className="hero shell" data-live-bounds data-live-open={open ? "" : undefined}>
+        <div className="hero-copy" inert={open}>
+          <p className="hero-status" data-status={status}>
+            <i aria-hidden="true" />
+            {status === "live" ? "Live now in #general" : status === "connecting" ? "Connecting to #general" : "Live chat is offline"}
+          </p>
           <h1 aria-label="A place for your people">
             <span className="hero-title-line">A place for</span>
             <span className="hero-title-line">
@@ -44,25 +54,24 @@ export default function Home({ account, demo, initialNow, latestChanges }: HomeP
               <Rolodex words={rotatingWords} />
             </span>
           </h1>
-          <p>
-            Chat with anyone, about anything.
+          <p className="hero-lede">Chat with anyone, about anything.</p>
+          <p className="hero-invite">
+            {live
+              ? "That window is Caper's public #general, running for real. Open it to chat, or hop into voice."
+              : "The live channel can't be reached right now, so the window is playing a preview."}
           </p>
+          {live && <div className="hero-actions">
+            <button className="join-button" type="button" data-live-open onClick={() => setOpen(true)}>Join the conversation</button>
+          </div>}
           <p className="made-by">
-            Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a>.
+            Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a> · <a href={repositoryUrl} target="_blank" rel="noreferrer">Follow on GitHub</a>
           </p>
-          <div className="hero-actions">
-            <a className="github-button" href={demoHref}>Open the demo</a>
-            <span className="action-separator" aria-hidden="true">·</span>
-            <a className="coming-soon" href={repositoryUrl} target="_blank" rel="noreferrer">
-              Follow on GitHub <span aria-hidden="true">↗</span>
-            </a>
-          </div>
           <p className="experimental-note">
             Caper may contain bugs or incomplete features. A desktop app is coming soon. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a>, or <CopyEmailButton email={contactEmail} />.
           </p>
         </div>
 
-        <LiveChannel account={account} demoHref={demoHref} history={demo.history} />
+        <LiveWindow account={account} history={demo.history} active={open} onActiveChange={setOpen} onStatusChange={onStatusChange} />
       </section>
 
       <section className="latest-changes shell" aria-labelledby="latest-changes-heading">
@@ -104,6 +113,14 @@ function formatRelativeTime(committedAt: string, now: number) {
   }
 
   return relativeTimeFormatter.format(0, "second");
+}
+
+function GitHubIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a10.9 10.9 0 0 1 5.76 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" />
+    </svg>
+  );
 }
 
 function XIcon() {

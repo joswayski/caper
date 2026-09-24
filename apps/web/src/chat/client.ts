@@ -106,7 +106,7 @@ export class ChatClient {
   private readonly typers = new Map<string, { author: ChatAuthor; typing: boolean; revision: bigint; expires: number }>();
   private readonly changed: (state: ChatViewState) => void;
   private readonly channelId?: string;
-  private readonly sounds: boolean;
+  private sounds: boolean;
   private spaceId?: string;
 
   constructor(changed: (state: ChatViewState) => void, channelId?: string, options: { sounds?: boolean } = {}) {
@@ -119,6 +119,9 @@ export class ChatClient {
     if (error) this.update({ phase: "error", error });
     else void this.loadInitial(history);
   }
+
+  /** New-message sounds can be enabled once a visitor engages with an embedded chat. */
+  setSounds(enabled: boolean) { this.sounds = enabled; }
 
   snapshotHistory(): GeneralChatHistory | undefined {
     if (this.state.phase !== "ready" || !this.spaceId || !this.state.channelId) return;
