@@ -20,7 +20,7 @@ ARCHIVES = {
         "b167adad5291cea0e4d66a0454d9d52d2ad714e6b0ed70f4410317d3ebde70c5",
     ),
     "windows": (
-        "webrtc-windows-x64-release.zip",
+        "webrtc-win-x64-release.zip",
         "5c2349c960bae4f06f71c102f58552d0d09c912a142811acfcadfb7c883cbf58",
     ),
 }
