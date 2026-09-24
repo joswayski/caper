@@ -460,9 +460,6 @@ final class CaperParityUITests: XCTestCase {
 
     func testRejectedMessageActionsRenderWithoutSending() {
         let app = launch(fixture: "chat-rejected")
-        #if os(iOS)
-        app.buttons["Open navigation"].tap()
-        #endif
         assertStaticText("Fixture message that was rejected", in: app)
         let edit = app.buttons["Edit"]
         XCTAssertTrue(edit.waitForExistence(timeout: 5))
