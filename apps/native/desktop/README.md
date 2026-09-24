@@ -133,3 +133,8 @@ For deterministic visual inspection without live accounts, launch
 `caper-desktop --fixture login` or `--fixture parity-channel`. These are
 explicitly labeled static previews; the chat fixture at loopback port 3001
 does not provide live SFU media. Use normal `--api-url` for networked chat tests.
+`parity-voice-joining` and `parity-voice-connected` preview Cancel/Leave and the
+audio bar without starting a media transport.
+
+After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
+vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

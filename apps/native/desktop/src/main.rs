@@ -40,10 +40,20 @@ const MEMBER_PAGE_SIZE: usize = 25;
 #[derive(Clone, Copy)]
 enum NavIcon {
     Chevron,
+    ChevronRight,
     Close,
     More,
     Plus,
     Settings,
+    Hash,
+    Lock,
+    Users,
+    Speech,
+    Mic,
+    MicOff,
+    Headphones,
+    VolumeX,
+    Menu,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +138,7 @@ struct CaperApp {
     presence: BTreeMap<String, String>,
     member_page: usize,
     members_visible: bool,
+    channels_expanded: bool,
     sidebar_width: f32,
     navigation_open: bool,
     dialog: Option<Dialog>,
@@ -177,6 +188,7 @@ impl CaperApp {
             presence: BTreeMap::new(),
             member_page: 0,
             members_visible: true,
+            channels_expanded: true,
             sidebar_width: 280.0,
             navigation_open: false,
             dialog: None,
@@ -214,6 +226,18 @@ impl CaperApp {
                     app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
+                } else if matches!(name, "parity-voice-joining" | "parity-voice-connected") {
+                    // Explicit visual fixtures only: no media transport is started.
+                    let call = CallContext {
+                        channel_id: "chan00000001".into(),
+                        channel_name: "general".into(),
+                        space_name: "Fixture Studio".into(),
+                    };
+                    app.voice.state.phase = if name == "parity-voice-connected" {
+                        Phase::Connected(call)
+                    } else {
+                        Phase::Joining(call)
+                    };
                 }
                 if matches!(name, "parity-narrow" | "parity-browse") {
                     app.members_visible = false;
@@ -1402,6 +1426,7 @@ impl CaperApp {
             .show(ui, |ui| {
                 ui.set_width(42.0);
                 ui.set_min_height(ui.available_height());
+                ui.spacing_mut().item_spacing.y = 0.0;
                 let spaces: Vec<_> = self
                     .spaces
                     .iter()
@@ -1429,28 +1454,76 @@ impl CaperApp {
                     } else {
                         SURFACE
                     })
-                    .stroke(Stroke::new(1.0, if active { TERRACOTTA } else { BORDER }))
+                    .stroke(Stroke::new(
+                        1.0,
+                        if active {
+                            Color32::from_rgb(128, 81, 67)
+                        } else {
+                            BORDER
+                        },
+                    ))
                     .corner_radius(if active { 8 } else { 12 });
-                    if ui
+                    let response = ui
                         .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                             ui.add(button)
                         })
                         .inner
-                        .on_hover_text(name)
-                        .clicked()
-                    {
+                        .on_hover_text(name);
+                    if active {
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(ui.max_rect().left() - 9.0, response.rect.top() + 8.0),
+                                egui::vec2(3.0, 24.0),
+                            ),
+                            2.0,
+                            TERRACOTTA_BRIGHT,
+                        );
+                    }
+                    if response.clicked() {
                         self.select_space(id);
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(10.0);
                 }
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("+").size(22.0).color(TERRACOTTA_BRIGHT))
-                            .min_size(egui::vec2(40.0, 40.0))
-                            .fill(SURFACE)
-                            .stroke(Stroke::new(1.0, BORDER))
-                            .corner_radius(12),
+                let (rect, add) =
+                    ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+                ui.painter()
+                    .rect_filled(rect, 12.0, if add.hovered() { RAISED } else { SURFACE });
+                let inset = rect.shrink(0.5);
+                let corners = [
+                    inset.right_top() + egui::vec2(-12.0, 12.0),
+                    inset.right_bottom() + egui::vec2(-12.0, -12.0),
+                    inset.left_bottom() + egui::vec2(12.0, -12.0),
+                    inset.left_top() + egui::vec2(12.0, 12.0),
+                ];
+                let mut outline = Vec::new();
+                for (corner, center) in corners.into_iter().enumerate() {
+                    for step in 0..=8 {
+                        let angle =
+                            (corner as f32 - 1.0 + step as f32 / 8.0) * std::f32::consts::FRAC_PI_2;
+                        outline.push(center + egui::vec2(angle.cos(), angle.sin()) * 12.0);
+                    }
+                }
+                outline.push(outline[0]);
+                ui.painter().extend(egui::Shape::dashed_line(
+                    &outline,
+                    Stroke::new(1.0, BORDER),
+                    3.0,
+                    3.0,
+                ));
+                add.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        "Create space",
                     )
+                });
+                paint_icon(
+                    ui.painter(),
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
+                    NavIcon::Plus,
+                    TERRACOTTA_BRIGHT,
+                );
+                if add
                     .on_hover_text(if self.account.is_some() {
                         "Create space"
                     } else {
@@ -1471,97 +1544,224 @@ impl CaperApp {
     fn sidebar(&mut self, ui: &mut egui::Ui, width: f32) {
         egui::Frame::new()
             .fill(SIDEBAR)
-            .inner_margin(egui::Margin::same(12))
+            .inner_margin(egui::Margin {
+                left: 12,
+                right: 12,
+                top: 0,
+                bottom: 12,
+            })
             .show(ui, |ui| {
                 ui.set_width(width - 24.0);
                 ui.set_height(ui.available_height());
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::TopBottomPanel::bottom("native-account")
+                    .show_separator_line(false)
+                    .frame(egui::Frame::NONE)
+                    .show_inside(ui, |ui| self.account_bar(ui));
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar-scroll")
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                bold(
-                                    self.detail
-                                        .as_ref()
-                                        .map_or("Caper", |detail| detail.space.name.as_str()),
-                                )
-                                .size(16.0),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if self.owner()
-                                        && drawn_icon_button(ui, NavIcon::Chevron, "Space actions")
-                                            .clicked()
-                                    {
-                                        self.form_name = self
-                                            .detail
-                                            .as_ref()
-                                            .map_or_else(String::new, |detail| {
-                                                detail.space.name.clone()
-                                            });
-                                        self.managed_members = self
-                                            .detail
-                                            .as_ref()
-                                            .map_or_else(Vec::new, |detail| detail.members.clone());
-                                        self.managed_channel = None;
-                                        if let (Some(token), Some(space)) =
-                                            (self.token.clone(), self.selected_space.clone())
-                                        {
-                                            self.worker.send(Command::Admin {
-                                                generation: self.generation,
-                                                token,
-                                                operation: AdminOperation::LoadMembers {
-                                                    space,
-                                                    channel: None,
-                                                },
-                                            });
-                                        }
-                                        self.dialog = Some(Dialog::ManageSpace);
-                                    }
-                                    if self.navigation_open
-                                        && drawn_icon_button(ui, NavIcon::Close, "Close navigation")
-                                            .clicked()
-                                    {
-                                        self.navigation_open = false;
-                                    }
-                                },
-                            );
-                        });
-                        ui.separator();
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            drawn_icon(ui, NavIcon::Chevron, egui::vec2(18.0, 28.0), MUTED);
-                            ui.label(bold("Channels").size(12.0).color(MUTED));
-                            let count = self
-                                .detail
-                                .as_ref()
-                                .map_or(0, |detail| detail.channels.len());
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if self.owner()
-                                        && drawn_icon_button(ui, NavIcon::More, "Channel options")
-                                            .clicked()
-                                    {
-                                        self.form_name.clear();
-                                        self.form_private = false;
-                                        self.dialog = Some(Dialog::CreateChannel);
-                                    }
-                                    if self.owner()
-                                        && drawn_icon_button(ui, NavIcon::Plus, "Create channel")
-                                            .clicked()
-                                    {
-                                        self.form_name.clear();
-                                        self.form_private = false;
-                                        self.dialog = Some(Dialog::CreateChannel);
-                                    }
-                                    ui.label(
-                                        RichText::new(count.to_string()).size(10.0).color(MUTED),
+                        let header = ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 54.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                let width = ui.available_width()
+                                    - if self.navigation_open { 36.0 } else { 0.0 };
+                                let (rect, actions) = ui.allocate_exact_size(
+                                    egui::vec2(width, 38.0),
+                                    if self.owner() {
+                                        egui::Sense::click()
+                                    } else {
+                                        egui::Sense::hover()
+                                    },
+                                );
+                                if self.owner() && (actions.hovered() || actions.has_focus()) {
+                                    ui.painter().rect_filled(rect, 8.0, RAISED);
+                                }
+                                let name = self
+                                    .detail
+                                    .as_ref()
+                                    .map_or("Caper", |detail| detail.space.name.as_str());
+                                let title_rect = rect.shrink2(egui::vec2(8.0, 0.0));
+                                ui.painter()
+                                    .with_clip_rect(egui::Rect::from_min_max(
+                                        title_rect.min,
+                                        egui::pos2(title_rect.right() - 24.0, title_rect.bottom()),
+                                    ))
+                                    .text(
+                                        egui::pos2(title_rect.left(), title_rect.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        name,
+                                        egui::FontId::new(
+                                            15.0,
+                                            egui::FontFamily::Name("Satoshi Bold".into()),
+                                        ),
+                                        TEXT,
                                     );
-                                },
-                            );
-                        });
+                                actions.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        self.owner(),
+                                        format!("{name} actions"),
+                                    )
+                                });
+                                if self.owner() {
+                                    paint_icon(
+                                        ui.painter(),
+                                        egui::Rect::from_center_size(
+                                            egui::pos2(rect.right() - 16.0, rect.center().y),
+                                            egui::vec2(16.0, 16.0),
+                                        ),
+                                        NavIcon::Chevron,
+                                        MUTED,
+                                    );
+                                    egui::Popup::menu(&actions).width(width).show(|ui| {
+                                        if ui
+                                            .add(
+                                                egui::Button::image_and_text(
+                                                    egui::Image::new(egui::include_image!(
+                                                        "../resources/icons/settings.svg"
+                                                    ))
+                                                    .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                                    "Space settings",
+                                                )
+                                                .min_size(egui::vec2(width - 16.0, 36.0)),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.form_name = self
+                                                .detail
+                                                .as_ref()
+                                                .map_or_else(String::new, |detail| {
+                                                    detail.space.name.clone()
+                                                });
+                                            self.managed_members = self
+                                                .detail
+                                                .as_ref()
+                                                .map_or_else(Vec::new, |detail| {
+                                                    detail.members.clone()
+                                                });
+                                            self.managed_channel = None;
+                                            if let (Some(token), Some(space)) =
+                                                (self.token.clone(), self.selected_space.clone())
+                                            {
+                                                self.worker.send(Command::Admin {
+                                                    generation: self.generation,
+                                                    token,
+                                                    operation: AdminOperation::LoadMembers {
+                                                        space,
+                                                        channel: None,
+                                                    },
+                                                });
+                                            }
+                                            self.dialog = Some(Dialog::ManageSpace);
+                                            ui.close();
+                                        }
+                                    });
+                                }
+                                if self.navigation_open
+                                    && drawn_icon_button(ui, NavIcon::Close, "Close navigation")
+                                        .clicked()
+                                {
+                                    self.navigation_open = false;
+                                }
+                            },
+                        );
+                        ui.painter().hline(
+                            (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
+                            header.response.rect.bottom(),
+                            Stroke::new(1.0, BORDER),
+                        );
+                        ui.add_space(12.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 32.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                if drawn_icon_button(
+                                    ui,
+                                    if self.channels_expanded {
+                                        NavIcon::Chevron
+                                    } else {
+                                        NavIcon::ChevronRight
+                                    },
+                                    "Toggle channels",
+                                )
+                                .clicked()
+                                {
+                                    self.channels_expanded = !self.channels_expanded;
+                                }
+                                ui.label(bold("Channels").size(12.0).color(MUTED));
+                                let count = self
+                                    .detail
+                                    .as_ref()
+                                    .map_or(0, |detail| detail.channels.len());
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 2.0;
+                                        if self.owner() {
+                                            let options = drawn_icon_button(
+                                                ui,
+                                                NavIcon::More,
+                                                "Channel options",
+                                            );
+                                            egui::Popup::menu(&options)
+                                                .align(egui::RectAlign::BOTTOM_END)
+                                                .width(190.0)
+                                                .show(|ui| {
+                                                    if ui
+                                                        .add(egui::Button::image_and_text(
+                                                            egui::Image::new(egui::include_image!(
+                                                                "../resources/icons/plus.svg"
+                                                            ))
+                                                            .fit_to_exact_size(egui::vec2(
+                                                                16.0, 16.0,
+                                                            )),
+                                                            "Create channel",
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        self.form_name.clear();
+                                                        self.form_private = false;
+                                                        self.dialog = Some(Dialog::CreateChannel);
+                                                        ui.close();
+                                                    }
+                                                    if ui
+                                                        .button(if self.channels_expanded {
+                                                            "Collapse channels"
+                                                        } else {
+                                                            "Expand channels"
+                                                        })
+                                                        .clicked()
+                                                    {
+                                                        self.channels_expanded =
+                                                            !self.channels_expanded;
+                                                        ui.close();
+                                                    }
+                                                });
+                                        }
+                                        if self.owner()
+                                            && drawn_icon_button(
+                                                ui,
+                                                NavIcon::Plus,
+                                                "Create channel",
+                                            )
+                                            .clicked()
+                                        {
+                                            self.form_name.clear();
+                                            self.form_private = false;
+                                            self.dialog = Some(Dialog::CreateChannel);
+                                        }
+                                        ui.label(
+                                            RichText::new(count.to_string())
+                                                .size(10.0)
+                                                .color(MUTED),
+                                        );
+                                    },
+                                );
+                            },
+                        );
                         ui.add_space(4.0);
                         let channels: Vec<_> =
                             self.detail.as_ref().map_or_else(Vec::new, |detail| {
@@ -1574,6 +1774,9 @@ impl CaperApp {
                                     .collect()
                             });
                         for (id, name, private) in channels {
+                            if !self.channels_expanded {
+                                break;
+                            }
                             let active = self.selected_channel.as_deref() == Some(&id);
                             let (response, settings) = channel_button(
                                 ui,
@@ -1604,6 +1807,7 @@ impl CaperApp {
                             } else if response.clicked() {
                                 self.select_channel(id.clone(), false);
                             }
+                            ui.add_space(3.0);
                         }
                         if !self.voice.participants.is_empty() {
                             ui.add_space(14.0);
@@ -1635,156 +1839,145 @@ impl CaperApp {
                             }
                         }
                     });
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    egui::Frame::new()
-                        .fill(RAISED)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(6)
-                        .inner_margin(4)
-                        .show(ui, |ui| {
-                            ui.set_width(width - 34.0);
-                            ui.horizontal(|ui| {
-                                avatar(ui, &self.identity_name(), 30.0, false);
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new(self.identity_name()).strong(),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .clicked()
-                                {
-                                    self.dialog = Some(if self.account.is_some() {
-                                        Dialog::Profile
-                                    } else {
-                                        Dialog::SignIn
-                                    });
-                                }
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if drawn_icon_button(ui, NavIcon::Settings, "User settings")
-                                            .clicked()
-                                        {
-                                            if self.account.is_some() {
-                                                self.dialog = Some(Dialog::Profile);
-                                            } else {
-                                                self.dialog = Some(Dialog::SignIn);
-                                            }
-                                        }
-                                    },
-                                );
-                            });
-                        });
-                    ui.add_space(8.0);
-                    if let Phase::Joining(context)
-                    | Phase::Connected(context)
-                    | Phase::Reconnecting(context) = &self.voice.state.phase
-                    {
-                        let label = format!("{} / {}", context.space_name, context.channel_name);
-                        let connected = matches!(self.voice.state.phase, Phase::Connected(_));
-                        egui::Frame::new()
-                            .fill(RAISED)
-                            .stroke(Stroke::new(1.0, BORDER))
-                            .inner_margin(8)
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.vertical(|ui| {
-                                        ui.label(
-                                            bold(if connected {
-                                                "Voice connected"
-                                            } else {
-                                                "Connecting voice…"
-                                            })
-                                            .size(12.0),
-                                        );
-                                        ui.label(RichText::new(label).size(11.0).color(MUTED));
-                                    });
-                                    if ui.button("Leave").clicked() {
-                                        self.voice.leave();
-                                    }
-                                });
-                            });
-                        ui.add_space(8.0);
-                    }
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_sized(
-                                [76.0, 32.0],
-                                egui::Button::new(if self.voice.state.audio.muted {
-                                    "Unmute"
-                                } else {
-                                    "Mute"
-                                })
-                                .fill(RAISED)
-                                .stroke(Stroke::new(1.0, BORDER))
-                                .corner_radius(8),
-                            )
-                            .clicked()
-                        {
-                            self.voice
-                                .command(VoiceOperation::Mute(!self.voice.state.audio.muted));
-                        }
-                        if ui
-                            .add_sized(
-                                [84.0, 32.0],
-                                egui::Button::new(if self.voice.state.audio.deafened {
-                                    "Undeafen"
-                                } else {
-                                    "Deafen"
-                                })
-                                .fill(RAISED)
-                                .stroke(Stroke::new(1.0, BORDER))
-                                .corner_radius(8),
-                            )
-                            .clicked()
-                        {
-                            self.voice
-                                .command(VoiceOperation::Deafen(!self.voice.state.audio.deafened));
-                        }
-                        ui.style_mut().spacing.interact_size.y = 32.0;
-                        ui.menu_button("Audio", |ui| {
-                            ui.label(bold("Microphone"));
-                            for (guid, name) in self.voice.inputs.clone() {
-                                if ui
-                                    .selectable_label(
-                                        self.voice.input.as_deref() == Some(&guid),
-                                        name,
-                                    )
-                                    .clicked()
-                                {
-                                    self.voice.command(VoiceOperation::Input(guid));
-                                    ui.close();
-                                }
-                            }
-                            if self.voice.inputs.is_empty() {
-                                ui.label("Available after joining voice");
-                            }
-                            ui.separator();
-                            ui.label(bold("Speaker"));
-                            for (guid, name) in self.voice.outputs.clone() {
-                                if ui
-                                    .selectable_label(
-                                        self.voice.output.as_deref() == Some(&guid),
-                                        name,
-                                    )
-                                    .clicked()
-                                {
-                                    self.voice.command(VoiceOperation::Output(guid));
-                                    ui.close();
-                                }
-                            }
-                            if self.voice.outputs.is_empty() {
-                                ui.label("Available after joining voice");
-                            }
-                        });
-                    });
-                    if let Some(error) = &self.voice.error {
-                        ui.colored_label(ERROR, error);
-                    }
-                    ui.add_space(8.0);
-                });
             });
+    }
+
+    fn account_bar(&mut self, ui: &mut egui::Ui) {
+        if let Phase::Joining(context) | Phase::Connected(context) | Phase::Reconnecting(context) =
+            &self.voice.state.phase
+        {
+            let label = format!("{} / {}", context.space_name, context.channel_name);
+            let connected = matches!(self.voice.state.phase, Phase::Connected(_));
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        bold(if connected {
+                            "Voice connected"
+                        } else {
+                            "Connecting voice…"
+                        })
+                        .size(12.0),
+                    );
+                    ui.label(RichText::new(label).size(11.0).color(MUTED));
+                });
+                if drawn_icon_button(ui, NavIcon::Close, "Disconnect voice").clicked() {
+                    self.voice.leave();
+                }
+            });
+            ui.add_space(8.0);
+        }
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 42.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 6.0, RAISED);
+        ui.painter().rect_stroke(
+            rect,
+            6.0,
+            Stroke::new(1.0, BORDER),
+            egui::StrokeKind::Inside,
+        );
+        let content = rect.shrink(5.0);
+        let profile = egui::Rect::from_min_max(
+            content.min,
+            egui::pos2(content.right() - 122.0, content.bottom()),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(profile)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                presence_avatar(
+                    ui,
+                    &self.identity_name(),
+                    30.0,
+                    if self.live == "Live" {
+                        "online"
+                    } else {
+                        "unknown"
+                    },
+                );
+                ui.add(egui::Label::new(bold(self.identity_name()).size(12.8)).truncate());
+            },
+        );
+        if ui
+            .interact(profile, ui.id().with("profile"), egui::Sense::click())
+            .on_hover_text("Edit profile")
+            .clicked()
+        {
+            self.dialog = Some(if self.account.is_some() {
+                Dialog::Profile
+            } else {
+                Dialog::SignIn
+            });
+        }
+        let controls = egui::Rect::from_min_max(
+            egui::pos2(profile.right() + 2.0, content.top()),
+            content.max,
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let muted = self.voice.state.audio.muted;
+            if audio_icon_button(ui, if muted { NavIcon::MicOff } else { NavIcon::Mic }, 28.0, if muted { "Unmute microphone" } else { "Mute microphone" }, muted).clicked() {
+                self.voice.command(VoiceOperation::Mute(!muted));
+            }
+            let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted);
+            egui::Popup::menu(&input).align(egui::RectAlign::TOP_START).width(232.0).show(|ui| self.device_options(ui, true));
+            ui.add_space(2.0);
+            let deafened = self.voice.state.audio.deafened;
+            if audio_icon_button(ui, if deafened { NavIcon::VolumeX } else { NavIcon::Headphones }, 28.0, if deafened { "Undeafen audio" } else { "Deafen audio" }, deafened).clicked() {
+                self.voice.command(VoiceOperation::Deafen(!deafened));
+            }
+            let output = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened);
+            egui::Popup::menu(&output).align(egui::RectAlign::TOP_START).width(232.0).show(|ui| self.device_options(ui, false));
+            ui.add_space(2.0);
+            let settings = audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false);
+            egui::Popup::menu(&settings).align(egui::RectAlign::TOP_END).width(232.0).show(|ui| {
+                ui.label(bold("Audio settings").size(12.0).color(MUTED));
+                ui.label("Input and output devices are in the arrow menus.");
+                ui.label(RichText::new("Mic test and volume controls are not available in this desktop build.").size(11.0).color(MUTED));
+                ui.separator();
+                if ui.button(if self.account.is_some() { "Edit profile" } else { "Sign in" }).clicked() {
+                    self.dialog = Some(if self.account.is_some() { Dialog::Profile } else { Dialog::SignIn });
+                    ui.close();
+                }
+            });
+        });
+    }
+
+    fn device_options(&mut self, ui: &mut egui::Ui, input: bool) {
+        ui.label(
+            bold(if input { "Microphone" } else { "Audio output" })
+                .size(12.0)
+                .color(MUTED),
+        );
+        let devices = if input {
+            self.voice.inputs.clone()
+        } else {
+            self.voice.outputs.clone()
+        };
+        if devices.is_empty() {
+            ui.label("System default · devices become available after joining voice.");
+        }
+        for (guid, name) in devices {
+            let selected = if input {
+                &self.voice.input
+            } else {
+                &self.voice.output
+            };
+            if ui
+                .selectable_label(selected.as_deref() == Some(&guid), name)
+                .clicked()
+            {
+                self.voice.command(if input {
+                    VoiceOperation::Input(guid)
+                } else {
+                    VoiceOperation::Output(guid)
+                });
+                ui.close();
+            }
+        }
     }
 
     fn member_presence(&mut self, ui: &mut egui::Ui) {
@@ -1794,19 +1987,18 @@ impl CaperApp {
         let demo = detail.space.demo;
         egui::Frame::new()
             .fill(SIDEBAR)
-            .stroke(Stroke::new(1.0, BORDER))
-            .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
         ui.set_min_size(ui.available_size());
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Members").size(12.0).strong().color(MUTED));
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let bounds = ui.max_rect();
+        ui.painter().vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
+        let (heading, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(),54.0), egui::Sense::hover());
+        ui.painter().text(egui::pos2(heading.left()+12.0,heading.center().y), egui::Align2::LEFT_CENTER,"Members", egui::FontId::new(12.0,egui::FontFamily::Name("Satoshi Bold".into())), MUTED);
             if !demo {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(member_count.to_string()).size(10.0).color(MUTED));
-                });
+                ui.painter().text(egui::pos2(heading.right()-12.0,heading.center().y), egui::Align2::RIGHT_CENTER,member_count.to_string(),egui::FontId::proportional(10.4),MUTED);
             }
-        });
-        ui.separator();
+        ui.painter().hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
+        ui.add_space(8.0);
         if demo {
             ui.label(
                 RichText::new("General is open to everyone. People in voice appear in the channel sidebar.")
@@ -1823,7 +2015,9 @@ impl CaperApp {
             .cloned()
             .collect();
         for member in members {
-            ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                ui.add_space(16.0);
                 let status = self
                     .presence
                     .get(&member.id)
@@ -1862,87 +2056,142 @@ impl CaperApp {
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_width(320.0);
             ui.set_height(ui.available_height());
-            egui::TopBottomPanel::top("chat-heading")
-                .exact_height(52.0)
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let heading = egui::TopBottomPanel::top("chat-heading")
+                .exact_height(54.0)
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
-                        .stroke(Stroke::new(0.0, BORDER))
                         .inner_margin(egui::Margin::symmetric(18, 8)),
                 )
                 .show_inside(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if narrow && ui.button("☰  Browse").clicked() {
-                            self.navigation_open = true;
-                        }
-                        ui.heading(RichText::new(format!("# {}", self.channel_name())).size(14.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if self
-                                .detail
-                                .as_ref()
-                                .is_some_and(|detail| !detail.members.is_empty())
-                                && users_button(ui, self.members_visible).clicked()
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), 38.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            if narrow
+                                && drawn_icon_button(ui, NavIcon::Menu, "Browse channels").clicked()
                             {
-                                self.members_visible = !self.members_visible;
+                                self.navigation_open = true;
                             }
                             ui.label(
-                                RichText::new(&self.live)
-                                    .size(11.0)
-                                    .color(if self.live == "Live" { CAPER } else { MUTED }),
+                                RichText::new(format!("# {}", self.channel_name())).size(13.76),
                             );
-                            let already_here = self.voice.state.active_channel()
-                                == self.selected_channel.as_deref();
-                            if !already_here
-                                && self.selected_channel.is_some()
-                                && ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("Join voice").strong().color(TEXT),
-                                        )
-                                        .fill(TERRACOTTA)
-                                        .corner_radius(8),
-                                    )
-                                    .clicked()
-                            {
-                                self.join_voice();
-                            }
-                        });
-                    });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if self
+                                        .detail
+                                        .as_ref()
+                                        .is_some_and(|detail| !detail.members.is_empty())
+                                        && users_button(ui, self.members_visible).clicked()
+                                    {
+                                        self.members_visible = !self.members_visible;
+                                    }
+                                    let already_here =
+                                        self.voice.state.active_channel().is_some_and(|channel| {
+                                            Some(channel) == self.selected_channel.as_deref()
+                                        });
+                                    let label = if already_here {
+                                        if matches!(self.voice.state.phase, Phase::Connected(_)) {
+                                            "Leave"
+                                        } else {
+                                            "Cancel"
+                                        }
+                                    } else {
+                                        "Join"
+                                    };
+                                    if self.selected_channel.is_some()
+                                        && voice_join_button(ui, label).clicked()
+                                    {
+                                        if already_here {
+                                            self.voice.leave();
+                                        } else {
+                                            self.join_voice();
+                                        }
+                                    }
+                                },
+                            );
+                        },
+                    );
                 });
-            egui::TopBottomPanel::bottom("composer")
+            ui.painter().hline(
+                heading.response.rect.x_range(),
+                heading.response.rect.bottom(),
+                Stroke::new(1.0, BORDER),
+            );
+            // A persisted bottom-panel height otherwise constrains the scroll
+            // viewport to the previous draft's size, even when the text grows.
+            let draft_height = ui.fonts_mut(|fonts| fonts.layout(
+                self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
+                (ui.available_width() - 36.0 - 22.0).max(1.0),
+            ).size().y);
+            let editor_height = (draft_height + 20.0).clamp(42.0, (ui.ctx().viewport_rect().height() * 0.4).min(320.0));
+            let composer = egui::TopBottomPanel::bottom("composer")
+                .min_height(editor_height + 24.0)
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
-                        .stroke(Stroke::new(1.0, BORDER))
                         .inner_margin(egui::Margin::symmetric(18, 12)),
                 )
                 .show_inside(ui, |ui| {
+                    ui.visuals_mut().widgets.inactive.corner_radius = CornerRadius::same(6);
+                    ui.visuals_mut().widgets.hovered.corner_radius = CornerRadius::same(6);
+                    ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(6);
                     if let Some(error) = &self.error {
                         ui.colored_label(ERROR, error);
                     }
-                    if narrow && let Some(error) = &self.voice.error {
+                    if let Some(error) = &self.voice.error {
                         ui.colored_label(ERROR, error);
+                    }
+                    if self.live != "Live" {
+                        ui.label(RichText::new(&self.live).size(11.0).color(MUTED));
                     }
                     let before = self.draft.clone();
                     let channel_name = self.channel_name().to_owned();
-                    let response = ui.add_sized(
-                        [ui.available_width(), 44.0],
+                    let editor = egui::ScrollArea::vertical()
+                        .id_salt("composer-scroll")
+                        .max_height((ui.ctx().viewport_rect().height() * 0.4).min(320.0))
+                        .min_scrolled_height(42.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| ui.add(
                         egui::TextEdit::multiline(&mut self.draft)
+                            .id(egui::Id::new("message-composer"))
+                            .desired_width(f32::INFINITY)
+                            .min_size(egui::vec2(0.0, 42.0))
                             .desired_rows(1)
-                            .hint_text(format!("Message #{channel_name}"))
+                            .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
+                            .font(egui::FontId::proportional(13.6))
+                            .margin(egui::vec2(11.0, 10.0))
+                            .hint_text(
+                                RichText::new(format!("Message #{channel_name}"))
+                                    .color(Color32::from_rgb(142, 149, 152)),
+                            )
                             .background_color(COMPOSER)
                             .char_limit(4_000),
+                    ));
+                    let response = editor.inner;
+                    ui.painter().rect_stroke(
+                        editor.inner_rect,
+                        6.0,
+                        Stroke::new(1.0, BORDER),
+                        egui::StrokeKind::Inside,
                     );
                     if self.draft != before {
                         self.typing_edited = Instant::now();
                     }
                     let send = response.has_focus()
                         && ui.input(|input| {
-                            input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
+                            // The modifier belongs to the key event, not the end of
+                            // the frame (Shift may already have been released).
+                            input.events.iter().any(|event| matches!(event,
+                                egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if !modifiers.shift
+                            ))
                         });
                     if send {
-                        let trimmed = self.draft.trim_end_matches('\n').to_owned();
-                        self.draft = trimmed;
                         self.send_message();
                     }
                     let count = self.draft.chars().count();
@@ -1956,8 +2205,14 @@ impl CaperApp {
                         });
                     }
                 });
+            ui.painter().hline(
+                composer.response.rect.x_range(),
+                composer.response.rect.top(),
+                Stroke::new(1.0, BORDER),
+            );
             egui::TopBottomPanel::bottom("typing")
-                .exact_height(24.0)
+                .exact_height(20.0)
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(CONVERSATION)
@@ -2003,14 +2258,17 @@ impl CaperApp {
                     {
                         self.load_older();
                     } else if !self.has_more {
-                        ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new("Beginning of conversation")
-                                    .size(11.0)
-                                    .color(MUTED),
-                            );
-                        });
-                        ui.add_space(24.0);
+                        let (history, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 44.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().text(
+                            history.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Beginning of conversation",
+                            egui::FontId::proportional(11.52),
+                            MUTED,
+                        );
                     }
                     if self.loading && self.timeline.messages().next().is_none() {
                         ui.centered_and_justified(|ui| {
@@ -2464,11 +2722,6 @@ impl CaperApp {
     }
 }
 
-fn drawn_icon(ui: &mut egui::Ui, icon: NavIcon, size: egui::Vec2, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    paint_icon(ui.painter(), rect, icon, color);
-}
-
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     if response.hovered() || response.has_focus() {
@@ -2480,67 +2733,132 @@ fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Res
         icon,
         if response.hovered() { TEXT } else { MUTED },
     );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
     response.on_hover_text(label)
 }
 
+fn audio_icon_button(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    width: f32,
+    label: &str,
+    active: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::click());
+    let hover = response.hovered() || response.has_focus();
+    if active || hover {
+        ui.painter().rect_filled(
+            rect,
+            4.0,
+            if active {
+                Color32::from_rgba_unmultiplied(212, 67, 85, if hover { 75 } else { 36 })
+            } else {
+                COMPOSER
+            },
+        );
+    }
+    let color = if active {
+        Color32::from_rgb(237, 82, 101)
+    } else if hover {
+        TEXT
+    } else {
+        MUTED
+    };
+    let size = if width < 20.0 { 12.0 } else { 19.0 };
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(size, size)),
+        icon,
+        color,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.on_hover_text(label)
+}
+
+fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(if label == "Join" { 76.0 } else { 88.0 }, 36.0),
+        egui::Sense::click(),
+    );
+    let hover = response.hovered() || response.has_focus();
+    ui.painter().rect_filled(
+        rect,
+        6.0,
+        Color32::from_rgba_unmultiplied(182, 77, 50, if hover { 61 } else { 36 }),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(
+            1.0,
+            if hover {
+                TERRACOTTA_BRIGHT
+            } else {
+                Color32::from_rgb(137, 70, 53)
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    let color = Color32::from_rgb(227, 153, 133);
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 20.0, rect.center().y),
+            egui::vec2(16.0, 16.0),
+        ),
+        NavIcon::Speech,
+        color,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 36.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::new(12.48, egui::FontFamily::Name("Satoshi Bold".into())),
+        color,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            format!("{label} voice"),
+        )
+    });
+    response.on_hover_text(format!("{label} voice"))
+}
+
 fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: Color32) {
-    let center = rect.center();
-    let stroke = Stroke::new(1.7, color);
-    match icon {
-        NavIcon::Chevron => {
-            painter.line_segment([egui::pos2(center.x - 4.0, center.y - 2.0), center], stroke);
-            painter.line_segment([center, egui::pos2(center.x + 4.0, center.y - 2.0)], stroke);
-        }
-        NavIcon::Close => {
-            painter.line_segment(
-                [
-                    egui::pos2(center.x - 4.0, center.y - 4.0),
-                    egui::pos2(center.x + 4.0, center.y + 4.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(center.x + 4.0, center.y - 4.0),
-                    egui::pos2(center.x - 4.0, center.y + 4.0),
-                ],
-                stroke,
-            );
-        }
-        NavIcon::Plus => {
-            painter.line_segment(
-                [
-                    egui::pos2(center.x - 5.0, center.y),
-                    egui::pos2(center.x + 5.0, center.y),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(center.x, center.y - 5.0),
-                    egui::pos2(center.x, center.y + 5.0),
-                ],
-                stroke,
-            );
-        }
-        NavIcon::More => {
-            for x in [-5.0, 0.0, 5.0] {
-                painter.circle_filled(egui::pos2(center.x + x, center.y), 1.4, color);
-            }
-        }
-        NavIcon::Settings => {
-            painter.circle_stroke(center, 5.0, stroke);
-            painter.circle_stroke(center, 1.7, stroke);
-            for angle in [
-                0.0_f32,
-                std::f32::consts::FRAC_PI_2,
-                std::f32::consts::PI,
-                std::f32::consts::PI + std::f32::consts::FRAC_PI_2,
-            ] {
-                let direction = egui::vec2(angle.cos(), angle.sin());
-                painter.line_segment([center + direction * 5.0, center + direction * 7.0], stroke);
-            }
-        }
+    // These are the web client's Lucide vectors, not approximate glyphs.
+    let source = match icon {
+        NavIcon::Chevron => egui::include_image!("../resources/icons/chevron-down.svg"),
+        NavIcon::ChevronRight => egui::include_image!("../resources/icons/chevron-right.svg"),
+        NavIcon::Close => egui::include_image!("../resources/icons/x.svg"),
+        NavIcon::More => egui::include_image!("../resources/icons/ellipsis.svg"),
+        NavIcon::Plus => egui::include_image!("../resources/icons/plus.svg"),
+        NavIcon::Settings => egui::include_image!("../resources/icons/settings.svg"),
+        NavIcon::Hash => egui::include_image!("../resources/icons/hash.svg"),
+        NavIcon::Lock => egui::include_image!("../resources/icons/lock.svg"),
+        NavIcon::Users => egui::include_image!("../resources/icons/users.svg"),
+        NavIcon::Speech => egui::include_image!("../resources/icons/speech.svg"),
+        NavIcon::Mic => egui::include_image!("../resources/icons/mic.svg"),
+        NavIcon::MicOff => egui::include_image!("../resources/icons/mic-off.svg"),
+        NavIcon::Headphones => egui::include_image!("../resources/icons/headphones.svg"),
+        NavIcon::VolumeX => egui::include_image!("../resources/icons/volume-x.svg"),
+        NavIcon::Menu => egui::include_image!("../resources/icons/menu.svg"),
+    };
+    let image = egui::Image::new(source).tint(color);
+    if let Ok(egui::load::TexturePoll::Ready { texture }) =
+        image.load_for_size(painter.ctx(), rect.size())
+    {
+        painter.image(
+            texture.id,
+            rect,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            color,
+        );
     }
 }
 
@@ -2553,6 +2871,14 @@ fn channel_button(
     manageable: bool,
 ) -> (egui::Response, Option<egui::Response>) {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 38.0), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            active,
+            name,
+        )
+    });
     if active || response.hovered() {
         ui.painter().rect_filled(
             rect,
@@ -2565,46 +2891,21 @@ fn channel_button(
         );
     }
     let color = if active { TEXT } else { MUTED };
-    let icon_center = egui::pos2(rect.left() + 15.0, rect.center().y);
-    if private {
-        let body = egui::Rect::from_center_size(
-            egui::pos2(icon_center.x, icon_center.y + 2.0),
-            egui::vec2(10.0, 9.0),
-        );
-        ui.painter()
-            .rect_stroke(body, 2.0, Stroke::new(1.5, color), egui::StrokeKind::Middle);
-        ui.painter().line_segment(
-            [
-                egui::pos2(icon_center.x - 4.0, icon_center.y - 2.0),
-                egui::pos2(icon_center.x - 4.0, icon_center.y - 6.0),
-            ],
-            Stroke::new(1.5, color),
-        );
-        ui.painter().line_segment(
-            [
-                egui::pos2(icon_center.x - 4.0, icon_center.y - 6.0),
-                egui::pos2(icon_center.x + 4.0, icon_center.y - 6.0),
-            ],
-            Stroke::new(1.5, color),
-        );
-        ui.painter().line_segment(
-            [
-                egui::pos2(icon_center.x + 4.0, icon_center.y - 6.0),
-                egui::pos2(icon_center.x + 4.0, icon_center.y - 2.0),
-            ],
-            Stroke::new(1.5, color),
-        );
-    } else {
-        ui.painter().text(
-            icon_center,
-            egui::Align2::CENTER_CENTER,
-            "#",
-            egui::FontId::new(17.0, egui::FontFamily::Name("Satoshi Medium".into())),
-            if active { TERRACOTTA_BRIGHT } else { color },
-        );
-    }
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 17.5, rect.center().y),
+            egui::vec2(17.0, 17.0),
+        ),
+        if private {
+            NavIcon::Lock
+        } else {
+            NavIcon::Hash
+        },
+        if active { TERRACOTTA_BRIGHT } else { color },
+    );
     ui.painter().text(
-        egui::pos2(rect.left() + 31.0, rect.center().y - 1.0),
+        egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
         egui::Align2::LEFT_CENTER,
         name,
         egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
@@ -2634,6 +2935,13 @@ fn channel_button(
             NavIcon::Settings,
             if settings.hovered() { TEXT } else { MUTED },
         );
+        settings.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                format!("Manage {name}"),
+            )
+        });
         settings.on_hover_text(format!("Manage {name}"))
     });
     (response, settings)
@@ -2649,45 +2957,23 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     } else {
         MUTED
     };
-    let center = rect.center();
-    ui.painter().circle_stroke(
-        egui::pos2(center.x - 3.0, center.y - 4.0),
-        3.0,
-        Stroke::new(1.5, color),
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0)),
+        NavIcon::Users,
+        color,
     );
-    ui.painter().circle_stroke(
-        egui::pos2(center.x + 5.0, center.y - 2.5),
-        2.4,
-        Stroke::new(1.4, color),
-    );
-    ui.painter().line_segment(
-        [
-            egui::pos2(center.x - 9.0, center.y + 6.0),
-            egui::pos2(center.x - 6.0, center.y + 2.0),
-        ],
-        Stroke::new(1.5, color),
-    );
-    ui.painter().line_segment(
-        [
-            egui::pos2(center.x - 6.0, center.y + 2.0),
-            egui::pos2(center.x, center.y + 2.0),
-        ],
-        Stroke::new(1.5, color),
-    );
-    ui.painter().line_segment(
-        [
-            egui::pos2(center.x, center.y + 2.0),
-            egui::pos2(center.x + 3.0, center.y + 6.0),
-        ],
-        Stroke::new(1.5, color),
-    );
-    ui.painter().line_segment(
-        [
-            egui::pos2(center.x + 3.0, center.y + 2.5),
-            egui::pos2(center.x + 9.0, center.y + 6.0),
-        ],
-        Stroke::new(1.4, color),
-    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            if active {
+                "Hide member list"
+            } else {
+                "Show member list"
+            },
+        )
+    });
     response.on_hover_text(if active {
         "Hide member list"
     } else {
@@ -2704,8 +2990,9 @@ fn message_row(
     pending: bool,
 ) {
     egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(18, 6))
+        .inner_margin(egui::Margin::symmetric(18, 10))
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
             ui.horizontal_top(|ui| {
                 avatar(ui, author, 34.0, false);
                 ui.vertical(|ui| {
@@ -2822,6 +3109,7 @@ fn display_time(timestamp: &str) -> String {
 }
 
 fn configure(context: &egui::Context) {
+    egui_extras::install_image_loaders(context);
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes) in [
         (
@@ -3036,6 +3324,211 @@ mod tests {
         SpaceDetail, Spaces,
     };
     use crate::worker::LoadError;
+    use eframe::egui;
+
+    fn render(
+        app: &mut CaperApp,
+        context: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |context| app.shell(context),
+        )
+    }
+
+    fn click(app: &mut CaperApp, context: &egui::Context, pos: egui::Pos2) {
+        for pressed in [true, false] {
+            render(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn native_chrome_matches_web_header_channel_and_composer_geometry() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        let text = |label: &str| {
+            *texts
+                .iter()
+                .find(|text| text.galley.job.text == label)
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        // Independent values from the current web CSS: 54px header, 44px history.
+        for (label, center) in [
+            ("Fixture Studio", 27.0),
+            ("# general", 27.0),
+            ("Members", 27.0),
+            ("Join", 27.0),
+            ("Beginning of conversation", 76.0),
+        ] {
+            let shape = text(label);
+            assert!(
+                (shape.pos.y + shape.galley.size().y / 2.0 - center).abs() < 1.0,
+                "{label} is not centered"
+            );
+        }
+        for label in ["general", "design", "planning"] {
+            assert_eq!(
+                text(label).pos.x,
+                106.0,
+                "public/private labels must share one offset"
+            );
+        }
+        assert!(
+            (text("planning").pos.y - text("design").pos.y - 41.0).abs() < 1.0,
+            "38px rows plus 3px gap"
+        );
+        assert!(!texts.iter().any(|text| text.galley.job.text == "Live"));
+        let dividers: Vec<_> = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+            egui::Shape::LineSegment { points, stroke } if stroke.width > 0.0 && points[0].x == 340.0 && points[1].x == 1220.0 && points[0].y > 800.0
+        )).collect();
+        assert_eq!(
+            dividers.len(),
+            1,
+            "only one divider above the composer: {dividers:?}"
+        );
+    }
+
+    #[test]
+    fn composer_grows_and_shift_enter_does_not_send_after_shift_is_released() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        app.draft = "first".into();
+        let editor_height = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.rect.left() == 358.0
+                            && rect.fill == egui::Color32::TRANSPARENT
+                            && rect.stroke.width == 1.0 =>
+                    {
+                        Some(rect.rect.height())
+                    }
+                    _ => None,
+                })
+                .expect("composer outline")
+        };
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(editor_height(&output), 42.0);
+        let id = egui::Id::new("message-composer");
+        context.memory_mut(|memory| memory.request_focus(id));
+        let enter = |pressed, modifiers| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        // Both Shift+Enter and the release can arrive in one frame. RawInput's
+        // final modifiers are NONE; only the Enter event records the held Shift.
+        render(
+            &mut app,
+            &context,
+            vec![
+                enter(true, egui::Modifiers::SHIFT),
+                enter(false, egui::Modifiers::NONE),
+                egui::Event::Text("second".into()),
+            ],
+        );
+        assert_eq!(app.draft, "first\nsecond");
+        assert!(
+            app.pending.is_none(),
+            "Shift+Enter must never submit a draft"
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            editor_height(&output) >= 56.0,
+            "both lines must fit: {}",
+            editor_height(&output)
+        );
+        render(&mut app, &context, vec![enter(true, egui::Modifiers::NONE)]);
+        assert_eq!(app.pending.as_ref().unwrap().text, "first\nsecond");
+        assert!(app.error.is_none());
+        app.draft = "line\n".repeat(40);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            editor_height(&output) <= 320.0,
+            "long drafts must not consume the conversation"
+        );
+    }
+
+    #[test]
+    fn audio_controls_and_voice_header_act_on_current_intent() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        render(&mut app, &context, vec![]);
+        // Panels settle their persisted height on the second frame, as in eframe.
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(216.0, 867.0));
+        assert!(app.voice.state.audio.muted);
+        click(&mut app, &context, egui::pos2(216.0, 867.0));
+        assert!(!app.voice.state.audio.muted);
+        click(&mut app, &context, egui::pos2(262.0, 867.0));
+        assert!(app.voice.state.audio.muted && app.voice.state.audio.deafened);
+        click(&mut app, &context, egui::pos2(262.0, 867.0));
+        assert!(!app.voice.state.audio.muted && !app.voice.state.audio.deafened);
+        for fixture in ["parity-voice-joining", "parity-voice-connected"] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            render(&mut app, &context, vec![]);
+            click(&mut app, &context, egui::pos2(1110.0, 27.0));
+            assert!(
+                matches!(app.voice.state.phase, crate::state::Phase::Idle),
+                "Cancel/Leave must end the current call"
+            );
+        }
+    }
 
     fn account(profile: bool) -> Account {
         Account {
