@@ -270,8 +270,6 @@ private struct ChannelSidebar: View {
     @State private var channelsExpanded = true
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 6) {
                         Menu {
                             if model.isOwner { Button("Space settings") { sheet = .manageSpace } }
@@ -286,9 +284,11 @@ private struct ChannelSidebar: View {
                             .accessibilityIdentifier("selected-space-name")
                         if narrow { Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Close navigation") }
                     }
-                    .frame(minHeight: 38).padding(.bottom, 12)
+                    .padding(.horizontal, 16).frame(height: 50)
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
                     HStack {
                         Button { channelsExpanded.toggle() } label: {
                             HStack(spacing: 6) {
@@ -337,7 +337,7 @@ private struct ChannelSidebar: View {
                     if model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty {
                         VoiceRoster(model: model)
                     }
-                }.padding(.horizontal, 16).padding(.top, 20)
+                }.padding(.horizontal, 16)
             }
             AccountBar(model: model, sheet: $sheet)
         }
@@ -366,7 +366,9 @@ private struct MemberPresenceView: View {
                 if model.detail?.space.demo != true {
                     Text("\(model.detail?.members.count ?? 0)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
                 }
-            }.frame(minHeight: 38)
+            }.padding(.horizontal, 12).frame(height: 50)
+                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            VStack(alignment: .leading, spacing: 8) {
             if model.detail?.space.demo == true {
                 Text("General is open to everyone. People in voice appear in the channel sidebar.")
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
@@ -391,7 +393,8 @@ private struct MemberPresenceView: View {
                     }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 }
             }
-        }.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }.padding(.horizontal, 12)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(CaperTheme.sidebar)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
     }
@@ -524,7 +527,7 @@ private struct Avatar: View {
     let name: String; let size: CGFloat
     var body: some View {
         Text(String(name.prefix(1)).uppercased()).font(CaperTheme.font(size * 0.36, weight: .black))
-            .frame(width: size, height: size).background(Color(red: 53/255, green: 64/255, blue: 39/255)).clipShape(Circle())
+            .frame(width: size, height: size).background(CaperTheme.raised).clipShape(Circle())
     }
 }
 
@@ -722,7 +725,9 @@ private struct MessageRow: View {
         }.padding(.horizontal, 18).padding(.vertical, 10)
     }
     private func timeLabel(_ value: String) -> String {
-        guard let date = ISO8601DateFormatter().date(from: value) else { return "" }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
     }
 }
@@ -999,6 +1004,7 @@ private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     #if os(macOS)
     @State private var micTest = MacMicrophoneTest()
+    @State private var routeError: String?
     #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1014,8 +1020,34 @@ private struct AudioPreferencesView: View {
                 .accessibilityIdentifier("close-audio-preferences")
                 .keyboardShortcut(.cancelAction)
             }
+            #if os(macOS)
+            Picker("Input", selection: inputRoute) {
+                Text("System default").tag("")
+                ForEach(voice.availableInputs) { route in Text(route.name).tag(route.id) }
+            }.accessibilityIdentifier("audio-input-device")
+            Picker("Output", selection: outputRoute) {
+                Text("System default").tag("")
+                ForEach(voice.availableOutputs) { route in Text(route.name).tag(route.id) }
+            }.accessibilityIdentifier("audio-output-device")
+            if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            VStack(alignment: .leading, spacing: 7) {
+                HStack { Text("Input gain"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
+                Slider(value: inputGain, in: 0...200, step: 1)
+                    .accessibilityLabel("Input gain")
+                    .accessibilityValue("\(voice.inputGain)%")
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                HStack { Text("Live voice processing"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12))
+                Slider(value: liveStrength, in: 0...100, step: 1)
+                    .accessibilityLabel("Live voice processing")
+                    .accessibilityValue("\(voice.voiceProcessingStrength)%")
+                Text("Processing runs on capture before the WebRTC sender; 0% bypasses it.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            }
+            #else
             AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
             AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+            #endif
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Output gain").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                 Slider(value: outputGain, in: 0...200, step: 1)
@@ -1033,36 +1065,30 @@ private struct AudioPreferencesView: View {
             Text("Use the iPhone system picker to switch available routes during a call.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             #else
-            Text("Input shows the current macOS default. Output and live WebRTC routing follow System Settings; this build cannot switch devices per call.")
+            Text("Caper routes this call to the selected devices without changing macOS system defaults.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             Divider().overlay(CaperTheme.border)
             Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
-            Text("Record up to 30 seconds, then listen back. This test runs only before joining voice; it never sends audio to a channel.")
+            Text("Record up to 30 seconds from the selected mic. In a call, Caper sends silence while recording locally and restores your current mute state afterward.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             HStack {
                 Button(micTest.recording ? "Stop testing" : "Mic Test") {
                     if micTest.recording { micTest.stopRecording() }
-                    else { Task { await micTest.start() } }
+                    else { Task { await micTest.start(voice: voice) } }
                 }
                 .accessibilityIdentifier("local-mic-test")
-                .disabled(voice.phase != .idle && voice.phase != .failed && !micTest.recording)
-                if micTest.recording { ProgressView(value: Double(micTest.level)).frame(width: 130).accessibilityLabel("Microphone level") }
+                .disabled(recordedPreview || (voice.phase != .idle && voice.phase != .failed && voice.phase != .connected && !micTest.recording))
+                if micTest.recording { Text("Recording locally…").font(CaperTheme.font(11)) }
             }
             if recordedPreview { Text("TEST FIXTURE — completed local recording layout only; no microphone or playback.")
                 .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
             if micTest.hasRecording || recordedPreview {
                 HStack {
                     Button("Play natural") { micTest.play(enhanced: false) }.disabled(recordedPreview)
-                    Button("Play EQ comparison") { micTest.play(enhanced: true) }.disabled(recordedPreview)
+                    Button("Play enhanced") { micTest.play(enhanced: true) }.disabled(recordedPreview)
                     Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview)
                 }
-                HStack {
-                    Text("Comparison EQ").font(CaperTheme.font(12, weight: .bold))
-                    Slider(value: comparisonStrength, in: 0...100, step: 1)
-                        .accessibilityLabel("Comparison EQ strength")
-                    Text("\(micTest.strength)%")
-                }
-                Text("Comparison EQ adds a high-pass filter, warmth and presence to local playback only. It does not process your live microphone.")
+                Text("Enhanced playback uses the input gain and live processing strength captured during this test. Natural playback uses raw microphone input.")
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
             if let error = micTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
@@ -1102,8 +1128,21 @@ private struct AudioPreferencesView: View {
         Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) })
     }
     #if os(macOS)
-    private var comparisonStrength: Binding<Double> {
-        Binding(get: { Double(micTest.strength) }, set: { micTest.strength = Int($0) })
+    private var inputRoute: Binding<String> {
+        Binding(get: { voice.selectedInputID ?? "" }, set: { uid in
+            routeError = voice.selectInput(uid) ? nil : "Could not switch microphone. The previous route is still selected."
+        })
+    }
+    private var outputRoute: Binding<String> {
+        Binding(get: { voice.selectedOutputID ?? "" }, set: { uid in
+            routeError = voice.selectOutput(uid) ? nil : "Could not switch output. The previous route is still selected."
+        })
+    }
+    private var inputGain: Binding<Double> {
+        Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)) })
+    }
+    private var liveStrength: Binding<Double> {
+        Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)) })
     }
     private var recordedPreview: Bool { CaperRuntime.isAudioPreview("audio-recorded") }
     private var statisticsPreview: Bool { CaperRuntime.isAudioPreview("audio-statistics") }

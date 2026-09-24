@@ -136,12 +136,12 @@ final class CaperParityUITests: XCTestCase {
         app.descendants(matching: .any)["Audio preferences"].tap()
         assertStaticText("TEST FIXTURE — completed local recording layout only; no microphone or playback.", in: app)
         XCTAssertTrue(app.buttons["local-mic-test"].exists)
-        for title in ["Play natural", "Play EQ comparison", "Stop playback"] {
+        for title in ["Play natural", "Play enhanced", "Stop playback"] {
             let button = app.buttons[title]
             XCTAssertTrue(button.exists, "Missing \(title) in the completed recording layout")
             XCTAssertFalse(button.isEnabled, "A visual fixture must not play synthetic audio")
         }
-        XCTAssertTrue(app.sliders["Comparison EQ strength"].exists)
+        XCTAssertTrue(app.sliders["Live voice processing"].exists)
         assertStaticText("25%", in: app)
         capture("audio-recorded-test-fixture", app: app)
         app.buttons["close-audio-preferences"].tap()
@@ -292,9 +292,14 @@ final class CaperParityUITests: XCTestCase {
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
         #else
-        assertStaticText("Input shows the current macOS default. Output and live WebRTC routing follow System Settings; this build cannot switch devices per call.", in: app, timeout: 2)
+        XCTAssertTrue(app.descendants(matching: .any)["audio-input-device"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["audio-output-device"].exists)
+        assertStaticText("Caper routes this call to the selected devices without changing macOS system defaults.", in: app, timeout: 2)
+        XCTAssertTrue(app.sliders["Input gain"].exists)
+        XCTAssertTrue(app.sliders["Live voice processing"].exists)
+        assertStaticText("Processing runs on capture before the WebRTC sender; 0% bypasses it.", in: app, timeout: 2)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
-        assertStaticText("Record up to 30 seconds, then listen back. This test runs only before joining voice; it never sends audio to a channel.", in: app, timeout: 2)
+        assertStaticText("Record up to 30 seconds from the selected mic. In a call, Caper sends silence while recording locally and restores your current mute state afterward.", in: app, timeout: 2)
         #endif
         capture("audio-preferences", app: app)
     }

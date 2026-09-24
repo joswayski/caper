@@ -20,6 +20,12 @@ targets:
       - path: Sources/CaperRTCBridge/CaperRTCBridge.h
         headerVisibility: public
       - path: Sources/CaperRTCBridge/CaperRTCBridge.m
+      - path: Sources/CaperRTCBridge/CaperMacAudioDevice.h
+        headerVisibility: public
+      - path: Sources/CaperRTCBridge/CaperMacAudioDevice.m
+      - path: Sources/CaperRTCBridge/CaperVoiceDSP.c
+      - path: Sources/CaperRTCBridge/CaperVoiceDSP.h
+        headerVisibility: project
       - path: Sources/CaperRTCBridge/sdk
         buildPhase: none
     dependencies:
@@ -92,6 +98,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_MACOS_BUNDLE_ID)
         PRODUCT_NAME: Caper
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"

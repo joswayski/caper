@@ -1,6 +1,9 @@
 import XCTest
 import AVFoundation
 @testable import CaperCore
+#if os(macOS)
+import CaperRTCBridge
+#endif
 
 final class ProtocolTests: XCTestCase {
     @MainActor
@@ -17,22 +20,26 @@ final class ProtocolTests: XCTestCase {
 
     #if os(macOS)
     @MainActor
-    func testTimedMicrophoneStopReplaysSavedFileWithoutRecorderCurrentTime() throws {
+    func testTimedMicrophoneStopSavesBothNaturalAndEnhancedPCMWithoutHardware() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("caper-mic-test-fixture-\(UUID().uuidString).caf")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1))
-        try { () throws in
-            let file = try AVAudioFile(forWriting: url, settings: format.settings)
-            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 22_050))
-            buffer.frameLength = 22_050
-            try file.write(from: buffer)
-        }()
-        // Closing the writer mirrors the recorder having already stopped itself at 30 seconds.
         let test = MacMicrophoneTest(fileURL: url)
+        defer { test.close() }
+        let raw = Array(repeating: Int16(1200), count: 22_050)
+        let processed = Array(repeating: Int16(2400), count: 22_050)
+        let natural = raw.withUnsafeBytes { Data($0) }
+        let enhanced = processed.withUnsafeBytes { Data($0) }
+        test.saveComparison(CaperAudioComparison(natural: natural, enhanced: enhanced, sampleRate: 44_100))
+        XCTAssertTrue(test.hasRecording, "Timed stop and explicit stop use the same bounded PCM save path")
         XCTAssertEqual(MacMicrophoneTest.recordedDuration(at: url), 0.5, accuracy: 0.01)
-        test.finishRecording()
-        XCTAssertTrue(test.hasRecording, "Automatic stop must keep a playable recording even when no recorder is active")
-        test.close()
+        let enhancedURL = url.deletingPathExtension().appendingPathExtension("enhanced.caf")
+        XCTAssertEqual(MacMicrophoneTest.recordedDuration(at: enhancedURL), 0.5, accuracy: 0.01)
+        let saved = try AVAudioFile(forReading: enhancedURL, commonFormat: .pcmFormatInt16, interleaved: true)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: saved.processingFormat, frameCapacity: 22_050))
+        try saved.read(into: buffer)
+        XCTAssertEqual(buffer.int16ChannelData?.pointee[400], 2400, "Enhanced samples must not be replaced by raw input")
+        XCTAssertEqual(MacMicrophoneTest.playbackDecibels(for: 0), -96)
+        XCTAssertEqual(MacMicrophoneTest.playbackDecibels(for: 100), 0)
+        XCTAssertEqual(MacMicrophoneTest.playbackDecibels(for: 200), 6.0206, accuracy: 0.001)
     }
     #endif
 

@@ -1,40 +1,43 @@
 #if os(macOS)
 import AVFoundation
 import AudioToolbox
+import CaperRTCBridge
 import Observation
 
-/// Local comparison only. Neither the recorded samples nor this effect graph enter WebRTC.
+/// Bounded local comparison of raw input and the same processed PCM submitted to WebRTC.
+/// Neither recording is transmitted by the test; VoiceClient suspends publication in a call.
 @MainActor @Observable
 final class MacMicrophoneTest {
     private(set) var recording = false
     private(set) var hasRecording = false
-    private(set) var level: Float = 0
     var error: String?
-    var strength = 25
 
-    private var recorder: AVAudioRecorder?
-    private var engine: AVAudioEngine?
-    private var player: AVAudioPlayerNode?
+    private var voice: VoiceClient?
+    private let device: CaperMacAudioDevice
+    private let fileURL: URL
     private var timer: Task<Void, Never>?
     private var generation = 0
     private var playbackGeneration = 0
-    private let fileURL: URL
+    private var engine: AVAudioEngine?
+    private var player: AVAudioPlayerNode?
+    private var playbackOutputID: UInt32 = 0
+    private var playbackGain = 100
 
-    init(fileURL: URL = FileManager.default.temporaryDirectory.appendingPathComponent("caper-mic-test-\(UUID().uuidString).caf")) {
+    init(device: CaperMacAudioDevice = CaperMacAudioDevice(),
+         fileURL: URL = FileManager.default.temporaryDirectory.appendingPathComponent("caper-mic-test-\(UUID().uuidString).caf")) {
+        self.device = device
         self.fileURL = fileURL
     }
 
-    func start() async {
+    func start(voice: VoiceClient? = nil) async {
         guard !recording else { return }
         generation += 1
         let attempt = generation
+        self.voice = voice
         stopPlayback()
         timer?.cancel()
-        recorder?.stop()
-        recorder = nil
-        try? FileManager.default.removeItem(at: fileURL)
-        hasRecording = false
-        error = nil
+        clearFiles()
+        hasRecording = false; error = nil
         let permitted: Bool
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: permitted = true
@@ -43,32 +46,14 @@ final class MacMicrophoneTest {
         }
         guard attempt == generation else { return }
         guard permitted else { error = "Microphone access is required for a local test."; return }
-        do {
-            let recorder = try AVAudioRecorder(url: fileURL, settings: [
-                AVFormatIDKey: Int(kAudioFormatLinearPCM),
-                AVSampleRateKey: 44_100,
-                AVNumberOfChannelsKey: 1,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsFloatKey: false
-            ])
-            guard recorder.prepareToRecord(), recorder.record(forDuration: 30) else {
-                error = "Could not start recording."; return
-            }
-            recorder.isMeteringEnabled = true
-            self.recorder = recorder
-            recording = true
-            timer = Task { [weak self] in
-                for _ in 0..<300 {
-                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                    guard let self, self.recording else { return }
-                    recorder.updateMeters()
-                    self.level = max(0, min(1, (recorder.averagePower(forChannel: 0) + 60) / 60))
-                    if !recorder.isRecording { self.finishRecording(); return }
-                }
-                self?.finishRecording()
-            }
-        } catch {
-            self.error = "Could not access the microphone."
+        guard (voice?.beginMicrophoneComparison() ?? device.beginComparison()) else {
+            error = "Could not start recording from the selected microphone."
+            return
+        }
+        recording = true
+        timer = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            self?.stopRecording()
         }
     }
 
@@ -77,14 +62,40 @@ final class MacMicrophoneTest {
         finishRecording()
     }
 
-    // Also called after AVAudioRecorder's own timed stop, when currentTime is zero.
     func finishRecording() {
         recording = false
         timer?.cancel(); timer = nil
-        recorder?.stop(); recorder = nil
-        level = 0
-        hasRecording = Self.recordedDuration(at: fileURL) > 0.2
-        if !hasRecording { error = "Record a little longer to hear your voice." }
+        playbackOutputID = voice?.comparisonOutputDeviceID() ?? device.resolvedOutputDeviceID
+        playbackGain = voice?.outputGain ?? 100
+        let samples = voice?.endMicrophoneComparison() ?? device.endComparison()
+        voice = nil
+        saveComparison(samples)
+    }
+
+    func saveComparison(_ samples: CaperAudioComparison?) {
+        guard let samples,
+              Double(samples.natural.count) > 0.2 * samples.sampleRate * 2,
+              samples.natural.count == samples.enhanced.count else {
+            error = "Record a little longer to hear your voice."
+            return
+        }
+        do {
+            try Self.write(samples.natural, rate: samples.sampleRate, to: fileURL)
+            try Self.write(samples.enhanced, rate: samples.sampleRate, to: enhancedURL)
+            hasRecording = true
+        } catch {
+            clearFiles()
+            self.error = "Could not save the local comparison."
+        }
+    }
+
+    private static func write(_ pcm: Data, rate: Double, to url: URL) throws {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: rate, channels: 1, interleaved: true),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(pcm.count / 2)),
+              let channel = buffer.int16ChannelData?.pointee else { throw CocoaError(.fileWriteUnknown) }
+        pcm.copyBytes(to: UnsafeMutableRawBufferPointer(start: channel, count: pcm.count))
+        buffer.frameLength = AVAudioFrameCount(pcm.count / 2)
+        try AVAudioFile(forWriting: url, settings: format.settings).write(from: buffer)
     }
 
     static func recordedDuration(at url: URL) -> TimeInterval {
@@ -97,27 +108,23 @@ final class MacMicrophoneTest {
         stopPlayback()
         error = nil
         do {
-            let file = try AVAudioFile(forReading: fileURL)
+            let file = try AVAudioFile(forReading: enhanced ? enhancedURL : fileURL)
             let engine = AVAudioEngine()
             let player = AVAudioPlayerNode()
+            let volume = AVAudioUnitEQ(numberOfBands: 1)
+            volume.bands[0].bypass = true
+            volume.globalGain = Self.playbackDecibels(for: playbackGain)
             engine.attach(player)
-            if enhanced {
-                let eq = AVAudioUnitEQ(numberOfBands: 3)
-                let amount = Float(strength) / 100
-                let highPass = eq.bands[0]
-                highPass.filterType = .highPass; highPass.frequency = 80; highPass.bypass = strength == 0
-                let warmth = eq.bands[1]
-                warmth.filterType = .parametric; warmth.frequency = 190
-                warmth.bandwidth = 1; warmth.gain = 2 * amount; warmth.bypass = false
-                let presence = eq.bands[2]
-                presence.filterType = .parametric; presence.frequency = 2_900
-                presence.bandwidth = 1; presence.gain = 3 * amount; presence.bypass = false
-                // This graph affects comparison playback only; the live WebRTC mic is untouched.
-                engine.attach(eq)
-                engine.connect(player, to: eq, format: file.processingFormat)
-                engine.connect(eq, to: engine.mainMixerNode, format: file.processingFormat)
-            } else {
-                engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
+            engine.attach(volume)
+            engine.connect(player, to: volume, format: file.processingFormat)
+            engine.connect(volume, to: engine.mainMixerNode, format: file.processingFormat)
+            guard playbackOutputID != 0, let output = engine.outputNode.audioUnit else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            var route = AudioDeviceID(playbackOutputID)
+            guard AudioUnitSetProperty(output, kAudioOutputUnitProperty_CurrentDevice,
+                                       kAudioUnitScope_Global, 0, &route, UInt32(MemoryLayout.size(ofValue: route))) == noErr else {
+                throw CocoaError(.fileReadUnknown)
             }
             let playback = playbackGeneration
             player.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self, weak player] _ in
@@ -135,6 +142,10 @@ final class MacMicrophoneTest {
         }
     }
 
+    static func playbackDecibels(for gain: Int) -> Float {
+        gain == 0 ? -96 : Float(20 * log10(Double(max(0, min(200, gain))) / 100))
+    }
+
     func stopPlayback() {
         playbackGeneration += 1
         player?.stop(); engine?.stop()
@@ -145,10 +156,20 @@ final class MacMicrophoneTest {
         generation += 1
         timer?.cancel(); timer = nil
         recording = false
-        recorder?.stop(); recorder = nil
+        _ = voice?.endMicrophoneComparison() ?? device.endComparison()
+        voice = nil
         stopPlayback()
-        level = 0; hasRecording = false
+        hasRecording = false
+        clearFiles()
+    }
+
+    private var enhancedURL: URL {
+        fileURL.deletingPathExtension().appendingPathExtension("enhanced.caf")
+    }
+
+    private func clearFiles() {
         try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: enhancedURL)
     }
 }
 #endif

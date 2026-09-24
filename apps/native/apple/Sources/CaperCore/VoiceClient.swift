@@ -2,6 +2,9 @@ import Foundation
 import Observation
 import WebRTC
 import AVFoundation
+#if os(macOS)
+import CaperRTCBridge
+#endif
 #if os(iOS)
 import AVFAudio
 #endif
@@ -80,6 +83,13 @@ public final class VoiceClient {
     public var availableOutputs: [AudioDevice] = []
     public var selectedInputID: String?
     public var selectedOutputID: String?
+    #if os(macOS)
+    public private(set) var inputGain = 100
+    public private(set) var voiceProcessingStrength = 25
+    private let audioDevice: CaperMacAudioDevice
+    private var comparisonPeer: RTCPeerConnection?
+    private var comparisonGeneration: Int?
+    #endif
     public private(set) var diagnostics: VoiceDiagnostics?
     public internal(set) var context: VoiceContext?
 
@@ -108,7 +118,7 @@ public final class VoiceClient {
     private var generation = 0
     private var previousStatistics: VoiceStatisticsSample?
     private var delegate: PeerDelegate?
-    private let factory: RTCPeerConnectionFactory
+    private let factory: RTCPeerConnectionFactory?
     private let gateway: Gateway
     private let requestMicrophonePermission: @MainActor () async -> Bool
     #if os(iOS)
@@ -123,7 +133,26 @@ public final class VoiceClient {
         self.api = api
         self.requestMicrophonePermission = requestMicrophonePermission
         RTCInitializeSSL()
+        #if os(macOS)
+        let audioDevice = CaperMacAudioDevice()
+        self.audioDevice = audioDevice
+        let inputGain = UserDefaults.standard.object(forKey: "caper.voice.inputGain") == nil ? 100 : UserDefaults.standard.integer(forKey: "caper.voice.inputGain")
+        let strength = UserDefaults.standard.object(forKey: "caper.voice.processingStrength") == nil ? 25 : UserDefaults.standard.integer(forKey: "caper.voice.processingStrength")
+        let initialGain = min(200, max(0, inputGain))
+        let initialStrength = min(100, max(0, strength))
+        self.inputGain = initialGain
+        voiceProcessingStrength = initialStrength
+        audioDevice.inputGain = initialGain
+        audioDevice.processingStrength = initialStrength
+        for (key, select) in [("caper.voice.inputUID", true), ("caper.voice.outputUID", false)] {
+            let uid = UserDefaults.standard.string(forKey: key) ?? ""
+            if select { _ = audioDevice.selectInputUID(uid) }
+            else { _ = audioDevice.selectOutputUID(uid) }
+        }
+        factory = CaperCreateAudioPeerFactory(audioDevice)
+        #else
         factory = RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(), decoderFactory: RTCDefaultVideoDecoderFactory())
+        #endif
         gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { _, _ in }
     }
 
@@ -146,6 +175,7 @@ public final class VoiceClient {
         self.context = context
         phase = .joining; error = nil; self.channelID = channelID
         do {
+            guard let factory else { throw VoiceError.setup }
             guard await requestMicrophonePermission() else { throw VoiceError.permission }
             guard generation == attempt, phase == .joining else { return }
             #if os(iOS)
@@ -229,6 +259,9 @@ public final class VoiceClient {
             mediaSubscriptionID = subscriptionID
             publishedMID = mid
             phase = .connected
+            #if os(macOS)
+            audioDevice.publicationEnabled = !muted
+            #endif
             track.isEnabled = !muted
             reconnectAttempts = 0
             startLeaseRenewal(generation: attempt, peer: peer)
@@ -246,6 +279,9 @@ public final class VoiceClient {
             muteBeforeDeafen = value
             muted = true
         } else { muted = value }
+        #if os(macOS)
+        audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
+        #endif
         microphone?.isEnabled = phase == .connected && !muted
         await syncState()
     }
@@ -259,6 +295,9 @@ public final class VoiceClient {
             else { track.isEnabled = false }
         }
         muted = value ? true : muteBeforeDeafen
+        #if os(macOS)
+        audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
+        #endif
         microphone?.isEnabled = phase == .connected && !muted
         await syncState()
     }
@@ -446,6 +485,11 @@ public final class VoiceClient {
     }
 
     private func detachLocal(preservingContext: Bool = false) {
+        #if os(macOS)
+        audioDevice.publicationEnabled = false
+        _ = audioDevice.endComparison()
+        comparisonPeer = nil; comparisonGeneration = nil
+        #endif
         diagnostics = nil; previousStatistics = nil
         pollTask?.cancel(); pollTask = nil
         turnTask?.cancel(); turnTask = nil
@@ -600,14 +644,66 @@ public final class VoiceClient {
         selectedInputID = audio.currentRoute.inputs.first?.uid
         selectedOutputID = audio.currentRoute.outputs.first?.uid
         #else
-        // The embedded WebRTC build follows the macOS system route and does
-        // not expose a supported per-device switch API.
-        availableInputs = AVCaptureDevice.default(for: .audio).map { [AudioDevice(id: $0.uniqueID, name: $0.localizedName)] } ?? []
-        availableOutputs = []
-        selectedInputID = availableInputs.first?.id
-        selectedOutputID = nil
+        availableInputs = CaperMacAudioDevice.inputRoutes().map { AudioDevice(id: $0.uid, name: $0.name) }
+        availableOutputs = CaperMacAudioDevice.outputRoutes().map { AudioDevice(id: $0.uid, name: $0.name) }
+        selectedInputID = audioDevice.inputUID
+        selectedOutputID = audioDevice.outputUID
         #endif
     }
+
+    #if os(macOS)
+    /// Publication stays gated before/during comparison; stale tests cannot open a replacement call.
+    func beginMicrophoneComparison() -> Bool {
+        guard comparisonGeneration == nil else { return false }
+        if phase == .idle || phase == .failed { return audioDevice.beginComparison() }
+        guard phase == .connected, let peer else { return false }
+        audioDevice.publicationEnabled = false
+        guard audioDevice.beginComparison() else {
+            audioDevice.publicationEnabled = !muted
+            return false
+        }
+        comparisonPeer = peer; comparisonGeneration = generation
+        return true
+    }
+
+    func endMicrophoneComparison() -> CaperAudioComparison? {
+        let samples = audioDevice.endComparison()
+        if let attempt = comparisonGeneration, attempt == generation, phase == .connected,
+           let oldPeer = comparisonPeer, oldPeer === peer {
+            audioDevice.publicationEnabled = !muted
+        }
+        comparisonPeer = nil; comparisonGeneration = nil
+        return samples
+    }
+
+    func comparisonOutputDeviceID() -> UInt32 { audioDevice.resolvedOutputDeviceID }
+
+    @discardableResult public func selectInput(_ uid: String) -> Bool {
+        guard audioDevice.selectInputUID(uid) else { return false }
+        selectedInputID = uid
+        UserDefaults.standard.set(uid, forKey: "caper.voice.inputUID")
+        return true
+    }
+
+    @discardableResult public func selectOutput(_ uid: String) -> Bool {
+        guard audioDevice.selectOutputUID(uid) else { return false }
+        selectedOutputID = uid
+        UserDefaults.standard.set(uid, forKey: "caper.voice.outputUID")
+        return true
+    }
+
+    public func setInputGain(_ value: Int) {
+        inputGain = min(200, max(0, value))
+        audioDevice.inputGain = inputGain
+        UserDefaults.standard.set(inputGain, forKey: "caper.voice.inputGain")
+    }
+
+    public func setVoiceProcessingStrength(_ value: Int) {
+        voiceProcessingStrength = min(100, max(0, value))
+        audioDevice.processingStrength = voiceProcessingStrength
+        UserDefaults.standard.set(voiceProcessingStrength, forKey: "caper.voice.processingStrength")
+    }
+    #endif
 
     public func refreshDiagnostics() async {
         guard phase == .connected, let peer else { return }
