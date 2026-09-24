@@ -1920,6 +1920,9 @@ impl CaperApp {
                     if let Some(error) = &self.error {
                         ui.colored_label(ERROR, error);
                     }
+                    if narrow && let Some(error) = &self.voice.error {
+                        ui.colored_label(ERROR, error);
+                    }
                     let before = self.draft.clone();
                     let channel_name = self.channel_name().to_owned();
                     let response = ui.add_sized(
