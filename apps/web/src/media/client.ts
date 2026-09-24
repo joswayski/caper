@@ -110,6 +110,7 @@ export class PublicCallClient {
   private statsTimer?: number;
   private diagnostics?: ConnectionDiagnostics;
   private previousStats?: { received: number; sent: number; sampledAt: number };
+  private mediaDetail?: object;
   private noiseSuppression: NoiseSuppression = "dpdfnet8";
   private audioSetup: AudioSetup = "headphones";
   private voiceProcessingStrength = DEFAULT_VOICE_PROCESSING_STRENGTH;
@@ -646,6 +647,30 @@ export class PublicCallClient {
       captureAttempt: this.captureAttempt, captureError: this.captureError,
       captures: [...this.captures.values()].map((capture) => capture.diagnostics()),
       connection: this.diagnostics,
+      voice: this.voiceDiagnostics(),
+    };
+  }
+
+  private voiceDiagnostics() {
+    const sender = this.senders.get("microphone");
+    const others = this.participants.filter((participant) => participant.id !== this.selfId);
+    return {
+      phase: this.phase, muted: this.muted, deafened: this.deafened, monitoring: this.monitoring,
+      liveUpdates: !!this.events?.connected,
+      peer: this.pc && {
+        connection: this.pc.connectionState, ice: this.pc.iceConnectionState, signaling: this.pc.signalingState,
+      },
+      microphoneSender: sender && {
+        attached: !!sender.sender.track, enabled: sender.track.enabled,
+        readyState: sender.track.readyState, muted: sender.track.muted,
+      },
+      participants: this.participants.length,
+      otherTracks: others.reduce((count, participant) => count + participant.tracks.length, 0),
+      subscriptions: this.subscriptions.size,
+      remoteStreams: [...this.remoteMedia.values()].map(({ stream }) => stream.getAudioTracks().map((track) => ({
+        readyState: track.readyState, muted: track.muted, enabled: track.enabled,
+      }))).flat(),
+      media: this.mediaDetail,
     };
   }
 
@@ -877,12 +902,26 @@ export class PublicCallClient {
       const report = await pc.getStats();
       if (pc !== this.pc) return;
       let received = 0, sent = 0, lost = 0, jitter = 0, rtt = 0, relay = false;
+      // Per-stream counters separate "nothing arrives" from "arrives but is silent".
+      const outbound: object[] = [], inbound: object[] = [], sources: object[] = [];
+      const level = (value: unknown) => typeof value === "number" ? Number(value.toFixed(4)) : undefined;
       report.forEach((stat) => {
-        if (stat.type === "outbound-rtp") sent += stat.bytesSent ?? 0;
+        if (stat.type === "outbound-rtp") {
+          sent += stat.bytesSent ?? 0;
+          outbound.push({ mid: stat.mid, packetsSent: stat.packetsSent, bytesSent: stat.bytesSent, active: stat.active });
+        }
+        if (stat.type === "media-source" && stat.kind === "audio") {
+          sources.push({ audioLevel: level(stat.audioLevel), totalAudioEnergy: level(stat.totalAudioEnergy) });
+        }
         if (stat.type === "inbound-rtp") {
           received += stat.bytesReceived ?? 0;
           lost += stat.packetsLost ?? 0;
           jitter = Math.max(jitter, stat.jitter ?? 0);
+          inbound.push({
+            mid: stat.mid, packetsReceived: stat.packetsReceived, bytesReceived: stat.bytesReceived,
+            audioLevel: level(stat.audioLevel), totalSamplesReceived: stat.totalSamplesReceived,
+            concealedSamples: stat.concealedSamples,
+          });
         }
         if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.nominated) {
           rtt = Math.max(rtt, stat.currentRoundTripTime ?? 0);
@@ -894,6 +933,7 @@ export class PublicCallClient {
       const receiveBitrate = elapsed > 0 ? Math.max(0, (received - (this.previousStats?.received ?? received)) * 8_000 / elapsed) : 0;
       const sendBitrate = elapsed > 0 ? Math.max(0, (sent - (this.previousStats?.sent ?? sent)) * 8_000 / elapsed) : 0;
       this.previousStats = { received, sent, sampledAt };
+      this.mediaDetail = { outbound, sources, inbound };
       if (!this.joinTiming) return;
       this.diagnostics = {
         ...this.joinTiming,
@@ -1101,6 +1141,7 @@ export class PublicCallClient {
     window.clearInterval(this.statsTimer);
     this.diagnostics = undefined;
     this.previousStats = undefined;
+    this.mediaDetail = undefined;
     this.joinTiming = undefined;
     this.microphoneStatus = undefined;
     this.monitorStream = undefined;

@@ -88,6 +88,8 @@ export async function captureMicrophone(
       const { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl } = raw.getSettings();
       return {
         requested: mode, status: microphone.status, stopped,
+        rawTrack: { readyState: raw.readyState, muted: raw.muted, enabled: raw.enabled },
+        processedTrack: microphone.track === raw ? undefined : { readyState: microphone.track.readyState, muted: microphone.track.muted, enabled: microphone.track.enabled },
         context: context?.state, contextSampleRate: context?.sampleRate,
         capture: { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl },
         dpdfnet: { profile: activeProfile, processedHops, meanProcessingMs: processedHops ? totalProcessingMs / processedHops : null, maxProcessingMs, hopBudgetMs: 10 },
