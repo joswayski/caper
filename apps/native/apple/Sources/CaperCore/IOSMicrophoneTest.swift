@@ -80,7 +80,7 @@ final class IOSMicrophoneTest {
             try Self.write(samples.enhanced, rate: samples.sampleRate, to: enhancedURL)
             hasRecording = true
         } catch {
-            clearFiles(); error = "Could not save the local comparison."
+            clearFiles(); self.error = "Could not save the local comparison."
         }
     }
 
@@ -118,7 +118,7 @@ final class IOSMicrophoneTest {
             try engine.start()
             self.engine = engine; self.player = player
             player.play()
-        } catch { stopPlayback(); error = "Could not play the local recording." }
+        } catch { stopPlayback(); self.error = "Could not play the local recording." }
     }
 
     func stopPlayback() {
