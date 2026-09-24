@@ -82,7 +82,11 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(chat.draft, "new next draft", "gateway confirmation must not erase the next draft")
         held?.respond(status: 500, data: Data(#"{"error":"late failure"}"#.utf8))
         await send.value
-        XCTAssertNil(chat.error)
+        // The independent WebSocket may report a reconnect while HTTP finishes.
+        // Only this already-confirmed send's late failure must be ignored.
+        XCTAssertNotEqual(chat.error?.contains("late failure"), true)
+        XCTAssertFalse(chat.sendRejected)
+        XCTAssertNil(chat.pendingMessage)
         XCTAssertEqual(chat.draft, "new next draft", "late HTTP failure must not erase confirmed successor")
         XCTAssertEqual(chat.messages.map(\.content.text), ["submitted first"])
         await chat.stop()
