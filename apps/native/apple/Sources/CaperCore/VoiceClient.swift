@@ -123,7 +123,7 @@ public final class VoiceClient {
     private var mediaSubscriptionID: String?
     private var stateSequence = 0
     private var restartSequence = 0
-    private var muteBeforeDeafen = false
+    private var muteBeforeDeafen: Bool?
     private var snapshotRevisions = MonotonicRevision()
     private var reconnectAttempts = 0
     private var joinName = "Guest"
@@ -308,18 +308,14 @@ public final class VoiceClient {
     }
 
     public func setMuted(_ value: Bool) async {
-        #if os(macOS)
-        if !value, deafened {
-            deafened = false
-            refreshLocalPlayback()
+        if !value {
+            muteBeforeDeafen = nil
+            if deafened {
+                deafened = false
+                refreshLocalPlayback()
+            }
         }
         muted = value
-        #else
-        if deafened {
-            muteBeforeDeafen = value
-            muted = true
-        } else { muted = value }
-        #endif
         #if os(macOS) || os(iOS)
         audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
         #endif
@@ -329,19 +325,13 @@ public final class VoiceClient {
 
     public func setDeafened(_ value: Bool) async {
         guard value != deafened else { return }
-        #if os(iOS)
-        if value, !deafened { muteBeforeDeafen = muted }
-        #endif
+        if value { muteBeforeDeafen = muted; muted = true }
+        else { muted = muteBeforeDeafen ?? false; muteBeforeDeafen = nil }
         deafened = value
         for (mid, track) in remoteAudioByMID {
             if let participantID = participantByMID[mid] { applyLocalPlayback(to: track, participantID: participantID) }
             else { track.isEnabled = false }
         }
-        #if os(macOS)
-        muted = value
-        #else
-        muted = value ? true : muteBeforeDeafen
-        #endif
         #if os(macOS) || os(iOS)
         audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
         #endif

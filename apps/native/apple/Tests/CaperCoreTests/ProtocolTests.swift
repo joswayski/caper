@@ -135,6 +135,9 @@ final class ProtocolTests: XCTestCase {
 
         let rejected = delivery.begin(text: "invalid", makeID: { "client-two" })
         delivery.reject(id: rejected.id)
+        XCTAssertEqual(delivery.pending, rejected)
+        XCTAssertTrue(delivery.rejected)
+        XCTAssertEqual(delivery.discardRejected(), "invalid")
         let edited = delivery.begin(text: "edited", makeID: { "client-three" })
         XCTAssertEqual(edited.id, "client-three")
         XCTAssertEqual(edited.text, "edited")
@@ -226,25 +229,29 @@ final class ProtocolTests: XCTestCase {
 
         await voice.setMuted(true)
         await voice.setDeafened(true)
-        await voice.setMuted(false)
-        #if os(macOS)
-        XCTAssertFalse(voice.muted, "unmuting also undeafens on desktop")
-        XCTAssertFalse(voice.deafened)
-        await voice.setMuted(true)
-        await voice.setDeafened(true)
-        #else
-        XCTAssertTrue(voice.muted, "capture remains locally silent while deafened")
-        #endif
+        XCTAssertTrue(voice.muted)
         await voice.setDeafened(false)
-        #if os(macOS)
-        XCTAssertFalse(voice.muted, "desktop undeafen does not restore a prior mute")
-        #else
-        XCTAssertFalse(voice.muted, "an explicit mute change while deafened becomes the restored intent")
-        #endif
+        XCTAssertTrue(voice.muted, "undeafen restores a pre-deafen explicit mute")
+        await voice.setDeafened(false)
+        XCTAssertTrue(voice.muted, "repeated undeafen must not clear that mute")
+
+        await voice.setDeafened(true)
+        await voice.setMuted(false)
+        XCTAssertFalse(voice.muted, "explicit unmute overrides saved deafen intent")
+        XCTAssertFalse(voice.deafened)
+        await voice.setDeafened(false)
+        XCTAssertFalse(voice.muted, "stale pre-deafen intent must not return")
 
         await voice.setMuted(true)
         await voice.setDeafened(false)
         XCTAssertTrue(voice.muted, "repeating an already-false deafen state must not restore stale intent")
+
+        await voice.setDeafened(true)
+        voice.phase = .connected
+        voice.leaveImmediately()
+        XCTAssertTrue(voice.muted)
+        await voice.setDeafened(false)
+        XCTAssertTrue(voice.muted, "transfer teardown retains pre-deafen mute intent")
 
         voice.setOutputGain(250)
         voice.setParticipantGain(-10, participantID: "remote")

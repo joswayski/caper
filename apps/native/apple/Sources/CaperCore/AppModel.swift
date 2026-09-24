@@ -540,6 +540,7 @@ public final class ChatModel {
     public var typingNames: [String] = []
     public var currentAuthor: ChatAuthor? { session?.author }
     public var pendingMessage: PendingMessage? { delivery.pending }
+    public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
     private let api: APIClient
     private var channelID: String?
@@ -619,6 +620,11 @@ public final class ChatModel {
                 return
             }
             subscriptionID = newSubscription
+            if CaperRuntime.isChatPreview("chat-rejected") {
+                let preview = delivery.begin(text: "Fixture message that was rejected")
+                delivery.reject(id: preview.id)
+                error = "Fixture rejection; no message was sent."
+            }
         } catch {
             guard generation == requestGeneration else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
@@ -652,12 +658,15 @@ public final class ChatModel {
     }
 
     public func send() async {
+        guard !sending, !delivery.rejected else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
         if delivery.pending == nil, let validation = MessageValidation.error(for: draft) { error = validation; return }
+        let newSubmission = delivery.pending == nil
         let command = delivery.begin(text: draft)
+        if newSubmission { draft = "" }
         let requestGeneration = generation
-        await gateway.reportActivity()
         sending = true; error = nil
+        await gateway.reportActivity()
         do {
             let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text)
             guard self.channelID == channelID,
@@ -665,12 +674,11 @@ public final class ChatModel {
             guard MessageValidation.acceptsResponse(message, channelID: channelID, command: command, authorID: session.author.id) else {
                 throw APIError(status: 502, message: "The chat service returned an invalid message.")
             }
-            merge([message]); delivery.confirmHTTP(id: command.id); draft = ""
+            merge([message]); delivery.confirmHTTP(id: command.id)
         } catch {
             guard self.channelID == channelID,
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             if delivery.pending?.id != command.id {
-                draft = ""
                 self.error = nil
                 sending = false
                 return
@@ -683,6 +691,14 @@ public final class ChatModel {
             }
         }
         sending = false
+    }
+
+    @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
+        guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
+        guard let text = delivery.discardRejected() else { return false }
+        if edit { draft = text }
+        error = nil
+        return true
     }
 
     public func setTyping(_ active: Bool) {
@@ -706,7 +722,7 @@ public final class ChatModel {
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
     }
 
-    private func receive(_ event: [String: Any], generation eventGeneration: Int, channelID eventChannelID: String) {
+    func receive(_ event: [String: Any], generation eventGeneration: Int, channelID eventChannelID: String) {
         guard generation == eventGeneration, channelID == eventChannelID else { return }
         guard let type = event["type"] as? String else { return }
         if type == "subscription.error", let status = event["status"] as? Int, [401, 403, 404].contains(status) {
@@ -736,7 +752,6 @@ public final class ChatModel {
                 merge([message])
                 if newMessage, let author = session?.author, author.id != message.author.id { CaperEffects.shared.play(.message) }
                 if delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
-                    draft = ""
                     error = nil
                 }
                 if let subscriptionID {

@@ -118,6 +118,35 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(macOS)
+    func testSidebarResizeKeyboardBoundsAndSavedWidth() {
+        let app = launch()
+        let handle = app.descendants(matching: .any)["Channel sidebar width"]
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        handle.doubleClick()
+        XCTAssertEqual(handle.value as? String, "280 pixels")
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
+        let dragged = Int((handle.value as? String ?? "").split(separator: " ").first ?? "") ?? 0
+        XCTAssertTrue((310...320).contains(dragged), "drag translation must be anchored once, not added every frame")
+        handle.doubleClick()
+        handle.click()
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "290 pixels")
+        handle.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "220 pixels")
+        handle.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "440 pixels")
+        handle.doubleClick()
+        handle.typeKey(.rightArrow, modifierFlags: [])
+        app.terminate()
+        let reopened = launch()
+        let saved = reopened.descendants(matching: .any)["Channel sidebar width"]
+        XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        XCTAssertEqual(saved.value as? String, "290 pixels", "resized width survives relaunch")
+        capture("sidebar-resized", app: reopened)
+        saved.doubleClick()
+    }
+
     func testMembersCanBeHiddenWithoutChangingConversation() {
         let app = launch()
         let toggle = app.buttons["Hide members"]
@@ -267,13 +296,9 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-muted", app: app)
         headphones.tap()
         XCTAssertEqual(headphones.value as? String, "On")
-        #if os(macOS)
-        XCTAssertEqual(microphone.value as? String, "On", "Desktop undeafen also unmutes")
-        #else
         XCTAssertEqual(microphone.value as? String, "Muted", "Undeafen must preserve an explicitly muted microphone")
         microphone.tap()
         XCTAssertEqual(microphone.value as? String, "On")
-        #endif
         #if os(macOS)
         app.buttons["Input Options"].tap()
         XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 2))
@@ -348,6 +373,23 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.", in: app, timeout: 2)
         #endif
         capture("audio-preferences", app: app)
+    }
+
+    func testRejectedMessageActionsRenderWithoutSending() {
+        let app = launch(fixture: "chat-rejected")
+        #if os(iOS)
+        app.buttons["Open navigation"].tap()
+        #endif
+        assertStaticText("Fixture message that was rejected", in: app)
+        XCTAssertTrue(app.buttons["Edit"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Edit"].isEnabled)
+        XCTAssertTrue(app.buttons["Dismiss"].exists)
+        XCTAssertFalse(app.buttons["send-message-button"].isEnabled)
+        capture("chat-rejected-fixture", app: app)
+        app.buttons["Edit"].tap()
+        XCTAssertFalse(app.buttons["Dismiss"].exists)
+        XCTAssertEqual(app.descendants(matching: .any)["message-composer"].value as? String,
+                       "Fixture message that was rejected")
     }
 
     #if os(iOS)

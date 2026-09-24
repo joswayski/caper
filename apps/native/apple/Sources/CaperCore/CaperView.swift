@@ -110,7 +110,8 @@ private enum WorkspaceSheet: Identifiable {
 private struct WorkspaceView: View {
     @Bindable var model: AppModel
     @State private var sheet: WorkspaceSheet?
-    @State private var sidebarWidth: CGFloat = 280
+    @AppStorage("caper.channelSidebarWidth") private var sidebarWidth = 280.0
+    @State private var sidebarDragStart: Double?
     @State private var membersPreference: Bool?
     private let parityFixture: String?
 
@@ -155,14 +156,38 @@ private struct WorkspaceView: View {
                                 narrow: narrow,
                                 close: { model.navigationOpen = false }
                             )
-                            .frame(width: narrow ? nil : sidebarWidth)
-                            .frame(maxWidth: narrow ? .infinity : sidebarWidth)
+                            .frame(width: narrow ? nil : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
+                            .frame(maxWidth: narrow ? .infinity : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
                             .overlay(alignment: .trailing) {
                                 if !narrow {
                                     Rectangle().fill(Color.clear).frame(width: 8).contentShape(Rectangle())
                                         .gesture(DragGesture().onChanged { value in
-                                            sidebarWidth = min(440, max(220, sidebarWidth + value.translation.width))
-                                        })
+                                            if sidebarDragStart == nil { sidebarDragStart = sidebarWidth }
+                                            resizeSidebar((sidebarDragStart ?? sidebarWidth) + Double(value.translation.width), viewport: geometry.size.width)
+                                        }.onEnded { _ in sidebarDragStart = nil })
+                                        .onTapGesture(count: 2) { resizeSidebar(280, viewport: geometry.size.width) }
+                                        .focusable()
+                                        .accessibilityElement()
+                                        .accessibilityLabel("Channel sidebar width")
+                                        .accessibilityValue("\(Int(min(sidebarWidth, sidebarMaximum(for: geometry.size.width)))) pixels")
+                                        .accessibilityHint("Drag to resize. Arrow keys adjust by 10 pixels; Home and End select the bounds. Double-click resets.")
+                                        .accessibilityAdjustableAction { direction in
+                                            switch direction {
+                                            case .increment: resizeSidebar(sidebarWidth + 10, viewport: geometry.size.width)
+                                            case .decrement: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
+                                            @unknown default: break
+                                            }
+                                        }
+                                        .onKeyPress { press in
+                                            switch press.key {
+                                            case .leftArrow: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
+                                            case .rightArrow: resizeSidebar(sidebarWidth + 10, viewport: geometry.size.width)
+                                            case .home: resizeSidebar(220, viewport: geometry.size.width)
+                                            case .end: resizeSidebar(sidebarMaximum(for: geometry.size.width), viewport: geometry.size.width)
+                                            default: return .ignored
+                                            }
+                                            return .handled
+                                        }
                                 }
                             }
                             if !narrow {
@@ -205,6 +230,14 @@ private struct WorkspaceView: View {
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
         }
+    }
+
+    private func sidebarMaximum(for viewport: CGFloat) -> Double {
+        max(220, min(440, Double(viewport) - 60 - 320))
+    }
+
+    private func resizeSidebar(_ value: Double, viewport: CGFloat) {
+        sidebarWidth = min(sidebarMaximum(for: viewport), max(220, value.rounded()))
     }
 
     private var modalSheet: Binding<WorkspaceSheet?> {
@@ -706,7 +739,11 @@ private struct ChatView: View {
                         }
                         ForEach(chat.messages) { message in MessageRow(message: message).id(message.id) }
                         if let pending = chat.pendingMessage {
-                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error) { Task { await chat.send() } }
+                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
+                                              rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
+                                              retry: { Task { await chat.send() } },
+                                              edit: { _ = chat.discardRejected(edit: true) },
+                                              dismiss: { _ = chat.discardRejected() })
                         }
                         if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
@@ -744,7 +781,7 @@ private struct ChatView: View {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
                 }
                 .buttonStyle(PrimaryIconButton())
-                .disabled(chat.sending || chat.pendingMessage != nil || MessageValidation.error(for: chat.draft) != nil)
+                .disabled(chat.sending || chat.sendRejected || (chat.pendingMessage == nil && MessageValidation.error(for: chat.draft) != nil))
                 .accessibilityLabel("Send message")
                 .accessibilityIdentifier("send-message-button")
             }.padding(.horizontal, 18).padding(.vertical, 12)
@@ -835,7 +872,8 @@ private struct MessageRow: View {
 }
 
 private struct PendingMessageRow: View {
-    let pending: PendingMessage; let author: ChatAuthor?; let error: String?; let retry: () -> Void
+    let pending: PendingMessage; let author: ChatAuthor?; let error: String?
+    let rejected: Bool; let canEdit: Bool; let retry: () -> Void; let edit: () -> Void; let dismiss: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(name: author?.name ?? "Guest", size: 34)
@@ -843,8 +881,16 @@ private struct PendingMessageRow: View {
                 Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
                 Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                 if let error {
-                    HStack { Text("Not confirmed yet. \(error)"); Button("Retry send", action: retry) }
-                        .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
+                        HStack(spacing: 12) {
+                            if rejected {
+                                Button("Edit", action: edit).disabled(!canEdit)
+                                Button("Dismiss", action: dismiss)
+                            } else { Button("Retry send", action: retry) }
+                        }
+                    }
+                    .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)

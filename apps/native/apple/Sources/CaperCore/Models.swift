@@ -176,6 +176,7 @@ public struct PendingMessage: Equatable, Sendable {
 public struct ChatDeliveryState: Sendable {
     public private(set) var cursor: String
     public private(set) var pending: PendingMessage?
+    public private(set) var rejected = false
 
     public init(cursor: String = "0") { self.cursor = cursor }
 
@@ -187,17 +188,24 @@ public struct ChatDeliveryState: Sendable {
     }
 
     public mutating func confirmHTTP(id: String) {
-        if pending?.id == id { pending = nil }
+        if pending?.id == id { pending = nil; rejected = false }
     }
 
     public mutating func reject(id: String) {
-        if pending?.id == id { pending = nil }
+        if pending?.id == id { rejected = true }
+    }
+
+    public mutating func discardRejected() -> String? {
+        guard rejected else { return nil }
+        let text = pending?.text
+        pending = nil; rejected = false
+        return text
     }
 
     @discardableResult
     public mutating func confirmGateway(clientMessageID: String, authorID: String, ownAuthorID: String?) -> Bool {
         guard authorID == ownAuthorID, pending?.id == clientMessageID else { return false }
-        pending = nil
+        pending = nil; rejected = false
         return true
     }
 
@@ -210,7 +218,7 @@ public struct ChatDeliveryState: Sendable {
 
     public mutating func reset(cursor: String = "0", preservingPending: Bool = false) {
         self.cursor = cursor
-        if !preservingPending { pending = nil }
+        if !preservingPending { pending = nil; rejected = false }
     }
 }
 
