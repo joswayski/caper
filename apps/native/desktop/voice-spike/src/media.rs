@@ -9,6 +9,10 @@ mod input_processing;
 #[path = "mic_test.rs"]
 pub mod mic_test;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "sfu_smoke.rs"]
+mod sfu_smoke;
+
 pub use self::input_processing::AudioProcessingDiagnostics;
 #[cfg(test)]
 use self::input_processing::VoiceProcessor;
@@ -1135,6 +1139,29 @@ impl NativeSession {
             )
             .await
             .map_err(VoiceError::Media)?;
+        Self::from_join(
+            api,
+            joined,
+            muted,
+            deafened,
+            input_guid,
+            output_guid,
+            control,
+        )
+        .await
+    }
+
+    // Keep the issued capability available to callers that must await cleanup
+    // even if device/signaling setup fails. Normal joins retain SetupGuard.
+    async fn from_join(
+        api: MediaApi,
+        joined: JoinResponse,
+        muted: bool,
+        deafened: bool,
+        input_guid: Option<&str>,
+        output_guid: Option<&str>,
+        control: &JoinControl,
+    ) -> Result<Self, VoiceError> {
         let factory = PeerConnectionFactory::default();
         if !factory.acquire_platform_adm() {
             detached_leave(api.clone(), joined.token);

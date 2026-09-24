@@ -163,9 +163,13 @@ reports safe direction/track counts. It has not been rerun with that diagnostic.
 A physical microphone is not required for meaningful automated audio tests.
 The private null-device regression injects locally generated speech into the
 virtual microphone, requires nonzero captured and denoised PCM, and checks that
-a second local peer decodes it. A remote acceptance test must likewise establish
-nonzero input/publication and decoded reception instead of relying on silence
-or transport connectivity alone. Local success does not prove SFU forwarding.
+a second local peer decodes it. On September 24, a separately authorized,
+20-second-bounded live test also passed **two-way decoded speech through the
+public SFU**, using two owned native sessions and generated virtual-microphone
+input. Both remote leaves were acknowledged and both clients disappeared from
+General. See [the acceptance record](../../../docs/media.md#native-generated-speech-acceptance)
+for exact boundaries and results; physical devices and sustained/TURN calls
+remain unverified.
 
 A non-ignored, local-only native test receives actual RTP after adding a
 subscription to an existing transport and after ICE renewal. It caught a separate

@@ -55,7 +55,7 @@
 }
 /* minmax(0, 1fr): one long channel name must not widen every line past the sidebar. */
 .spaces-room .channel-navigation ul { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; margin: 4px 0 0; padding: 0; list-style: none; }
-.spaces-room .channel-navigation ul[hidden] { display: none; }
+.spaces-room .channel-navigation ul[data-collapsed] { display: none; }
 .channel-navigation li { position: relative; min-width: 0; display: flex; align-items: center; }
 .channel-select { min-width: 0; height: 38px; flex: 1; display: flex; align-items: center; gap: 9px; padding: 0 34px 0 9px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .82rem; font-weight: 650; text-align: left; cursor: pointer; }
 .channel-select svg { width: 17px; height: 17px; flex: 0 0 auto; }
@@ -211,6 +211,21 @@
   .spaces-room .people-panel { border-right: 0; border-bottom: 0; }
   .spaces-room .sidebar-channels { padding: 0 14px 18px; }
   .spaces-room .people-panel ul { max-height: none; }
+  /* As in the homepage room on phones, the viewed channel's line (who is in
+     its voice, and Join) and the voice panel sit above the conversation, so
+     joining, muting and leaving never depend on Browse. Browse still opens
+     every space and channel. */
+  .call-room.spaces-room:has(.voice-panel):not(.navigation-open) { grid-template: auto minmax(0, 1fr) / 1fr; }
+  .spaces-room:has(.voice-panel):not(.navigation-open) > .people-panel { grid-area: 1 / 1; display: flex; border-bottom: 1px solid var(--border); }
+  .spaces-room:has(.voice-panel):not(.navigation-open) > .stage { grid-area: 2 / 1; }
+  /* The member list overlays the conversation below its header. */
+  .spaces-room:has(.voice-panel):not(.navigation-open) > .space-member-presence { position: relative; grid-area: 2 / 1; top: auto; justify-self: end; margin-top: 54px; }
+  .spaces-room:has(.voice-panel):not(.navigation-open) .sidebar-channels { flex: none; padding: 12px 12px 0; }
+  .spaces-room:not(.navigation-open) .channel-navigation > :is(header, .channel-section-heading),
+  .spaces-room:not(.navigation-open) .channel-navigation > ul > li:not(:has(.channel-select[aria-current="page"])) { display: none; }
+  .spaces-room:not(.navigation-open) .channel-navigation > ul { margin: 0; }
+  /* A collapsed channel section still shows the channel being viewed. */
+  .spaces-room:not(.navigation-open) .channel-navigation > ul[data-collapsed] { display: grid; }
   .navigation-toggle { display: inline-flex; }
   .chat-channel-title { order: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .spaces-room .chat-heading { gap: 10px; }

@@ -1320,6 +1320,25 @@ test("a received participant track is exposed for that participant's speaking in
   assert.equal(remote?.stream.getAudioTracks().length, 1);
 });
 
+test("remote audio is withheld until the join has completed", async (t) => {
+  const { client, states, install } = setup(t);
+  const original = fetch;
+  install("fetch", (url: string, options: RequestInit) => {
+    if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({
+      participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }],
+    }));
+    return original(url, options);
+  });
+
+  await client.join();
+
+  // Subscription happens during joining; no state before "connected" may carry it.
+  assert.ok(states.some((state) => state.phase === "joining"));
+  assert.deepEqual(states.filter((state) => state.phase !== "connected").map((state) => state.remoteMedia.length).filter(Boolean), []);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.remoteMedia.length, 1);
+});
+
 test("cancel before SSE readiness stops silent publication and releases capture", async (t) => {
   const { client, track, calls, states } = setup(t, { eventsReady: false });
   const joining = client.join();
