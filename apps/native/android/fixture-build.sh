@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 "$ROOT/prepare-fonts.sh"
-./gradlew --no-daemon \
+bash "$ROOT/prepare-audio.sh"
+CMAKE_BUILD_PARALLEL_LEVEL=1 ./gradlew --no-daemon --max-workers=1 \
   -PcaperFixtureMode=true \
   -PcaperApiBaseUrl=http://localhost:3001 \
   assembleDebug

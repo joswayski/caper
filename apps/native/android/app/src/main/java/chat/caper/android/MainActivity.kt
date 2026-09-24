@@ -44,6 +44,17 @@ import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
+import chat.caper.android.voice.MicComparison
+import chat.caper.android.voice.MicComparisonBinding
+import chat.caper.android.voice.PrejoinMicTest
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -416,7 +427,13 @@ internal data class VoiceJoinIntent(
             state.pendingMessage?.error?.let { pending ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (state.pendingMessage.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
-                    TextButton({ if (state.pendingMessage.rejected) viewModel.discardPending()?.let { draft = it } else viewModel.send(state.pendingMessage.text) }) { Text(if (state.pendingMessage.rejected) "Edit" else "Retry send") }
+                    TextButton({
+                        if (state.pendingMessage.rejected) {
+                            if (canEditRejectedMessage(draft, state.pendingMessage.text)) viewModel.discardPending()?.let { draft = it }
+                        } else viewModel.send(state.pendingMessage.text)
+                    }, enabled = !state.pendingMessage.rejected || canEditRejectedMessage(draft, state.pendingMessage.text)) {
+                        Text(if (state.pendingMessage.rejected) "Edit" else "Retry send")
+                    }
                     if (state.pendingMessage.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
                 }
             }
@@ -425,11 +442,11 @@ internal data class VoiceJoinIntent(
                     draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
                     modifier = Modifier.weight(1f), placeholder = { Text("Message #${channel.name}") }, maxLines = 6,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } }),
+                    keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                 )
                 FilledIconButton(
-                    { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } },
+                    { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } },
                     modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null,
                     shape = MaterialTheme.shapes.small,
                     colors = IconButtonDefaults.filledIconButtonColors(
@@ -636,6 +653,128 @@ internal data class VoiceJoinIntent(
 
 @Composable private fun AudioSettingsDialog(state: AppUiState, voice: VoiceState, close: () -> Unit, logout: () -> Unit) {
     val context = LocalContext.current
+    val preferences = remember(context) { context.getSharedPreferences("audio", android.content.Context.MODE_PRIVATE) }
+    var inputGain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
+    var strength by remember { mutableIntStateOf(preferences.getInt("strength", 25)) }
+    // Preparation owns its scope until it can release the recorder, even when
+    // this dialog has already left composition.
+    val cleanupScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
+    var generation by remember { mutableLongStateOf(0L) }
+    var permissionGeneration by remember { mutableLongStateOf(0L) }
+    var testing by remember { mutableStateOf(false) }
+    var finishing by remember { mutableStateOf(false) }
+    var dialogActive by remember { mutableStateOf(true) }
+    var prejoin by remember { mutableStateOf<PrejoinMicTest?>(null) }
+    var binding by remember { mutableStateOf<MicComparisonBinding?>(null) }
+    var recording by remember { mutableStateOf<MicComparison?>(null) }
+    var playback by remember { mutableStateOf<Job?>(null) }
+    var playingEnhanced by remember { mutableStateOf<Boolean?>(null) }
+    var timeout by remember { mutableStateOf<Job?>(null) }
+    var testError by remember { mutableStateOf<String?>(null) }
+    fun stopPlayback() {
+        playback?.cancel()
+        recording?.stopPlayback() // Silence the AudioTrack before publication resumes.
+        playback = null
+        playingEnhanced = null
+    }
+    fun playClip(clip: MicComparison, enhanced: Boolean) {
+        stopPlayback()
+        val ticket = generation
+        val next = cleanupScope.launch(start = CoroutineStart.LAZY) {
+            if (!dialogActive || ticket != generation || recording !== clip) return@launch
+            playingEnhanced = enhanced
+            try { clip.play(enhanced, VoiceCallService.state.value.outputVolume) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { testError = error.message ?: "Local playback failed." }
+            finally {
+                if (playback === coroutineContext[Job]) {
+                    playback = null
+                    playingEnhanced = null
+                }
+            }
+        }
+        playback = next
+        next.start()
+    }
+    fun teardownTest() {
+        generation++
+        timeout?.cancel(); timeout = null
+        testing = false
+        finishing = false
+        prejoin?.let { local ->
+            local.stopNow()
+            cleanupScope.launch { local.finish() }
+        }
+        prejoin = null
+        stopPlayback()
+        recording = null
+        binding?.let { VoiceCallService.resumeMicPublication(it) }
+        binding = null
+    }
+    fun stopTest() {
+        if (!testing) return
+        testing = false
+        finishing = true
+        timeout?.cancel(); timeout = null
+        val ticket = generation
+        val local = prejoin
+        prejoin = null
+        if (local != null) cleanupScope.launch {
+            try {
+                val result = local.finish()
+                if (ticket == generation && dialogActive) recording = result
+            } finally { if (ticket == generation && dialogActive) finishing = false }
+        } else {
+            recording = binding?.let { VoiceCallService.finishMicComparison(it) }
+            finishing = false
+        }
+    }
+    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!dialogActive || permissionGeneration != generation) Unit
+        else if (!granted) {
+            finishing = false
+            testError = "Microphone permission is required to test audio."
+        }
+        else {
+            testError = null
+            recording = null
+            val ticket = generation
+            val call = VoiceCallService.beginMicComparison()
+            if (call != null) {
+                binding = call
+                finishing = false
+                testing = true
+            } else if (!VoiceCallService.canPreparePrejoinMicTest()) {
+                finishing = false
+                testError = "Wait for the current call to connect or leave it before testing the microphone."
+            } else cleanupScope.launch {
+                try {
+                    val local = PrejoinMicTest.prepare(context)
+                    if (!dialogActive || ticket != generation || !VoiceCallService.canPreparePrejoinMicTest()) {
+                        local.stopNow(); local.finish()
+                    } else {
+                        prejoin = local
+                        finishing = false
+                        testing = true
+                        timeout = cleanupScope.launch { delay(30_000); if (ticket == generation) stopTest() }
+                    }
+                } catch (error: Throwable) {
+                    if (dialogActive && ticket == generation) {
+                        finishing = false
+                        testError = error.message ?: "Microphone test could not start."
+                    }
+                }
+            }
+            if (testing) timeout = cleanupScope.launch { delay(30_000); if (ticket == generation) stopTest() }
+        }
+    }
+    DisposableEffect(Unit) { onDispose {
+        dialogActive = false
+        teardownTest()
+    } }
+    DisposableEffect(voice.channelId, voice.phase, voice.selectedRouteId) { onDispose {
+        if (dialogActive) teardownTest()
+    } }
     CaperDialog("Audio settings", close) {
         Text("Input and output routing", fontWeight = FontWeight.Bold)
         if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
@@ -644,12 +783,44 @@ internal data class VoiceJoinIntent(
                 Spacer(Modifier.width(8.dp)); Text(route.name)
             }
         } else Text("Choose audio input and output in Android system settings. Available communication routes appear here during a call on Android 12 and newer.", color = TextMuted, fontSize = 12.sp)
+        Text("Android communication routes follow the selected system device; separate microphone and speaker hardware selectors are not available.", color = TextMuted, fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input gain", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
+        Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, valueRange = 0f..200f)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Processing strength", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
+        Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, valueRange = 0f..100f)
+        Text("DPDFNet-8 with RNNoise fallback, then voice EQ, compression and limiting. Defaults to 25%.", color = TextMuted, fontSize = 11.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton({ if (testing) stopTest() else {
+                finishing = true
+                permissionGeneration = generation
+                microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+            } },
+                enabled = !finishing && (testing || recording == null), shape = MaterialTheme.shapes.small) { Text(if (testing) "Stop mic test" else "Test microphone") }
+            if (recording != null) TextButton(::teardownTest) { Text("Done") }
+        }
+        if (testing) Text("Recording locally for up to 30 seconds. Your test audio is not published.", color = TextMuted, fontSize = 11.sp)
+        testError?.let { Text(it, color = ErrorText, fontSize = 11.sp) }
+        recording?.let { clip ->
+            Text("Compare your microphone", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ playClip(clip, false) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Natural") }
+                OutlinedButton({ playClip(clip, true) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Enhanced") }
+                if (playingEnhanced != null) TextButton(::stopPlayback) { Text("Stop playback") }
+            }
+        }
         if (voice.phase == VoiceState.Phase.CONNECTED) {
             Text("Connected to #${voice.channelName}", color = CaperGreen, fontSize = 12.sp)
             Text("Mute and deafen controls remain available in the account bar and ongoing notification.", color = TextMuted, fontSize = 12.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("${voice.outputVolume}%", color = TextMuted, fontSize = 11.sp) }
             Slider(voice.outputVolume.toFloat(), { VoiceCallService.setOutputVolume(context, it.toInt()) }, valueRange = 0f..200f)
-            Text("Android exposes communication routes rather than independent microphone and speaker selectors. Input gain and the natural/enhanced mic test require a native capture-processing path and are not enabled yet.", color = TextMuted, fontSize = 11.sp)
+            if (state.account?.debugEnabled == true && voice.processing.size == 5) {
+                val report = voice.processing
+                DiagnosticRow("Microphone processing", when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" })
+                DiagnosticRow("Processed frames", (report[1] * 480).toString())
+                DiagnosticRow("Mean processing", if (report[1] == 0L) "Not sampled" else "%.1f ms".format(report[2] / report[1] / 1000.0))
+                DiagnosticRow("Maximum processing", "%.1f ms".format(report[3] / 1000.0))
+                DiagnosticRow("Queued microphone", "%.1f ms".format(report[4] / 48.0))
+            }
             voice.diagnostics?.let { diagnostics ->
                 HorizontalDivider(color = Border)
                 Text("Connection details", fontWeight = FontWeight.Bold)
@@ -672,6 +843,9 @@ internal data class VoiceJoinIntent(
         }
     }
 }
+
+internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
+    draft.isBlank() || draft == rejectedText
 
 @Composable private fun DiagnosticRow(label: String, value: String) = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
     Text(label, color = TextMuted, fontSize = 11.sp); Text(value, fontSize = 11.sp)

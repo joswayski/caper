@@ -48,6 +48,7 @@ android {
         versionName = "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "ENABLE_NATIVE_VOICE", "true")
+        externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
     }
 
     buildTypes {
@@ -73,9 +74,13 @@ android {
         buildConfig = true
     }
     sourceSets["main"].apply {
-        assets.srcDirs("../third_party", layout.buildDirectory.dir("generated/caper-fonts/assets"))
+        assets.srcDirs("../third_party", layout.buildDirectory.dir("generated/caper-fonts/assets"), layout.buildDirectory.dir("native-inputs/assets"))
+        jniLibs.srcDir(layout.buildDirectory.dir("native-inputs/ort/jni"))
         res.srcDir(layout.buildDirectory.dir("generated/caper-fonts/res"))
     }
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
+    packaging.jniLibs.pickFirsts += "**/libonnxruntime.so"
     packaging.resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -83,6 +88,12 @@ android {
     }
     kotlinOptions.jvmTarget = "17"
     lint.abortOnError = true
+}
+
+tasks.configureEach {
+    if (name.startsWith("configureCMake") || name.startsWith("merge") && name.endsWith("Assets")) {
+        doFirst { check(file("build/native-inputs/ort/headers/onnxruntime_cxx_api.h").isFile) { "Run prepare-audio.sh before Gradle." } }
+    }
 }
 
 if (!releaseSigningAvailable) {

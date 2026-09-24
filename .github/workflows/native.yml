@@ -247,12 +247,17 @@ jobs:
           arch: x86_64
           profile: pixel_7_pro
           disable-animations: true
-          script: python apps/native/android/smoke.py
+          script: |
+            CMAKE_BUILD_PARALLEL_LEVEL=1 apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 -PcaperFixtureMode=true -PcaperApiBaseUrl=http://localhost:3001 connectedDebugAndroidTest
+            python apps/native/android/smoke.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: caper-ui-android-${{ github.sha }}
-          path: apps/native/android/dist/ui/
+          path: |
+            apps/native/android/dist/ui/
+            apps/native/android/app/build/reports/androidTests/
+            apps/native/android/app/build/outputs/androidTest-results/
           if-no-files-found: warn
           retention-days: 14
       - name: Stop the parity fixture
