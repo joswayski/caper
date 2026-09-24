@@ -553,7 +553,9 @@ impl Cloudflare {
                 provider_code(&value),
             ));
         }
-        tracing::debug!(%id, operation, status = status.as_u16(), elapsed_ms = started.elapsed().as_millis(), "Cloudflare operation succeeded");
+        // Info level: join latency is a chain of these calls, so production
+        // needs every successful elapsed time, not only failures.
+        tracing::info!(%id, operation, status = status.as_u16(), elapsed_ms = started.elapsed().as_millis(), "Cloudflare operation succeeded");
         Ok(value)
     }
 }
@@ -1531,6 +1533,17 @@ struct Join {
     muted: bool,
     #[serde(default)]
     deafened: bool,
+    /// The browser's first microphone offer. Publishing it inside join saves a
+    /// signaling round trip; the same handler state machine runs either way.
+    #[serde(default)]
+    publish: Option<InitialPublish>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct InitialPublish {
+    mid: String,
+    session_description: Sdp,
 }
 
 fn country_code(headers: &HeaderMap) -> Option<String> {
@@ -1558,6 +1571,13 @@ async fn join(
     let name = account_name.as_deref().unwrap_or(submitted_name).trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
+    }
+    if input
+        .publish
+        .as_ref()
+        .is_some_and(|p| !valid_offer(&p.mid, &p.session_description))
+    {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
     }
     let country_code = country_code(&headers);
     let reservation = Uuid::new_v4();
@@ -1724,9 +1744,19 @@ async fn join(
         Ok(Ok(()))
     })
     .await??;
-    Ok(Json(
-        json!({"token":token,"id":id,"iceServers":ice,"turn":turn_metadata(p.turn.as_ref().unwrap())}),
-    ))
+    let mut response = json!({"token":token,"id":id,"iceServers":ice,"turn":turn_metadata(p.turn.as_ref().unwrap())});
+    if let Some(publish) = input.publish {
+        // The capability was never returned, so nobody else can use this
+        // participant. Any failure removes it instead of leaving a half-join.
+        match publish_track(&s, &token, &publish.mid, &publish.session_description.sdp).await {
+            Ok(publication) => response["publish"] = publication,
+            Err(error) => {
+                remove_participant(&s, id).await;
+                return Err(error);
+            }
+        }
+    }
+    Ok(Json(response))
 }
 
 fn turn_metadata(cache: &TurnCache) -> Value {
@@ -2295,14 +2325,21 @@ async fn publish(
     Json(i): Json<Publish>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
-    if i.kind != "microphone"
-        || !matches!(i.session_description.ty, SdpType::Offer)
-        || !valid_text(&i.mid, 64)
-        || !valid_text(&i.session_description.sdp, 200_000)
-    {
+    if i.kind != "microphone" || !valid_offer(&i.mid, &i.session_description) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
     }
-    let token = bearer(&headers)?;
+    publish_track(&s, bearer(&headers)?, &i.mid, &i.session_description.sdp)
+        .await
+        .map(Json)
+}
+
+fn valid_offer(mid: &str, description: &Sdp) -> bool {
+    matches!(description.ty, SdpType::Offer)
+        && valid_text(mid, 64)
+        && valid_text(&description.sdp, 200_000)
+}
+
+async fn publish_track(s: &AppState, token: &str, mid: &str, sdp: &str) -> Result<Value, ApiError> {
     let (id, session) = s
         .update(|r| {
             let id = authenticate(r, token)?;
@@ -2319,7 +2356,7 @@ async fn publish(
                 p.operation = false;
                 return Err(ApiError::new(StatusCode::CONFLICT, "negotiation pending"));
             }
-            if p.tracks.len() >= MAX_TRACKS || p.tracks.contains_key(&i.mid) {
+            if p.tracks.len() >= MAX_TRACKS || p.tracks.contains_key(mid) {
                 p.operation = false;
                 return Err(ApiError::new(
                     StatusCode::CONFLICT,
@@ -2331,13 +2368,13 @@ async fn publish(
         .await?;
     let track_id = Uuid::new_v4();
     let provider_name = format!("caper-{track_id}");
-    let body = json!({"sessionDescription":{"type":"offer","sdp":i.session_description.sdp},"tracks":[{"location":"local","mid":i.mid,"trackName":provider_name,"kind":"audio"}]});
+    let body = json!({"sessionDescription":{"type":"offer","sdp":sdp},"tracks":[{"location":"local","mid":mid,"trackName":provider_name,"kind":"audio"}]});
     let result = s.provider.tracks_new(&s.config, &session, body).await;
     let valid = result.as_ref().is_ok_and(|v| {
         validate_provider_envelope(v).is_ok()
             && v.get("tracks").and_then(Value::as_array).is_some_and(|a| {
                 a.iter()
-                    .any(|t| t.get("mid").and_then(Value::as_str) == Some(i.mid.as_str()))
+                    .any(|t| t.get("mid").and_then(Value::as_str) == Some(mid))
             })
             && v.pointer("/sessionDescription/type")
                 .and_then(Value::as_str)
@@ -2347,8 +2384,8 @@ async fn publish(
                 .is_some()
     });
     if !valid {
-        enqueue_cleanup(&s, session.clone(), i.mid.clone()).await;
-        remove_participant(&s, id).await;
+        enqueue_cleanup(s, session.clone(), mid.to_owned()).await;
+        remove_participant(s, id).await;
         return Err(ApiError::from(
             result
                 .err()
@@ -2358,7 +2395,7 @@ async fn publish(
     let result = result.unwrap();
     s.update(|r| {
         let Some(p) = r.participants.get_mut(&id) else {
-            enqueue_cleanup_locked(r, session.clone(), i.mid.clone());
+            enqueue_cleanup_locked(r, session.clone(), mid.to_owned());
             return Ok(Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "session expired",
@@ -2367,7 +2404,7 @@ async fn publish(
         p.operation = false;
         p.operation_started = None;
         p.tracks.insert(
-            i.mid.clone(),
+            mid.to_owned(),
             Track {
                 id: track_id,
                 kind: Kind::Microphone,
@@ -2381,7 +2418,7 @@ async fn publish(
     if let Some(object) = result.as_object_mut() {
         object.insert("trackId".into(), json!(track_id));
     }
-    Ok(Json(result))
+    Ok(result)
 }
 
 #[derive(Deserialize)]

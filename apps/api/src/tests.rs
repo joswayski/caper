@@ -157,7 +157,9 @@ async fn call(
     let value = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap()
+        // Extractor rejections are plain text; keep them for status assertions.
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into()))
     };
     (status, value)
 }
@@ -916,6 +918,98 @@ async fn public_join_publish_close_and_leave_emit_changes() {
     )
     .await;
     assert!(next_event(&mut stream).await.unwrap().contains("changed"));
+}
+
+#[tokio::test]
+async fn join_can_publish_the_first_microphone_in_one_request() {
+    let (s, mock) = state();
+    let (status, joined) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        json!({"name":"fast","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(joined["publish"]["sessionDescription"]["type"], "answer");
+    assert_eq!(joined["publish"]["tracks"][0]["mid"], "0");
+    let track_id = joined["publish"]["trackId"].clone();
+    assert!(track_id.is_string());
+    let observer = self::joined(&s, "observer").await;
+    let snapshot = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/snapshot",
+        observer["token"].as_str(),
+        json!({}),
+    )
+    .await
+    .1;
+    let published = snapshot["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == joined["id"])
+        .unwrap();
+    assert_eq!(published["tracks"][0]["id"], track_id);
+    // The ordinary publication path still rejects a duplicate MID.
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/publish",
+            joined["token"].as_str(),
+            json!({"kind":"microphone","mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}),
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+
+    // Browsers fall back to a separate publish only on this pre-mutation rejection,
+    // which is also how an API without combined publication answers the field.
+    let sessions = mock.next.load(Ordering::SeqCst);
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/join",
+            None,
+            json!({"name":"future","unknown":true}),
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Invalid offers are rejected before any provider session exists.
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/join",
+            None,
+            json!({"name":"bad","publish":{"mid":"0","sessionDescription":{"type":"answer","sdp":"v=0"}}}),
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions);
+
+    // A publication the state machine refuses never leaves a half-joined participant.
+    let parent = self::joined(&s, "parent").await;
+    let (status, _) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        parent["token"].as_str(),
+        json!({"name":"Microphone test","monitor":"receiver","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let participants = s.read(|r| Ok(r.participants.len())).await.unwrap();
+    assert_eq!(participants, 3);
 }
 
 #[tokio::test]

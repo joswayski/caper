@@ -1412,6 +1412,67 @@ September 6, 2026 investigation (not a post-deployment performance guarantee):
   sender detached; leave ended the raw track. This is not live SFU, physical
   speech-quality, remote first-decoded-audio, or native desktop validation.
 
+### Combined join and publication
+
+Joining used to run four Cloudflare API calls back to back: `sessions/new` and
+TURN (in parallel), then `tracks/new` for publication, then per remote track
+`tracks/new` and `renegotiate` after transport. Two September 24, 2026 samples
+(one browser, direct route, 6–7 ms RTT) took 1,071 ms in an empty room and
+1,515 ms with one other listener. Their 31 ms roster phase in the empty room is
+one gateway round trip, so the remaining time is mostly provider calls and
+their ordering, not the SFU or AWS hop. These are two samples, not a benchmark.
+
+The browser now creates its sendonly audio transceiver and offer while the
+microphone opens, and sends that offer with `media.join`. The API creates the
+session and TURN credentials, commits the participant, then publishes the offer
+through the same `publish` state machine before returning `publish` (the answer
+and `trackId`) with the capability. A refused or failed publication removes the
+participant; the capability is never returned half-joined. TURN servers arrive
+with that response and are applied with `setConfiguration` before the offer is
+set locally, so relay gathering still uses them. The microphone is attached to
+the sender before the answer is applied, preserving the previous invariant that
+transport never connects without the (disabled) microphone. The authenticated
+roster/lease request now overlaps ICE; subscription negotiation and audio still
+wait for the connected transport.
+
+When the provider refuses to pull a listed source that is not sending media yet
+(`track_gone` while the source is still in the roster), the listener re-checks
+after 0.5, 1, 2, 4 and 8 seconds instead of waiting for the next roster change or
+15-second lease heartbeat. A successful reconciliation resets that budget.
+
+Diagnostics now separate microphone capture from session + publication (both
+measured from Join, since they overlap), report ICE time within transport, and
+show the selected candidate pair's connectivity checks (sent vs answered) to
+expose retransmitted checks. The API logs every successful Cloudflare call's
+`elapsed_ms` at info level (`Cloudflare operation succeeded`), not only failures.
+
+Compatibility: an API without this change rejects the `publish` field with 422
+before any mutation, and the browser then joins and publishes separately. Older
+gateways converted that plain-text 422 into a 503, so the fallback only covers
+the direct HTTP path. Deploy **API first, gateway second, web last**; no
+migration, secret, Valkey schema or configuration change. Native clients do not
+send the field and are unaffected. After merge:
+
+```bash
+MERGED_SHA=<full-merged-caper-commit>
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+```
+
+Validation: Rust unit tests with a mocked provider (combined publication,
+invalid offers creating no session, refused publication leaving no participant,
+the 422 contract), the Valkey/Postgres gateway suite, and browser-client tests
+with mocked WebRTC (combined answer, 422 fallback, overlapped lease renewal,
+delayed pull retry). Real Chromium confirmed that an offer created before
+`setConfiguration` applies unchanged and that TURN allocation requests then reach
+the later-configured server. Live Cloudflare joins, multi-network TURN, Firefox,
+Safari and remote listening latency were **not** measured; compare the new
+diagnostics from real sessions before claiming a specific speedup.
+
 ### ICE-gathering follow-up: signal before every probe completes
 
 After the port-53 fix deployed, Jose measured 5,631 ms total, with 246 ms in

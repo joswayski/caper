@@ -49,9 +49,11 @@ function deviceOptions(devices: MediaDeviceInfo[], kind: MediaDeviceKind) {
 function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallViewState["diagnostics"]> }) {
   const values = [
     ["Joined", diagnostics.join],
-    ["Microphone + session", `${Math.round(diagnostics.microphoneSessionMs)} ms`],
+    ["Microphone", `${Math.round(diagnostics.microphoneMs)} ms`],
+    ["Session + publish", `${Math.round(diagnostics.sessionMs)} ms`],
     ["Signaling + live updates", `${Math.round(diagnostics.signalingMs)} ms`],
-    ["Transport + state", `${Math.round(diagnostics.transportMs)} ms`],
+    ["Transport + state", `${Math.round(diagnostics.transportMs)} ms${diagnostics.iceMs === undefined ? "" : ` (ICE ${Math.round(diagnostics.iceMs)} ms)`}`],
+    ["Connectivity checks", diagnostics.checks ?? "Not observed yet"],
     ["Roster", `${Math.round(diagnostics.rosterMs)} ms`],
     ["Received", formatBytes(diagnostics.receivedBytes)],
     ["Live receive", formatBitrate(diagnostics.receiveBitrate)],

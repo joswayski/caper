@@ -26,6 +26,8 @@ export interface JoinResponse {
   id: string;
   iceServers: RTCIceServer[];
   turn?: TurnGeneration;
+  /** Present when the API published the join's microphone offer in the same request. */
+  publish?: SessionDescriptionResponse;
 }
 
 export interface TurnGeneration {
@@ -54,10 +56,15 @@ export interface RemoteMedia {
 
 export interface ConnectionDiagnostics {
   join: string;
-  microphoneSessionMs: number;
+  /** Microphone capture and the join request run concurrently; both are measured from Join. */
+  microphoneMs: number;
+  sessionMs: number;
   signalingMs: number;
   transportMs: number;
+  iceMs?: number;
   rosterMs: number;
+  /** Connectivity checks on the selected candidate pair, first sampled after joining. */
+  checks?: string;
   receivedBytes: number;
   sentBytes: number;
   receiveBitrate: number;
