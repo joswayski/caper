@@ -222,7 +222,10 @@ speaking; speaking is detected only by call participants. When the channel
 cannot be loaded, the window plays a scripted preview labeled "Preview",
 limited to shipped features (text, typing, voice presence), and cannot be
 opened. Each channel line in the sidebar shows who is in that channel's voice
-and a Join button. In `/spaces` the browser opens one spectator voice-roster
+and a Join button. At 760px and narrower, `/spaces` keeps the viewed channel's
+line (its voice roster and Join) and the voice panel above the conversation,
+as the homepage room does; Browse opens the full space and channel list.
+In `/spaces` the browser opens one spectator voice-roster
 subscription per channel, up to 24 per space, on the same gateway connection
 (within its 32-subscription limit). A space-level voice presence feed on the
 server would replace these. `/spaces` is for accounts: it sends logged-out visitors to the homepage,

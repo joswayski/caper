@@ -1079,7 +1079,7 @@ export default function Spaces() {
           </details>
         </div>}
       </div>
-      <ul id="space-channel-list" hidden={!channelsExpanded}>
+      <ul id="space-channel-list" data-collapsed={channelsExpanded ? undefined : ""}>
         {detail.channels.map((item) => {
           const voice = voiceFor(item.id);
           return (
