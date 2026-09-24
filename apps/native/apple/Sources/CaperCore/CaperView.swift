@@ -940,8 +940,18 @@ private struct AudioPreferencesView: View {
     #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Audio preferences").font(CaperTheme.font(20, weight: .bold))
-                .accessibilityIdentifier("audio-preferences-sheet")
+            HStack {
+                Text("Audio preferences").font(CaperTheme.font(20, weight: .bold))
+                    .accessibilityIdentifier("audio-preferences-sheet")
+                Spacer()
+                Button { voice.showAudioPreferences = false } label: {
+                    Image(systemName: "xmark").frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close audio preferences")
+                .accessibilityIdentifier("close-audio-preferences")
+                .keyboardShortcut(.cancelAction)
+            }
             AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
             AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
             VStack(alignment: .leading, spacing: 7) {

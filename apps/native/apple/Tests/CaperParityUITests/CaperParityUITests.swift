@@ -144,6 +144,12 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.sliders["Comparison EQ strength"].exists)
         assertStaticText("25%", in: app)
         capture("audio-recorded-test-fixture", app: app)
+        app.buttons["close-audio-preferences"].tap()
+        let closed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: app.descendants(matching: .any)["audio-preferences-sheet"]
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
     }
 
     func testConnectionStatisticsLayoutWithoutVoiceConnection() {
