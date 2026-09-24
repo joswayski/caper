@@ -147,12 +147,16 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
     {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
 
+/** Voice occupants for one channel: a summary for its row and a list beneath it. */
+export interface VoiceSlot { summary: ReactNode; list: ReactNode }
+
 interface CallProps {
   channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean };
   membersPanel?: ReactNode;
   onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
-  channelNavigation?: ReactNode;
+  /** Channel list. As a function it receives voiceFor, to place the voice roster under its channel. */
+  channelNavigation?: ReactNode | ((voiceFor: (channelId: string) => VoiceSlot | null) => ReactNode);
   navigationOpen?: boolean;
   onNavigationToggle?: () => void;
   initialAccount?: Account;
@@ -202,6 +206,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
+  const [rosterOpen, setRosterOpen] = useState(true);
   const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence["participants"]>>({});
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
@@ -393,6 +398,99 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     else profileDialog.current?.close();
   }, [profileOpen]);
 
+  const isSpeaking = (participant: { id: string; muted: boolean }) => {
+    const muted = participant.id === state.selfId ? state.muted : participant.muted;
+    return activeParticipants.has(participant.id) && !(muted && !state.monitoring);
+  };
+  const rosterChannelId = publicRoster ? channel?.id : voiceChannel?.id;
+  const rosterChannelName = (publicRoster ? channel : voiceChannel)?.name ?? "general";
+  const rosterList = (
+            <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label={`People in voice in ${rosterChannelName}`}>
+              {roster.map((participant) => {
+                const self = participant.id === state.selfId;
+                const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
+                const participantMuted = self ? state.muted : participant.muted;
+                const participantDeafened = self ? state.deafened : participant.deafened;
+                const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
+                const activityMuted = participantMuted && !state.monitoring;
+                const speaking = isSpeaking(participant);
+                return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={publicRoster || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
+                  <span className="participant-avatar">
+                    <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                    <ParticipantCountry code={participant.countryCode} />
+                  </span>
+                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><small aria-hidden={!participantStatus}>{participantStatus ?? "\u00a0"}</small></span>
+                  {!publicRoster && <VoiceActivity
+                    stream={stream}
+                    muted={activityMuted}
+                    onActivityChange={(active) => setActiveParticipants((current) => {
+                      if (current.has(participant.id) === active) return current;
+                      const next = new Set(current);
+                      active ? next.add(participant.id) : next.delete(participant.id);
+                      return next;
+                    })}
+                  />}
+                  {!publicRoster && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
+                  {!publicRoster && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
+                    <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
+                    <Slider
+                      label={`${participant.name} volume`}
+                      value={participantVolumes[participant.id] ?? 100}
+                      max={200}
+                      onChange={(value) => setParticipantVolumes((current) => ({ ...current, [participant.id]: value }))}
+                    />
+                    <label className="participant-mute">
+                      <span>Mute</span>
+                      <input
+                        type="checkbox"
+                        checked={mutedParticipants.has(participant.id)}
+                        onChange={(event) => {
+                          playSound(event.target.checked ? "toggle-off" : "toggle-on");
+                          setMutedParticipants((current) => {
+                            const next = new Set(current);
+                            event.target.checked ? next.add(participant.id) : next.delete(participant.id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </label>
+                    <small>Only changes what you hear.</small>
+                  </div>}
+                </li>;
+              })}
+            </ul>
+  );
+  // Voice occupants render under their channel: a stack of avatars on the
+  // channel row (click to collapse or expand) and a compact list beneath it.
+  let rosterPlaced = false;
+  const voiceFor = (channelId?: string): VoiceSlot | null => {
+    if (channelId !== rosterChannelId || !roster.length) return null;
+    rosterPlaced = true;
+    const open = rosterOpen || !!volumeParticipant;
+    return {
+      summary: <button className="voice-stack" type="button" aria-expanded={open} aria-controls="voice-occupants" aria-label={`${roster.length} in voice. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => { setRosterOpen(!open); setVolumeParticipant(undefined); }}>
+        {roster.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${isSpeaking(participant) ? " speaking" : ""}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>)}
+        <small aria-hidden="true">{roster.length}</small>
+      </button>,
+      list: <div className="voice-occupants" id="voice-occupants" data-open={open ? "" : undefined}>
+        <div className="voice-occupants-inner" inert={!open}>{rosterList}</div>
+      </div>,
+    };
+  };
+  let navigation: ReactNode;
+  if (typeof channelNavigation === "function") navigation = channelNavigation(voiceFor);
+  else if (channelNavigation) navigation = channelNavigation;
+  else {
+    const voice = voiceFor(undefined);
+    navigation = <>
+      <div className="channel-row">
+        <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span></a>
+        {voice?.summary}
+      </div>
+      {voice?.list}
+    </>;
+  }
+
   return (
     <Root className={`call-page${embedded ? " call-embedded" : ""}`}>
       {!embedded && <header className="call-header">
@@ -402,62 +500,11 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
         {spaceRail}
         <ChannelSidebar>
           <div className="sidebar-channels">
-          {channelNavigation ?? <a className="channel-link" href="#chat-heading" aria-current="location"><Hash aria-hidden="true" /><span>general</span></a>}
-          {roster.length > 0 && <p className="voice-roster-label">In voice · {roster.length}</p>}
-          <ul className={volumeParticipant ? "volume-menu-open" : undefined} aria-label={`People talking in ${(idle ? channel : voiceChannel)?.name ?? "general"}`}>
-            {roster.map((participant) => {
-              const self = participant.id === state.selfId;
-              const stream = self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
-              const participantMuted = self ? state.muted : participant.muted;
-              const participantDeafened = self ? state.deafened : participant.deafened;
-              const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
-              const activityMuted = participantMuted && !state.monitoring;
-              const speaking = activeParticipants.has(participant.id) && !activityMuted;
-              return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={publicRoster || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
-                <span className="participant-avatar">
-                  <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                  <ParticipantCountry code={participant.countryCode} />
-                </span>
-                <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><small aria-hidden={!participantStatus}>{participantStatus ?? "\u00a0"}</small></span>
-                {!publicRoster && <VoiceActivity
-                  stream={stream}
-                  muted={activityMuted}
-                  onActivityChange={(active) => setActiveParticipants((current) => {
-                    if (current.has(participant.id) === active) return current;
-                    const next = new Set(current);
-                    active ? next.add(participant.id) : next.delete(participant.id);
-                    return next;
-                  })}
-                />}
-                {!publicRoster && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
-                {!publicRoster && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
-                  <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
-                  <Slider
-                    label={`${participant.name} volume`}
-                    value={participantVolumes[participant.id] ?? 100}
-                    max={200}
-                    onChange={(value) => setParticipantVolumes((current) => ({ ...current, [participant.id]: value }))}
-                  />
-                  <label className="participant-mute">
-                    <span>Mute</span>
-                    <input
-                      type="checkbox"
-                      checked={mutedParticipants.has(participant.id)}
-                      onChange={(event) => {
-                        playSound(event.target.checked ? "toggle-off" : "toggle-on");
-                        setMutedParticipants((current) => {
-                          const next = new Set(current);
-                          event.target.checked ? next.add(participant.id) : next.delete(participant.id);
-                          return next;
-                        });
-                      }}
-                    />
-                  </label>
-                  <small>Only changes what you hear.</small>
-                </div>}
-              </li>;
-            })}
-          </ul>
+          {navigation}
+          {!rosterPlaced && roster.length > 0 && <div className="voice-elsewhere">
+            <p className="voice-roster-label">In voice · {roster.length} · {rosterChannelName}</p>
+            {rosterList}
+          </div>}
           </div>
           <div className="voice-panel">
           <div className="voice-dock">

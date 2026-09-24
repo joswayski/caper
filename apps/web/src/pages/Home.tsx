@@ -52,8 +52,9 @@ export default function Home({ account, history, initialNow, latestChanges }: Ho
             Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a> · <a href={repositoryUrl} target="_blank" rel="noreferrer">Follow on GitHub</a>
           </p>
           <p className="experimental-note">
-            Caper may contain bugs or incomplete features. A desktop app is coming soon. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a>, or <CopyEmailButton email={contactEmail} />.
+            Caper may contain bugs or incomplete features. A desktop app is coming soon. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a> or by email:
           </p>
+          <div className="feedback-email"><CopyEmailButton email={contactEmail} /></div>
         </div>
 
         <LiveWindow account={account} history={history} active={open} onActiveChange={setOpen} />

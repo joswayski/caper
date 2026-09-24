@@ -136,7 +136,8 @@ body {
 .feedback-x { display: inline-flex; width: .75rem; height: .75rem; vertical-align: -.12em; margin: 0 2px; transition: color .2s ease-out, transform .2s ease-out; }
 .feedback-x:hover { color: var(--terracotta-bright); transform: translateY(-1px); }
 .feedback-x svg { width: 100%; height: 100%; }
-.copy-email { display: inline-flex; flex-direction: column; vertical-align: middle; margin: 0 2px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: transparent; font: inherit; line-height: 1.15; text-align: left; cursor: pointer; transition: border-color .2s ease-out, color .2s ease-out, background-color .2s ease-out, transform .2s ease-out; }
+.hero-copy > .feedback-email { margin-top: 10px; }
+.copy-email { display: inline-flex; flex-direction: column; vertical-align: middle; margin: 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: transparent; font: inherit; line-height: 1.15; text-align: left; cursor: pointer; transition: border-color .2s ease-out, color .2s ease-out, background-color .2s ease-out, transform .2s ease-out; }
 .copy-email:hover { border-color: var(--terracotta); color: #fff; background: rgba(182,77,50,.14); transform: translateY(-1px); }
 .copy-email span { font-size: .75rem; }
 .copy-email small { color: var(--text-muted); font-size: .625rem; transition: color .2s ease-out; }
@@ -181,6 +182,7 @@ body {
   .hero .live-stage { order: 4; width: 100%; aspect-ratio: 1.3; min-height: 0; margin-top: 20px; }
   .hero-copy > .made-by { order: 7; }
   .hero-copy > .experimental-note { order: 8; max-width: 560px; }
+  .hero-copy > .feedback-email { order: 9; }
 }
 
 @media (max-width: 640px) {

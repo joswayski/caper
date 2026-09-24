@@ -97,10 +97,8 @@
   /* The phone layout stacks the roster above the chat. In the small resting
      card, keep the roster short so the conversation shows; opening the window
      restores the full layout. */
-  .live-stage:not([data-active]) .live-app .sidebar-channels { flex: none; padding: 12px 14px 4px; }
-  .live-stage:not([data-active]) .live-app .sidebar-channels .channel-link { display: none; }
-  .live-stage:not([data-active]) .live-app .voice-roster-label { margin-top: 0; }
-  .live-stage:not([data-active]) .live-app .people-panel ul { max-height: 58px; margin-top: 6px; overflow: hidden; }
+  .live-stage:not([data-active]) .live-app .sidebar-channels { flex: none; padding: 10px 12px; }
+  .live-stage:not([data-active]) .live-app .voice-occupants { display: none; }
   .live-stage:not([data-active]) .live-app .voice-panel { display: none; }
 }
 

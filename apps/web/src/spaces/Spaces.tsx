@@ -20,7 +20,7 @@ import {
 import { getAccount, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
-import Call from "../pages/Call";
+import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
@@ -988,7 +988,7 @@ export default function Spaces() {
       {pending && <span className="sr-only" role="status">Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…</span>}
     </nav>
   );
-  const channelNavigation = (
+  const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
     <nav
       className="channel-navigation"
       aria-label={`${detail.space.name} channels`}
@@ -1080,8 +1080,10 @@ export default function Spaces() {
         </div>}
       </div>
       <ul id="space-channel-list" hidden={!channelsExpanded}>
-        {detail.channels.map((item) => (
-          <li key={item.id}>
+        {detail.channels.map((item) => {
+          const voice = voiceFor(item.id);
+          return (
+          <li key={item.id} data-voice={voice ? "" : undefined}>
             <button
               className="channel-select"
               type="button"
@@ -1098,6 +1100,7 @@ export default function Spaces() {
               )}
               <span>{item.name}</span>
             </button>
+            {voice?.summary}
             {owner && (
               <button
                 className="channel-manage"
@@ -1108,8 +1111,10 @@ export default function Spaces() {
                 <Settings aria-hidden="true" />
               </button>
             )}
+            {voice?.list}
           </li>
-        ))}
+          );
+        })}
       </ul>
       {error && (
         <p className="space-sidebar-error" role="alert">
@@ -1134,7 +1139,7 @@ export default function Spaces() {
           >
             {rail}
             <ChannelSidebar>
-              <div className="sidebar-channels">{channelNavigation}</div>
+              <div className="sidebar-channels">{channelNavigation(() => null)}</div>
               <div className="empty-channel-account">
                 <span className="account-avatar" aria-hidden="true">
                   {account?.displayName?.slice(0, 1).toUpperCase()}
