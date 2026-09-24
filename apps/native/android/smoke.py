@@ -304,7 +304,8 @@ def main() -> None:
         submit = parents.get(submit)
     assert submit is not None and submit.get("enabled") == "false"
     enter_first_field("fixture_owner")
-    fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503}})
+    fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503,
+                         "error": "TEST FIXTURE: profile save temporarily unavailable."}})
     tap(text="Save profile")
     profile_error = capture("caper-android-profile-error", "temporarily unavailable")
     assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
