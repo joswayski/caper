@@ -54,11 +54,16 @@ targets:
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES
         HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge $(SRCROOT)/.build/onnxruntime-osx-universal2-1.23.2/include"
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/.build/onnxruntime-osx-universal2-1.23.2/lib"
         CLANG_CXX_LANGUAGE_STANDARD: c++17
   CaperCoreMacOS:
     type: framework
     platform: macOS
-    sources: Sources/CaperCore
+    sources:
+      - Sources/CaperCore
+      - path: ../../web/public/audio/effects
+        buildPhase: resources
+        excludes: [README.md]
     dependencies:
       - target: CaperRTCBridge
         embed: false

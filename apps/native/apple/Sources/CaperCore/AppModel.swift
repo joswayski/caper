@@ -562,8 +562,10 @@ public final class ChatModel {
                 requestResync(generation: eventGeneration, channelID: eventChannelID)
                 return
             }
+            let newMessage = (try? Sequence.compare(message.seq, delivery.cursor)) == .orderedDescending
             if delivery.receive(seq: message.seq) {
                 merge([message])
+                if newMessage, let author = session?.author, author.id != message.author.id { CaperEffects.shared.play(.message) }
                 if delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     draft = ""
                     error = nil

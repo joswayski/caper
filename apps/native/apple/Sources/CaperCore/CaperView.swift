@@ -47,7 +47,11 @@ public enum CaperTheme {
         .background(CaperTheme.blackout.ignoresSafeArea())
         .task {
             CaperFontLoader.register()
+            CaperEffects.shared.preload()
             if model.phase == .loading { await model.start() }
+        }
+        .onChange(of: model.voice.phase) { old, new in
+            if old != .connected, new == .connected { CaperEffects.shared.play(.join) }
         }
     }
 }
@@ -290,7 +294,7 @@ private struct ChannelSidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        Button { channelsExpanded.toggle() } label: {
+                        Button { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } label: {
                             HStack(spacing: 6) {
                                 CaperIcon(name: channelsExpanded ? "chevron-down" : "chevron-right")
                                 Text("Channels")
@@ -432,6 +436,7 @@ private struct VoiceRoster: View {
                         if !voice.isSelf(participantID: participant.id) {
                             Button {
                                 voice.setParticipantMuted(!voice.locallyMutedParticipants.contains(participant.id), participantID: participant.id)
+                                CaperEffects.shared.toggle(!voice.locallyMutedParticipants.contains(participant.id))
                             } label: {
                                 Image(systemName: voice.locallyMutedParticipants.contains(participant.id) ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             }.buttonStyle(SidebarIconButton()).accessibilityLabel("Mute \(participant.name) locally")
@@ -459,7 +464,7 @@ private struct VoiceRoster: View {
                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
-                    Button { voice.leaveImmediately() } label: { CaperIcon(name: "x") }
+                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; voice.leaveImmediately() } label: { CaperIcon(name: "x") }
                         .buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
             }
@@ -470,7 +475,7 @@ private struct VoiceRoster: View {
     private func participantGain(_ id: String) -> Binding<Double> {
         Binding(
             get: { Double(voice.participantGains[id] ?? 100) },
-            set: { voice.setParticipantGain(Int($0), participantID: id) }
+            set: { voice.setParticipantGain(Int($0), participantID: id); CaperEffects.shared.slider($0 / 200) }
         )
     }
 }
@@ -501,30 +506,30 @@ private struct AccountBar: View {
                     Spacer()
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
-            Button { Task { await voice.setMuted(!voice.muted) } } label: {
+            Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
             }.buttonStyle(SidebarIconButton()).accessibilityLabel("Microphone")
                 .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
             #if os(macOS)
-            Button { inputOptions.toggle() } label: {
+            Button { inputOptions.toggle(); CaperEffects.shared.toggle(inputOptions) } label: {
                 CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
             }.buttonStyle(.plain).accessibilityLabel("Input Options")
                 .popover(isPresented: $inputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: true) }
             #endif
-            Button { Task { await voice.setDeafened(!voice.deafened) } } label: {
+            Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
                 CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
                     .foregroundStyle(voice.deafened ? CaperTheme.terracottaBright : CaperTheme.muted)
             }.buttonStyle(SidebarIconButton()).accessibilityLabel("Headphones")
                 .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
             #if os(macOS)
-            Button { outputOptions.toggle() } label: {
+            Button { outputOptions.toggle(); CaperEffects.shared.toggle(outputOptions) } label: {
                 CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
             }.buttonStyle(.plain).accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             #endif
             if voice.phase == .connected || voice.phase == .reconnecting {
-                Button(role: .destructive) { voice.leaveImmediately() } label: { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
+                Button(role: .destructive) { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; voice.leaveImmediately() } label: { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
             }
             Menu {
                 Button("Audio preferences") { voice.showAudioPreferences = true }
@@ -560,14 +565,14 @@ private struct AccountAudioMenu: View {
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
             if input {
                 Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
-                Slider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)) }), in: 0...200, step: 1)
+                Slider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
                     .accessibilityLabel("Input volume")
                 Text("Voice processing · \(voice.voiceProcessingStrength)%").font(CaperTheme.font(12))
-                Slider(value: Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)) }), in: 0...100, step: 1)
+                Slider(value: Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)); CaperEffects.shared.slider($0 / 100) }), in: 0...100, step: 1)
                     .accessibilityLabel("Voice processing")
             } else {
                 Text("Output volume · \(voice.outputGain)%").font(CaperTheme.font(12))
-                Slider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) }), in: 0...200, step: 1)
+                Slider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
                     .accessibilityLabel("Output volume")
             }
             Button("Audio preferences") { dismiss(); voice.showAudioPreferences = true }
@@ -632,7 +637,7 @@ private struct ChatView: View {
                 Spacer()
                 VoiceHeaderButton(model: model, voice: voice)
                 if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
-                Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }
+                Button { CaperEffects.shared.toggle(!membersVisible); toggleMembers() } label: { CaperIcon(name: "users", size: 20) }
                     .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
@@ -719,7 +724,7 @@ private struct VoiceHeaderButton: View {
         if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
             Button { voice.leaveImmediately() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Cancel") } }.buttonStyle(VoiceJoinButton())
         } else if sameChannel, voice.phase == .connected {
-            Button { voice.leaveImmediately() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
+            Button { CaperEffects.shared.play(.leave); voice.leaveImmediately() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
         } else if voice.phase == .leaving {
             ProgressView().controlSize(.small)
         } else {
@@ -968,7 +973,7 @@ private struct SpaceEditor: View {
                         Divider().overlay(CaperTheme.border)
                         Text("Delete space").font(CaperTheme.font(14, weight: .bold))
                         Text("Delete this space and all its channels for every member.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                        Button("Delete space", role: .destructive) { confirmDelete = true }.buttonStyle(.bordered).disabled(pending)
+                        Button("Delete space", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(.bordered).disabled(pending)
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
@@ -977,6 +982,7 @@ private struct SpaceEditor: View {
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
                 try await model.deleteCurrentSpace()
+                CaperEffects.shared.play(.delete)
                 close()
             }
         }
@@ -996,7 +1002,7 @@ private struct ChannelEditor: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     CaperField(title: "Channel name", text: Binding(get: { name }, set: { name = WorkspaceValidation.normalizeChannelName($0) }))
-                    Toggle(isOn: $privateChannel) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in this space can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) } }.toggleStyle(.switch)
+                    Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in this space can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) } }.toggleStyle(.switch)
                     Button(channel == nil ? "Create channel" : "Save changes") { run { if let existing = channel { channel = try await model.updateChannel(existing, name: name, privateChannel: privateChannel) } else { try await model.createChannel(name: name, privateChannel: privateChannel); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
                     if let channel, channel.private {
                         Divider().overlay(CaperTheme.border); Text("Members  \(members.count)").font(CaperTheme.font(14, weight: .bold))
@@ -1010,7 +1016,7 @@ private struct ChannelEditor: View {
                         ForEach(members) { member in HStack { Avatar(name: member.displayName, size: 30); Text(member.displayName); Spacer(); if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } } }.font(CaperTheme.font(12)) }
                             .disabled(pending || loadingMembers || membersError != nil)
                     }
-                    if channel != nil { Divider().overlay(CaperTheme.border); Button("Delete channel", role: .destructive) { confirmDelete = true }.buttonStyle(.bordered).disabled(pending) }
+                    if channel != nil { Divider().overlay(CaperTheme.border); Button("Delete channel", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(.bordered).disabled(pending) }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
             }
@@ -1020,6 +1026,7 @@ private struct ChannelEditor: View {
             if let channel {
                 ConfirmationSheet(title: "Delete channel", detail: "Delete #\(channel.name) for everyone? This channel and its messages will disappear from the space. This cannot be undone.", action: "Delete channel", close: { confirmDelete = false }) {
                     try await model.deleteChannel(channel)
+                    CaperEffects.shared.play(.delete)
                     close()
                 }
             }
@@ -1179,7 +1186,7 @@ private struct AudioPreferencesView: View {
     }
 
     private var outputGain: Binding<Double> {
-        Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) })
+        Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
     }
     #if os(macOS)
     private var inputRoute: Binding<String> {
@@ -1193,10 +1200,10 @@ private struct AudioPreferencesView: View {
         })
     }
     private var inputGain: Binding<Double> {
-        Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)) })
+        Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
     }
     private var liveStrength: Binding<Double> {
-        Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)) })
+        Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)); CaperEffects.shared.slider($0 / 100) })
     }
     private var recordedPreview: Bool { CaperRuntime.isAudioPreview("audio-recorded") }
     private var statisticsPreview: Bool { CaperRuntime.isAudioPreview("audio-statistics") }

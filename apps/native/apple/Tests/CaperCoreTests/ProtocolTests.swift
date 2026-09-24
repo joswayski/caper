@@ -20,6 +20,18 @@ final class ProtocolTests: XCTestCase {
 
     #if os(macOS)
     @MainActor
+    func testAllBundledWebEffectsDecodeWithoutOpeningOutput() throws {
+        for effect in CaperEffects.Effect.allCases {
+            let buffer = try XCTUnwrap(CaperEffects.decode(effect), "Missing canonical \(effect.rawValue) WAV")
+            XCTAssertGreaterThan(buffer.frameLength, 100)
+            let samples = try XCTUnwrap(buffer.floatChannelData).pointee
+            let values = UnsafeBufferPointer(start: samples, count: Int(buffer.frameLength))
+            XCTAssertTrue(values.allSatisfy { $0.isFinite && abs($0) <= 1 })
+            XCTAssertTrue(values.contains { abs($0) > 0.01 })
+        }
+    }
+
+    @MainActor
     func testTimedMicrophoneStopSavesBothNaturalAndEnhancedPCMWithoutHardware() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("caper-mic-test-fixture-\(UUID().uuidString).caf")
         let test = MacMicrophoneTest(fileURL: url)
