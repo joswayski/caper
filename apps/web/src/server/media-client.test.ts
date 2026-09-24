@@ -2108,7 +2108,8 @@ test("a listed source that cannot be pulled yet is retried shortly", async (t) =
   let refusals = 0;
   const roster = [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "fresh", kind: "microphone" }] }];
   install("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("/subscribe") && refusals++ === 0) {
+    // A newcomer is refused until its own transport sends media.
+    if (url.endsWith("/subscribe") && refusals++ < 2) {
       return Promise.resolve(Response.json({ error: "track not found", code: "track_gone" }, { status: 404 }));
     }
     if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({ participants: roster }));
@@ -2117,9 +2118,13 @@ test("a listed source that cannot be pulled yet is retried shortly", async (t) =
   events[0].enqueue(snapshotEvent(roster, 1));
   await tick();
   assert.equal(states.at(-1)?.remoteMedia.length, 0);
-  await new Promise((resolve) => setTimeout(resolve, 650));
+  await new Promise((resolve) => setTimeout(resolve, 380));
   await tick();
-  assert.equal(refusals, 2);
+  assert.equal(refusals, 2, "the first re-check follows within about 250 ms");
+  assert.equal(states.at(-1)?.remoteMedia.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await tick();
+  assert.equal(refusals, 3, "and the next about 250 ms later");
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "fresh");
 });

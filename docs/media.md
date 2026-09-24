@@ -1472,8 +1472,13 @@ the browser fall back to one pull per source for the rest of that call.
 
 When the provider refuses to pull a listed source that is not sending media yet
 (`track_gone` while the source is still in the roster), the listener re-checks
-after 0.5, 1, 2, 4 and 8 seconds instead of waiting for the next roster change or
-15-second lease heartbeat. A successful reconciliation resets that budget.
+after 0.25, 0.25, 0.5, 0.5, 1, 2, 4 and 8 seconds (about 16.5 s in total) instead
+of waiting for the next roster change or 15-second lease heartbeat. A newcomer's
+track is listed at publication but pullable only once its transport sends media,
+typically 0.3–3 s later, so the early checks are dense; a refused pull allocates
+nothing and needs no renegotiation (live-captured shape: empty MID,
+`not_found_track_error`, `requiresImmediateRenegotiation: false`, no offer). A
+successful reconciliation resets that budget.
 
 Diagnostics now separate microphone capture from session + publication (both
 measured from Join, since they overlap), report ICE time within transport, and

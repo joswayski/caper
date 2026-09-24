@@ -32,6 +32,13 @@ const FETCH_TIMEOUT_MS = 25_000;
 const SNAPSHOT_TIMEOUT_MS = 5_000;
 const CONTROL_RECOVERY_MS = 30_000;
 const DISCONNECT_GRACE_MS = 10_000;
+/**
+ * Re-checks for a listed source that cannot be pulled yet. A newcomer's track is
+ * listed at publication but pullable only once its transport sends media, which
+ * usually takes 0.3–3 s, so check densely early and back off to the same ~16 s
+ * window. A refused pull allocates nothing and needs no renegotiation.
+ */
+const PULL_RETRY_DELAYS_MS = [250, 250, 500, 500, 1_000, 2_000, 4_000, 8_000];
 
 class CallApiError extends Error {
   readonly status: number;
@@ -1151,11 +1158,11 @@ export class PublicCallClient {
     // provider refuses pulls until then. Re-check soon rather than waiting for
     // the next roster change or lease heartbeat; a departed source drops out.
     window.clearTimeout(this.unavailableRetryTimer);
-    if (!unavailable || this.unavailableRetries >= 5) {
+    if (!unavailable || this.unavailableRetries >= PULL_RETRY_DELAYS_MS.length) {
       if (!unavailable) this.unavailableRetries = 0;
       return;
     }
-    const delay = 500 * 2 ** this.unavailableRetries++;
+    const delay = PULL_RETRY_DELAYS_MS[this.unavailableRetries++];
     this.unavailableRetryTimer = window.setTimeout(() => {
       if (generation !== this.generation) return;
       void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
