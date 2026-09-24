@@ -1,17 +1,30 @@
 import Foundation
+import Observation
 #if os(macOS)
 import AVFoundation
 #endif
 
 /// Decorative UI feedback shares the web assets, gain, pitch and timing limits.
 /// It never participates in voice capture or changes the selected call route.
-@MainActor final class CaperEffects {
+@MainActor @Observable final class CaperEffects {
     enum Effect: String, CaseIterable {
         case toggleOff = "toggle-off", toggleOn = "toggle-on", slider = "slider-tick"
         case leave = "channel-leave", warning, join = "channel-join", message = "new-message", delete
     }
     static let shared = CaperEffects(enabled: ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] != "parity")
     private let enabled: Bool
+    private let defaults: UserDefaults
+    var soundsEnabled: Bool {
+        didSet {
+            defaults.set(soundsEnabled, forKey: "caper.soundEffects")
+            #if os(macOS)
+            if !soundsEnabled {
+                for voice in voices { voice.player.stop() }
+                engine.pause()
+            }
+            #endif
+        }
+    }
     private var lastSlider = -Double.infinity
     #if os(macOS)
     private let engine = AVAudioEngine()
@@ -28,11 +41,15 @@ import AVFoundation
     }
     #endif
 
-    init(enabled: Bool) { self.enabled = enabled }
+    init(enabled: Bool, defaults: UserDefaults = .standard) {
+        self.enabled = enabled
+        self.defaults = defaults
+        soundsEnabled = defaults.object(forKey: "caper.soundEffects") as? Bool ?? true
+    }
 
     func preload() {
         #if os(macOS)
-        guard enabled, buffers.isEmpty else { return }
+        guard enabled, soundsEnabled, buffers.isEmpty else { return }
         for effect in Effect.allCases { buffers[effect] = Self.decode(effect) }
         #endif
     }
@@ -49,7 +66,7 @@ import AVFoundation
 
     func play(_ effect: Effect, volume: Float = 0.45, rate: Float = 1) {
         #if os(macOS)
-        guard enabled else { return }
+        guard enabled, soundsEnabled else { return }
         let requested = ProcessInfo.processInfo.systemUptime
         preload()
         guard let buffer = buffers[effect] else { return }

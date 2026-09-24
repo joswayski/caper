@@ -7,6 +7,20 @@ import CaperRTCBridge
 
 final class ProtocolTests: XCTestCase {
     @MainActor
+    func testSoundEffectsPreferencePersistsBothDirectionsWithoutOpeningOutput() throws {
+        let suite = "caper-effects-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let effects = CaperEffects(enabled: false, defaults: defaults)
+        XCTAssertTrue(effects.soundsEnabled)
+        effects.soundsEnabled = false
+        let reopened = CaperEffects(enabled: false, defaults: defaults)
+        XCTAssertFalse(reopened.soundsEnabled)
+        reopened.soundsEnabled = true
+        XCTAssertTrue(CaperEffects(enabled: false, defaults: defaults).soundsEnabled)
+    }
+
+    @MainActor
     func testAudioPreviewRequiresExplicitLoopbackParityMode() {
         var environment = ["CAPER_TEST_MODE": "parity", "CAPER_UI_FIXTURE": "audio-recorded", "CAPER_API_BASE_URL": "http://127.0.0.1:3001"]
         XCTAssertTrue(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))

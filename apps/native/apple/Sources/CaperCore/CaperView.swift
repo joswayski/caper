@@ -165,7 +165,8 @@ private struct WorkspaceView: View {
                                         Rectangle().fill(Color.clear).frame(width: 8).contentShape(Rectangle())
                                     }
                                         .buttonStyle(.plain)
-                                        .gesture(DragGesture(coordinateSpace: .global).onChanged { value in
+                                        .highPriorityGesture(DragGesture(minimumDistance: 1, coordinateSpace: .global).onChanged { value in
+                                            sidebarFocused = true
                                             if sidebarDragStart == nil { sidebarDragStart = sidebarWidth }
                                             resizeSidebar((sidebarDragStart ?? sidebarWidth) + Double(value.translation.width), viewport: geometry.size.width)
                                         }.onEnded { _ in sidebarDragStart = nil })
@@ -1200,6 +1201,7 @@ private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     var debugEnabled = false
     #if os(macOS)
+    @Bindable private var effects = CaperEffects.shared
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
     #else
@@ -1247,6 +1249,9 @@ private struct AudioPreferencesView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 18) {
             #if os(macOS)
+            Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
+                .toggleStyle(.checkbox)
+                .accessibilityIdentifier("sound-effects")
             Picker("Input", selection: inputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableInputs) { route in Text(route.name).tag(route.id) }
