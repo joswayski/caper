@@ -188,11 +188,6 @@ public final class VoiceClient {
             guard let factory else { throw VoiceError.setup }
             guard await requestMicrophonePermission() else { throw VoiceError.permission }
             guard generation == attempt, phase == .joining else { return }
-            #if os(macOS)
-            guard await prepareMicrophoneDenoise(), generation == attempt, phase == .joining else {
-                throw VoiceError.setup
-            }
-            #endif
             #if os(iOS)
             try activateAudioSession()
             installAudioObservers(generation: attempt)
@@ -203,6 +198,13 @@ public final class VoiceClient {
                 return
             }
             token = joined.token; selfID = joined.id
+            #if os(macOS)
+            // A canceled or denied join must not initialize local audio. Warm
+            // inference only for the current owned lease, before creating media.
+            guard await prepareMicrophoneDenoise(), generation == attempt, phase == .joining else {
+                throw VoiceError.setup
+            }
+            #endif
             let configuration = Self.configuration(iceServers: joined.iceServers)
             let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: ["DtlsSrtpKeyAgreement": kRTCMediaConstraintsValueTrue])
             let delegate = PeerDelegate()
