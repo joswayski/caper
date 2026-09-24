@@ -61,7 +61,8 @@ Copy-Item (Join-Path $Root 'apps\web\public\audio\dpdfnet8-v2\LICENSE-APACHE-2.0
 # ORT's official DLL is /MD even though the Rust executable uses +crt-static.
 # Stage Microsoft's signed app-local VC++ runtime from the VS build toolchain;
 # do not claim a portable package that depends on an installed redistributable.
-$Crt = Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT' -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+if (-not $env:VCToolsRedistDir) { throw 'Run from an x64 Visual Studio developer environment (VCToolsRedistDir is required)' }
+$Crt = Get-ChildItem (Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC*.CRT') -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
 if (-not $Crt) { throw 'Microsoft VC++ app-local runtime not found in Visual Studio redist directory' }
 foreach ($Dll in @('MSVCP140.dll', 'MSVCP140_1.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll')) {
   $Source = Join-Path $Crt.FullName $Dll

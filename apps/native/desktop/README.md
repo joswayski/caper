@@ -72,10 +72,12 @@ rustup toolchain install 1.94.0 --profile minimal --component rustfmt --componen
 
 Windows Server 2025 / Windows 11 build host:
 
-1. Install Visual Studio 2022 Build Tools with **Desktop development with C++**
+1. Install Visual Studio 2022 or newer Build Tools with **Desktop development with C++**
    and a Windows 10/11 SDK.
 2. Install rustup and the stable `1.94.0-x86_64-pc-windows-msvc` toolchain.
-3. Run `powershell -ExecutionPolicy Bypass -File apps/native/desktop/build.ps1`.
+3. Open the x64 Visual Studio developer environment, then run
+   `powershell -ExecutionPolicy Bypass -File apps/native/desktop/build.ps1`.
+   Packaging uses its `VCToolsRedistDir` to locate the signed app-local runtime.
 
 Outputs are unsigned:
 
@@ -125,7 +127,7 @@ the suppression mechanism is not established.
 
 Linux packages carry the checked native runtime and licenses. Windows also
 stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
-from the installed VS2022 toolchain and are not immutable hash-pinned. Windows
+from the active Visual Studio toolchain and are not immutable hash-pinned. Windows
 package execution remains an exact-head CI/platform acceptance requirement.
 No camera, screen sharing, native notifications, installers, signing or updates.
 IME/accessibility and sustained multi-network voice need separate acceptance.
