@@ -236,8 +236,10 @@ async fn generated_speech_public_sfu_two_native_sessions() {
             })).await.map_err(|_| "join request failed")?;
             // Retain every returned capability before fallible native setup.
             owned.push((joined.id.clone(), joined.token.clone()));
+            let mut intent = AudioIntent::default();
+            intent.set_muted(true);
             let session =
-                NativeSession::from_join(api.clone(), joined, true, false, None, None, control)
+                NativeSession::from_join(api.clone(), joined, intent, None, None, control)
                     .await
                     .map_err(|_| "native transport setup failed")?;
             sessions.push(session);

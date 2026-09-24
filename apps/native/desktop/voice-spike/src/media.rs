@@ -18,6 +18,7 @@ pub use self::input_processing::AudioProcessingDiagnostics;
 use self::input_processing::VoiceProcessor;
 use self::input_processing::{InputProcessing, ProcessedVoice};
 use self::mic_test::{MicTest, MicTestControl};
+use crate::state::AudioIntent;
 use libwebrtc::MediaType;
 use libwebrtc::audio_frame::AudioFrame;
 use libwebrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
@@ -474,8 +475,7 @@ pub struct NativeSession {
     microphone: MediaStreamTrack,
     subscriptions: Arc<Mutex<BTreeMap<String, String>>>,
     state_sequence: u64,
-    muted: bool,
-    deafened: bool,
+    audio_intent: AudioIntent,
     turn: Option<TurnGeneration>,
     restart_sequence: u64,
     pending_restart: Option<PendingRestart>,
@@ -1111,8 +1111,7 @@ impl NativeSession {
     pub async fn join(
         api: MediaApi,
         name: &str,
-        muted: bool,
-        deafened: bool,
+        intent: AudioIntent,
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
@@ -1120,15 +1119,14 @@ impl NativeSession {
         tokio::select! {
             biased;
             () = control.cancelled() => Err(VoiceError::Local("voice join cancelled".into())),
-            result = Self::join_inner(api, name, muted, deafened, input_guid, output_guid, control) => result,
+            result = Self::join_inner(api, name, intent, input_guid, output_guid, control) => result,
         }
     }
 
     async fn join_inner(
         api: MediaApi,
         name: &str,
-        muted: bool,
-        deafened: bool,
+        intent: AudioIntent,
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
@@ -1137,20 +1135,11 @@ impl NativeSession {
             .post(
                 "join",
                 None,
-                json!({"name":name,"muted":muted,"deafened":deafened}),
+                json!({"name":name,"muted":intent.muted,"deafened":intent.deafened}),
             )
             .await
             .map_err(VoiceError::Media)?;
-        Self::from_join(
-            api,
-            joined,
-            muted,
-            deafened,
-            input_guid,
-            output_guid,
-            control,
-        )
-        .await
+        Self::from_join(api, joined, intent, input_guid, output_guid, control).await
     }
 
     // Keep the issued capability available to callers that must await cleanup
@@ -1158,8 +1147,7 @@ impl NativeSession {
     async fn from_join(
         api: MediaApi,
         joined: JoinResponse,
-        muted: bool,
-        deafened: bool,
+        intent: AudioIntent,
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
@@ -1486,8 +1474,7 @@ impl NativeSession {
             microphone: audio.into(),
             subscriptions,
             state_sequence: 0,
-            muted,
-            deafened,
+            audio_intent: intent,
             turn: joined.turn,
             restart_sequence: 1,
             pending_restart: None,
@@ -1579,20 +1566,18 @@ impl NativeSession {
     }
 
     pub async fn set_muted(&mut self, muted: bool) -> Result<(), VoiceError> {
-        if !muted {
-            self.deafened = false;
-        }
-        self.muted = muted;
+        self.audio_intent.set_muted(muted);
+        // The UI already gated capture synchronously. Reapply its latest
+        // intent, never overwrite a newer mute with an older queued command.
         self.local_control.enforce_local_audio()?;
         self.sync_state().await
     }
 
     pub async fn set_deafened(&mut self, deafened: bool) -> Result<(), VoiceError> {
-        if deafened == self.deafened {
+        if deafened == self.audio_intent.deafened {
             return Ok(());
         }
-        self.muted = deafened;
-        self.deafened = deafened;
+        self.audio_intent.set_deafened(deafened);
         self.local_control.enforce_local_audio()?;
         self.sync_state().await
     }
@@ -1695,8 +1680,8 @@ impl NativeSession {
                 "state",
                 &self.token,
                 json!({
-                    "muted":self.muted,
-                    "deafened":self.deafened,
+                    "muted":self.audio_intent.muted,
+                    "deafened":self.audio_intent.deafened,
                     "sequence":self.state_sequence
                 }),
             )
@@ -2671,8 +2656,7 @@ mod tests {
             let mut first = NativeSession::join(
                 api.clone(),
                 "Caper Silent Verification A",
-                false,
-                false,
+                AudioIntent::default(),
                 Some(&input),
                 Some(&output),
                 &first_control,
@@ -2691,8 +2675,7 @@ mod tests {
             let mut second = NativeSession::join(
                 api,
                 "Caper Silent Verification B",
-                false,
-                false,
+                AudioIntent::default(),
                 Some(&input),
                 Some(&output),
                 &second_control,
@@ -3175,7 +3158,8 @@ mod tests {
             cancelling.cancel();
         });
         let started = Instant::now();
-        let result = NativeSession::join(api, "Guest", false, false, None, None, &control).await;
+        let result =
+            NativeSession::join(api, "Guest", AudioIntent::default(), None, None, &control).await;
         assert!(
             matches!(result, Err(VoiceError::Local(ref detail)) if detail == "voice join cancelled")
         );
@@ -3288,9 +3272,11 @@ mod tests {
             for (sequence, muted, deafened) in [
                 (1, true, false),
                 (2, true, true),
-                (3, false, false),
+                (3, true, false),
                 (4, true, true),
                 (5, false, false),
+                (6, true, true),
+                (7, false, false),
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
                 let request = receive(&mut stream);
@@ -3322,19 +3308,30 @@ mod tests {
             self_id: "self".into(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             state_sequence: 0,
-            muted: false,
-            deafened: false,
+            audio_intent: AudioIntent::default(),
             turn: None,
             restart_sequence: 1,
             pending_restart: None,
             previous_stats: None,
         };
+        session.local_control.set_local_audio(true, false).unwrap();
         session.set_muted(true).await.unwrap();
         session.set_deafened(true).await.unwrap();
+        session.set_deafened(true).await.unwrap();
+        session.set_deafened(false).await.unwrap();
+        assert!(session.audio_intent.muted);
+        assert_eq!(*session.local_control.audio.lock().unwrap(), (true, false));
         session.set_deafened(false).await.unwrap();
         session.set_deafened(true).await.unwrap();
         session.set_muted(false).await.unwrap();
-        assert!(!session.muted && !session.deafened);
+        session.set_deafened(true).await.unwrap();
+        session.set_deafened(false).await.unwrap();
+        assert!(!session.audio_intent.muted && !session.audio_intent.deafened);
+        assert_eq!(
+            *session.local_control.audio.lock().unwrap(),
+            (true, false),
+            "queued signaling cannot overwrite newer synchronous capture intent"
+        );
         server.join().unwrap();
     }
 
@@ -3391,8 +3388,7 @@ mod tests {
             microphone: audio.clone(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             state_sequence: 0,
-            muted: false,
-            deafened: false,
+            audio_intent: AudioIntent::default(),
             turn: None,
             restart_sequence: 1,
             pending_restart: None,
@@ -3470,8 +3466,7 @@ mod tests {
             microphone: factory.create_device_audio_track("local-test-mic").into(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             state_sequence: 0,
-            muted: false,
-            deafened: false,
+            audio_intent: AudioIntent::default(),
             turn: None,
             restart_sequence: 1,
             pending_restart: None,

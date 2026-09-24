@@ -189,8 +189,7 @@ impl Voice {
         let events = self.events.clone();
         let repaint = self.repaint.clone();
         let base = self.base.clone();
-        let muted = self.state.audio.muted;
-        let deafened = self.state.audio.deafened;
+        let audio_intent = self.state.audio;
         let input = self.preferences.input.clone();
         let output = self.preferences.output.clone();
         let channel_id = space
@@ -215,8 +214,7 @@ impl Voice {
             let session = runtime.block_on(NativeSession::join(
                 api,
                 &name,
-                muted,
-                deafened,
+                audio_intent,
                 input.as_deref(),
                 output.as_deref(),
                 &control,
@@ -885,7 +883,7 @@ mod tests {
         voice.command(VoiceOperation::Mute(true));
         voice.command(VoiceOperation::Deafen(true));
         voice.command(VoiceOperation::Deafen(false));
-        assert!(!voice.state.audio.muted);
+        assert!(voice.state.audio.muted);
         assert!(!voice.state.audio.deafened);
         voice.command(VoiceOperation::Mute(true));
         voice.command(VoiceOperation::Deafen(false));
