@@ -26,7 +26,24 @@ public final class AppModel {
     private var generation = 0
     private var demoDetail: SpaceDetail?
     private var navigationGeneration = 0
+    private var navigationCacheEpoch = 0
     private var navigationTarget: (space: Space, channelID: String?)?
+    private struct PreparedNavigation {
+        let detail: SpaceDetail
+        let channelID: String?
+        let history: ChatHistory?
+    }
+    private struct PrefetchEntry {
+        let id: UUID
+        let expires: Date
+        let generation: Int
+        let task: Task<PreparedNavigation, Error>
+    }
+    private var prefetches: [String: PrefetchEntry] = [:]
+    private var prefetchOrder: [String] = []
+    private var visited: [String: PreparedNavigation] = [:]
+    private var visitedOrder: [String] = []
+    private var lastChannelBySpace: [String: String] = [:]
 
     public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
         self.api = api
@@ -36,13 +53,16 @@ public final class AppModel {
         chat = chatModel
         voice = voiceClient
         presence = PresenceModel(api: api)
-        chatModel.onAccessRevoked = { [weak voiceClient] channelID in
+        chatModel.onAccessRevoked = { [weak self, weak voiceClient] channelID in
             if let channelID, voiceClient?.isActive(channelID: channelID) == true { voiceClient?.leaveImmediately() }
+            if let channelID { self?.invalidateNavigation(spaceID: nil, channelID: channelID) }
+            else { self?.clearNavigationCache() }
         }
     }
 
     public func start() async {
         generation += 1
+        clearNavigationCache()
         let attempt = generation
         do {
             let account = try await api.account()
@@ -68,6 +88,7 @@ public final class AppModel {
     public func verify(code: String) async {
         guard let challengeID else { return }
         generation += 1
+        clearNavigationCache()
         let attempt = generation
         await work(generation: attempt) {
             let account = try await self.api.verify(challengeId: challengeID, code: code)
@@ -80,6 +101,7 @@ public final class AppModel {
 
     public func saveProfile(username: String, displayName: String) async {
         generation += 1
+        clearNavigationCache()
         let attempt = generation
         await work(generation: attempt) {
             let account = try await self.api.updateProfile(username: username, displayName: displayName)
@@ -92,6 +114,7 @@ public final class AppModel {
 
     public func logout() async {
         generation += 1
+        clearNavigationCache()
         voice.leaveImmediately()
         account = nil; spaces = []; detail = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
@@ -145,15 +168,63 @@ public final class AppModel {
         await navigate(space: space, channelID: channel.id, preparedDemo: nil)
     }
 
+    /// Performs read-only speculative work. It never opens chat, starts a socket, or creates a chat session.
+    public func prefetch(space: Space, channelID: String? = nil) {
+        let key = navigationKey(spaceID: space.id, channelID: channelID)
+        if let entry = prefetches[key], entry.expires > Date(), entry.generation == generation { return }
+        prefetches[key]?.task.cancel()
+        let cacheGeneration = generation
+        let previous = visitedNavigation(spaceID: space.id, channelID: channelID)
+        let api = self.api
+        let demo = space.demo == true ? demoDetail : nil
+        let task = Task<PreparedNavigation, Error> {
+            let detail: SpaceDetail
+            if let demo { detail = demo }
+            else { detail = try await api.space(space.id) }
+            guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
+            if let previousID = previous?.channelID, !detail.channels.contains(where: { $0.id == previousID }) {
+                throw APIError(status: 404, message: "This channel is no longer accessible.")
+            }
+            let wanted = channelID ?? previous?.channelID
+            let channel = wanted.flatMap { id in detail.channels.first { $0.id == id } } ?? detail.channels.first
+            if channelID != nil, channel?.id != channelID { throw APIError(status: 404, message: "This channel is no longer accessible.") }
+            let history: ChatHistory?
+            if let retained = previous?.history { history = retained }
+            else if let channel { history = try await api.history(channelID: space.demo == true ? nil : channel.id) }
+            else { history = nil }
+            if let history, history.space?.id != space.id || history.channel?.id != channel?.id {
+                throw APIError(status: 502, message: "The service returned another conversation.")
+            }
+            return PreparedNavigation(detail: detail, channelID: channel?.id, history: history)
+        }
+        let entryID = UUID()
+        prefetches[key] = PrefetchEntry(id: entryID, expires: Date().addingTimeInterval(5), generation: cacheGeneration, task: task)
+        prefetchOrder.removeAll { $0 == key }; prefetchOrder.append(key)
+        while prefetchOrder.count > 4 {
+            let removed = prefetchOrder.removeFirst()
+            prefetches.removeValue(forKey: removed)?.task.cancel()
+        }
+        Task { [weak self] in
+            do { _ = try await task.value }
+            catch {
+                guard let self, self.generation == cacheGeneration, self.prefetches[key]?.id == entryID else { return }
+                self.removePrefetch(key)
+                if let failure = error as? APIError, [401, 403, 404].contains(failure.status) { self.invalidateNavigation(spaceID: space.id) }
+            }
+        }
+    }
+
     public func retryNavigation() async {
         guard let target = navigationTarget else { return }
         await navigate(space: target.space, channelID: target.channelID, preparedDemo: nil)
     }
 
     private func navigate(space: Space, channelID: String?, preparedDemo: ChatHistory?) async {
+        rememberCurrentNavigation()
         navigationGeneration += 1
         let navigation = navigationGeneration
         let attempt = generation
+        let cacheEpoch = navigationCacheEpoch
         navigationTarget = (space, channelID)
         navigationError = nil
         openingSpaceID = space.id; openingChannelID = channelID
@@ -164,36 +235,64 @@ public final class AppModel {
             }
         }
         do {
+            let key = navigationKey(spaceID: space.id, channelID: channelID)
+            let prepared: PreparedNavigation?
+            if let entry = prefetches[key], entry.expires > Date(), entry.generation == generation {
+                removePrefetch(key)
+                prepared = try await entry.task.value
+                guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
+            } else {
+                removePrefetch(key)
+                prepared = nil
+            }
             let detail: SpaceDetail
+            // A hover is not authorization for a later click. Recheck membership
+            // even when speculative history has already completed.
             if space.demo == true, let demo = self.demoDetail { detail = demo }
             else { detail = try await self.api.space(space.id) }
-            guard navigationGeneration == navigation, generation == attempt else { return }
+            guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
             spaceVerified = true
-            let channel = channelID == nil ? detail.channels.first : detail.channels.first(where: { $0.id == channelID })
+            let restoredChannelID = channelID ?? prepared?.channelID ?? lastChannelBySpace[space.id]
+            let restoredChannel = restoredChannelID.flatMap { id in detail.channels.first { $0.id == id } }
+            let channel = channelID == nil ? (restoredChannel ?? detail.channels.first) : restoredChannel
             if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
             let history: ChatHistory?
             if let channel {
                 if let preparedDemo, space.demo == true { history = preparedDemo }
+                else if let retained = visitedNavigation(spaceID: space.id, channelID: channel.id)?.history { history = retained }
+                else if prepared?.channelID == channel.id { history = prepared?.history }
                 else { history = try await api.history(channelID: space.demo == true ? nil : channel.id) }
+                guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
                 guard history?.space?.id == space.id, history?.channel?.id == channel.id else {
                     throw APIError(status: 502, message: "The service returned another conversation.")
                 }
             } else { history = nil }
-            guard navigationGeneration == navigation, generation == attempt else { return }
+            guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             // Keep the current conversation, draft and selection until the target is ready.
             selectedSpaceID = space.id
             selectedChannelID = channel?.id
             self.detail = detail
+            lastChannelBySpace[space.id] = channel?.id
             navigationOpen = false
             navigationTarget = nil
-            if let history { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
+            if let history {
+                remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
+                await chat.open(history: history, displayName: account?.displayName ?? "Guest")
+            }
             else { await chat.stop() }
-            guard navigationGeneration == navigation, generation == attempt else { return }
+            guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else {
+                if navigationGeneration == navigation {
+                    selectedSpaceID = nil; selectedChannelID = nil; self.detail = nil
+                    await chat.stop()
+                }
+                return
+            }
             if detail.space.demo == true { await self.presence.stop() }
             else { await self.presence.watch(spaceID: detail.space.id, members: detail.members) }
+            guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
         } catch {
-            guard navigationGeneration == navigation, generation == attempt else { return }
+            guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             navigationError = error.localizedDescription
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status),
                selectedSpaceID == space.id, !spaceVerified || channelID == nil || selectedChannelID == channelID {
@@ -203,8 +302,53 @@ public final class AppModel {
                 await chat.stop()
                 if !spaceVerified { await presence.stop() }
             }
+            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                invalidateNavigation(spaceID: space.id)
+            }
         }
     }
+
+    private func navigationKey(spaceID: String, channelID: String?) -> String { "\(spaceID):\(channelID ?? "")" }
+    private func removePrefetch(_ key: String) {
+        prefetches.removeValue(forKey: key)
+        prefetchOrder.removeAll { $0 == key }
+    }
+    private func visitedNavigation(spaceID: String, channelID: String?) -> PreparedNavigation? {
+        if let channelID { return visited[navigationKey(spaceID: spaceID, channelID: channelID)] }
+        if let last = lastChannelBySpace[spaceID] { return visited[navigationKey(spaceID: spaceID, channelID: last)] }
+        return visitedOrder.reversed().compactMap { visited[$0] }.first { $0.detail.space.id == spaceID }
+    }
+    private func remember(_ value: PreparedNavigation) {
+        let key = navigationKey(spaceID: value.detail.space.id, channelID: value.channelID)
+        visited[key] = value; visitedOrder.removeAll { $0 == key }; visitedOrder.append(key)
+        while visitedOrder.count > 20 { visited.removeValue(forKey: visitedOrder.removeFirst()) }
+        lastChannelBySpace = lastChannelBySpace.filter { visited[navigationKey(spaceID: $0.key, channelID: $0.value)] != nil }
+    }
+    private func rememberCurrentNavigation() {
+        guard let detail, let snapshot = chat.currentSnapshot(), snapshot.space?.id == detail.space.id else { return }
+        lastChannelBySpace[detail.space.id] = snapshot.channel?.id
+        remember(PreparedNavigation(detail: detail, channelID: snapshot.channel?.id, history: snapshot))
+    }
+    private func clearNavigationCache() {
+        navigationCacheEpoch += 1
+        prefetches.values.forEach { $0.task.cancel() }
+        prefetches.removeAll(); prefetchOrder.removeAll(); visited.removeAll(); visitedOrder.removeAll(); lastChannelBySpace.removeAll()
+    }
+    private func invalidateNavigation(spaceID: String? = nil, channelID: String? = nil) {
+        navigationCacheEpoch += 1
+        let keys = Set(prefetches.keys).union(visited.keys).filter { key in
+            if let spaceID, !key.hasPrefix("\(spaceID):") { return false }
+            // A space-only prefetch may have selected this channel; drop these
+            // speculative aliases too, rather than reintroducing revoked data.
+            if let channelID, !key.hasSuffix(":\(channelID)"), !key.hasSuffix(":") { return false }
+            return true
+        }
+        for key in keys { prefetches.removeValue(forKey: key)?.task.cancel(); visited.removeValue(forKey: key) }
+        prefetchOrder.removeAll { keys.contains($0) }; visitedOrder.removeAll { keys.contains($0) }
+        if let spaceID, channelID == nil { lastChannelBySpace.removeValue(forKey: spaceID) }
+        if let channelID { lastChannelBySpace = lastChannelBySpace.filter { $0.value != channelID } }
+    }
+    var navigationCacheCounts: (prefetches: Int, visited: Int) { (prefetches.count, visited.count) }
 
     public var isOwner: Bool { account?.id == detail?.space.ownerId }
     public var canCreateSpace: Bool {
@@ -218,6 +362,7 @@ public final class AppModel {
     }
 
     public func createSpace(name: String) async throws {
+        clearNavigationCache()
         let attempt = generation
         if let error = WorkspaceValidation.spaceNameError(name) { throw APIError(status: 400, message: error) }
         let created = try await api.createSpace(name: name)
@@ -228,6 +373,7 @@ public final class AppModel {
 
     public func renameSpace(_ name: String) async throws {
         guard let detail else { return }
+        clearNavigationCache()
         let attempt = generation
         if let error = WorkspaceValidation.spaceNameError(name) { throw APIError(status: 400, message: error) }
         let updated = try await api.updateSpace(id: detail.space.id, name: name)
@@ -237,6 +383,7 @@ public final class AppModel {
 
     public func deleteCurrentSpace() async throws {
         guard let id = detail?.space.id else { return }
+        clearNavigationCache()
         let attempt = generation
         try await api.deleteSpace(id: id)
         guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
@@ -246,6 +393,7 @@ public final class AppModel {
 
     public func leaveCurrentSpace() async throws {
         guard let account, let id = detail?.space.id else { return }
+        clearNavigationCache()
         let attempt = generation
         try await api.removeSpaceMember(spaceID: id, memberID: account.id)
         guard generation == attempt, self.account?.id == account.id, detail?.space.id == id else { throw CancellationError() }
@@ -255,6 +403,7 @@ public final class AppModel {
 
     public func addSpaceMember(username: String) async throws {
         guard var detail else { return }
+        clearNavigationCache()
         let attempt = generation
         let member = try await api.addSpaceMember(spaceID: detail.space.id, username: username)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
@@ -264,6 +413,7 @@ public final class AppModel {
 
     public func removeSpaceMember(_ member: Member) async throws {
         guard var detail else { return }
+        clearNavigationCache()
         let attempt = generation
         try await api.removeSpaceMember(spaceID: detail.space.id, memberID: member.id)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
@@ -273,6 +423,7 @@ public final class AppModel {
 
     public func createChannel(name: String, privateChannel: Bool) async throws {
         guard var detail else { return }
+        clearNavigationCache()
         let attempt = generation
         let clean = name.hasSuffix("-") ? String(name.dropLast()) : name
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
@@ -285,6 +436,7 @@ public final class AppModel {
 
     public func updateChannel(_ channel: Channel, name: String, privateChannel: Bool) async throws -> Channel {
         guard var detail else { return channel }
+        clearNavigationCache()
         let attempt = generation
         let clean = name.hasSuffix("-") ? String(name.dropLast()) : name
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
@@ -297,6 +449,7 @@ public final class AppModel {
 
     public func deleteChannel(_ channel: Channel) async throws {
         guard var detail else { return }
+        clearNavigationCache()
         let attempt = generation
         try await api.deleteChannel(spaceID: detail.space.id, channelID: channel.id)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
@@ -319,6 +472,7 @@ public final class AppModel {
 
     public func addChannelMember(_ channel: Channel, username: String) async throws -> Member {
         guard let spaceID = detail?.space.id else { throw APIError(status: 400, message: "No space is selected.") }
+        clearNavigationCache()
         let attempt = generation
         let member = try await api.addChannelMember(spaceID: spaceID, channelID: channel.id, username: username)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
@@ -327,6 +481,7 @@ public final class AppModel {
 
     public func removeChannelMember(_ channel: Channel, member: Member) async throws {
         guard let spaceID = detail?.space.id else { return }
+        clearNavigationCache()
         let attempt = generation
         try await api.removeChannelMember(spaceID: spaceID, channelID: channel.id, memberID: member.id)
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
@@ -388,6 +543,7 @@ public final class ChatModel {
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
     private let api: APIClient
     private var channelID: String?
+    private var spaceID: String?
     private var session: ChatSession?
     private var subscriptionID: String?
     private var generation = 0
@@ -405,6 +561,18 @@ public final class ChatModel {
     }
 
     public init(api: APIClient) { self.api = api }
+
+    /// A token-free copy of only the timeline currently retained by this model.
+    public func currentSnapshot() -> ChatHistory? {
+        guard session != nil, let channelID, let spaceID else { return nil }
+        return ChatHistory(
+            space: HistoryIdentity(id: spaceID, name: spaceName),
+            channel: HistoryIdentity(id: channelID, name: channelName),
+            messages: messages,
+            cursor: delivery.cursor,
+            hasMore: hasMore
+        )
+    }
 
     public func open(channelID: String?, displayName: String) async {
         await open(channelID: channelID, displayName: displayName, preservingPending: false, prepared: nil)
@@ -434,6 +602,7 @@ public final class ChatModel {
             let chatSession = try await sessionRequest
             guard self.channelID == channelID, generation == requestGeneration else { return }
             let resolvedChannelID = history.channel?.id
+            spaceID = history.space?.id
             self.channelID = resolvedChannelID
             messages = history.messages
             delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
@@ -593,7 +762,7 @@ public final class ChatModel {
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
-        session = nil; channelID = nil; messages = []; draft = ""; hasMore = false
+        session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
         loadingOlder = false; olderError = nil
         loading = false; sending = false; liveState = .disconnected

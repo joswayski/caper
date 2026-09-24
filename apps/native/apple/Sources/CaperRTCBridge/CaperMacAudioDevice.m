@@ -1,4 +1,5 @@
 #import "CaperMacAudioDevice.h"
+#import "CaperDenoisePipeline.h"
 #import "CaperVoiceDSP.h"
 #import "sdk/objc/components/audio/RTCAudioDevice.h"
 #import <AudioUnit/AudioUnit.h>
@@ -23,6 +24,17 @@ static const double kCaperSampleRate = 48000;
 }
 - (instancetype)initWithNatural:(NSData *)natural enhanced:(NSData *)enhanced sampleRate:(double)sampleRate {
     if ((self = [super init])) { _natural = [natural copy]; _enhanced = [enhanced copy]; _sampleRate = sampleRate; }
+    return self;
+}
+@end
+
+@implementation CaperAudioProcessingReport
+- (instancetype)initWithMode:(NSInteger)mode hops:(uint64_t)hops meanMs:(double)meanMs
+                      maxMs:(double)maxMs queuedMs:(double)queuedMs {
+    if ((self = [super init])) {
+        _mode = mode; _processedHops = hops; _meanProcessingMs = meanMs;
+        _maxProcessingMs = maxMs; _queuedInputMs = queuedMs;
+    }
     return self;
 }
 @end
@@ -131,9 +143,11 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
     _Atomic int _gain;
     _Atomic int _strength;
     _Atomic bool _publicationEnabled;
+    _Atomic uint32_t _publicationEpoch;
     _Atomic double _inputRate;
     _Atomic double _outputRate;
     CaperVoiceDSP _processing;
+    uint32_t _processingEpoch;
     int16_t *_comparisonNatural;
     int16_t *_comparisonEnhanced;
     _Atomic unsigned _comparisonFrames;
@@ -141,12 +155,16 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
     double _comparisonSampleRate;
     _Atomic unsigned _comparisonCallbacks;
     _Atomic bool _comparing;
+    CaperDenoisePipeline *_denoiser;
+    uint32_t _captureEpochs[kCaperMaxFrames];
+    double _denoiserRate;
     BOOL _comparisonOwnsInput;
     BOOL _inputListener;
     BOOL _outputListener;
     BOOL _terminating;
     uint64_t _lifecycle;
     BOOL _syntheticTest;
+    _Atomic int _syntheticLastPublishedPeak;
     BOOL _syntheticInputInitialized;
     BOOL _syntheticOutputInitialized;
 }
@@ -156,10 +174,12 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
         _inputUID = @""; _outputUID = @"";
         atomic_init(&_gain, 100); atomic_init(&_strength, 25);
         atomic_init(&_publicationEnabled, false);
+        atomic_init(&_publicationEpoch, 1);
         atomic_init(&_recording, false); atomic_init(&_playing, false);
         atomic_init(&_inputRate, 0); atomic_init(&_outputRate, 0);
         atomic_init(&_comparisonFrames, 0); atomic_init(&_comparisonCallbacks, 0);
         atomic_init(&_comparing, false);
+        atomic_init(&_syntheticLastPublishedPeak, 0);
     }
     return self;
 }
@@ -170,6 +190,37 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
 }
 - (BOOL)syntheticRecordingActive { return _syntheticTest && _recording && _delegate != nil; }
 - (BOOL)syntheticPlayoutActive { return _syntheticTest && _playing && _delegate != nil; }
+- (NSInteger)syntheticLastPublishedPeak { return _syntheticTest ? atomic_load(&_syntheticLastPublishedPeak) : 0; }
+- (BOOL)denoiseFailed { @synchronized (self) { return !_syntheticTest && CaperDenoisePipelineFailed(_denoiser); } }
+- (NSInteger)denoiseMode { @synchronized (self) { return _syntheticTest ? 0 : CaperDenoisePipelineMode(_denoiser); } }
+- (CaperAudioProcessingReport *)audioProcessingReport {
+    @synchronized (self) {
+        if (_syntheticTest || !_denoiser) { return nil; }
+        CaperDenoiseStatistics stats = CaperDenoisePipelineStatistics(_denoiser);
+        return [[CaperAudioProcessingReport alloc] initWithMode:stats.mode hops:stats.processedHops
+            meanMs:stats.processedHops ? (double)stats.totalProcessingMicros / stats.processedHops / 1000 : 0
+            maxMs:(double)stats.maxProcessingMicros / 1000
+            queuedMs:_denoiserRate ? (double)stats.queuedInputFrames / _denoiserRate * 1000 : 0];
+    }
+}
+- (BOOL)prepareDenoise {
+    if (_syntheticTest) { return YES; }
+    @synchronized (self) {
+        if (_inputUnit || _comparisonOwnsInput || _recording || self.isComparing) { return _denoiser != NULL && !self.denoiseFailed; }
+        NSURL *model = [[NSBundle bundleForClass:self.class] URLForResource:@"dpdfnet8_48khz_hr" withExtension:@"onnx"];
+        double rate = self.deviceInputSampleRate;
+        CaperDenoisePipeline *prepared = CaperDenoisePipelineCreate(model.fileSystemRepresentation, rate);
+        if (!prepared) { return NO; }
+        CaperDenoisePipelineDestroy(_denoiser);
+        _denoiser = prepared;
+        _denoiserRate = rate;
+        return YES;
+    }
+}
+- (void)dealloc {
+    [self disposeInput:YES]; [self disposeInput:NO];
+    CaperDenoisePipelineDestroy(_denoiser);
+}
 + (NSArray<CaperAudioRoute *> *)inputRoutes { return CaperRoutes(YES); }
 + (NSArray<CaperAudioRoute *> *)outputRoutes { return CaperRoutes(NO); }
 - (uint32_t)resolvedOutputDeviceID { return CaperResolveRoute(_outputUID, NO); }
@@ -178,7 +229,12 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
 - (NSInteger)processingStrength { return atomic_load(&_strength); }
 - (void)setProcessingStrength:(NSInteger)value { atomic_store(&_strength, (int)MAX(0, MIN(100, value))); }
 - (BOOL)publicationEnabled { return atomic_load_explicit(&_publicationEnabled, memory_order_acquire); }
-- (void)setPublicationEnabled:(BOOL)value { atomic_store_explicit(&_publicationEnabled, value, memory_order_release); }
+- (void)setPublicationEnabled:(BOOL)value {
+    if (atomic_load_explicit(&_publicationEnabled, memory_order_acquire) != value) {
+        atomic_fetch_add_explicit(&_publicationEpoch, 1, memory_order_acq_rel);
+        atomic_store_explicit(&_publicationEnabled, value, memory_order_release);
+    }
+}
 
 static void CaperGatePublishedPCM(int16_t *samples, unsigned frames, bool enabled) {
     if (!enabled) { memset(samples, 0, frames * sizeof(int16_t)); }
@@ -215,22 +271,63 @@ BOOL CaperSyntheticComparisonStopWorks(void) {
     return entered && !comparing && atomic_load_explicit(&callbacks, memory_order_acquire) == 0;
 }
 
+static uint32_t CaperCaptureEpoch(CaperMacAudioDevice *device) {
+    uint32_t before = atomic_load_explicit(&device->_publicationEpoch, memory_order_acquire);
+    bool allowed = atomic_load_explicit(&device->_publicationEnabled, memory_order_acquire) &&
+        !atomic_load_explicit(&device->_comparing, memory_order_acquire);
+    return allowed && before == atomic_load_explicit(&device->_publicationEpoch, memory_order_acquire) ? before : 0;
+}
+
+static uint32_t CaperEpochAtDelivery(CaperMacAudioDevice *device, uint32_t entryEpoch) {
+    return entryEpoch == CaperCaptureEpoch(device) ? entryEpoch : 0;
+}
+
+BOOL CaperSyntheticCaptureEntryFenceWorks(void) {
+    CaperMacAudioDevice *device = [CaperMacAudioDevice syntheticTestDevice];
+    uint32_t privateEntry = CaperCaptureEpoch(device);
+    device.publicationEnabled = YES; // Reopened during AudioUnitRender.
+    if (privateEntry || CaperEpochAtDelivery(device, privateEntry)) return NO;
+    uint32_t publicEntry = CaperCaptureEpoch(device);
+    device.publicationEnabled = NO;
+    device.publicationEnabled = YES; // Closed and reopened during render.
+    return publicEntry && CaperEpochAtDelivery(device, publicEntry) == 0 &&
+        CaperEpochAtDelivery(device, CaperCaptureEpoch(device)) != 0;
+}
+
 static OSStatus CaperDeliverCapture(CaperMacAudioDevice *device, AudioUnitRenderActionFlags *flags,
-                                    const AudioTimeStamp *time, UInt32 frames) {
+                                    const AudioTimeStamp *time, UInt32 frames, uint32_t entryEpoch) {
     if (frames > kCaperMaxFrames) { return kAudio_ParamError; }
     AudioBufferList capture = {.mNumberBuffers = 1,
         .mBuffers = {{.mNumberChannels = 1, .mDataByteSize = frames * sizeof(int16_t), .mData = device->_capture}}};
     bool entered = CaperComparisonEnter(&device->_comparing, &device->_comparisonCallbacks);
     bool comparing = entered && atomic_load_explicit(&device->_comparing, memory_order_acquire);
+    // HAL entry preceded AudioUnitRender: a mute/comparison/reopen that crossed
+    // the render must not relabel pre-transition capture as newly public.
+    uint32_t epoch = CaperEpochAtDelivery(device, entryEpoch);
     unsigned offset = 0, count = 0;
+    BOOL processed = YES;
+    if (!device->_syntheticTest) {
+        // The bounded worker returns post-gain, post-DPDFNet PCM here. It never
+        // runs inference on the AUHAL callback or exposes raw capture on lag.
+        processed = CaperDenoisePipelineProcess(device->_denoiser, device->_capture,
+            device->_capture, device->_captureEpochs, frames,
+            atomic_load_explicit(&device->_gain, memory_order_relaxed), epoch);
+    }
     if (comparing) {
         offset = atomic_load_explicit(&device->_comparisonFrames, memory_order_relaxed);
         count = MIN(frames, device->_comparisonCapacityFrames - MIN(offset, device->_comparisonCapacityFrames));
         if (count) { memcpy(device->_comparisonNatural + offset, device->_capture, count * sizeof(int16_t)); }
     }
-    CaperProcessVoice(device->_capture, frames, atomic_load_explicit(&device->_inputRate, memory_order_relaxed),
-        atomic_load_explicit(&device->_gain, memory_order_relaxed),
-        atomic_load_explicit(&device->_strength, memory_order_relaxed), &device->_processing);
+    if (processed) {
+        if (device->_syntheticTest) {
+            for (UInt32 i = 0; i < frames; i++) device->_captureEpochs[i] = epoch;
+        }
+        CaperProcessVoiceEpochs(device->_capture, device->_captureEpochs, frames,
+            atomic_load_explicit(&device->_inputRate, memory_order_relaxed),
+            device->_syntheticTest ? atomic_load_explicit(&device->_gain, memory_order_relaxed) : 100,
+            atomic_load_explicit(&device->_strength, memory_order_relaxed),
+            &device->_processing, &device->_processingEpoch);
+    }
     if (comparing) {
         if (count) {
             memcpy(device->_comparisonEnhanced + offset, device->_capture, count * sizeof(int16_t));
@@ -238,8 +335,19 @@ static OSStatus CaperDeliverCapture(CaperMacAudioDevice *device, AudioUnitRender
         }
     }
     CaperComparisonLeave(&device->_comparisonCallbacks, entered);
+    if (!device->_syntheticTest) {
+        uint32_t currentEpoch = atomic_load_explicit(&device->_publicationEpoch, memory_order_acquire);
+        for (UInt32 i = 0; i < frames; i++) {
+            if (!device->_captureEpochs[i] || device->_captureEpochs[i] != currentEpoch) device->_capture[i] = 0;
+        }
+    }
     CaperGatePublishedPCM(device->_capture, frames,
         atomic_load_explicit(&device->_publicationEnabled, memory_order_acquire) && !comparing);
+    if (device->_syntheticTest) {
+        int peak = 0;
+        for (UInt32 i = 0; i < frames; i++) { peak = MAX(peak, abs((int)device->_capture[i])); }
+        atomic_store_explicit(&device->_syntheticLastPublishedPeak, peak, memory_order_release);
+    }
     return device->_recording && device->_delegate
         ? device->_delegate.deliverRecordedData(flags, time, 1, frames, &capture, NULL, NULL) : noErr;
 }
@@ -248,18 +356,20 @@ static OSStatus CaperInputCallback(void *context, AudioUnitRenderActionFlags *fl
                                    const AudioTimeStamp *time, UInt32 bus, UInt32 frames, AudioBufferList *data) {
     CaperMacAudioDevice *device = (__bridge CaperMacAudioDevice *)context;
     if (frames > kCaperMaxFrames || !device->_inputUnit) { return kAudio_ParamError; }
+    uint32_t entryEpoch = CaperCaptureEpoch(device);
     AudioBufferList capture = {.mNumberBuffers = 1,
         .mBuffers = {{.mNumberChannels = 1, .mDataByteSize = frames * sizeof(int16_t), .mData = device->_capture}}};
     OSStatus status = AudioUnitRender(device->_inputUnit, flags, time, 1, frames, &capture);
-    return status == noErr ? CaperDeliverCapture(device, flags, time, frames) : status;
+    return status == noErr ? CaperDeliverCapture(device, flags, time, frames, entryEpoch) : status;
 }
 
 - (BOOL)injectSyntheticPCM:(NSData *)pcm {
     if (!self.syntheticRecordingActive || pcm.length == 0 || pcm.length > sizeof(_capture) || pcm.length % sizeof(int16_t)) { return NO; }
+    uint32_t entryEpoch = CaperCaptureEpoch(self);
     memcpy(_capture, pcm.bytes, pcm.length);
     AudioUnitRenderActionFlags flags = 0;
     AudioTimeStamp time = {0};
-    return CaperDeliverCapture(self, &flags, &time, (UInt32)(pcm.length / sizeof(int16_t))) == noErr;
+    return CaperDeliverCapture(self, &flags, &time, (UInt32)(pcm.length / sizeof(int16_t)), entryEpoch) == noErr;
 }
 
 - (NSData *)pullSyntheticPlayoutFrames:(uint32_t)frames {
@@ -321,7 +431,19 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     if (status == noErr) { status = AudioUnitInitialize(unit); }
     if (status != noErr) { AudioComponentInstanceDispose(unit); return NO; }
     if (input) {
+        if (!_syntheticTest && _denoiserRate != format.mSampleRate) {
+            // Device changes can alter the hardware rate. Warm the replacement
+            // only after the old AUHAL unit stops, never from its callback.
+            NSURL *model = [[NSBundle bundleForClass:self.class] URLForResource:@"dpdfnet8_48khz_hr" withExtension:@"onnx"];
+            CaperDenoisePipeline *replacement = CaperDenoisePipelineCreate(model.fileSystemRepresentation, format.mSampleRate);
+            if (!replacement) { AudioUnitUninitialize(unit); AudioComponentInstanceDispose(unit); return NO; }
+            @synchronized (self) {
+                CaperDenoisePipelineDestroy(_denoiser);
+                _denoiser = replacement; _denoiserRate = format.mSampleRate;
+            }
+        }
         _processing = (CaperVoiceDSP){0};
+        _processingEpoch = 0;
         atomic_store(&_inputRate, format.mSampleRate);
         _inputUnit = unit;
     } else {
@@ -354,6 +476,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
         BOOL active = input ? self->_recording : self->_playing;
         if (!active) {
             [self disposeInput:input];
+            if (input) { self->_denoiserRate = 0; }
             if (input) { self->_inputUID = [uid copy]; } else { self->_outputUID = [uid copy]; }
             switched = YES;
             return;
@@ -361,6 +484,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
         if (input) { [self->_delegate notifyAudioInputInterrupted]; }
         else { [self->_delegate notifyAudioOutputInterrupted]; }
         [self disposeInput:input];
+        if (input) { self->_denoiserRate = 0; } // A new microphone needs fresh recurrent/OLA state.
         if (input) { self->_inputUID = [uid copy]; } else { self->_outputUID = [uid copy]; }
         switched = [self createUnitForInput:input] && (!active || AudioOutputUnitStart(input ? self->_inputUnit : self->_outputUnit) == noErr);
         if (!switched) {
@@ -402,6 +526,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 }
 - (BOOL)beginComparisonOnOwner {
     if (_comparisonNatural || _comparisonEnhanced) { return NO; }
+    if (!_syntheticTest && (!_denoiser || self.denoiseFailed)) { return NO; }
     if (![self initializeRecording]) { return NO; }
     _comparisonSampleRate = self.deviceInputSampleRate;
     if (_comparisonSampleRate < 8000 || _comparisonSampleRate > 192000) { return NO; }
@@ -421,6 +546,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
         _comparisonNatural = NULL; _comparisonEnhanced = NULL; _comparisonOwnsInput = NO;
         return NO;
     }
+    atomic_fetch_add_explicit(&_publicationEpoch, 1, memory_order_acq_rel);
     atomic_store_explicit(&_comparing, true, memory_order_release);
     return YES;
 }
@@ -441,6 +567,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     return result;
 }
 - (CaperAudioComparison *)endComparisonOnOwner {
+    atomic_fetch_add_explicit(&_publicationEpoch, 1, memory_order_acq_rel);
     atomic_store_explicit(&_comparing, false, memory_order_release);
     while (atomic_load_explicit(&_comparisonCallbacks, memory_order_acquire)) { usleep(1000); }
     if (_comparisonOwnsInput && !_recording) { [self disposeInput:YES]; }
@@ -496,6 +623,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     if (_inputListener) { AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &input, CaperDefaultRouteChanged, (__bridge void *)self); _inputListener = NO; }
     if (_outputListener) { AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &output, CaperDefaultRouteChanged, (__bridge void *)self); _outputListener = NO; }
     [self disposeInput:YES]; [self disposeInput:NO];
+    @synchronized (self) { CaperDenoisePipelineDestroy(_denoiser); _denoiser = NULL; }
     _recording = NO; _playing = NO;
     _syntheticInputInitialized = NO; _syntheticOutputInitialized = NO;
     @synchronized (self) { _delegate = nil; }
@@ -515,6 +643,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 - (BOOL)isRecordingInitialized { return _syntheticTest ? _syntheticInputInitialized : _inputUnit != NULL; }
 - (BOOL)initializeRecording {
     if (_syntheticTest) { _syntheticInputInitialized = YES; atomic_store(&_inputRate, kCaperSampleRate); return YES; }
+    if (!_denoiser || self.denoiseFailed) { return NO; }
     return _inputUnit || [self createUnitForInput:YES];
 }
 - (BOOL)isRecording { return _recording; }

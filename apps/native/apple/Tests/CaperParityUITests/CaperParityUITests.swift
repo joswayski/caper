@@ -316,7 +316,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(outputGain(of: app.sliders["Input gain"]), 0)
         app.sliders["Live voice processing"].adjust(toNormalizedSliderPosition: 1)
         XCTAssertEqual(outputGain(of: app.sliders["Live voice processing"]), 100)
-        assertStaticText("Processing runs on capture before the WebRTC sender; 0% bypasses it.", in: app, timeout: 2)
+        assertStaticText("The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.", in: app, timeout: 2)
+        assertStaticText("On-device noise suppression starts when you test or join.", in: app, timeout: 2)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
         assertStaticText("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.", in: app, timeout: 2)
         #endif

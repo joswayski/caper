@@ -32,6 +32,20 @@ test -f "$ORT_DIR/ThirdPartyNotices.txt"
 test "$(shasum -a 256 "$REPO/apps/web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx" | cut -d ' ' -f 1)" = \
   7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631
 
+# The native RNNoise fallback is built from exact upstream C sources and its
+# matching model. Neither engine downloads code or weights when the app runs.
+RN_DIR="$ROOT/.build/rnnoise"
+if [[ ! -f "$RN_DIR/src/rnnoise_data.c" ]]; then
+  mkdir -p "$RN_DIR"
+  curl -fLsS --retry 2 'https://github.com/xiph/rnnoise/archive/70f1d256acd4b34a572f999a05c87bf00b67730d.tar.gz' -o "$ROOT/.build/rnnoise-source.tar.gz"
+  echo "f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  $ROOT/.build/rnnoise-source.tar.gz" | shasum -a 256 -c -
+  tar -xzf "$ROOT/.build/rnnoise-source.tar.gz" -C "$RN_DIR" --strip-components=1
+  curl -fLsS --retry 2 'https://media.xiph.org/rnnoise/models/rnnoise_data-0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37.tar.gz' -o "$ROOT/.build/rnnoise-model.tar.gz"
+  echo "0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37  $ROOT/.build/rnnoise-model.tar.gz" | shasum -a 256 -c -
+  tar -xzf "$ROOT/.build/rnnoise-model.tar.gz" -C "$RN_DIR" src/rnnoise_data.c src/rnnoise_data.h
+fi
+test -f "$RN_DIR/COPYING"
+
 XCODEGEN_COMMIT=21ac9944b0ab546a07422dbed86f33dd2ebd76f8
 XCODEGEN="$ROOT/.build/xcodegen-$XCODEGEN_COMMIT"
 if [[ ! -d "$XCODEGEN/.git" ]]; then

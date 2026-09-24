@@ -47,3 +47,20 @@ void CaperProcessVoice(int16_t *samples, unsigned frames, double sampleRate, int
         samples[i] = (int16_t)lrintf(limit(sample, -1.f, 0.999969f) * 32767.f);
     }
 }
+
+void CaperProcessVoiceEpochs(int16_t *samples, const uint32_t *epochs, unsigned frames,
+                             double sampleRate, int inputGain, int strength,
+                             CaperVoiceDSP *state, uint32_t *lastEpoch) {
+    unsigned first = 0;
+    while (first < frames) {
+        uint32_t epoch = epochs[first];
+        unsigned end = first + 1;
+        while (end < frames && epochs[end] == epoch) end++;
+        if (*lastEpoch != epoch) {
+            *state = (CaperVoiceDSP){0};
+            *lastEpoch = epoch;
+        }
+        CaperProcessVoice(samples + first, end - first, sampleRate, inputGain, strength, state);
+        first = end;
+    }
+}

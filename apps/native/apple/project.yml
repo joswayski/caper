@@ -26,9 +26,22 @@ targets:
       - path: Sources/CaperRTCBridge/CaperDpdfnet.cpp
       - path: Sources/CaperRTCBridge/CaperDpdfnet.h
         headerVisibility: project
+      - path: Sources/CaperRTCBridge/CaperDenoisePipeline.cpp
+      - path: Sources/CaperRTCBridge/CaperDenoisePipeline.h
+        headerVisibility: project
       - path: Sources/CaperRTCBridge/CaperVoiceDSP.c
       - path: Sources/CaperRTCBridge/CaperVoiceDSP.h
         headerVisibility: project
+      - .build/rnnoise/src/denoise.c
+      - .build/rnnoise/src/rnn.c
+      - .build/rnnoise/src/pitch.c
+      - .build/rnnoise/src/kiss_fft.c
+      - .build/rnnoise/src/celt_lpc.c
+      - .build/rnnoise/src/nnet.c
+      - .build/rnnoise/src/nnet_default.c
+      - .build/rnnoise/src/parse_lpcnet_weights.c
+      - .build/rnnoise/src/rnnoise_data.c
+      - .build/rnnoise/src/rnnoise_tables.c
       - path: Sources/CaperRTCBridge/sdk
         buildPhase: none
       - path: ../../web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx
@@ -38,6 +51,8 @@ targets:
       - path: .build/onnxruntime-osx-universal2-1.23.2/LICENSE
         buildPhase: resources
       - path: .build/onnxruntime-osx-universal2-1.23.2/ThirdPartyNotices.txt
+        buildPhase: resources
+      - path: .build/rnnoise/COPYING
         buildPhase: resources
     dependencies:
       - package: WebRTC
@@ -53,8 +68,9 @@ targets:
         PRODUCT_MODULE_NAME: CaperRTCBridge
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES
-        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge $(SRCROOT)/.build/onnxruntime-osx-universal2-1.23.2/include"
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge $(SRCROOT)/.build/onnxruntime-osx-universal2-1.23.2/include $(SRCROOT)/.build/rnnoise/include $(SRCROOT)/.build/rnnoise/src"
         LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/.build/onnxruntime-osx-universal2-1.23.2/lib"
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) RNNOISE_BUILD=1 DISABLE_DEBUG_FLOAT=1"
         CLANG_CXX_LANGUAGE_STANDARD: c++17
   CaperCoreMacOS:
     type: framework

@@ -9,10 +9,13 @@ FOUNDATION_EXPORT BOOL CaperCustomAudioFactoryAvailable(void);
 FOUNDATION_EXPORT RTCPeerConnectionFactory * _Nullable CaperCreateAudioPeerFactory(NSObject *device);
 FOUNDATION_EXPORT BOOL CaperSyntheticAudioCallbacksWork(void);
 FOUNDATION_EXPORT BOOL CaperSyntheticVoiceDSPWorks(void);
+FOUNDATION_EXPORT BOOL CaperSyntheticContourEpochWorks(void);
+FOUNDATION_EXPORT BOOL CaperSyntheticCaptureEntryFenceWorks(void);
 FOUNDATION_EXPORT BOOL CaperSyntheticComparisonStopWorks(void);
 FOUNDATION_EXPORT BOOL CaperSyntheticPublicationGateWorks(void);
 /// Runs the bundled native ONNX model without microphone, speaker or peer I/O.
 FOUNDATION_EXPORT BOOL CaperNativeDpdfnetModelWorks(void);
+FOUNDATION_EXPORT BOOL CaperNativeDenoiseWorkersRunWithoutHardware(void);
 
 /// A no-I/O probe. Never opens hardware or returns audio from a callback.
 @interface CaperSyntheticAudioDevice : NSObject

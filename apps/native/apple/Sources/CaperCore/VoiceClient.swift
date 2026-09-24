@@ -86,6 +86,16 @@ public final class VoiceClient {
     #if os(macOS)
     public private(set) var inputGain = 100
     public private(set) var voiceProcessingStrength = 25
+    public var noiseSuppressionStatus: String {
+        switch audioDevice.denoiseMode {
+        case 1: return "DPDFNet-8 HR active · on-device"
+        case 2: return "DPDFNet-8 unavailable · RNNoise active · on-device"
+        default: return phase == .idle || phase == .failed
+            ? "On-device noise suppression starts when you test or join."
+            : "Noise suppression unavailable · microphone audio stays silent."
+        }
+    }
+    public var audioProcessingReport: CaperAudioProcessingReport? { audioDevice.audioProcessingReport }
     private let audioDevice: CaperMacAudioDevice
     private var comparisonPeer: RTCPeerConnection?
     private var comparisonGeneration: Int?
@@ -178,6 +188,11 @@ public final class VoiceClient {
             guard let factory else { throw VoiceError.setup }
             guard await requestMicrophonePermission() else { throw VoiceError.permission }
             guard generation == attempt, phase == .joining else { return }
+            #if os(macOS)
+            guard await prepareMicrophoneDenoise(), generation == attempt, phase == .joining else {
+                throw VoiceError.setup
+            }
+            #endif
             #if os(iOS)
             try activateAudioSession()
             installAudioObservers(generation: attempt)
@@ -666,6 +681,11 @@ public final class VoiceClient {
     }
 
     #if os(macOS)
+    func prepareMicrophoneDenoise() async -> Bool {
+        let device = audioDevice
+        return await Task.detached(priority: .userInitiated) { device.prepareDenoise() }.value
+    }
+
     /// Keep publication gated through recording and playback; stale tests cannot open a replacement call.
     func beginMicrophoneComparison() -> Int? {
         if phase == .idle || phase == .failed {

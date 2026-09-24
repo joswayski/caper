@@ -484,4 +484,139 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(model.voice.phase, .idle, "revoking the active voice channel must tear down synchronously")
         XCTAssertNil(model.voice.context)
     }
+
+    @MainActor
+    func testNavigationPrefetchIsReadOnlyAndBounded() async throws {
+        let model = AppModel(api: client())
+        var paths: [String] = []
+        var channelSpaces: [String: String] = [:]
+        let retainedPrefetchesCompleted = expectation(description: "all retained prefetches completed")
+        retainedPrefetchesCompleted.expectedFulfillmentCount = 4
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            paths.append(path)
+            if path.hasPrefix("/api/spaces/") {
+                let id = String(path.split(separator: "/").last!)
+                let channel = "chan0000000\(id.last!)"
+                channelSpaces[channel] = id
+                return (200, Data("{\"space\":{\"id\":\"\(id)\",\"name\":\"Space\",\"ownerId\":\"owner0000001\"},\"channels\":[{\"id\":\"\(channel)\",\"spaceId\":\"\(id)\",\"name\":\"general\",\"private\":false}],\"members\":[]}".utf8))
+            }
+            let channel = String(path.split(separator: "/")[3])
+            let space = try XCTUnwrap(channelSpaces[channel])
+            if channel != "chan00000000" { retainedPrefetchesCompleted.fulfill() }
+            return (200, Data("{\"space\":{\"id\":\"\(space)\",\"name\":\"Space\"},\"channel\":{\"id\":\"\(channel)\",\"name\":\"general\"},\"messages\":[],\"cursor\":\"7\",\"hasMore\":false}".utf8))
+        }
+        for index in 0..<5 {
+            let id = "space000000\(index)"
+            model.prefetch(space: Space(id: id, name: "S", ownerId: "owner0000001", demo: nil))
+        }
+        await fulfillment(of: [retainedPrefetchesCompleted], timeout: 2)
+        XCTAssertEqual(model.navigationCacheCounts.prefetches, 4)
+        XCTAssertFalse(paths.contains("/api/chat/session"), "speculation must not create capabilities")
+        XCTAssertTrue(paths.allSatisfy { $0.hasPrefix("/api/spaces/") || $0.contains("/messages") })
+    }
+
+    @MainActor
+    func testNavigationRevocationDiscardsWarmEntry() async throws {
+        let model = AppModel(api: client())
+        let space = Space(id: "space0000001", name: "S", ownerId: "owner0000001", demo: nil)
+        let prefetchCompleted = expectation(description: "prefetch completed")
+        MockURLProtocol.handler = { request in
+            if request.url!.path == "/api/spaces/space0000001" {
+                return (200, Data(#"{"space":{"id":"space0000001","name":"S","ownerId":"owner0000001"},"channels":[{"id":"chan00000001","spaceId":"space0000001","name":"general","private":true}],"members":[]}"#.utf8))
+            }
+            prefetchCompleted.fulfill()
+            return (200, Data(#"{"space":{"id":"space0000001","name":"S"},"channel":{"id":"chan00000001","name":"general"},"messages":[],"cursor":"9","hasMore":false}"#.utf8))
+        }
+        model.prefetch(space: space, channelID: "chan00000001")
+        await fulfillment(of: [prefetchCompleted], timeout: 2)
+        XCTAssertEqual(model.navigationCacheCounts.prefetches, 1)
+        model.chat.onAccessRevoked?("chan00000001")
+        XCTAssertEqual(model.navigationCacheCounts.prefetches, 0, "revocation must fence already completed speculative data")
+        XCTAssertEqual(model.navigationCacheCounts.visited, 0)
+    }
+
+    @MainActor
+    func testWarmPrefetchCannotBypassDeniedSpaceRefresh() async {
+        let model = AppModel(api: client())
+        let space = Space(id: "space0000001", name: "S", ownerId: "owner0000001", demo: nil)
+        let prefetchCompleted = expectation(description: "warm prefetch completed")
+        var denyRefresh = false
+        MockURLProtocol.handler = { request in
+            if request.url!.path == "/api/spaces/space0000001" {
+                if denyRefresh { return (403, Data(#"{"error":"Membership ended"}"#.utf8)) }
+                return (200, Data(#"{"space":{"id":"space0000001","name":"S","ownerId":"owner0000001"},"channels":[{"id":"chan00000001","spaceId":"space0000001","name":"general","private":true}],"members":[]}"#.utf8))
+            }
+            prefetchCompleted.fulfill()
+            return (200, Data(#"{"space":{"id":"space0000001","name":"S"},"channel":{"id":"chan00000001","name":"general"},"messages":[],"cursor":"9","hasMore":false}"#.utf8))
+        }
+        model.prefetch(space: space)
+        await fulfillment(of: [prefetchCompleted], timeout: 2)
+        denyRefresh = true
+
+        await model.select(space: space)
+
+        XCTAssertNil(model.selectedSpaceID)
+        XCTAssertNil(model.selectedChannelID)
+        XCTAssertNil(model.detail)
+        XCTAssertNil(model.chat.currentAuthor, "denied navigation must not create a chat session")
+        XCTAssertEqual(model.navigationCacheCounts.prefetches, 0)
+        XCTAssertEqual(model.navigationCacheCounts.visited, 0)
+    }
+
+    @MainActor
+    func testInvalidationFencesBlockedNavigationCompletion() async {
+        let model = AppModel(api: client())
+        let space = Space(id: "space0000001", name: "S", ownerId: "owner0000001", demo: nil)
+        let detailStarted = expectation(description: "navigation detail started")
+        var delayedDetail: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/spaces/space0000001" else { return false }
+            delayedDetail = request
+            detailStarted.fulfill()
+            return true
+        }
+        MockURLProtocol.handler = { _ in throw URLError(.badURL) }
+        let navigation = Task { await model.select(space: space) }
+        await fulfillment(of: [detailStarted], timeout: 2)
+
+        model.chat.onAccessRevoked?("chan00000001")
+        delayedDetail?.respond(status: 200, data: Data(#"{"space":{"id":"space0000001","name":"S","ownerId":"owner0000001"},"channels":[],"members":[]}"#.utf8))
+        await navigation.value
+
+        XCTAssertNil(model.selectedSpaceID)
+        XCTAssertNil(model.detail)
+        XCTAssertNil(model.openingSpaceID, "defer must clear opening state")
+        XCTAssertNil(model.chat.currentAuthor)
+    }
+
+    @MainActor
+    func testNavigationReturnReusesRetainedCursorInsteadOfFirstPage() async throws {
+        let model = AppModel(api: client())
+        let first = Channel(id: "chan00000001", spaceId: "space0000001", name: "one", private: false)
+        let second = Channel(id: "chan00000002", spaceId: "space0000001", name: "two", private: false)
+        let space = Space(id: "space0000001", name: "S", ownerId: "owner0000001", demo: nil)
+        let detail = SpaceDetail(space: space, channels: [first, second], members: [])
+        var firstHistoryReads = 0
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/spaces/space0000001":
+                return (200, try JSONEncoder().encode(detail))
+            case "/api/chat/channels/chan00000001/messages":
+                firstHistoryReads += 1
+                return (200, Data(#"{"space":{"id":"space0000001","name":"S"},"channel":{"id":"chan00000001","name":"one"},"messages":[],"cursor":"41","hasMore":false}"#.utf8))
+            case "/api/chat/channels/chan00000002/messages":
+                return (200, Data(#"{"space":{"id":"space0000001","name":"S"},"channel":{"id":"chan00000002","name":"two"},"messages":[],"cursor":"52","hasMore":false}"#.utf8))
+            case "/api/chat/session":
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        model.detail = detail
+        await model.select(channel: first)
+        await model.select(channel: second)
+        await model.select(channel: first)
+        XCTAssertEqual(firstHistoryReads, 1, "returning should resume from the retained cursor, not refetch page one")
+        XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "41")
+    }
 }

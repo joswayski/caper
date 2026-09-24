@@ -47,6 +47,14 @@ final class MacMicrophoneTest {
         }
         guard attempt == generation else { return }
         guard permitted else { error = "Microphone access is required for a local test."; return }
+        let ready: Bool
+        if let voice { ready = await voice.prepareMicrophoneDenoise() }
+        else {
+            let device = self.device
+            ready = await Task.detached(priority: .userInitiated) { device.prepareDenoise() }.value
+        }
+        guard attempt == generation else { return }
+        guard ready else { error = "On-device noise suppression could not start. No microphone audio was captured."; return }
         if let voice {
             guard let attempt = voice.beginMicrophoneComparison() else {
                 error = "Could not start recording from the selected microphone."

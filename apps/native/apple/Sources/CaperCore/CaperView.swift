@@ -1,6 +1,8 @@
 import SwiftUI
 #if os(iOS)
 import MediaPlayer
+#elseif os(macOS)
+import AppKit
 #endif
 
 public enum CaperTheme {
@@ -31,6 +33,7 @@ public enum CaperTheme {
 
 @MainActor public struct CaperRootView: View {
     @State private var model: AppModel
+    @State private var announcedVoice = false
     public init(model: AppModel? = nil) { _model = State(initialValue: model ?? CaperRuntime.makeModel()) }
 
     public var body: some View {
@@ -50,8 +53,12 @@ public enum CaperTheme {
             CaperEffects.shared.preload()
             if model.phase == .loading { await model.start() }
         }
-        .onChange(of: model.voice.phase) { old, new in
-            if old != .connected, new == .connected { CaperEffects.shared.play(.join) }
+        .onChange(of: model.voice.phase) { _, new in
+            if new == .idle || new == .failed || new == .joining { announcedVoice = false }
+            if new == .connected, !announcedVoice {
+                announcedVoice = true
+                CaperEffects.shared.play(.join)
+            }
         }
     }
 }
@@ -242,6 +249,7 @@ private struct SpaceRail: View {
                             .overlay(RoundedRectangle(cornerRadius: model.selectedSpaceID == space.id ? 8 : 12).stroke(model.selectedSpaceID == space.id ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border))
                     }
                     .buttonStyle(.plain).help(space.name)
+                    .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
                     .accessibilityLabel(space.name)
                     .accessibilityValue(model.openingSpaceID == space.id ? "Opening" : model.selectedSpaceID == space.id ? "Selected" : "")
                     .overlay(alignment: .leading) {
@@ -324,6 +332,9 @@ private struct ChannelSidebar: View {
                                         .background(model.selectedChannelID == channel.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }.buttonStyle(.plain)
+                                        .modifier(NavigationPrefetchModifier {
+                                            if let space = model.detail?.space { model.prefetch(space: space, channelID: channel.id) }
+                                        })
                                         .accessibilityIdentifier("channel-\(channel.id)")
                                         .accessibilityValue(model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : "")
                                     if model.isOwner {
@@ -347,6 +358,24 @@ private struct ChannelSidebar: View {
         }
         .background(CaperTheme.sidebar)
         .overlay(alignment: .trailing) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+    }
+}
+
+private struct NavigationPrefetchModifier: ViewModifier {
+    let action: () -> Void
+    #if os(macOS)
+    @FocusState private var focused: Bool
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .onHover { if $0 { action() } }
+            .focused($focused)
+            .onChange(of: focused) { _, value in if value { action() } }
+        #else
+        content
+        #endif
     }
 }
 
@@ -495,6 +524,7 @@ private struct AccountBar: View {
     #if os(macOS)
     @State private var inputOptions = false
     @State private var outputOptions = false
+    @State private var audioDiagnostics = false
     #endif
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
     var body: some View {
@@ -533,6 +563,11 @@ private struct AccountBar: View {
             }
             Menu {
                 Button("Audio preferences") { voice.showAudioPreferences = true }
+                #if os(macOS)
+                if model.account?.debugEnabled == true {
+                    Button("Audio diagnostics") { audioDiagnostics = true }
+                }
+                #endif
                 if model.account != nil { Button("Log out", role: .destructive) { Task { await model.logout() } } }
             } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).frame(width: 28)
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
@@ -540,7 +575,15 @@ private struct AccountBar: View {
         .padding(4).frame(height: 42).background(CaperTheme.raised)
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
         .padding(12)
-        .sheet(isPresented: $voice.showAudioPreferences) { AudioPreferencesView(voice: voice).presentationBackground(CaperTheme.surface) }
+        .sheet(isPresented: $voice.showAudioPreferences) { AudioPreferencesView(voice: voice, debugEnabled: model.account?.debugEnabled == true).presentationBackground(CaperTheme.surface) }
+        #if os(macOS)
+        .sheet(isPresented: $audioDiagnostics) {
+            VStack(alignment: .leading, spacing: 18) {
+                SheetHeader(title: "Audio diagnostics", detail: "Local processing counters", close: { audioDiagnostics = false })
+                if model.account?.debugEnabled == true { AudioDiagnosticsView(voice: voice).padding(22) }
+            }.frame(minWidth: 420).background(CaperTheme.surface)
+        }
+        #endif
     }
 }
 
@@ -1063,6 +1106,7 @@ private struct CaperPrimaryButton: ButtonStyle {
 
 private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
+    var debugEnabled = false
     #if os(macOS)
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
@@ -1102,7 +1146,9 @@ private struct AudioPreferencesView: View {
                 Slider(value: liveStrength, in: 0...100, step: 1)
                     .accessibilityLabel("Live voice processing")
                     .accessibilityValue("\(voice.voiceProcessingStrength)%")
-                Text("Processing runs on capture before the WebRTC sender; 0% bypasses it.")
+                Text("The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                Text(voice.noiseSuppressionStatus)
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
             #else
@@ -1149,10 +1195,13 @@ private struct AudioPreferencesView: View {
                     Button("Play enhanced") { micTest.play(enhanced: true) }.disabled(recordedPreview)
                     Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview)
                 }
-                Text("Enhanced playback uses the input gain and live processing strength captured during this test. Natural playback uses raw microphone input.")
+                Text("Natural playback includes input gain and on-device noise suppression. Enhanced playback also applies live voice processing strength.")
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
             if let error = micTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            if debugEnabled {
+                DisclosureGroup("Audio diagnostics") { AudioDiagnosticsView(voice: voice) }
+            }
             if voice.phase == .connected || statisticsPreview {
                 Divider().overlay(CaperTheme.border)
                 Text("Connection statistics").font(CaperTheme.font(14, weight: .bold))
@@ -1214,6 +1263,47 @@ private struct AudioPreferencesView: View {
     }
     #endif
 }
+
+#if os(macOS)
+private struct AudioDiagnosticsView: View {
+    let voice: VoiceClient
+    @State private var copyStatus = ""
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            let report = reportJSON
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                Text(voice.noiseSuppressionStatus).font(CaperTheme.font(12))
+                HStack {
+                    Button("Copy diagnostics") {
+                        NSPasteboard.general.clearContents()
+                        copyStatus = NSPasteboard.general.setString(report, forType: .string)
+                            ? "Copied diagnostics" : "Copy failed; select the report below."
+                    }
+                    Text(copyStatus).font(CaperTheme.font(11))
+                }
+                Text(report).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+            }.accessibilityIdentifier("audio-diagnostics")
+        }
+    }
+
+    private var reportJSON: String {
+        var values: [String: Any] = ["platform": "macOS", "processing": NSNull()]
+        if let stats = voice.audioProcessingReport {
+            values["processing"] = [
+                "mode": stats.mode, "processedHops": stats.processedHops,
+                "meanProcessingMs": stats.meanProcessingMs, "maxProcessingMs": stats.maxProcessingMs,
+                "queuedInputMs": stats.queuedInputMs, "hopBudgetMs": 10,
+            ] as [String: Any]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted, .sortedKeys]),
+              let report = String(data: data, encoding: .utf8) else { return "Diagnostics unavailable." }
+        return report
+    }
+}
+#endif
 
 private struct AudioRouteRow: View {
     let title: String

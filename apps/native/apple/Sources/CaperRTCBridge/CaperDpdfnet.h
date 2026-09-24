@@ -11,6 +11,7 @@ typedef struct CaperDpdfnet CaperDpdfnet;
 // recurrent state and overlap-add history for exactly one microphone session.
 CaperDpdfnet *CaperDpdfnetCreate(const char *modelPath);
 void CaperDpdfnetDestroy(CaperDpdfnet *engine);
+void CaperDpdfnetReset(CaperDpdfnet *engine);
 // One 10 ms hop, normalized mono PCM at 48 kHz. Call only from the engine worker.
 // On failure, the caller must stop publication; raw capture is not a fallback.
 int CaperDpdfnetProcess(CaperDpdfnet *engine, const float input[480], float output[480]);

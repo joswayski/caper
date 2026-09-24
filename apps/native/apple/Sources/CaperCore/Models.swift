@@ -4,6 +4,7 @@ public struct Account: Codable, Equatable, Sendable {
     public let id: String
     public var username: String?
     public var displayName: String?
+    public var debugEnabled: Bool?
 }
 
 public struct Space: Codable, Equatable, Identifiable, Sendable {

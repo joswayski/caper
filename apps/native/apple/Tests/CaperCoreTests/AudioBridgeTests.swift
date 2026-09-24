@@ -18,12 +18,21 @@ final class AudioBridgeTests: XCTestCase {
         XCTAssertTrue(CaperNativeDpdfnetModelWorks(), "The pinned native CPU runtime and bundled DPDFNet-8 model must run without I/O")
     }
 
+    func testNativeDenoiseAndFallbackWorkersAtAsymmetricHardwareRates() {
+        XCTAssertTrue(CaperNativeDenoiseWorkersRunWithoutHardware(), "Native DPDFNet at 44.1 kHz and RNNoise fallback at 48 kHz must process actual hops without I/O")
+    }
+
     func testSyntheticDelegateMovesExactPCMWithoutHardware() {
         XCTAssertTrue(CaperSyntheticAudioCallbacksWork(), "The M153 delegate contract must exchange signed mono PCM in both directions")
     }
 
     func testLiveCaptureGainAndProcessingOnSyntheticPCM() {
         XCTAssertTrue(CaperSyntheticVoiceDSPWorks(), "0% processing retains asymmetric 200% gain and 100% strength transforms speech")
+    }
+
+    func testPrivateContourHistoryCannotEnterReopenedPublication() {
+        XCTAssertTrue(CaperSyntheticContourEpochWorks(), "An asymmetric private impulse cannot produce public output from contour state, even within one capture buffer")
+        XCTAssertTrue(CaperSyntheticCaptureEntryFenceWorks(), "A private or old-public HAL entry cannot become newly eligible during render")
     }
 
     func testComparisonStopBetweenRegistrationAndRecheckReleasesCallback() {
@@ -97,6 +106,7 @@ final class AudioBridgeTests: XCTestCase {
         var gatedPeak = 0
         for _ in 0..<80 {
             XCTAssertTrue(device.injectSyntheticPCM(pcm))
+            XCTAssertEqual(device.syntheticLastPublishedPeak, 0, "The actual production gate must deliver exact PCM zero to the encoder")
             if let output = device.pullSyntheticPlayoutFrames(480) { gatedPeak = max(gatedPeak, Self.peak(output)) }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -104,12 +114,13 @@ final class AudioBridgeTests: XCTestCase {
         XCTAssertEqual(local.natural.count, local.enhanced.count)
         XCTAssertEqual(local.sampleRate, 48_000)
         XCTAssertGreaterThan(Self.peak(local.natural), 8_000, "Raw local comparison must retain the injected signal")
-        XCTAssertEqual(gatedPeak, 0, "Actual peer playout must not receive mic samples while publication is gated")
+        XCTAssertLessThanOrEqual(gatedPeak, 32, "Decoded codec comfort-noise must stay far below the injected 14,000-peak speech")
 
         device.publicationEnabled = true
         var audiblePeak = 0
         for _ in 0..<200 {
             XCTAssertTrue(device.injectSyntheticPCM(pcm))
+            XCTAssertGreaterThan(device.syntheticLastPublishedPeak, 1_000, "The encoder receives nonzero synthetic speech only after publication opens")
             if let output = device.pullSyntheticPlayoutFrames(480) { audiblePeak = max(audiblePeak, Self.peak(output)) }
             try await Task.sleep(for: .milliseconds(10))
         }

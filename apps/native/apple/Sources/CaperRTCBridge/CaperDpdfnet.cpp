@@ -64,6 +64,7 @@ struct CaperDpdfnet {
     std::array<Complex, kN> time{}, frequency{};
     std::array<float, kBins * 2> spec{};
     std::vector<float> state;
+    std::vector<float> initialState;
     bool primed = false;
 
     explicit CaperDpdfnet(const char *modelPath) {
@@ -83,6 +84,7 @@ struct CaperDpdfnet {
             throw std::runtime_error("Unexpected model state metadata");
         std::copy(erbValues.begin(), erbValues.end(), state.begin());
         std::copy(specValues.begin(), specValues.end(), state.begin() + erbValues.size());
+        initialState = state;
         for (int i = 0; i < kN; ++i) {
             double sine = std::sin(std::acos(-1.) * (i + 0.5) / kN);
             window[i] = std::sin(std::acos(-1.) / 2 * sine * sine);
@@ -92,6 +94,11 @@ struct CaperDpdfnet {
         std::array<float, kBins * 2> silence{};
         auto warmState = state;
         (void)infer(silence, warmState);
+    }
+
+    void reset() {
+        state = initialState;
+        analysis.fill(0); ola.fill(0); primed = false;
     }
 
     std::array<float, kBins * 2> infer(const std::array<float, kBins * 2> &spectrum,
@@ -141,6 +148,7 @@ extern "C" CaperDpdfnet *CaperDpdfnetCreate(const char *modelPath) {
     catch (...) { return nullptr; }
 }
 extern "C" void CaperDpdfnetDestroy(CaperDpdfnet *engine) { delete engine; }
+extern "C" void CaperDpdfnetReset(CaperDpdfnet *engine) { if (engine) engine->reset(); }
 extern "C" int CaperDpdfnetProcess(CaperDpdfnet *engine, const float input[480], float output[480]) {
     if (!engine || !input || !output) return 0;
     try { engine->process(input, output); return 1; }

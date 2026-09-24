@@ -1,8 +1,11 @@
 #import "CaperRTCBridge.h"
 #import "CaperDpdfnet.h"
+#import "CaperDenoisePipeline.h"
 #import "CaperVoiceDSP.h"
 #import "sdk/objc/components/audio/RTCAudioDevice.h"
+#import <math.h>
 #import <stdlib.h>
+#import <unistd.h>
 
 BOOL CaperNativeDpdfnetModelWorks(void) {
     NSURL *model = [[NSBundle bundleForClass:CaperMacAudioDevice.class]
@@ -14,6 +17,34 @@ BOOL CaperNativeDpdfnetModelWorks(void) {
                   CaperDpdfnetProcess(engine, input, output);
     CaperDpdfnetDestroy(engine);
     return worked;
+}
+
+BOOL CaperNativeDenoiseWorkersRunWithoutHardware(void) {
+    NSURL *model = [[NSBundle bundleForClass:CaperMacAudioDevice.class]
+        URLForResource:@"dpdfnet8_48khz_hr" withExtension:@"onnx"];
+    for (int engine = 1; engine <= 2; engine++) {
+        double rate = engine == 1 ? 44100 : 48000;
+        CaperDenoisePipeline *pipeline = CaperDenoisePipelineCreate(engine == 1 ? model.fileSystemRepresentation : NULL, rate);
+        if (!pipeline || CaperDenoisePipelineMode(pipeline) != engine) {
+            CaperDenoisePipelineDestroy(pipeline); return NO;
+        }
+        int16_t input[480], output[480];
+        uint32_t epochs[480];
+        unsigned frames = (unsigned)rate / 100;
+        for (unsigned hop = 0; hop < 20; hop++) {
+            for (unsigned i = 0; i < frames; i++) input[i] = (int16_t)(6000 * sin(2 * M_PI * (hop * frames + i) * 180 / rate));
+            if (!CaperDenoisePipelineProcess(pipeline, input, output, epochs, frames, 100, 1)) {
+                CaperDenoisePipelineDestroy(pipeline); return NO;
+            }
+            usleep(30000); // Runtime correctness only; sustained 10 ms timing needs physical acceptance.
+        }
+        CaperDenoiseStatistics stats = CaperDenoisePipelineStatistics(pipeline);
+        BOOL worked = stats.mode == engine && stats.processedHops >= 10 &&
+            stats.totalProcessingMicros > 0 && stats.maxProcessingMicros > 0;
+        CaperDenoisePipelineDestroy(pipeline);
+        if (!worked) return NO;
+    }
+    return YES;
 }
 
 // Match the M153 selector even if the distributed macOS framework omits the declaration.
@@ -133,4 +164,25 @@ BOOL CaperSyntheticVoiceDSPWorks(void) {
     int16_t processed[] = {20000, -20000, 20000, -20000};
     CaperProcessVoice(processed, 4, 44100, 100, 100, &state);
     return gainWorked && (processed[0] != 20000 || processed[1] != -20000);
+}
+
+BOOL CaperSyntheticContourEpochWorks(void) {
+    CaperVoiceDSP state = {0};
+    uint32_t lastEpoch = 0;
+    int16_t mixed[960] = {22000};
+    uint32_t epochs[960] = {0};
+    for (unsigned i = 480; i < 960; i++) epochs[i] = 7;
+    CaperProcessVoiceEpochs(mixed, epochs, 960, 48000, 100, 100, &state, &lastEpoch);
+    if (!mixed[0] || lastEpoch != 7) return NO;
+    for (unsigned i = 480; i < 960; i++) if (mixed[i]) return NO;
+
+    // Also cross the boundary between callbacks, where live contour state is
+    // retained. The public silence must match a freshly initialized filter.
+    int16_t privateImpulse[480] = {22000}, publicSilence[480] = {0};
+    uint32_t privateEpoch[480] = {0}, publicEpoch[480];
+    for (unsigned i = 0; i < 480; i++) publicEpoch[i] = 9;
+    CaperProcessVoiceEpochs(privateImpulse, privateEpoch, 480, 48000, 100, 100, &state, &lastEpoch);
+    CaperProcessVoiceEpochs(publicSilence, publicEpoch, 480, 48000, 100, 100, &state, &lastEpoch);
+    for (unsigned i = 0; i < 480; i++) if (publicSilence[i]) return NO;
+    return lastEpoch == 9;
 }
