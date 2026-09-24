@@ -652,28 +652,45 @@ public final class VoiceClient {
     }
 
     #if os(macOS)
-    /// Publication stays gated before/during comparison; stale tests cannot open a replacement call.
-    func beginMicrophoneComparison() -> Bool {
-        guard comparisonGeneration == nil else { return false }
-        if phase == .idle || phase == .failed { return audioDevice.beginComparison() }
-        guard phase == .connected, let peer else { return false }
+    /// Keep publication gated through recording and playback; stale tests cannot open a replacement call.
+    func beginMicrophoneComparison() -> Int? {
+        if phase == .idle || phase == .failed {
+            guard comparisonGeneration == nil || comparisonGeneration == generation && comparisonPeer == nil,
+                  audioDevice.beginComparison() else { return nil }
+            comparisonGeneration = generation
+            return generation
+        }
+        guard phase == .connected, let peer else { return nil }
+        if let attempt = comparisonGeneration {
+            guard attempt == generation, comparisonPeer === peer else { return nil }
+            return audioDevice.beginComparison() ? attempt : nil
+        }
         audioDevice.publicationEnabled = false
         guard audioDevice.beginComparison() else {
             audioDevice.publicationEnabled = !muted
-            return false
+            return nil
         }
         comparisonPeer = peer; comparisonGeneration = generation
-        return true
+        return generation
     }
 
-    func endMicrophoneComparison() -> CaperAudioComparison? {
-        let samples = audioDevice.endComparison()
+    func finishMicrophoneRecording(generation attempt: Int) -> CaperAudioComparison? {
+        guard generation == attempt, comparisonGeneration == attempt,
+              ((phase == .idle || phase == .failed) && comparisonPeer == nil ||
+               phase == .connected && comparisonPeer === peer) else { return nil }
+        return audioDevice.endComparison()
+    }
+
+    func endMicrophoneComparison(generation attempt: Int) {
+        guard generation == attempt, comparisonGeneration == attempt,
+              ((phase == .idle || phase == .failed) && comparisonPeer == nil ||
+               phase == .connected && comparisonPeer === peer) else { return }
+        _ = audioDevice.endComparison()
         if let attempt = comparisonGeneration, attempt == generation, phase == .connected,
            let oldPeer = comparisonPeer, oldPeer === peer {
             audioDevice.publicationEnabled = !muted
         }
         comparisonPeer = nil; comparisonGeneration = nil
-        return samples
     }
 
     func comparisonOutputDeviceID() -> UInt32 { audioDevice.resolvedOutputDeviceID }

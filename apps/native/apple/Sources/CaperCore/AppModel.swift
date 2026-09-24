@@ -157,6 +157,7 @@ public final class AppModel {
         navigationTarget = (space, channelID)
         navigationError = nil
         openingSpaceID = space.id; openingChannelID = channelID
+        var spaceVerified = false
         defer {
             if navigationGeneration == navigation {
                 openingSpaceID = nil; openingChannelID = nil
@@ -168,6 +169,7 @@ public final class AppModel {
             else { detail = try await self.api.space(space.id) }
             guard navigationGeneration == navigation, generation == attempt else { return }
             guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
+            spaceVerified = true
             let channel = channelID == nil ? detail.channels.first : detail.channels.first(where: { $0.id == channelID })
             if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
             let history: ChatHistory?
@@ -194,11 +196,12 @@ public final class AppModel {
             guard navigationGeneration == navigation, generation == attempt else { return }
             navigationError = error.localizedDescription
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status),
-               selectedSpaceID == space.id, channelID == nil || selectedChannelID == channelID {
-                if channelID == nil { detail = nil; selectedSpaceID = nil }
+               selectedSpaceID == space.id, !spaceVerified || channelID == nil || selectedChannelID == channelID {
+                if !spaceVerified { detail = nil; selectedSpaceID = nil }
                 selectedChannelID = nil
-                if voice.isActive(spaceID: space.id), channelID.map({ voice.isActive(channelID: $0) }) ?? true { voice.leaveImmediately() }
+                if voice.isActive(spaceID: space.id), !spaceVerified || channelID.map({ voice.isActive(channelID: $0) }) ?? true { voice.leaveImmediately() }
                 await chat.stop()
+                if !spaceVerified { await presence.stop() }
             }
         }
     }

@@ -430,6 +430,33 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testSpaceDenialWhenOpeningAnotherChannelClearsPreviouslyVisibleSpace() async {
+        let model = AppModel(api: client())
+        let space = Space(id: "space0000001", name: "Fixture", ownerId: "owner0000001", demo: nil)
+        let current = Channel(id: "chan00000001", spaceId: space.id, name: "general", private: false)
+        let target = Channel(id: "chan00000002", spaceId: space.id, name: "private", private: true)
+        model.detail = SpaceDetail(space: space, channels: [current, target], members: [])
+        model.selectedSpaceID = space.id; model.selectedChannelID = current.id
+        model.chat.draft = "Private draft"
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/spaces/space0000001" {
+                return (200, Data(#"{"space":{"id":"space0000001","name":"Fixture","ownerId":"owner0000001"},"channels":[],"members":[]}"#.utf8))
+            }
+            throw URLError(.badURL)
+        }
+        await model.select(channel: target)
+        XCTAssertEqual(model.selectedChannelID, current.id, "denial of another private channel must preserve the accessible conversation")
+        XCTAssertEqual(model.chat.draft, "Private draft")
+        MockURLProtocol.handler = { _ in (403, Data(#"{"error":"Space membership ended"}"#.utf8)) }
+        await model.select(channel: target)
+        XCTAssertNil(model.selectedSpaceID)
+        XCTAssertNil(model.selectedChannelID)
+        XCTAssertNil(model.detail)
+        XCTAssertTrue(model.chat.draft.isEmpty)
+        XCTAssertTrue(model.chat.messages.isEmpty)
+    }
+
+    @MainActor
     func testOnlyDeletingOrRevokingActiveVoiceContextStopsCall() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]

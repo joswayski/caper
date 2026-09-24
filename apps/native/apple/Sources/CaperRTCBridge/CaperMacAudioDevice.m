@@ -125,8 +125,8 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
     id<RTCAudioDeviceDelegate> _delegate;
     AudioUnit _inputUnit;
     AudioUnit _outputUnit;
-    BOOL _recording;
-    BOOL _playing;
+    _Atomic bool _recording;
+    _Atomic bool _playing;
     int16_t _capture[kCaperMaxFrames];
     _Atomic int _gain;
     _Atomic int _strength;
@@ -144,6 +144,11 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
     BOOL _comparisonOwnsInput;
     BOOL _inputListener;
     BOOL _outputListener;
+    BOOL _terminating;
+    uint64_t _lifecycle;
+    BOOL _syntheticTest;
+    BOOL _syntheticInputInitialized;
+    BOOL _syntheticOutputInitialized;
 }
 
 - (instancetype)init {
@@ -151,12 +156,20 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
         _inputUID = @""; _outputUID = @"";
         atomic_init(&_gain, 100); atomic_init(&_strength, 25);
         atomic_init(&_publicationEnabled, false);
+        atomic_init(&_recording, false); atomic_init(&_playing, false);
         atomic_init(&_inputRate, 0); atomic_init(&_outputRate, 0);
         atomic_init(&_comparisonFrames, 0); atomic_init(&_comparisonCallbacks, 0);
         atomic_init(&_comparing, false);
     }
     return self;
 }
++ (instancetype)syntheticTestDevice {
+    CaperMacAudioDevice *device = [self new];
+    device->_syntheticTest = YES;
+    return device;
+}
+- (BOOL)syntheticRecordingActive { return _syntheticTest && _recording && _delegate != nil; }
+- (BOOL)syntheticPlayoutActive { return _syntheticTest && _playing && _delegate != nil; }
 + (NSArray<CaperAudioRoute *> *)inputRoutes { return CaperRoutes(YES); }
 + (NSArray<CaperAudioRoute *> *)outputRoutes { return CaperRoutes(NO); }
 - (uint32_t)resolvedOutputDeviceID { return CaperResolveRoute(_outputUID, NO); }
@@ -202,14 +215,11 @@ BOOL CaperSyntheticComparisonStopWorks(void) {
     return entered && !comparing && atomic_load_explicit(&callbacks, memory_order_acquire) == 0;
 }
 
-static OSStatus CaperInputCallback(void *context, AudioUnitRenderActionFlags *flags,
-                                   const AudioTimeStamp *time, UInt32 bus, UInt32 frames, AudioBufferList *data) {
-    CaperMacAudioDevice *device = (__bridge CaperMacAudioDevice *)context;
-    if (frames > kCaperMaxFrames || !device->_inputUnit) { return kAudio_ParamError; }
+static OSStatus CaperDeliverCapture(CaperMacAudioDevice *device, AudioUnitRenderActionFlags *flags,
+                                    const AudioTimeStamp *time, UInt32 frames) {
+    if (frames > kCaperMaxFrames) { return kAudio_ParamError; }
     AudioBufferList capture = {.mNumberBuffers = 1,
         .mBuffers = {{.mNumberChannels = 1, .mDataByteSize = frames * sizeof(int16_t), .mData = device->_capture}}};
-    OSStatus status = AudioUnitRender(device->_inputUnit, flags, time, 1, frames, &capture);
-    if (status != noErr) { return status; }
     bool entered = CaperComparisonEnter(&device->_comparing, &device->_comparisonCallbacks);
     bool comparing = entered && atomic_load_explicit(&device->_comparing, memory_order_acquire);
     unsigned offset = 0, count = 0;
@@ -232,6 +242,35 @@ static OSStatus CaperInputCallback(void *context, AudioUnitRenderActionFlags *fl
         atomic_load_explicit(&device->_publicationEnabled, memory_order_acquire) && !comparing);
     return device->_recording && device->_delegate
         ? device->_delegate.deliverRecordedData(flags, time, 1, frames, &capture, NULL, NULL) : noErr;
+}
+
+static OSStatus CaperInputCallback(void *context, AudioUnitRenderActionFlags *flags,
+                                   const AudioTimeStamp *time, UInt32 bus, UInt32 frames, AudioBufferList *data) {
+    CaperMacAudioDevice *device = (__bridge CaperMacAudioDevice *)context;
+    if (frames > kCaperMaxFrames || !device->_inputUnit) { return kAudio_ParamError; }
+    AudioBufferList capture = {.mNumberBuffers = 1,
+        .mBuffers = {{.mNumberChannels = 1, .mDataByteSize = frames * sizeof(int16_t), .mData = device->_capture}}};
+    OSStatus status = AudioUnitRender(device->_inputUnit, flags, time, 1, frames, &capture);
+    return status == noErr ? CaperDeliverCapture(device, flags, time, frames) : status;
+}
+
+- (BOOL)injectSyntheticPCM:(NSData *)pcm {
+    if (!self.syntheticRecordingActive || pcm.length == 0 || pcm.length > sizeof(_capture) || pcm.length % sizeof(int16_t)) { return NO; }
+    memcpy(_capture, pcm.bytes, pcm.length);
+    AudioUnitRenderActionFlags flags = 0;
+    AudioTimeStamp time = {0};
+    return CaperDeliverCapture(self, &flags, &time, (UInt32)(pcm.length / sizeof(int16_t))) == noErr;
+}
+
+- (NSData *)pullSyntheticPlayoutFrames:(uint32_t)frames {
+    if (!_syntheticTest || !_playing || !_delegate || frames > kCaperMaxFrames) { return nil; }
+    int16_t samples[kCaperMaxFrames] = {0};
+    AudioBufferList data = {.mNumberBuffers = 1,
+        .mBuffers = {{.mNumberChannels = 1, .mDataByteSize = frames * sizeof(int16_t), .mData = samples}}};
+    AudioUnitRenderActionFlags flags = 0;
+    AudioTimeStamp time = {0};
+    if (_delegate.getPlayoutData(&flags, &time, 0, frames, &data) != noErr) { return nil; }
+    return [NSData dataWithBytes:samples length:frames * sizeof(int16_t)];
 }
 
 static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *flags,
@@ -343,6 +382,25 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 
 - (BOOL)isComparing { return atomic_load(&_comparing); }
 - (BOOL)beginComparison {
+    id<RTCAudioDeviceDelegate> delegate;
+    uint64_t lifecycle;
+    @synchronized (self) {
+        if (_terminating) { return NO; }
+        delegate = _delegate;
+        if (!delegate) { return [self beginComparisonOnOwner]; }
+        lifecycle = _lifecycle;
+    }
+    __block BOOL started = NO;
+    // M153 dispatchSync executes inline on its owner thread, BlockingCall otherwise.
+    // No main-thread lock is held while waiting for the ADM owner.
+    [delegate dispatchSync:^{
+        if (self->_delegate == delegate && self->_lifecycle == lifecycle && !self->_terminating) {
+            started = [self beginComparisonOnOwner];
+        }
+    }];
+    return started;
+}
+- (BOOL)beginComparisonOnOwner {
     if (_comparisonNatural || _comparisonEnhanced) { return NO; }
     if (![self initializeRecording]) { return NO; }
     _comparisonSampleRate = self.deviceInputSampleRate;
@@ -358,7 +416,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     }
     atomic_store(&_comparisonFrames, 0);
     _comparisonOwnsInput = !_recording;
-    if (_comparisonOwnsInput && AudioOutputUnitStart(_inputUnit) != noErr) {
+    if (_comparisonOwnsInput && !_syntheticTest && AudioOutputUnitStart(_inputUnit) != noErr) {
         free(_comparisonNatural); free(_comparisonEnhanced);
         _comparisonNatural = NULL; _comparisonEnhanced = NULL; _comparisonOwnsInput = NO;
         return NO;
@@ -367,6 +425,22 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     return YES;
 }
 - (CaperAudioComparison *)endComparison {
+    id<RTCAudioDeviceDelegate> delegate;
+    uint64_t lifecycle;
+    @synchronized (self) {
+        delegate = _delegate;
+        if (!delegate) { return [self endComparisonOnOwner]; }
+        lifecycle = _lifecycle;
+    }
+    __block CaperAudioComparison *result = nil;
+    [delegate dispatchSync:^{
+        if (self->_delegate == delegate && self->_lifecycle == lifecycle && !self->_terminating) {
+            result = [self endComparisonOnOwner];
+        }
+    }];
+    return result;
+}
+- (CaperAudioComparison *)endComparisonOnOwner {
     atomic_store_explicit(&_comparing, false, memory_order_release);
     while (atomic_load_explicit(&_comparisonCallbacks, memory_order_acquire)) { usleep(1000); }
     if (_comparisonOwnsInput && !_recording) { [self disposeInput:YES]; }
@@ -383,6 +457,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 }
 
 - (double)deviceInputSampleRate {
+    if (_syntheticTest) { return kCaperSampleRate; }
     double rate = atomic_load(&_inputRate);
     if (rate > 0) { return rate; }
     rate = CaperHardwareRate(CaperResolveRoute(_inputUID, YES));
@@ -392,6 +467,7 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 - (NSInteger)inputNumberOfChannels { return 1; }
 - (NSTimeInterval)inputLatency { return 0; }
 - (double)deviceOutputSampleRate {
+    if (_syntheticTest) { return kCaperSampleRate; }
     double rate = atomic_load(&_outputRate);
     if (rate > 0) { return rate; }
     rate = CaperHardwareRate(CaperResolveRoute(_outputUID, NO));
@@ -402,7 +478,8 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 - (NSTimeInterval)outputLatency { return 0; }
 - (BOOL)isInitialized { return _delegate != nil; }
 - (BOOL)initializeWithDelegate:(id<RTCAudioDeviceDelegate>)delegate {
-    _delegate = delegate;
+    @synchronized (self) { _lifecycle++; _terminating = NO; _delegate = delegate; }
+    if (_syntheticTest) { return YES; }
     AudioObjectPropertyAddress input = CaperAddress(kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal);
     AudioObjectPropertyAddress output = CaperAddress(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal);
     _inputListener = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &input, CaperDefaultRouteChanged, (__bridge void *)self) == noErr;
@@ -412,33 +489,42 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
     return NO;
 }
 - (BOOL)terminateDevice {
-    [self endComparison];
+    @synchronized (self) { _lifecycle++; _terminating = YES; }
+    [self endComparisonOnOwner];
     AudioObjectPropertyAddress input = CaperAddress(kAudioHardwarePropertyDefaultInputDevice, kAudioObjectPropertyScopeGlobal);
     AudioObjectPropertyAddress output = CaperAddress(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal);
     if (_inputListener) { AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &input, CaperDefaultRouteChanged, (__bridge void *)self); _inputListener = NO; }
     if (_outputListener) { AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &output, CaperDefaultRouteChanged, (__bridge void *)self); _outputListener = NO; }
     [self disposeInput:YES]; [self disposeInput:NO];
-    _recording = NO; _playing = NO; _delegate = nil;
+    _recording = NO; _playing = NO;
+    _syntheticInputInitialized = NO; _syntheticOutputInitialized = NO;
+    @synchronized (self) { _delegate = nil; }
     return YES;
 }
-- (BOOL)isPlayoutInitialized { return _outputUnit != NULL; }
-- (BOOL)initializePlayout { return _outputUnit || [self createUnitForInput:NO]; }
+- (BOOL)isPlayoutInitialized { return _syntheticTest ? _syntheticOutputInitialized : _outputUnit != NULL; }
+- (BOOL)initializePlayout {
+    if (_syntheticTest) { _syntheticOutputInitialized = YES; atomic_store(&_outputRate, kCaperSampleRate); return YES; }
+    return _outputUnit || [self createUnitForInput:NO];
+}
 - (BOOL)isPlaying { return _playing; }
 - (BOOL)startPlayout {
-    if (![self initializePlayout] || AudioOutputUnitStart(_outputUnit) != noErr) { return NO; }
+    if (![self initializePlayout] || (!_syntheticTest && AudioOutputUnitStart(_outputUnit) != noErr)) { return NO; }
     _playing = YES; return YES;
 }
-- (BOOL)stopPlayout { [self disposeInput:NO]; _playing = NO; return YES; }
-- (BOOL)isRecordingInitialized { return _inputUnit != NULL; }
-- (BOOL)initializeRecording { return _inputUnit || [self createUnitForInput:YES]; }
+- (BOOL)stopPlayout { if (!_syntheticTest) { [self disposeInput:NO]; } _playing = NO; return YES; }
+- (BOOL)isRecordingInitialized { return _syntheticTest ? _syntheticInputInitialized : _inputUnit != NULL; }
+- (BOOL)initializeRecording {
+    if (_syntheticTest) { _syntheticInputInitialized = YES; atomic_store(&_inputRate, kCaperSampleRate); return YES; }
+    return _inputUnit || [self createUnitForInput:YES];
+}
 - (BOOL)isRecording { return _recording; }
 - (BOOL)startRecording {
-    if (![self initializeRecording] || AudioOutputUnitStart(_inputUnit) != noErr) { return NO; }
+    if (![self initializeRecording] || (!_syntheticTest && AudioOutputUnitStart(_inputUnit) != noErr)) { return NO; }
     _recording = YES; return YES;
 }
 - (BOOL)stopRecording {
     _recording = NO;
-    if (!self.isComparing) { [self disposeInput:YES]; }
+    if (!self.isComparing && !_syntheticTest) { [self disposeInput:YES]; }
     return YES;
 }
 @end

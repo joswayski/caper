@@ -487,6 +487,10 @@ private struct AccountBar: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     @Binding var sheet: WorkspaceSheet?
+    #if os(macOS)
+    @State private var inputOptions = false
+    @State private var outputOptions = false
+    #endif
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
     var body: some View {
         HStack(spacing: 5) {
@@ -502,11 +506,23 @@ private struct AccountBar: View {
                     .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
             }.buttonStyle(SidebarIconButton()).accessibilityLabel("Microphone")
                 .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
+            #if os(macOS)
+            Button { inputOptions.toggle() } label: {
+                CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
+            }.buttonStyle(.plain).accessibilityLabel("Input Options")
+                .popover(isPresented: $inputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: true) }
+            #endif
             Button { Task { await voice.setDeafened(!voice.deafened) } } label: {
                 CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
                     .foregroundStyle(voice.deafened ? CaperTheme.terracottaBright : CaperTheme.muted)
             }.buttonStyle(SidebarIconButton()).accessibilityLabel("Headphones")
                 .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
+            #if os(macOS)
+            Button { outputOptions.toggle() } label: {
+                CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
+            }.buttonStyle(.plain).accessibilityLabel("Output Options")
+                .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
+            #endif
             if voice.phase == .connected || voice.phase == .reconnecting {
                 Button(role: .destructive) { voice.leaveImmediately() } label: { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
             }
@@ -522,6 +538,44 @@ private struct AccountBar: View {
         .sheet(isPresented: $voice.showAudioPreferences) { AudioPreferencesView(voice: voice).presentationBackground(CaperTheme.surface) }
     }
 }
+
+#if os(macOS)
+private struct AccountAudioMenu: View {
+    @Bindable var voice: VoiceClient
+    let input: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(input ? "Microphone" : "Audio output").font(CaperTheme.font(13, weight: .bold))
+            Picker("Device", selection: Binding(get: { (input ? voice.selectedInputID : voice.selectedOutputID) ?? "" }, set: { uid in
+                let changed = input ? voice.selectInput(uid) : voice.selectOutput(uid)
+                error = changed ? nil : "Could not switch devices. Check system audio settings."
+            })) {
+                Text("System default").tag("")
+                ForEach(input ? voice.availableInputs : voice.availableOutputs) { device in
+                    Text(device.name).tag(device.id)
+                }
+            }.labelsHidden()
+            if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            if input {
+                Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
+                Slider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)) }), in: 0...200, step: 1)
+                    .accessibilityLabel("Input volume")
+                Text("Voice processing · \(voice.voiceProcessingStrength)%").font(CaperTheme.font(12))
+                Slider(value: Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)) }), in: 0...100, step: 1)
+                    .accessibilityLabel("Voice processing")
+            } else {
+                Text("Output volume · \(voice.outputGain)%").font(CaperTheme.font(12))
+                Slider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) }), in: 0...200, step: 1)
+                    .accessibilityLabel("Output volume")
+            }
+            Button("Audio preferences") { dismiss(); voice.showAudioPreferences = true }
+        }.padding(16).frame(width: 260).background(CaperTheme.surface)
+            .task { await voice.refreshAudioDevices() }
+    }
+}
+#endif
 
 private struct Avatar: View {
     let name: String; let size: CGFloat
@@ -1069,7 +1123,7 @@ private struct AudioPreferencesView: View {
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             Divider().overlay(CaperTheme.border)
             Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
-            Text("Record up to 30 seconds from the selected mic. In a call, Caper sends silence while recording locally and restores your current mute state afterward.")
+            Text("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             HStack {
                 Button(micTest.recording ? "Stop testing" : "Mic Test") {

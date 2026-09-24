@@ -38,6 +38,8 @@ final class ProtocolTests: XCTestCase {
         try saved.read(into: buffer)
         XCTAssertEqual(buffer.int16ChannelData?.pointee[400], 2400, "Enhanced samples must not be replaced by raw input")
         XCTAssertEqual(MacMicrophoneTest.playbackDecibels(for: 0), -96)
+        XCTAssertEqual(MacMicrophoneTest.playerVolume(for: 0), 0, "The EQ floor alone is not exact silence")
+        XCTAssertEqual(MacMicrophoneTest.playerVolume(for: 200), 1)
         XCTAssertEqual(MacMicrophoneTest.playbackDecibels(for: 100), 0)
         XCTAssertEqual(MacMicrophoneTest.playbackDecibels(for: 200), 6.0206, accuracy: 0.001)
     }

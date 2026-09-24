@@ -32,6 +32,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)beginComparison;
 - (nullable CaperAudioComparison *)endComparison;
 @property(nonatomic, readonly) BOOL isComparing;
+/// Test-only synthetic I/O through the production capture/ADM callback; never opens CoreAudio.
++ (instancetype)syntheticTestDevice;
+@property(nonatomic, readonly) BOOL syntheticRecordingActive;
+@property(nonatomic, readonly) BOOL syntheticPlayoutActive;
+- (BOOL)injectSyntheticPCM:(NSData *)pcm;
+- (nullable NSData *)pullSyntheticPlayoutFrames:(uint32_t)frames;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -257,6 +257,17 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(microphone.value as? String, "Muted", "Undeafen must preserve an explicitly muted microphone")
         microphone.tap()
         XCTAssertEqual(microphone.value as? String, "On")
+        #if os(macOS)
+        app.buttons["Input Options"].tap()
+        XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.sliders["Voice processing"].exists)
+        capture("input-options", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        app.buttons["Output Options"].tap()
+        XCTAssertTrue(app.sliders["Output volume"].waitForExistence(timeout: 2))
+        capture("output-options", app: app)
+        app.typeKey(.escape, modifierFlags: [])
+        #endif
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         #if os(iOS)
@@ -297,9 +308,13 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Caper routes this call to the selected devices without changing macOS system defaults.", in: app, timeout: 2)
         XCTAssertTrue(app.sliders["Input gain"].exists)
         XCTAssertTrue(app.sliders["Live voice processing"].exists)
+        app.sliders["Input gain"].adjust(toNormalizedSliderPosition: 0)
+        XCTAssertEqual(outputGain(of: app.sliders["Input gain"]), 0)
+        app.sliders["Live voice processing"].adjust(toNormalizedSliderPosition: 1)
+        XCTAssertEqual(outputGain(of: app.sliders["Live voice processing"]), 100)
         assertStaticText("Processing runs on capture before the WebRTC sender; 0% bypasses it.", in: app, timeout: 2)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
-        assertStaticText("Record up to 30 seconds from the selected mic. In a call, Caper sends silence while recording locally and restores your current mute state afterward.", in: app, timeout: 2)
+        assertStaticText("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.", in: app, timeout: 2)
         #endif
         capture("audio-preferences", app: app)
     }
