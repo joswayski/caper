@@ -81,6 +81,7 @@ final class APIClientTests: XCTestCase {
         let newStarted = expectation(description: "new join waiting for response")
         var oldRequest: MockURLProtocol?
         var newRequest: MockURLProtocol?
+        var leftTokens: [String] = []
         MockURLProtocol.deferred = { request, urlRequest in
             if urlRequest.url?.path == "/api/channels/\(old.channelID)/media/join" {
                 oldRequest = request; oldStarted.fulfill(); return true
@@ -96,6 +97,7 @@ final class APIClientTests: XCTestCase {
             XCTAssertTrue(request.url!.path.hasSuffix("/media/leave"))
             let expected = request.url!.path.contains(old.channelID) ? "old-media" : "new-media"
             XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-media-token"), expected)
+            leftTokens.append(expected)
             return (204, Data())
         }
         let oldJoin = Task { await voice.join(channelID: old.channelID, context: old, name: "Old") }
@@ -114,6 +116,7 @@ final class APIClientTests: XCTestCase {
         await newJoin.value
         XCTAssertEqual(voice.phase, .idle)
         XCTAssertNil(voice.context)
+        XCTAssertEqual(leftTokens, ["old-media", "new-media"], "Both late capabilities must be explicitly cleaned up")
     }
 
     func testAccountAndChatCapabilitiesUseSeparateHeadersAndNeverURLs() async throws {

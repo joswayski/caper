@@ -737,7 +737,7 @@ private final class PeerDelegate: NSObject, RTCPeerConnectionDelegate, @unchecke
     }
 }
 
-extension RTCPeerConnection {
+private extension RTCPeerConnection {
     func offer(for constraints: RTCMediaConstraints) async throws -> RTCSessionDescription { try await withCheckedThrowingContinuation { continuation in offer(for: constraints) { value, error in value.map { continuation.resume(returning: $0) } ?? continuation.resume(throwing: error ?? VoiceError.setup) } } }
     func answer(for constraints: RTCMediaConstraints) async throws -> RTCSessionDescription { try await withCheckedThrowingContinuation { continuation in answer(for: constraints) { value, error in value.map { continuation.resume(returning: $0) } ?? continuation.resume(throwing: error ?? VoiceError.setup) } } }
     func setLocalDescription(_ description: RTCSessionDescription) async throws { try await withCheckedThrowingContinuation { continuation in setLocalDescription(description) { error in error.map { continuation.resume(throwing: $0) } ?? continuation.resume() } } }
