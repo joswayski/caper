@@ -30,14 +30,13 @@
 .account-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 20px; }
 .call-account .voice-icon-button { width: 28px; height: 30px; border: 0; border-radius: 4px 0 0 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .call-settings { flex: 0 0 auto; }
-.call-settings summary { width: 28px; height: 30px; display: grid; place-items: center; border-radius: 4px; color: var(--text-muted); cursor: pointer; list-style: none; }
-.call-settings summary::-webkit-details-marker { display: none; }
-.call-settings summary:is(:hover, :focus-visible), .call-settings[open] summary { background: var(--surface-composer); color: #fff; }
-.call-settings summary svg { width: 19px; height: 19px; }
+.call-settings-trigger { width: 28px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.call-settings-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) { background: var(--surface-composer); color: #fff; }
+.call-settings-trigger svg { width: 19px; height: 19px; }
 .call-settings-panel { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 0; width: 100%; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
-.device-menu summary { width: 16px; border-radius: 0 4px 4px 0; }
-.device-menu summary svg { width: 12px; height: 12px; }
-.device-menu[open] > summary svg { transform: rotate(180deg); }
+.device-menu .call-settings-trigger { width: 16px; border-radius: 0 4px 4px 0; }
+.device-menu .call-settings-trigger svg { width: 12px; height: 12px; }
+.device-menu .call-settings-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
 .device-menu .call-settings-panel { left: auto; right: 0; width: min(280px, 100%); border-radius: 8px; }
 .call-settings-panel > div { display: grid; gap: 12px; }
 .call-settings-panel a { overflow-wrap: anywhere; }
@@ -154,15 +153,17 @@
 .call-diagnostics > p { margin: 12px 0 0; font-size: .7rem; line-height: 1.45; }
 .voice-action-group { display: flex; flex: 0 0 auto; align-items: center; border-radius: 5px; }
 .call-account .voice-icon-button.active { color: var(--terracotta-bright); }
-.voice-action-group .device-menu summary:is(:hover, :focus-visible), .voice-action-group .device-menu[open] summary { background: var(--border); color: #fff; }
+.voice-action-group .call-settings-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) { background: var(--border); color: #fff; }
 .call-account .voice-icon-button[aria-disabled="true"] { opacity: .5; }
 .voice-icon-button { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); cursor: pointer; }
 .voice-icon-button svg { width: 19px; height: 19px; stroke-width: 2.25; }
 .voice-icon-button:hover:not(:disabled), .voice-icon-button.active { border-color: #805143; color: #fff; background: #39231e; }
 .call-account .voice-icon-button:is(:hover, :focus-visible) { color: #fff; background: var(--surface-composer); opacity: 1; }
 .call-account .voice-action-group.active { background: rgb(212 67 85 / .14); }
-.call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary) { color: #ed5265; background: transparent; }
-.call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary):is(:hover, :focus-visible), .call-account .voice-action-group.active .device-menu[open] summary { color: #ff7182; background: rgb(212 67 85 / .18); }
+.call-account .voice-action-group.active :is(.voice-icon-button, .call-settings-trigger) { color: #ed5265; background: transparent; }
+.call-account .voice-action-group.active :is(.voice-icon-button, .call-settings-trigger):is(:hover, :focus-visible), .call-account .voice-action-group.active .call-settings-trigger[aria-expanded="true"] { color: #ff7182; background: rgb(212 67 85 / .18); }
+.device-select { display: grid; gap: 8px; min-width: 0; color: var(--text-muted); font-size: .72rem; font-weight: 700; }
+.device-select select { width: 100%; min-width: 0; padding: 9px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-raised); font: inherit; font-size: .8rem; font-weight: 500; }
 .device-options { min-width: 0; margin: 0; padding: 0; border: 0; }
 .device-options legend { margin-bottom: 8px; color: var(--text-muted); font-size: .72rem; font-weight: 700; }
 .device-options label { display: flex; align-items: center; gap: 8px; padding: 9px 8px; border-radius: 6px; color: var(--text); font-size: .8rem; cursor: pointer; }
@@ -176,7 +177,7 @@
 .device-options p { margin: 0; color: var(--text-muted); font-size: .75rem; }
 .device-options:disabled { opacity: .5; }
 .profile-dialog { width: min(440px, calc(100vw - 32px)); }
-.call-page :is(button, a, summary, .voice-action-group, .device-options label), .device-menu summary svg { transition: background-color 150ms ease-in-out, border-color 150ms ease-in-out, color 150ms ease-in-out, opacity 150ms ease-in-out, transform 150ms ease-in-out; }
+.call-page :is(button, a, summary, .voice-action-group, .device-options label), .device-menu .call-settings-trigger svg { transition: background-color 150ms ease-in-out, border-color 150ms ease-in-out, color 150ms ease-in-out, opacity 150ms ease-in-out, transform 150ms ease-in-out; }
 @media (min-width: 761px) {
   .call-room { height: calc(100vh - 104px); }
   .stage { min-height: 0; overflow-y: auto; }

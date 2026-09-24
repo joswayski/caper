@@ -191,6 +191,22 @@ try {
   browser('set', 'viewport', '1280', '900', '2');
   evaluate(`await (${fixture.toString()})();`);
   wait(`document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.voice-button[aria-disabled="false"]')`);
+  for (const label of ['Input Options', 'Output Options', 'User Settings']) {
+    click(label);
+    for (const position of ['top', 'side', 'bottom']) {
+      const [x, y] = evaluate(`const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return ${JSON.stringify(position)} === 'top' ? [Math.round(r.left + r.width / 2), Math.round(r.top + 5)] : ${JSON.stringify(position)} === 'side' ? [Math.round(r.right - 5), Math.round(r.top + r.height / 2)] : [Math.round(r.left + r.width / 2), Math.round(r.bottom - 5)];`);
+      browser('mouse', 'move', String(x), String(y)); browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
+      assert.equal(evaluate(`return document.querySelector('button[aria-label="${label}"]').getAttribute('aria-expanded');`), 'true', 'Empty-space clicks must leave the menu open');
+      assert.ok(evaluate(`return document.querySelector('.call-settings-panel').contains(document.activeElement);`), 'Panel background safely takes focus');
+    }
+    browser('press', 'Escape');
+    assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), label);
+    assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel');`), false);
+    click(label);
+    browser('click', '.chat-heading');
+    assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel');`), false, 'Outside click still dismisses settings');
+  }
+  console.log('PASS empty-panel clicks, Escape focus restoration, and outside dismissal');
   const bounds = () => evaluate(`return ['.chat-heading', '.chat-composer'].map(selector => { const r = document.querySelector(selector).getBoundingClientRect(); return [r.top, r.height]; });`);
   const initialBounds = bounds();
   assert.equal(evaluate(`return document.querySelector('.account-name').textContent;`), 'UI fixture', 'Profile must use display name, not username');
@@ -215,31 +231,35 @@ try {
   browser('press', 'Escape');
   wait(`!document.querySelector('dialog[open]')`);
   click('Input Options');
-  assert.equal(evaluate(`return !!document.querySelector('details[open] select');`), false, 'Device menu must have direct choices');
+  assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel select');`), true, 'Device menu must use a dropdown');
   browser('focus', '[aria-label="Input volume"]'); browser('press', 'End');
   assert.equal(evaluate(`return document.querySelector('[aria-label="Input volume"]').getAttribute('aria-valuenow');`), '200');
   browser('press', 'Home');
   assert.equal(evaluate(`return document.querySelector('[aria-label="Input volume"]').getAttribute('aria-valuenow');`), '0');
   browser('press', 'End');
-  wait(`getComputedStyle(document.querySelector('summary[aria-label="Input Options"] svg')).transform === 'matrix(-1, 0, 0, -1, 0, 0)'`);
-  assert.equal(evaluate(`return getComputedStyle(document.querySelector('summary[aria-label="Input Options"] svg')).transform;`), 'matrix(-1, 0, 0, -1, 0, 0)', 'Open chevron must point up');
-  browser('check', 'input[name="input-device"][value="headset"]');
-  assert.equal(evaluate(`return document.querySelector('input[name="input-device"]:checked').value;`), 'headset');
+  wait(`getComputedStyle(document.querySelector('button[aria-label="Input Options"] svg')).transform === 'matrix(-1, 0, 0, -1, 0, 0)'`);
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('button[aria-label="Input Options"] svg')).transform;`), 'matrix(-1, 0, 0, -1, 0, 0)', 'Open chevron must point up');
+  browser('click', 'select[name="input-device"]');
+  screenshot('voice-input-dropdown');
+  browser('press', 'Escape');
+  assert.ok(evaluate(`return !!document.querySelector('.call-settings-panel');`), 'Escape closes the native dropdown before its parent panel');
+  browser('select', 'select[name="input-device"]', 'headset');
+  assert.equal(evaluate(`return document.querySelector('select[name="input-device"]').value;`), 'headset');
   screenshot('voice-input-options');
   click('Output Options');
-  assert.equal(evaluate(`return document.querySelector('summary[aria-label="Input Options"]').parentElement.open;`), false);
-  browser('check', 'input[name="output-device"][value="headphones"]');
-  assert.equal(evaluate(`return document.querySelector('input[name="output-device"]:checked').value;`), 'headphones');
+  assert.equal(evaluate(`return document.querySelector('button[aria-label="Input Options"]').getAttribute('aria-expanded');`), 'false');
+  browser('select', 'select[name="output-device"]', 'headphones');
+  assert.equal(evaluate(`return document.querySelector('select[name="output-device"]').value;`), 'headphones');
   browser('focus', '[aria-label="Output volume"]'); browser('press', 'PageDown');
-  assert.equal(evaluate(`return document.querySelector('details[open] .output-volume output').textContent;`), '90%');
+  assert.equal(evaluate(`return document.querySelector('.call-settings-panel .output-volume output').textContent;`), '90%');
   screenshot('voice-output-options');
   browser('press', 'Escape');
-  assert.equal(evaluate(`return document.querySelector('summary[aria-label="Output Options"]').parentElement.open;`), false);
+  assert.equal(evaluate(`return document.querySelector('button[aria-label="Output Options"]').getAttribute('aria-expanded');`), 'false');
   click('User Settings');
-  assert.equal(evaluate(`return !!document.querySelector('details[open] [role="slider"]');`), false);
-  assert.equal(evaluate(`return document.querySelector('details[open]').textContent.includes('@fixture');`), false);
-  assert.equal(evaluate(`return !!document.querySelector('details[open] a[href="/profile"]');`), false);
-  assert.ok(evaluate(`return [...document.querySelectorAll('details[open] button')].every(button => { const style = getComputedStyle(button); return style.borderTopWidth === '0px' && style.backgroundColor === 'rgba(0, 0, 0, 0)'; });`), 'Menu actions must not look like bordered inputs');
+  assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel [role="slider"]');`), false);
+  assert.equal(evaluate(`return document.querySelector('.call-settings-panel').textContent.includes('@fixture');`), false);
+  assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel a[href="/profile"]');`), false);
+  assert.ok(evaluate(`return [...document.querySelectorAll('.call-settings-panel button')].every(button => { const style = getComputedStyle(button); return style.borderTopWidth === '0px' && style.backgroundColor === 'rgba(0, 0, 0, 0)'; });`), 'Menu actions must not look like bordered inputs');
   screenshot('voice-settings');
   browser('press', 'Escape');
 
@@ -296,7 +316,7 @@ try {
     assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'true');
   }
   click('Input Options');
-  assert.ok(evaluate(`return document.querySelector('details[open] .call-settings-panel').getBoundingClientRect().width <= 280;`), 'Input menu stays compact in a wide sidebar');
+  assert.ok(evaluate(`return document.querySelector('.call-settings-panel').getBoundingClientRect().width <= 280;`), 'Input menu stays compact in a wide sidebar');
   screenshot('compact-input-wide-sidebar');
   browser('press', 'Escape');
   browser('hover', '.participant:has(.participant-menu-button)');
@@ -338,8 +358,9 @@ try {
 
   evaluate(`
     voiceFixture.effectStarts = 0;
+    voiceFixture.effectDurations = [];
     const start = AudioBufferSourceNode.prototype.start;
-    AudioBufferSourceNode.prototype.start = function (...args) { voiceFixture.effectStarts++; return start.apply(this, args); };
+    AudioBufferSourceNode.prototype.start = function (...args) { voiceFixture.effectStarts++; voiceFixture.effectDurations.push(this.buffer.duration); return start.apply(this, args); };
     voiceFixture.client.participants = voiceFixture.client.participants.filter(person => person.id !== 'peer');
     voiceFixture.client.emit();
   `);
@@ -381,11 +402,11 @@ try {
 
   browser('set', 'viewport', '390', '844', '2');
   click('Input Options');
-  assert.ok(evaluate(`const r = document.querySelector('details[open] .call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
+  assert.ok(evaluate(`const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
   screenshot('voice-controls-narrow');
   browser('press', 'Escape');
   click('Output Options');
-  assert.ok(evaluate(`const r = document.querySelector('details[open] .call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
+  assert.ok(evaluate(`const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
   screenshot('voice-output-narrow');
   browser('press', 'Escape');
   click('User Settings'); screenshot('voice-settings-narrow'); browser('press', 'Escape');
@@ -402,7 +423,12 @@ try {
   assert.ok(evaluate(`return voiceFixture.sampleGains.every(node => Math.abs(node.gain.value - 1.9) < 0.00001);`), 'Mic-test playback must amplify to 190% without setting native volume above one');
   browser('press', 'Escape'); wait(`!document.querySelector('dialog[open]')`);
   wait(`voiceFixture.sampleGains.every(node => node.context.state === 'closed')`);
+  const beforeDisconnect = evaluate(`return voiceFixture.effectStarts;`);
   click('Leave voice'); wait(`document.querySelector('[aria-label="Join voice"]')`);
+  wait(`voiceFixture.effectStarts === ${beforeDisconnect + 1}`);
+  assert.ok(evaluate(`return Math.abs(voiceFixture.effectDurations.at(-1) - 0.890159) < 0.001;`), 'Self-disconnect plays the supplied 0.89-second WAV');
+  assert.notEqual(evaluate(`return voiceFixture.effectDurations[0];`), evaluate(`return voiceFixture.effectDurations.at(-1);`), 'Remote departure and self-disconnect must be distinct sounds');
+  console.log('PASS supplied self-disconnect sound is distinct from remote departure');
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
   click('Close audio settings'); wait(`!document.querySelector('dialog[open]')`);

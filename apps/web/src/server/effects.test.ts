@@ -55,8 +55,10 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   });
 
   await preloadSoundEffects();
-  assert.equal(requests.length, 8, "every effect, including delete, is fetched once");
-  assert.equal(decoded.length, 7, "failed downloads are not decoded");
+  assert.equal(requests.length, 9, "every effect, including disconnect, is fetched once");
+  assert.equal(decoded.length, 8, "failed downloads are not decoded");
+  assert.ok(requests.includes("/audio/effects/disconnect.wav"));
+  assert.ok(requests.includes("/audio/effects/channel-leave.wav"));
 
   const originalMatchMedia = Object.getOwnPropertyDescriptor(globalThis, "matchMedia");
   Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query === "(pointer: coarse)" }) });
@@ -68,7 +70,7 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
     await flush();
     assert.equal(sources.length, 0, "mobile never starts a sound, including cached effects");
     assert.equal(currentContext.resumeCalls, 0, "mobile never unlocks audio for decorative effects");
-    assert.equal(requests.length, 8, "mobile preloading makes no requests");
+    assert.equal(requests.length, 9, "mobile preloading makes no requests");
   } finally {
     if (originalMatchMedia) Object.defineProperty(globalThis, "matchMedia", originalMatchMedia);
     else Reflect.deleteProperty(globalThis, "matchMedia");
