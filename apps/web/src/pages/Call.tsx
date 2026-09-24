@@ -513,8 +513,11 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       <span className="voice-stack-total" aria-hidden="true"><Users /><small>{people.length}</small></span>
       <ChevronDown aria-hidden="true" />
     </button>;
-    const join = !inVoiceHere(channelId) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
-      <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
+    // Join shows on the channel being viewed, and on channels with people in
+    // voice when you hover or focus their line (hidden on touch screens).
+    const viewed = channelId === channel?.id;
+    const join = !inVoiceHere(channelId) && (viewed || people.length > 0) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
+      <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
     return {

@@ -237,6 +237,15 @@
 .channel-join.voice-button { min-height: 28px; gap: 5px; padding: 0 9px; font-size: .72rem; }
 .channel-join.voice-button > svg { width: 14px; height: 14px; }
 .channel-join.voice-button[aria-busy="true"] { cursor: progress; }
+/* Other channels' Join appears on hover or keyboard focus. It keeps its
+   space, so nothing shifts under the cursor. */
+@media (hover: hover) {
+  .channel-join[data-hover-only] { visibility: hidden; opacity: 0; transition: opacity .12s ease, visibility 0s .12s; }
+  :is(.channel-row, .channel-line):is(:hover, :focus-within) .channel-join[data-hover-only] { visibility: visible; opacity: 1; transition: opacity .12s ease; }
+}
+@media (hover: none) {
+  .channel-join[data-hover-only] { display: none; }
+}
 .voice-stack:hover { color: var(--text); background: var(--surface-raised); }
 /* Join glows faintly while people are in the channel's voice: enough to read
    as live, quiet enough for several live channels at once. */
@@ -254,8 +263,8 @@
 .voice-stack-faces small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
 /* The channel name keeps priority: controls step down as the sidebar narrows. */
 @container channels (max-width: 291px) {
-  .channel-join-label { display: none; }
-  .channel-join.voice-button { padding: 0 7px; }
+  .channel-join.voice-button > svg { display: none; }
+  .channel-join.voice-button { padding: 0 8px; }
 }
 @container channels (max-width: 239px) {
   .voice-stack-faces { display: none; }
