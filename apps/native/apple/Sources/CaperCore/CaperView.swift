@@ -105,22 +105,16 @@ private struct WorkspaceView: View {
             let narrow = geometry.size.width <= 760
             let membersVisible = membersPreference ?? !narrow
             VStack(spacing: 0) {
-                HStack {
-                    Wordmark()
-                    Spacer()
-                    if model.busy { ProgressView().controlSize(.small) }
-                }
-                .frame(maxWidth: 1400)
-                .frame(height: narrow ? 64 : 80)
-                .padding(.horizontal, narrow ? 12 : 28)
-
                 Group {
                     if narrow && !model.navigationOpen {
                         ZStack(alignment: .trailing) {
                             ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
                                 membersPreference = !membersVisible
                             }
-                            if membersVisible { MemberPresenceView(model: model).frame(width: min(280, geometry.size.width - 24)) }
+                            if membersVisible {
+                                MemberPresenceView(model: model)
+                                    .frame(width: min(280, geometry.size.width - 24)).padding(.top, 50)
+                            }
                         }
                     } else {
                         HStack(spacing: 0) {
@@ -164,14 +158,13 @@ private struct WorkspaceView: View {
                         }
                     }
                 }
-                .frame(maxWidth: 1400, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border, lineWidth: 1))
-                .padding(.horizontal, narrow ? 12 : 28)
-                .padding(.bottom, 24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CaperTheme.blackout)
+            .overlay(alignment: .top) {
+                if model.busy { ProgressView().progressViewStyle(.linear) }
+            }
         }
         .modifier(LoginPresentation(sheet: $sheet, model: model))
         .sheet(item: modalSheet) { item in
@@ -545,20 +538,15 @@ private struct ChatView: View {
                         Image(systemName: "line.3.horizontal").font(.system(size: 18))
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityLabel("Open navigation")
-                    VoiceHeaderButton(model: model, voice: voice)
-                    Button(action: toggleMembers) { Image(systemName: "person.2.fill") }
-                        .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
                 }
                 Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                     .accessibilityLabel("# \(chat.channelName.lowercased())")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
-                if !narrow { VoiceHeaderButton(model: model, voice: voice) }
+                VoiceHeaderButton(model: model, voice: voice)
                 if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
-                if !narrow {
-                    Button(action: toggleMembers) { Image(systemName: "person.2.fill") }
-                        .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
-                }
+                Button(action: toggleMembers) { Image(systemName: "person.2.fill") }
+                    .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 

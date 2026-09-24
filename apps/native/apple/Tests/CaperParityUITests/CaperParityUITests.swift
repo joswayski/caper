@@ -109,6 +109,7 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         assertElement("selected-channel-name", label: "# general", in: app)
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
+        XCTAssertEqual(staticTexts("caper", in: app).count, 0, "The workspace must not have a web-style branding header")
         #if os(macOS)
         assertElement("selected-space-name", label: "Fixture Studio", in: app)
         XCTAssertTrue(app.buttons["Hide members"].exists)
@@ -252,7 +253,17 @@ final class CaperParityUITests: XCTestCase {
         let navigation = app.buttons["Open navigation"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Browse"].exists)
+        let members = app.buttons["Show members"]
+        XCTAssertTrue(members.exists)
+        XCTAssertGreaterThan(members.frame.minX, app.frame.midX, "Members belongs on the right of the header")
         capture("narrow-conversation", app: app)
+        members.tap()
+        assertStaticText("Members", in: app, timeout: 2)
+        capture("narrow-members", app: app)
+        let hideMembers = app.buttons["Hide members"]
+        XCTAssertTrue(hideMembers.isHittable, "The open member panel must leave its toggle accessible")
+        hideMembers.tap()
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         navigation.tap()
         assertElement("selected-space-name", label: "Fixture Studio", in: app, timeout: 5)
         capture("narrow-browse", app: app)

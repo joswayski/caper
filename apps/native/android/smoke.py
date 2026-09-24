@@ -270,6 +270,7 @@ def main() -> None:
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
     for required in ("CHANNELS", "general", "design", "planning", "Members", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
+    assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
 
     tap(description="Manage planning")
     overview = capture("caper-android-channel-settings", "Overview")
@@ -281,7 +282,10 @@ def main() -> None:
     launch()
     narrow = capture("caper-android-narrow", "Open navigation")
     assert find(narrow, text="Browse") is None, "Mobile navigation must be icon-only"
+    assert find(narrow, text="caper") is None
     assert find(narrow, contains="Message #general") is not None
+    send = find(narrow, description="Send")
+    assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
     tap(description="Open navigation")
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")
@@ -295,6 +299,13 @@ def main() -> None:
     wait_for(contains="Message #general")
     sent_text = "Android fixture send check"
     enter_first_field(sent_text)
+    ready = capture("caper-android-send-ready", sent_text)
+    send = find(ready, description="Send")
+    assert send is not None and send.get("enabled") == "true", "Draft must enable the send button"
+    composer = next(node for node in nodes(ready) if node.get("class") == "android.widget.EditText")
+    composer_right = list(map(int, re.findall(r"\d+", composer.attrib["bounds"])))[2]
+    send_left = list(map(int, re.findall(r"\d+", send.attrib["bounds"])))[0]
+    assert send_left > composer_right, "Send must be a separate button to the right of the composer"
     tap(description="Send")
     delivered = wait_for(text=sent_text)
     assert sum(1 for node in nodes(delivered) if node.get("text") == sent_text) == 1, "Sent message rendered more than once"

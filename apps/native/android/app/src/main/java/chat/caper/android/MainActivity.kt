@@ -143,17 +143,14 @@ internal data class VoiceJoinIntent(
     viewModel: CaperViewModel,
 ) {
     Column(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxWidth().height(80.dp)) {
-            Wordmark(Modifier.fillMaxWidth().align(Alignment.Center).padding(horizontal = 28.dp))
-        }
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
             val medium = maxWidth in 761.dp..1099.dp
             var membersVisible by remember { mutableStateOf(!narrow) }
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
             Surface(
-                Modifier.padding(start = if (narrow) 12.dp else 28.dp, end = if (narrow) 12.dp else 28.dp, bottom = 24.dp).widthIn(max = 1400.dp).fillMaxSize().align(Alignment.TopCenter),
-                color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+                Modifier.fillMaxSize(),
+                color = Surface,
             ) {
                 if (narrow) Box {
                     if (navigationOpen) Row {
@@ -412,14 +409,24 @@ internal data class VoiceJoinIntent(
                     if (state.pendingMessage.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
                 }
             }
-            OutlinedTextField(
-                draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
-                modifier = Modifier.fillMaxWidth(), placeholder = { Text("Message #${channel.name}") }, maxLines = 6,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } }),
-                trailingIcon = { IconButton({ if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } }, enabled = draft.isNotBlank() && state.pendingMessage == null) { Icon(Icons.Default.Send, "Send", tint = if (draft.isNotBlank()) TerracottaBright else TextMuted) } },
-                colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                OutlinedTextField(
+                    draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
+                    modifier = Modifier.weight(1f), placeholder = { Text("Message #${channel.name}") }, maxLines = 6,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } }),
+                    colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
+                )
+                FilledIconButton(
+                    { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } },
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null,
+                    shape = MaterialTheme.shapes.small,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Terracotta, contentColor = Color.White,
+                        disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
+                    ),
+                ) { Icon(Icons.Default.ArrowUpward, null) }
+            }
             if (draft.codePointCount(0, draft.length) >= 3000) Text("${draft.codePointCount(0, draft.length)} / 4,000", Modifier.align(Alignment.End), color = if (draft.codePointCount(0, draft.length) >= 3900) ErrorText else TextMuted, fontSize = 10.sp)
         }
     }

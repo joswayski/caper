@@ -1241,185 +1241,114 @@ impl CaperApp {
 
     fn shell(&mut self, context: &egui::Context) {
         let narrow = context.viewport_rect().width() <= 760.0;
-        egui::TopBottomPanel::top("header")
-            .exact_height(if narrow { 64.0 } else { 80.0 })
-            .frame(egui::Frame::new().fill(BLACKOUT))
-            .show(context, |ui| {
-                let side = if narrow {
-                    12.0
-                } else {
-                    ((ui.available_width() - 1400.0) / 2.0).max(28.0)
-                };
-                let y = if narrow { 31.0 } else { 39.0 };
-                let font = egui::FontId::new(29.0, egui::FontFamily::Name("Satoshi Bold".into()));
-                ui.painter().text(
-                    egui::pos2(side, y),
-                    egui::Align2::LEFT_CENTER,
-                    "caper",
-                    font.clone(),
-                    TEXT,
-                );
-                ui.painter().text(
-                    egui::pos2(side + 68.0, y),
-                    egui::Align2::LEFT_CENTER,
-                    ".",
-                    font,
-                    TERRACOTTA_BRIGHT,
-                );
-            });
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BLACKOUT))
+            .frame(egui::Frame::new().fill(SURFACE))
             .show(context, |ui| {
-                let side = if narrow {
-                    12.0
-                } else {
-                    ((ui.available_width() - 1400.0) / 2.0).max(28.0)
-                };
-                let bounds = ui.max_rect();
-                let stage_left = bounds.left() + side;
-                let stage_top = bounds.top();
-                let stage = egui::Rect::from_min_max(
-                    egui::pos2(stage_left, stage_top),
-                    egui::pos2(
-                        (bounds.right() - side).max(stage_left + 2.0),
-                        (bounds.bottom() - if narrow { 52.0 } else { 36.0 }).max(stage_top + 2.0),
-                    ),
-                );
-                let size = stage.size();
-                ui.scope_builder(egui::UiBuilder::new().max_rect(stage), |ui| {
-                    egui::Frame::new()
-                        .fill(SURFACE)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(6)
-                        .show(ui, |ui| {
-                            ui.set_min_size(egui::vec2(
-                                (size.x - 2.0).max(1.0),
-                                (size.y - 2.0).max(1.0),
-                            ));
-                            let content = ui.max_rect();
-                            if narrow {
-                                if self.navigation_open {
-                                    let rail_rect = egui::Rect::from_min_max(
-                                        content.min,
-                                        egui::pos2(content.left() + 59.0, content.bottom()),
-                                    );
-                                    let sidebar_rect = egui::Rect::from_min_max(
-                                        egui::pos2(rail_rect.right(), content.top()),
-                                        content.max,
-                                    );
-                                    ui.scope_builder(
-                                        egui::UiBuilder::new().max_rect(rail_rect),
-                                        |ui| {
-                                            self.rail(ui);
-                                        },
-                                    );
-                                    ui.scope_builder(
-                                        egui::UiBuilder::new().max_rect(sidebar_rect),
-                                        |ui| {
-                                            self.sidebar(ui, sidebar_rect.width());
-                                        },
-                                    );
-                                } else {
-                                    ui.scope_builder(
-                                        egui::UiBuilder::new().max_rect(content),
-                                        |ui| self.conversation(ui, true),
-                                    );
-                                    if self.members_visible {
-                                        let members_rect = egui::Rect::from_min_max(
-                                            egui::pos2(
-                                                (content.right() - 280.0).max(content.left()),
-                                                content.top() + 53.0,
-                                            ),
-                                            content.max,
-                                        );
-                                        ui.scope_builder(
-                                            egui::UiBuilder::new().max_rect(members_rect),
-                                            |ui| self.member_presence(ui),
-                                        );
-                                    }
-                                }
-                            } else {
-                                let sidebar_width =
-                                    self.sidebar_width.min(content.width() - 380.0).max(220.0);
-                                let rail_rect = egui::Rect::from_min_max(
-                                    content.min,
-                                    egui::pos2(content.left() + 59.0, content.bottom()),
-                                );
-                                let sidebar_rect = egui::Rect::from_min_max(
-                                    egui::pos2(rail_rect.right(), content.top()),
-                                    egui::pos2(rail_rect.right() + sidebar_width, content.bottom()),
-                                );
-                                let separator_rect = egui::Rect::from_min_max(
-                                    egui::pos2(sidebar_rect.right(), content.top()),
-                                    egui::pos2(sidebar_rect.right() + 1.0, content.bottom()),
-                                );
-                                let stage_rect = egui::Rect::from_min_max(
-                                    egui::pos2(separator_rect.right(), content.top()),
-                                    content.max,
-                                );
-                                let wide_members = context.viewport_rect().width() >= 1100.0;
-                                let (conversation_rect, members_rect) = if self.members_visible
-                                    && wide_members
-                                {
-                                    let members = egui::Rect::from_min_max(
-                                        egui::pos2(stage_rect.right() - 220.0, stage_rect.top()),
-                                        stage_rect.max,
-                                    );
-                                    (
-                                        egui::Rect::from_min_max(
-                                            stage_rect.min,
-                                            egui::pos2(members.left(), stage_rect.bottom()),
-                                        ),
-                                        Some(members),
-                                    )
-                                } else if self.members_visible {
-                                    let members = egui::Rect::from_min_max(
-                                        egui::pos2(stage_rect.left(), stage_rect.bottom() - 220.0),
-                                        stage_rect.max,
-                                    );
-                                    (
-                                        egui::Rect::from_min_max(
-                                            stage_rect.min,
-                                            egui::pos2(stage_rect.right(), members.top()),
-                                        ),
-                                        Some(members),
-                                    )
-                                } else {
-                                    (stage_rect, None)
-                                };
-                                ui.scope_builder(
-                                    egui::UiBuilder::new().max_rect(rail_rect),
-                                    |ui| {
-                                        self.rail(ui);
-                                    },
-                                );
-                                ui.scope_builder(
-                                    egui::UiBuilder::new().max_rect(sidebar_rect),
-                                    |ui| self.sidebar(ui, sidebar_width),
-                                );
-                                let separator = ui.interact(
-                                    separator_rect,
-                                    ui.id().with("sidebar-resize"),
-                                    egui::Sense::drag(),
-                                );
-                                if separator.dragged() {
-                                    self.sidebar_width = (self.sidebar_width
-                                        + separator.drag_delta().x)
-                                        .clamp(220.0, 440.0);
-                                }
-                                ui.scope_builder(
-                                    egui::UiBuilder::new().max_rect(conversation_rect),
-                                    |ui| self.conversation(ui, false),
-                                );
-                                if let Some(members_rect) = members_rect {
-                                    ui.scope_builder(
-                                        egui::UiBuilder::new().max_rect(members_rect),
-                                        |ui| self.member_presence(ui),
-                                    );
-                                }
-                            }
+                let content = ui.max_rect();
+                if narrow {
+                    if self.navigation_open {
+                        let rail_rect = egui::Rect::from_min_max(
+                            content.min,
+                            egui::pos2(content.left() + 59.0, content.bottom()),
+                        );
+                        let sidebar_rect = egui::Rect::from_min_max(
+                            egui::pos2(rail_rect.right(), content.top()),
+                            content.max,
+                        );
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
+                            self.rail(ui);
                         });
-                });
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+                            self.sidebar(ui, sidebar_rect.width());
+                        });
+                    } else {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
+                            self.conversation(ui, true)
+                        });
+                        if self.members_visible {
+                            let members_rect = egui::Rect::from_min_max(
+                                egui::pos2(
+                                    (content.right() - 280.0).max(content.left()),
+                                    content.top() + 53.0,
+                                ),
+                                content.max,
+                            );
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
+                                self.member_presence(ui)
+                            });
+                        }
+                    }
+                } else {
+                    let sidebar_width = self.sidebar_width.min(content.width() - 380.0).max(220.0);
+                    let rail_rect = egui::Rect::from_min_max(
+                        content.min,
+                        egui::pos2(content.left() + 59.0, content.bottom()),
+                    );
+                    let sidebar_rect = egui::Rect::from_min_max(
+                        egui::pos2(rail_rect.right(), content.top()),
+                        egui::pos2(rail_rect.right() + sidebar_width, content.bottom()),
+                    );
+                    let separator_rect = egui::Rect::from_min_max(
+                        egui::pos2(sidebar_rect.right(), content.top()),
+                        egui::pos2(sidebar_rect.right() + 1.0, content.bottom()),
+                    );
+                    let stage_rect = egui::Rect::from_min_max(
+                        egui::pos2(separator_rect.right(), content.top()),
+                        content.max,
+                    );
+                    let wide_members = context.viewport_rect().width() >= 1100.0;
+                    let (conversation_rect, members_rect) = if self.members_visible && wide_members
+                    {
+                        let members = egui::Rect::from_min_max(
+                            egui::pos2(stage_rect.right() - 220.0, stage_rect.top()),
+                            stage_rect.max,
+                        );
+                        (
+                            egui::Rect::from_min_max(
+                                stage_rect.min,
+                                egui::pos2(members.left(), stage_rect.bottom()),
+                            ),
+                            Some(members),
+                        )
+                    } else if self.members_visible {
+                        let members = egui::Rect::from_min_max(
+                            egui::pos2(stage_rect.left(), stage_rect.bottom() - 220.0),
+                            stage_rect.max,
+                        );
+                        (
+                            egui::Rect::from_min_max(
+                                stage_rect.min,
+                                egui::pos2(stage_rect.right(), members.top()),
+                            ),
+                            Some(members),
+                        )
+                    } else {
+                        (stage_rect, None)
+                    };
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rail_rect), |ui| {
+                        self.rail(ui);
+                    });
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+                        self.sidebar(ui, sidebar_width)
+                    });
+                    let separator = ui.interact(
+                        separator_rect,
+                        ui.id().with("sidebar-resize"),
+                        egui::Sense::drag(),
+                    );
+                    if separator.dragged() {
+                        self.sidebar_width =
+                            (self.sidebar_width + separator.drag_delta().x).clamp(220.0, 440.0);
+                    }
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(conversation_rect), |ui| {
+                        self.conversation(ui, false)
+                    });
+                    if let Some(members_rect) = members_rect {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
+                            self.member_presence(ui)
+                        });
+                    }
+                }
             });
     }
 
