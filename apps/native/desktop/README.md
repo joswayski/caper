@@ -151,18 +151,28 @@ closes the local peer and disables ADM before remote leave finishes.
 The owned-session-only live smoke was rerun on 2026-09-24 at 04:39:57–04:40:12
 UTC with private virtual devices. Both peers connected and subscribed, but
 the ten-second receive check failed: A sent/received **451/0 bytes**, B
-**1396/0 bytes**. No unrelated roster was observed. This is a real unresolved
-receive-path failure, not working voice. The failed process closed local peers;
+**1396/0 bytes**. No unrelated roster was observed. This test fed a silent null
+source, not speech, and checked aggregate RTP bytes rather than decoded audio.
+It is an unresolved silent-transport observation, not proof that normal speech
+cannot be received. Silence handling versus a relay/receive fault was not
+distinguished. The failed process closed local peers;
 remote leave completion was not independently confirmed (server leases expire).
 The ignored test now awaits remote leave before asserting its RTP result and
 reports safe direction/track counts. It has not been rerun with that diagnostic.
+
+A physical microphone is not required for meaningful automated audio tests.
+The private null-device regression injects locally generated speech into the
+virtual microphone, requires nonzero captured and denoised PCM, and checks that
+a second local peer decodes it. A remote acceptance test must likewise establish
+nonzero input/publication and decoded reception instead of relying on silence
+or transport connectivity alone. Local success does not prove SFU forwarding.
 
 A non-ignored, local-only native test receives actual RTP after adding a
 subscription to an existing transport and after ICE renewal. It caught a separate
 binding-default bug that changed receive transceivers to inactive during renewal;
 restart offers now retain existing receive directions without adding an unused
 receiver to a publish-only session. This does **not** diagnose or resolve the
-immediate live receive failure above. Further public tests require explicit
+silent live-test observation above. Further public tests require explicit
 authorization and the same isolation controls.
 
 ## Validation
