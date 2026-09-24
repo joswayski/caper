@@ -326,6 +326,8 @@ public final class ChatModel {
     public var spaceName = "Caper"
     public var draft = ""
     public var loading = false
+    public var loadingOlder = false
+    public var olderError: String?
     public var sending = false
     public var liveState: GatewayState = .disconnected
     public var error: String?
@@ -410,8 +412,10 @@ public final class ChatModel {
     }
 
     public func loadOlder() async {
-        guard hasMore, let channelID, let before = messages.first?.seq else { return }
+        guard !loadingOlder, hasMore, let channelID, let before = messages.first?.seq else { return }
         let requestGeneration = generation
+        loadingOlder = true; olderError = nil
+        defer { if generation == requestGeneration { loadingOlder = false } }
         do {
             let page = try await api.history(channelID: channelID, before: before)
             guard generation == requestGeneration, self.channelID == channelID else { return }
@@ -419,7 +423,12 @@ public final class ChatModel {
             hasMore = page.hasMore
         } catch {
             guard generation == requestGeneration, self.channelID == channelID else { return }
-            self.error = error.localizedDescription
+            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                onAccessRevoked?(channelID)
+                await stop()
+                guard generation == requestGeneration + 1 else { return }
+                self.error = error.localizedDescription
+            } else { olderError = error.localizedDescription }
         }
     }
 
@@ -534,6 +543,7 @@ public final class ChatModel {
         delivery.reset(preservingPending: preservingPending)
         session = nil; channelID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
+        loadingOlder = false; olderError = nil
         loading = false; sending = false; liveState = .disconnected
     }
 

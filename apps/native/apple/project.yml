@@ -13,11 +13,34 @@ settings:
     SWIFT_VERSION: "5.0"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 targets:
+  CaperRTCBridge:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/CaperRTCBridge/CaperRTCBridge.h
+        headerVisibility: public
+      - path: Sources/CaperRTCBridge/CaperRTCBridge.m
+      - path: Sources/CaperRTCBridge/sdk
+        buildPhase: none
+    dependencies:
+      - package: WebRTC
+        product: WebRTC
+        link: true
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: chat.caper.rtc-bridge
+        PRODUCT_MODULE_NAME: CaperRTCBridge
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: YES
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge"
   CaperCoreMacOS:
     type: framework
     platform: macOS
     sources: Sources/CaperCore
     dependencies:
+      - target: CaperRTCBridge
+        embed: false
       - package: WebRTC
         product: WebRTC
         link: true
@@ -54,6 +77,8 @@ targets:
         buildPhase: resources
     dependencies:
       - target: CaperCoreMacOS
+      - target: CaperRTCBridge
+        embed: true
       - package: WebRTC
         product: WebRTC
         link: true
@@ -102,6 +127,7 @@ targets:
     sources: Tests/CaperCoreTests
     dependencies:
       - target: CaperCoreMacOS
+      - target: CaperRTCBridge
       - package: WebRTC
         product: WebRTC
     settings:

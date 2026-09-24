@@ -268,6 +268,62 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testOlderHistorySerializesRetriesAndRevocationClearsPrivateData() async throws {
+        let chat = ChatModel(api: client())
+        let channel = "Aaaaaaaaaaaa"
+        func history(_ sequence: Int, more: Bool) -> Data {
+            Data("""
+            {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[{"id":"m\(sequence)","channelId":"\(channel)","seq":"\(sequence)","author":{"id":"u","name":"User","isGuest":false},"content":{"version":1,"type":"text","text":"Message \(sequence)"},"createdAt":"now","clientMessageId":"c\(sequence)"}],"cursor":"\(sequence)","hasMore":\(more)}
+            """.utf8)
+        }
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8))
+            }
+            if request.url?.path.hasSuffix("/messages") == true { return (200, history(20, more: true)) }
+            throw URLError(.badURL)
+        }
+        await chat.open(channelID: channel, displayName: "User")
+        chat.draft = "Keep my draft"
+        let started = expectation(description: "one older request")
+        started.assertForOverFulfill = true
+        var delayed: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.query?.contains("before=20") == true else { return false }
+            delayed = request; started.fulfill(); return true
+        }
+        let older = Task { await chat.loadOlder() }
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertTrue(chat.loadingOlder)
+        await chat.loadOlder()
+        XCTAssertTrue(chat.loadingOlder, "duplicate call cannot release the original request's gate")
+        delayed?.respond(status: 503, data: Data(#"{"error":"History unavailable"}"#.utf8))
+        await older.value
+        XCTAssertFalse(chat.loadingOlder)
+        XCTAssertNotNil(chat.olderError)
+        XCTAssertEqual(chat.messages.map(\.seq), ["20"])
+        XCTAssertEqual(chat.draft, "Keep my draft")
+
+        MockURLProtocol.deferred = nil
+        MockURLProtocol.handler = { _ in (200, history(7, more: true)) }
+        await chat.loadOlder()
+        XCTAssertNil(chat.olderError)
+        XCTAssertEqual(chat.messages.map(\.seq), ["7", "20"])
+        XCTAssertEqual(chat.messages.last?.id, "m20", "prepending must not change the bottom-scroll identity")
+
+        var revoked: String?
+        chat.onAccessRevoked = { revoked = $0 }
+        MockURLProtocol.handler = { _ in (403, Data(#"{"error":"Access ended"}"#.utf8)) }
+        await chat.loadOlder()
+        XCTAssertEqual(revoked, channel)
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertTrue(chat.draft.isEmpty)
+        XCTAssertNil(chat.currentAuthor)
+        XCTAssertFalse(chat.loadingOlder)
+        XCTAssertNotNil(chat.error)
+    }
+
+    @MainActor
     func testLateOwnerMutationCannotRepopulateWorkspaceAfterLogout() async {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]

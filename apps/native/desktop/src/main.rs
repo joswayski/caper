@@ -96,7 +96,15 @@ enum Dialog {
     Connection,
     CreateSpace,
     ManageSpace,
-    LeaveSpace { id: String, name: String },
+    LeaveSpace {
+        id: String,
+        name: String,
+    },
+    ConfirmDelete {
+        space: String,
+        channel: Option<String>,
+        name: String,
+    },
     CreateChannel,
     ManageChannel(String),
 }
@@ -114,6 +122,7 @@ struct CaperApp {
     generation: u64,
     loading: bool,
     loading_older: bool,
+    older_error: Option<String>,
     has_more: bool,
     error: Option<String>,
     warning: Option<String>,
@@ -166,6 +175,7 @@ impl CaperApp {
             generation: 1,
             loading: fixture.is_none(),
             loading_older: false,
+            older_error: None,
             has_more: false,
             error: None,
             warning: None,
@@ -707,6 +717,9 @@ impl CaperApp {
         self.generation += 1;
         self.selected_channel = Some(id.clone());
         self.session = None;
+        self.loading_older = false;
+        self.older_error = None;
+        self.has_more = false;
         self.timeline = Timeline::default();
         self.pending = None;
         self.draft.clear();
@@ -939,6 +952,7 @@ impl CaperApp {
         requested_channel: &str,
         result: Result<model::History, worker::LoadError>,
     ) {
+        self.older_error = None;
         match result {
             Ok(history) if history.channel.id != requested_channel => {
                 self.clear_channel("Caper returned history for another channel.")
@@ -951,12 +965,14 @@ impl CaperApp {
             {
                 self.has_more = history.has_more;
                 if let Err(error) = self.timeline.prepend(history.messages) {
-                    self.error = Some(error);
+                    self.older_error = Some(error);
                 }
             }
-            Ok(_) => self.error = Some("Caper returned messages from another channel.".into()),
+            Ok(_) => {
+                self.older_error = Some("Caper returned messages from another channel.".into())
+            }
             Err(error) if error.access_denied => self.clear_channel(&error.message),
-            Err(error) => self.error = Some(error.message),
+            Err(error) => self.older_error = Some(error.message),
         }
     }
 
@@ -972,6 +988,9 @@ impl CaperApp {
         self.worker.send(Command::StopGateway);
         self.selected_channel = None;
         self.session = None;
+        self.loading_older = false;
+        self.older_error = None;
+        self.has_more = false;
         self.timeline = Timeline::default();
         self.pending = None;
         self.draft.clear();
@@ -1067,6 +1086,9 @@ impl CaperApp {
     }
 
     fn load_older(&mut self) {
+        if self.loading_older || !self.has_more {
+            return;
+        }
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
@@ -1079,6 +1101,7 @@ impl CaperApp {
             return;
         };
         self.loading_older = true;
+        self.older_error = None;
         self.worker.send(Command::LoadOlder {
             generation: self.generation,
             token: self.token.clone(),
@@ -2737,6 +2760,8 @@ impl CaperApp {
                                 !self.loading_older,
                                 egui::Button::new(if self.loading_older {
                                     "Loading…"
+                                } else if self.older_error.is_some() {
+                                    "Retry older messages"
                                 } else {
                                     "Load older messages"
                                 }),
@@ -2756,6 +2781,9 @@ impl CaperApp {
                             egui::FontId::proportional(11.52),
                             MUTED,
                         );
+                    }
+                    if let Some(error) = &self.older_error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
                     }
                     if self.loading && self.timeline.messages().next().is_none() {
                         ui.centered_and_justified(|ui| {
@@ -2866,6 +2894,13 @@ impl CaperApp {
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
             Dialog::LeaveSpace { .. } => "Leave space?",
+            Dialog::ConfirmDelete { channel, .. } => {
+                if channel.is_some() {
+                    "Delete channel"
+                } else {
+                    "Delete space"
+                }
+            }
             Dialog::CreateChannel => "Create a channel",
             Dialog::ManageChannel(_) => "Overview",
         };
@@ -2885,6 +2920,14 @@ impl CaperApp {
             0.0
         };
         let available = context.viewport_rect().size() - egui::vec2(32.0, 32.0);
+        let return_to = match &dialog {
+            Dialog::ConfirmDelete { channel, .. } => Some(
+                channel
+                    .clone()
+                    .map_or(Dialog::ManageSpace, Dialog::ManageChannel),
+            ),
+            _ => None,
+        };
         let mut close = context.input(|input| input.key_pressed(egui::Key::Escape))
             && !egui::Popup::is_any_open(context);
         egui::Area::new(egui::Id::new("caper-dialog"))
@@ -2948,6 +2991,19 @@ impl CaperApp {
                                             Dialog::Connection => self.connection_details(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
+                                            Dialog::ConfirmDelete { space, channel, name } => {
+                                                let kind = if channel.is_some() { "channel" } else { "space" };
+                                                let display = if channel.is_some() { format!("#{name}") } else { name };
+                                                ui.label(format!("Delete {display} for everyone? {} This cannot be undone.", if channel.is_some() { "This channel and its messages will disappear from the space." } else { "All its channels and their messages will disappear from the space." }));
+                                                ui.add_space(16.0);
+                                                ui.horizontal(|ui| {
+                                                    if ui.add_enabled(!self.loading, egui::Button::new("Cancel")).clicked() { close = true; }
+                                                    let delete = ui.add_enabled(!self.loading, egui::Button::new(RichText::new(if self.loading { "Deleting…".into() } else { format!("Delete {kind}") }).color(ERROR)));
+                                                    if delete.clicked() && !delete.double_clicked() {
+                                                        self.admin(match channel { Some(channel) => AdminOperation::DeleteChannel { space, channel }, None => AdminOperation::DeleteSpace { space } });
+                                                    }
+                                                });
+                                            }
                                             Dialog::LeaveSpace { id, name } => {
                                                 ui.label(format!("Leave {name}? You will lose access to its channels and conversations. An owner can add you again later."));
                                                 ui.add_space(16.0);
@@ -2971,8 +3027,8 @@ impl CaperApp {
                             });
                     });
             });
-        if close {
-            self.dialog = None;
+        if close && !(self.loading && return_to.is_some()) {
+            self.dialog = return_to;
             self.error = None;
         }
     }
@@ -3098,7 +3154,15 @@ impl CaperApp {
             if destructive(ui, "Delete space").clicked()
                 && let Some(space) = self.selected_space.clone()
             {
-                self.admin(AdminOperation::DeleteSpace { space });
+                self.dialog = Some(Dialog::ConfirmDelete {
+                    space,
+                    channel: None,
+                    name: self
+                        .detail
+                        .as_ref()
+                        .map_or("this space", |detail| detail.space.name.as_str())
+                        .into(),
+                });
             }
         }
     }
@@ -3175,7 +3239,17 @@ impl CaperApp {
             if destructive(ui, "Delete channel").clicked()
                 && let Some(space) = self.selected_space.clone()
             {
-                self.admin(AdminOperation::DeleteChannel { space, channel });
+                let name = self
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail.channels.iter().find(|entry| entry.id == channel))
+                    .map_or("this channel", |entry| entry.name.as_str())
+                    .to_owned();
+                self.dialog = Some(Dialog::ConfirmDelete {
+                    space,
+                    channel: Some(channel),
+                    name,
+                });
             }
         }
     }
@@ -3962,6 +4036,48 @@ mod tests {
     }
 
     #[test]
+    fn deletion_requires_confirmation_and_cancel_preserves_editor_and_data() {
+        for (fixture, label) in [
+            ("parity-admin", "Delete space"),
+            ("parity-channel", "Delete channel"),
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            let button = |output: &egui::FullOutput, label: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .rev()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == label => {
+                            Some(text.pos + egui::vec2(4.0, 4.0))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {label}"))
+            };
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            click(&mut app, &context, button(&output, label));
+            assert!(matches!(app.dialog, Some(Dialog::ConfirmDelete { .. })));
+            assert!(!app.loading, "opening confirmation must not send DELETE");
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            click(&mut app, &context, button(&output, "Cancel"));
+            assert!(matches!(
+                app.dialog,
+                Some(Dialog::ManageSpace | Dialog::ManageChannel(_))
+            ));
+            assert!(!app.loading);
+            assert_eq!(app.detail.as_ref().unwrap().channels.len(), 3);
+        }
+    }
+
+    #[test]
     fn narrow_resize_does_not_cover_conversation_with_desktop_members() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -4324,6 +4440,46 @@ mod tests {
             app.draft.is_empty(),
             "guest draft must not cross auth transition"
         );
+    }
+
+    #[test]
+    fn older_failure_keeps_conversation_and_send_error_and_retries_separately() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let channel = app.selected_channel.clone().unwrap();
+        let count = app.timeline.messages().count();
+        app.has_more = true;
+        app.error = Some("Send failed".into());
+        app.draft = "Keep my draft".into();
+        app.accept_older(
+            &channel,
+            Err(LoadError {
+                message: "History unavailable".into(),
+                access_denied: false,
+            }),
+        );
+        assert_eq!(app.older_error.as_deref(), Some("History unavailable"));
+        assert_eq!(app.error.as_deref(), Some("Send failed"));
+        assert_eq!(app.timeline.messages().count(), count);
+        assert_eq!(app.draft, "Keep my draft");
+        app.load_older();
+        assert!(app.loading_older);
+        assert!(app.older_error.is_none());
+        app.older_error = Some("Sentinel".into());
+        app.load_older();
+        assert_eq!(
+            app.older_error.as_deref(),
+            Some("Sentinel"),
+            "duplicate request must be ignored"
+        );
+        app.select_channel("other".into(), false);
+        assert!(!app.loading_older);
+        assert!(app.older_error.is_none());
+        assert!(!app.has_more);
     }
 
     #[test]

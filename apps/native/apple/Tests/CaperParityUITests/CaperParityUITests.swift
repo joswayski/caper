@@ -172,6 +172,36 @@ final class CaperParityUITests: XCTestCase {
         capture("login", app: app)
     }
 
+    func testDeleteSpaceRequiresConfirmationAndCanCancel() {
+        let app = launch(fixture: "manage-space")
+        let delete = app.buttons["Delete space"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 10))
+        delete.tap()
+        let confirm = app.buttons["confirm-destructive-action"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        assertStaticText("Delete Fixture Studio for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", in: app)
+        capture("delete-space-confirmation", app: app)
+        app.buttons["Cancel"].tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertTrue(app.buttons["Save name"].exists)
+    }
+
+    func testDeleteChannelRequiresConfirmationAndCanCancel() {
+        let app = launch(fixture: "manage-channel")
+        let delete = app.buttons["Delete channel"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 10))
+        delete.tap()
+        let confirm = app.buttons["confirm-destructive-action"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        assertStaticText("Delete #planning for everyone? This channel and its messages will disappear from the space. This cannot be undone.", in: app)
+        capture("delete-channel-confirmation", app: app)
+        app.buttons["Cancel"].tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
+        XCTAssertTrue(app.buttons["Save changes"].exists)
+    }
+
     func testAccountCanSendExactlyOneMessageAndComposerClears() {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)

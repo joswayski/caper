@@ -567,9 +567,17 @@ private struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         HStack {
-                            if chat.hasMore { Button("Load older messages") { Task { await chat.loadOlder() } } }
+                            if chat.hasMore {
+                                Button(chat.loadingOlder ? "Loading…" : chat.olderError == nil ? "Load older messages" : "Retry older messages") {
+                                    Task { await chat.loadOlder() }
+                                }.disabled(chat.loadingOlder)
+                                    .accessibilityIdentifier("load-older-messages")
+                            }
                             else { Text("Beginning of conversation") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44)
+                        if let error = chat.olderError {
+                            Text(error).font(CaperTheme.font(11)).foregroundStyle(.red).padding(.horizontal, 18).padding(.bottom, 8)
+                        }
                         ForEach(chat.messages) { message in MessageRow(message: message).id(message.id) }
                         if let pending = chat.pendingMessage {
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error) { Task { await chat.send() } }
@@ -582,7 +590,7 @@ private struct ChatView: View {
                         }
                     }
                 }
-                .onChange(of: chat.messages.count) { _, _ in if let id = chat.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
             }
 
             HStack(spacing: 7) {
@@ -860,6 +868,7 @@ private struct ProfileSheet: View {
 private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
+    @State private var confirmDelete = false
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, close: close)
@@ -879,12 +888,18 @@ private struct SpaceEditor: View {
                         Divider().overlay(CaperTheme.border)
                         Text("Delete space").font(CaperTheme.font(14, weight: .bold))
                         Text("Delete this space and all its channels for every member.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                        Button("Delete space", role: .destructive) { run { try await model.deleteCurrentSpace(); close() } }.buttonStyle(.bordered)
+                        Button("Delete space", role: .destructive) { confirmDelete = true }.buttonStyle(.bordered).disabled(pending)
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
             }
         }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : "" }
+        .sheet(isPresented: $confirmDelete) {
+            ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
+                try await model.deleteCurrentSpace()
+                close()
+            }
+        }
     }
     private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }
 }
@@ -892,6 +907,9 @@ private struct SpaceEditor: View {
 private struct ChannelEditor: View {
     @Bindable var model: AppModel; @State var channel: Channel?; let close: () -> Void
     @State private var name = ""; @State private var privateChannel = false; @State private var members: [Member] = []; @State private var username = ""; @State private var error: String?; @State private var pending = false
+    @State private var confirmDelete = false
+    @State private var membersError: String?
+    @State private var loadingMembers = false
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: channel == nil ? "Create a channel" : "Channel Overview", close: close)
@@ -902,14 +920,37 @@ private struct ChannelEditor: View {
                     Button(channel == nil ? "Create channel" : "Save changes") { run { if let existing = channel { channel = try await model.updateChannel(existing, name: name, privateChannel: privateChannel) } else { try await model.createChannel(name: name, privateChannel: privateChannel); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
                     if let channel, channel.private {
                         Divider().overlay(CaperTheme.border); Text("Members  \(members.count)").font(CaperTheme.font(14, weight: .bold))
+                        if loadingMembers { ProgressView("Loading members…") }
+                        if let membersError {
+                            Text(membersError).foregroundStyle(.red)
+                            Button("Retry loading members") { Task { await loadMembers(channel) } }.disabled(loadingMembers)
+                        }
                         HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()); Button("Add") { run { let member = try await model.addChannelMember(channel, username: username); members.removeAll { $0.id == member.id }; members.append(member); username = "" } }.buttonStyle(.bordered) }
+                            .disabled(pending || loadingMembers || membersError != nil)
                         ForEach(members) { member in HStack { Avatar(name: member.displayName, size: 30); Text(member.displayName); Spacer(); if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } } }.font(CaperTheme.font(12)) }
+                            .disabled(pending || loadingMembers || membersError != nil)
                     }
-                    if let channel { Divider().overlay(CaperTheme.border); Button("Delete channel", role: .destructive) { run { try await model.deleteChannel(channel); close() } }.buttonStyle(.bordered) }
+                    if channel != nil { Divider().overlay(CaperTheme.border); Button("Delete channel", role: .destructive) { confirmDelete = true }.buttonStyle(.bordered).disabled(pending) }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
             }
-        }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; if let channel, channel.private { Task { members = (try? await model.channelMembers(channel)) ?? [] } } }
+        }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false }
+        .task(id: channel?.private) { if let channel, channel.private { await loadMembers(channel) } }
+        .sheet(isPresented: $confirmDelete) {
+            if let channel {
+                ConfirmationSheet(title: "Delete channel", detail: "Delete #\(channel.name) for everyone? This channel and its messages will disappear from the space. This cannot be undone.", action: "Delete channel", close: { confirmDelete = false }) {
+                    try await model.deleteChannel(channel)
+                    close()
+                }
+            }
+        }
+    }
+    private func loadMembers(_ channel: Channel) async {
+        guard !loadingMembers else { return }
+        loadingMembers = true; membersError = nil
+        defer { loadingMembers = false }
+        do { members = try await model.channelMembers(channel) }
+        catch { membersError = error.localizedDescription }
     }
     private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }
 }
@@ -917,7 +958,7 @@ private struct ChannelEditor: View {
 private struct ConfirmationSheet: View {
     let title: String; let detail: String; let action: String; let close: () -> Void; let perform: () async throws -> Void
     @State private var pending = false; @State private var error: String?
-    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: close); VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close); Button(action, role: .destructive) { pending = true; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending) } }.padding(22) }.background(CaperTheme.surface) }
+    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? "Working…" : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) }.background(CaperTheme.surface).interactiveDismissDisabled(pending) }
 }
 
 private struct CaperField: View {
