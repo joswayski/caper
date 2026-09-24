@@ -126,10 +126,16 @@ final class CaperParityUITests: XCTestCase {
         handle.doubleClick()
         XCTAssertEqual(handle.value as? String, "280 pixels")
         let initialEdge = channelTitle.frame.minX
-        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        // The handle moves during resize. Anchor the synthesized pointer path
+        // to the stationary window, not a lazily resolved moving element.
+        let window = app.windows.firstMatch
+        let handleFrame = handle.frame
+        let start = window.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: handleFrame.midX - window.frame.minX, dy: handleFrame.midY - window.frame.minY
+        ))
         start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
         let dragged = Int((handle.value as? String ?? "").split(separator: " ").first ?? "") ?? 0
-        XCTAssertTrue((310...320).contains(dragged), "drag translation must be anchored once, not added every frame")
+        XCTAssertTrue((310...320).contains(dragged), "35-point drag should produce width 315, got \(dragged)")
         XCTAssertEqual(channelTitle.frame.minX - initialEdge, CGFloat(dragged - 280), accuracy: 2,
                        "the actual conversation edge must follow the reported sidebar width")
         handle.doubleClick()
