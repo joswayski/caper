@@ -11,6 +11,7 @@ pub struct CallContext {
 pub struct AudioIntent {
     pub muted: bool,
     pub deafened: bool,
+    muted_before_deafen: Option<bool>,
 }
 
 impl AudioIntent {
@@ -18,6 +19,7 @@ impl AudioIntent {
         self.muted = muted;
         if !muted {
             self.deafened = false;
+            self.muted_before_deafen = None;
         }
     }
 
@@ -25,8 +27,13 @@ impl AudioIntent {
         if deafened == self.deafened {
             return;
         }
+        if deafened {
+            self.muted_before_deafen = Some(self.muted);
+            self.muted = true;
+        } else {
+            self.muted = self.muted_before_deafen.take().unwrap_or(false);
+        }
         self.deafened = deafened;
-        self.muted = deafened;
     }
 }
 
@@ -171,19 +178,22 @@ mod tests {
     }
 
     #[test]
-    fn unmute_undeafens_and_undeafen_unmutes_but_repeated_false_preserves_mute() {
-        let mut audio = AudioIntent::default();
-        audio.set_deafened(true);
-        assert_eq!((audio.muted, audio.deafened), (true, true));
-        audio.set_muted(false);
-        assert_eq!((audio.muted, audio.deafened), (false, false));
-
-        audio.set_muted(true);
-        audio.set_deafened(true);
-        audio.set_deafened(false);
-        assert_eq!((audio.muted, audio.deafened), (false, false));
-        audio.set_muted(true);
-        audio.set_deafened(false);
-        assert!(audio.muted, "idempotent undeafen preserves mute");
+    fn deafen_restores_prior_mute_across_transfer_and_unmute_overrides_it() {
+        for muted in [false, true] {
+            let mut state = CallState::default();
+            state.audio.set_muted(muted);
+            state.audio.set_deafened(true);
+            state.audio.set_deafened(true);
+            assert_eq!((state.audio.muted, state.audio.deafened), (true, true));
+            state.leave_now();
+            state.join(context("replacement"));
+            state.audio.set_deafened(false);
+            state.audio.set_deafened(false);
+            assert_eq!((state.audio.muted, state.audio.deafened), (muted, false));
+            state.audio.set_deafened(true);
+            state.audio.set_muted(false);
+            state.audio.set_deafened(false);
+            assert_eq!((state.audio.muted, state.audio.deafened), (false, false));
+        }
     }
 }
