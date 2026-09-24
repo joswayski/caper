@@ -1432,16 +1432,25 @@ with that response and are applied with `setConfiguration` before the offer is
 set locally, so relay gathering still uses them. The microphone is attached to
 the sender before the answer is applied, preserving the previous invariant that
 transport never connects without the (disabled) microphone. The authenticated
-roster/lease request and subscription negotiation (`tracks/new` pulls plus
-`renegotiate`) now overlap ICE instead of waiting for the connected transport.
-Pulls are provider-side session operations, and applying their offer to a peer
-that is still checking is ordinary renegotiation. Received audio remains
-withheld from playback, and the microphone stays disabled, until transport,
-live updates, roster and state have all completed. Cloudflare's own
-[receive recipe](https://developers.cloudflare.com/realtime/sfu/get-started/connection-patterns/#receive-a-published-track)
-pulls on a new, unconnected session and waits for `connected` afterwards. Real
-Chromium accepted a remote offer while its connection state was still `new`,
-then connected and received audio. A live Cloudflare join has not yet exercised it.
+roster/lease request overlaps ICE. Subscription negotiation (`tracks/new` pulls
+plus `renegotiate`) still waits for the listener's connected transport, because
+Cloudflare does not accept a pull into a session whose PeerConnection has been
+negotiated but has not connected. A live September 24, 2026 probe (real
+Cloudflare, Chromium offers, the publisher and listener each having applied
+their publication answer) found that `tracks/new` for the listener was held for
+10.9 s and then answered HTTP 425 `session_error`: "Session is not ready yet.
+Please ensure the PeerConnection is connected before making this request." The
+API's 10-second provider timeout fires first, so pulling early turned into a
+502 and removed the listener. A pull into an **empty** session (no negotiated
+PeerConnection, as in Cloudflare's
+[receive recipe](https://developers.cloudflare.com/realtime/sfu/get-started/connection-patterns/#receive-a-published-track))
+was answered in 275 ms, and a pull of a publisher that has not connected was
+answered at once with a per-track `not_found_track_error`. The probe could not
+connect WebRTC transport (no UDP and no TURN/TLS egress from that sandbox), so
+whether a held pull completes once the listener connects mid-wait is unknown;
+either way it would not start media sooner. Received audio remains withheld
+from playback, and the microphone stays disabled, until transport, live
+updates, roster and state have all completed.
 
 When several sources are missing, the browser sends `media.subscribe` with
 `trackIds` instead of one `trackId` per request. The API pulls them in one
@@ -1494,8 +1503,8 @@ documented batch results (partial success in both positions, all refused, and si
 uncertain shapes); Rust unit tests with a mocked provider (combined publication,
 invalid offers creating no session, refused publication leaving no participant,
 the 422 contract), the Valkey/Postgres gateway suite, and browser-client tests
-with mocked WebRTC (combined answer, 422 fallback, overlapped lease renewal,
-delayed pull retry, batched pull with a departed source, batch fallback after
+with mocked WebRTC (combined answer, 422 fallback, overlapped lease renewal with
+pulls held until transport connects, delayed pull retry, batched pull with a departed source, batch fallback after
 422). Real Chromium confirmed that an offer created before
 `setConfiguration` applies unchanged and that TURN allocation requests then reach
 the later-configured server. Live Cloudflare joins, multi-network TURN, Firefox,
@@ -1577,8 +1586,8 @@ alone never renews the lease. There is no durable event log or second registry.
 Join/rejoin waits for the selected audio processor before publication. The SSE
 handshake and publication run concurrently; the published track stays disabled
 (silence). After both finish, mute/deafen state synchronization overlaps the
-transport handshake. Snapshot/subscription negotiation now also overlaps it (see
-"Combined join and publication"); received audio stays withheld until joined. A newer dirty state is repaired before
+transport handshake, and so does the lease-renewing roster request (see
+"Combined join and publication"). Subscription negotiation still waits for transport. A newer dirty state is repaired before
 completion, and SSE invalidations during roster synchronization are drained.
 Only after actual SSE readiness, transport connection, initial roster/subscription
 negotiation, state synchronization and a final live-stream/track check does the client enable audio

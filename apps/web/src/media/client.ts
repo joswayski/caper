@@ -374,15 +374,16 @@ export class PublicCallClient {
     ]);
     signal.throwIfAborted();
     const signaled = performance.now();
-    // Pulls are provider-side session operations and ordinary renegotiation of
-    // a peer that is still checking, so overlap roster renewal and subscription
-    // with ICE. Received audio stays withheld until the join completes below.
-    const reconciled = this.renewLease().then((renewed) => renewed ? this.poll() : undefined);
-    reconciled.catch(() => undefined);
+    // The roster request renews the lease consumed by signaling. It needs no
+    // transport, so overlap it with ICE. Pulls must wait: Cloudflare holds
+    // tracks/new for a listener whose PeerConnection is not connected, then
+    // answers 425 "Session is not ready yet" (live-verified, about 11 s).
+    const leased = this.renewLease();
+    leased.catch(() => undefined);
     await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     const connected = performance.now();
     pc.removeEventListener("iceconnectionstatechange", iceChanged);
-    await reconciled;
+    if (await leased) await this.poll();
     if (this.stateDirty) await this.setState();
     if (this.pollAgain) await this.poll();
     signal.throwIfAborted();

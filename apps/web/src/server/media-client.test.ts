@@ -1113,7 +1113,7 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   assert.equal(track.enabled, true);
 });
 
-test("roster and subscriptions overlap transport setup, but audio waits for it", async (t) => {
+test("lease renewal overlaps transport setup, but pulls and audio wait for it", async (t) => {
   const { client, track, calls, states, install } = setup(t);
   const original = fetch;
   install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
@@ -1130,14 +1130,15 @@ test("roster and subscriptions overlap transport setup, but audio waits for it",
   await tick();
   assert.equal(calls.includes("state"), true);
   assert.equal(calls.includes("snapshot"), true, "the lease renewal overlaps transport setup");
-  assert.equal(calls.includes("subscribe"), true, "pulls overlap transport setup");
-  assert.equal(calls.includes("negotiate"), true);
+  // Cloudflare holds a pull for an unconnected listener, then answers 425.
+  assert.equal(calls.includes("subscribe"), false, "pulls wait for the listener's transport");
+  assert.equal(calls.includes("negotiate"), false);
   assert.equal(track.enabled, false);
   assert.equal(states.at(-1)?.phase, "joining");
-  assert.equal(states.some((state) => state.remoteMedia.length > 0), false, "received audio is withheld while joining");
   Peer.latest.connectionState = "connected";
   Peer.latest.dispatchEvent(new Event("connectionstatechange"));
   await joining;
+  assert.equal(calls.includes("subscribe"), true);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
   assert.equal(track.enabled, true);
