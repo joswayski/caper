@@ -22,12 +22,21 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   deduplication, gap resync, heartbeat handling, reconnect status, and stale
   result isolation across logout/channel changes.
 - Guest General, account spaces, private-channel grants, pagination, typing,
-  paginated member presence, and owner space/channel/member management.
+  paginated member presence, owner space/channel/member management, and confirmed
+  non-owner leave-space with immediate call teardown and conversation clearing.
 - Experimental native voice: raw Google libwebrtc with platform audio devices,
   Caper SFU offer/answer publication and subscription, voice roster, lease
   snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
   active call running; explicit replacement, logout and access denial silence
   locally. Mute/deafen and input/output selection use native ADM.
+- Prejoin device discovery, saved device/output-volume preferences, per-person
+  local mute and 0–200% software playback gain, and aggregate connection
+  statistics. Participant mute survives microphone-track replacement and takes
+  effect locally even while signaling is waiting for HTTP.
+- Explicit local microphone recording (30 seconds maximum), natural/enhanced
+  comparison playback, and cancellation on dismissal/leave. Samples stay in
+  memory, never go to the API, and are discarded when the test ends. During a
+  test, live microphone publication is suspended; newer mute intent is retained.
 
 The account bearer is sent only in the HTTP/WebSocket `Authorization` header.
 The short-lived chat capability is separate, held only in memory, and sent only
@@ -80,11 +89,16 @@ Run the unpacked binary directly, or install the Debian package with
 
 Voice is **experimental**, not live/physical-device accepted. Source and local
 tests exercise signaling, cancellation and native ICE gathering; they do not
-prove two-client SFU/TURN or actual mic/speaker quality. The pinned binding
-does not provide safe ADM input/output gain, per-remote gain, or a local
-natural/enhanced mic-monitor path, so these browser controls are not shown.
-Mic test, processing strength and full connection diagnostics are also absent.
-Device selection is available only after an active session enumerates hardware.
+prove two-client SFU/TURN or actual mic/speaker quality. Playback gain uses a
+narrow bridge to WebRTC's software track volume, not system volume. Independent
+device enumeration does not start capture or alter an active call's ADM. A
+missing saved device fails explicitly rather than silently opening another mic.
+Switching an explicit device works in-call; returning to system default applies
+on the next join because the pinned bridge has no cross-platform live-default
+reset. Input gain and live processing strength remain unsupported. The local
+microphone comparison uses approximate software processing, not web-equivalent
+live-call DSP. Private null-device tests exercise capture, decoded PCM, replay,
+and stop; they do not establish physical recording/listening quality.
 No camera, screen sharing, native notifications, installers, signing or updates.
 IME/accessibility and sustained multi-network voice need separate acceptance.
 The `.deb` and archives are unsigned release artifacts, not installers.

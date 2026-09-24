@@ -22,7 +22,7 @@ pub mod native {
         task::{Context, Poll},
     };
 
-    use tokio_stream::Stream;
+    use tokio_stream::{Stream, StreamExt};
 
     use super::stream_imp;
     use crate::{audio_frame::AudioFrame, audio_track::RtcAudioTrack};
@@ -88,6 +88,12 @@ pub mod native {
 
         pub fn track(&self) -> RtcAudioTrack {
             self.handle.track()
+        }
+
+        /// Receive a decoded local/remote PCM frame without exposing WebRTC's
+        /// internal audio callback across the application boundary.
+        pub async fn next_frame(&mut self) -> Option<AudioFrame<'static>> {
+            self.next().await
         }
 
         pub fn close(&mut self) {

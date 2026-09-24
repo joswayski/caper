@@ -97,6 +97,10 @@ pub enum AdminOperation {
     DeleteSpace {
         space: String,
     },
+    LeaveSpace {
+        space: String,
+        member: String,
+    },
     CreateChannel {
         space: String,
         name: String,
@@ -132,6 +136,7 @@ pub enum AdminResult {
     SpaceCreated(Space),
     SpaceUpdated(Space),
     SpaceDeleted(String),
+    SpaceLeft(String),
     ChannelCreated(Channel),
     ChannelUpdated(Channel),
     ChannelDeleted(String),
@@ -472,6 +477,10 @@ fn execute_admin(
             api.delete_space(token, &space)?;
             AdminResult::SpaceDeleted(space)
         }
+        AdminOperation::LeaveSpace { space, member } => {
+            api.remove_member(token, &space, None, &member)?;
+            AdminResult::SpaceLeft(space)
+        }
         AdminOperation::CreateChannel {
             space,
             name,
@@ -529,6 +538,59 @@ pub fn current(
 #[cfg(test)]
 mod tests {
     use super::{advance_generation, current};
+
+    #[test]
+    fn leave_space_removes_only_self_membership_and_propagates_denial() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}/", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for denied in [false, true] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(
+                    request,
+                    "DELETE /api/spaces/space-a/members/self-b HTTP/1.1\r\n"
+                );
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    headers.push_str(&line);
+                }
+                assert!(
+                    headers
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer fixture-token\r\n")
+                );
+                let response = if denied {
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+                };
+                reader.get_mut().write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let leave = || {
+            super::execute_admin(
+                &api,
+                "fixture-token",
+                super::AdminOperation::LeaveSpace {
+                    space: "space-a".into(),
+                    member: "self-b".into(),
+                },
+            )
+        };
+        assert!(matches!(leave(), Ok(super::AdminResult::SpaceLeft(id)) if id == "space-a"));
+        assert!(leave().is_err());
+        worker.join().unwrap();
+    }
 
     #[test]
     fn logout_and_channel_switch_isolate_late_results() {

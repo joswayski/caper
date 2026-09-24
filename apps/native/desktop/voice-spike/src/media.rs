@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+#[path = "mic_test.rs"]
+pub mod mic_test;
+
 use libwebrtc::MediaType;
 use libwebrtc::audio_frame::AudioFrame;
 use libwebrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
@@ -136,6 +139,71 @@ pub struct Diagnostics {
     pub max_jitter_ms: f64,
     pub round_trip_ms: f64,
     pub route: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioDevices {
+    pub inputs: Vec<AudioDevice>,
+    pub outputs: Vec<AudioDevice>,
+}
+
+/// Enumerate using a separate factory/ADM. Never changes an active call's
+/// capture, output selection, or playout gate; None means platform default.
+pub fn enumerate_audio_devices() -> Result<AudioDevices, String> {
+    let factory = PeerConnectionFactory::default();
+    factory.set_adm_recording_enabled(false);
+    factory.set_adm_playout_enabled(false);
+    if !factory.acquire_platform_adm() {
+        return Err("native audio devices are unavailable".into());
+    }
+    let devices = AudioDevices {
+        inputs: (0..factory.recording_devices().max(0) as u16)
+            .map(|index| AudioDevice {
+                id: factory.recording_device_guid(index),
+                name: factory.recording_device_name(index),
+            })
+            .collect(),
+        outputs: (0..factory.playout_devices().max(0) as u16)
+            .map(|index| AudioDevice {
+                id: factory.playout_device_guid(index),
+                name: factory.playout_device_name(index),
+            })
+            .collect(),
+    };
+    factory.release_platform_adm();
+    Ok(devices)
+}
+
+fn select_device(factory: &PeerConnectionFactory, guid: &str, input: bool) -> bool {
+    if guid.is_empty() {
+        return false;
+    }
+    // The pinned SDK silently falls back to index 0 for an unknown GUID.
+    // Validate first so a stale preference cannot select a different device.
+    let count = if input {
+        factory.recording_devices()
+    } else {
+        factory.playout_devices()
+    };
+    let found = (0..count.max(0) as u16).any(|index| {
+        (if input {
+            factory.recording_device_guid(index)
+        } else {
+            factory.playout_device_guid(index)
+        }) == guid
+    });
+    found
+        && if input {
+            factory.set_recording_device_by_guid(guid)
+        } else {
+            factory.set_playout_device_by_guid(guid)
+        }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -389,7 +457,6 @@ pub struct NativeSession {
     self_id: String,
     microphone: MediaStreamTrack,
     subscriptions: Arc<Mutex<BTreeMap<String, String>>>,
-    remote_tracks: Arc<Mutex<BTreeMap<String, MediaStreamTrack>>>,
     state_sequence: u64,
     muted: bool,
     deafened: bool,
@@ -478,6 +545,54 @@ pub struct JoinControl {
     local: Arc<Mutex<Option<LocalAudio>>>,
     audio: Arc<Mutex<(bool, bool)>>,
     activated: Arc<AtomicBool>,
+    testing: Arc<AtomicBool>,
+    playback: Arc<Mutex<PlaybackState>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackPlayback {
+    pub gain_percent: u16,
+    pub muted: bool,
+}
+
+struct PlaybackState {
+    master_percent: u16,
+    per_track: BTreeMap<String, TrackPlayback>,
+    per_participant: BTreeMap<String, TrackPlayback>,
+    track_owners: BTreeMap<String, String>,
+    tracks: BTreeMap<String, MediaStreamTrack>,
+    roster_reconciled: bool,
+    silenced: bool,
+}
+
+impl PlaybackState {
+    fn effective_volume(&self, id: &str) -> f64 {
+        let track = self.per_track.get(id);
+        let participant = self
+            .track_owners
+            .get(id)
+            .and_then(|owner| self.per_participant.get(owner));
+        if self.silenced
+            || track.is_some_and(|preference| preference.muted)
+            || participant.is_some_and(|preference| preference.muted)
+        {
+            0.0
+        } else {
+            let percent = participant
+                .or(track)
+                .map_or(100, |value| value.gain_percent);
+            f64::from(self.master_percent) * f64::from(percent) / 10_000.0
+        }
+    }
+
+    fn apply(&self, id: &str, track: &MediaStreamTrack) {
+        let volume = self.effective_volume(id);
+        if let MediaStreamTrack::Audio(audio) = track {
+            // This is WebRTC's per-source software volume, not system volume.
+            audio.set_volume(volume);
+        }
+        track.set_enabled(volume > 0.0);
+    }
 }
 
 struct LocalAudio {
@@ -506,16 +621,33 @@ impl JoinControl {
             local: Arc::new(Mutex::new(None)),
             audio: Arc::new(Mutex::new((false, false))),
             activated: Arc::new(AtomicBool::new(false)),
+            testing: Arc::new(AtomicBool::new(false)),
+            playback: Arc::new(Mutex::new(PlaybackState {
+                master_percent: 100,
+                per_track: BTreeMap::new(),
+                per_participant: BTreeMap::new(),
+                track_owners: BTreeMap::new(),
+                tracks: BTreeMap::new(),
+                roster_reconciled: false,
+                silenced: true,
+            })),
         }
     }
 
     pub fn cancel(&self) {
         self.stop.send_replace(true);
         self.activated.store(false, Ordering::Release);
+        self.testing.store(false, Ordering::Release);
         if let Ok(local) = self.local.lock()
             && let Some(local) = local.as_ref()
         {
             local.silence();
+        }
+        if let Ok(mut playback) = self.playback.lock() {
+            playback.silenced = true;
+            for (id, track) in &playback.tracks {
+                playback.apply(id, track);
+            }
         }
     }
 
@@ -524,18 +656,25 @@ impl JoinControl {
     }
 
     pub fn set_local_audio(&self, muted: bool, deafened: bool) -> Result<(), String> {
-        self.update_local_audio(Some((muted, deafened)))
+        self.update_local_audio(Some((muted, deafened)), None)
     }
 
     pub fn enforce_local_audio(&self) -> Result<(), String> {
-        self.update_local_audio(None)
+        self.update_local_audio(None, None)
     }
 
-    fn update_local_audio(&self, intent: Option<(bool, bool)>) -> Result<(), String> {
+    fn update_local_audio(
+        &self,
+        intent: Option<(bool, bool)>,
+        mic_test: Option<bool>,
+    ) -> Result<(), String> {
         // Serialize intent reads with both device application and intent writes.
         // A worker must never copy old intent, wait behind a UI mute, and then
         // overwrite that newer mute while enforcing its stale copy.
         let mut local = self.local.lock().map_err(|_| "local audio unavailable")?;
+        if let Some(testing) = mic_test {
+            self.testing.store(testing, Ordering::Release);
+        }
         let mut audio = self
             .audio
             .lock()
@@ -546,7 +685,7 @@ impl JoinControl {
         let (muted, deafened) = *audio;
         if let Some(local) = local.as_mut() {
             let active = self.activated.load(Ordering::Acquire) && !self.is_cancelled();
-            if active && !muted {
+            if active && !muted && !self.testing.load(Ordering::Acquire) {
                 // Swap to the device only after this exact attempt is ready.
                 if !local.on_microphone {
                     local
@@ -572,6 +711,126 @@ impl JoinControl {
             }
             local.factory.set_adm_playout_enabled(active && !deafened);
         }
+        let mut playback = self.playback.lock().map_err(|_| "playback unavailable")?;
+        playback.silenced =
+            self.is_cancelled() || !self.activated.load(Ordering::Acquire) || deafened;
+        for (id, track) in &playback.tracks {
+            playback.apply(id, track);
+        }
+        Ok(())
+    }
+
+    pub fn set_playback_preferences(
+        &self,
+        master_percent: u16,
+        per_track: &BTreeMap<String, TrackPlayback>,
+    ) -> Result<(), String> {
+        if master_percent > 200 || per_track.values().any(|value| value.gain_percent > 200) {
+            return Err("playback gain must be between 0 and 200 percent".into());
+        }
+        let mut playback = self.playback.lock().map_err(|_| "playback unavailable")?;
+        playback.master_percent = master_percent;
+        playback.per_track = per_track.clone();
+        for (id, track) in &playback.tracks {
+            playback.apply(id, track);
+        }
+        Ok(())
+    }
+
+    pub fn set_participant_playback_preferences(
+        &self,
+        master_percent: u16,
+        per_participant: &BTreeMap<String, TrackPlayback>,
+    ) -> Result<(), String> {
+        if master_percent > 200
+            || per_participant
+                .values()
+                .any(|value| value.gain_percent > 200)
+        {
+            return Err("playback gain must be between 0 and 200 percent".into());
+        }
+        let mut playback = self.playback.lock().map_err(|_| "playback unavailable")?;
+        playback.master_percent = master_percent;
+        playback.per_participant = per_participant.clone();
+        for (id, track) in &playback.tracks {
+            playback.apply(id, track);
+        }
+        Ok(())
+    }
+
+    fn reconcile_participants(&self, snapshot: &Snapshot) -> Result<(), String> {
+        let mut playback = self.playback.lock().map_err(|_| "playback unavailable")?;
+        let owners: BTreeMap<String, String> = snapshot
+            .participants
+            .iter()
+            .flat_map(|participant| {
+                participant
+                    .tracks
+                    .iter()
+                    .map(move |track| (track.id.clone(), participant.id.clone()))
+            })
+            .collect();
+        let previous = std::mem::take(&mut playback.track_owners);
+        playback.tracks.retain(|id, track| {
+            if owners.contains_key(id) && owners.get(id) == previous.get(id) {
+                return true;
+            }
+            track.set_enabled(false);
+            if let MediaStreamTrack::Audio(audio) = track {
+                audio.set_volume(0.0);
+            }
+            false
+        });
+        playback.track_owners = owners;
+        playback.roster_reconciled = true;
+        for (id, track) in &playback.tracks {
+            playback.apply(id, track);
+        }
+        Ok(())
+    }
+
+    fn add_remote_track(&self, id: String, track: MediaStreamTrack) {
+        if let Ok(mut playback) = self.playback.lock() {
+            if self.is_cancelled()
+                || (playback.roster_reconciled && !playback.track_owners.contains_key(&id))
+            {
+                track.set_enabled(false);
+                if let MediaStreamTrack::Audio(audio) = &track {
+                    audio.set_volume(0.0);
+                }
+                return;
+            }
+            playback.apply(&id, &track);
+            playback.tracks.insert(id, track);
+        } else {
+            track.set_enabled(false);
+        }
+    }
+
+    fn remove_remote_track(&self, id: &str) {
+        if let Ok(mut playback) = self.playback.lock()
+            && let Some(track) = playback.tracks.remove(id)
+        {
+            track.set_enabled(false);
+            if let MediaStreamTrack::Audio(audio) = track {
+                audio.set_volume(0.0);
+            }
+        }
+    }
+
+    fn set_remote_muted(&self, id: &str, muted: bool) -> Result<(), String> {
+        let mut playback = self.playback.lock().map_err(|_| "playback unavailable")?;
+        let preference = playback
+            .per_track
+            .entry(id.to_owned())
+            .or_insert(TrackPlayback {
+                gain_percent: 100,
+                muted: false,
+            });
+        preference.muted = muted;
+        if let Some(track) = playback.tracks.get(id) {
+            playback.apply(id, track);
+        }
         Ok(())
     }
 
@@ -581,6 +840,16 @@ impl JoinControl {
             self.enforce_local_audio()?;
         }
         Ok(())
+    }
+
+    /// Detach device publication during an explicit local microphone test.
+    /// Muting/deafening remain owned by normal intent, restored on completion.
+    pub fn suspend_for_mic_test(&self) -> Result<(), String> {
+        self.update_local_audio(None, Some(true))
+    }
+
+    pub fn finish_mic_test(&self) -> Result<(), String> {
+        self.update_local_audio(None, Some(false))
     }
 
     async fn cancelled(&self) {
@@ -644,10 +913,10 @@ impl NativeSession {
         // desktop attempt may activate them after gateway and roster readiness.
         factory.set_adm_playout_enabled(false);
         factory.set_adm_recording_enabled(false);
-        if input_guid.is_some_and(|guid| !factory.set_recording_device_by_guid(guid)) {
+        if input_guid.is_some_and(|guid| !select_device(&factory, guid, true)) {
             return Err("selected microphone is unavailable".into());
         }
-        if output_guid.is_some_and(|guid| !factory.set_playout_device_by_guid(guid)) {
+        if output_guid.is_some_and(|guid| !select_device(&factory, guid, false)) {
             return Err("selected speaker is unavailable".into());
         }
         let mut config = RtcConfiguration::default();
@@ -665,11 +934,11 @@ impl NativeSession {
             .map_err(|error| error.to_string())?;
         guard.peer = Some(peer.clone());
         let subscriptions = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
-        let remote_tracks = Arc::new(Mutex::new(BTreeMap::new()));
         let callback_subscriptions = subscriptions.clone();
-        let callback_tracks = remote_tracks.clone();
+        let callback_control = control.clone();
         peer.on_track(Some(Box::new(move |event| {
             let Some(mid) = event.transceiver.mid() else {
+                event.track.set_enabled(false);
                 return;
             };
             let track_id = callback_subscriptions
@@ -680,10 +949,10 @@ impl NativeSession {
                         .iter()
                         .find_map(|(track, assigned)| (assigned == &mid).then(|| track.clone()))
                 });
-            if let Some(track_id) = track_id
-                && let Ok(mut tracks) = callback_tracks.lock()
-            {
-                tracks.insert(track_id, event.track);
+            if let Some(track_id) = track_id {
+                callback_control.add_remote_track(track_id, event.track);
+            } else {
+                event.track.set_enabled(false);
             }
         })));
 
@@ -775,7 +1044,6 @@ impl NativeSession {
             self_id: joined.id,
             microphone: audio.into(),
             subscriptions,
-            remote_tracks,
             state_sequence: 0,
             muted,
             deafened,
@@ -809,6 +1077,16 @@ impl NativeSession {
             .collect()
     }
 
+    pub fn set_playback_preferences(
+        &self,
+        master_percent: u16,
+        per_track: &BTreeMap<String, TrackPlayback>,
+    ) -> Result<(), VoiceError> {
+        self.local_control
+            .set_playback_preferences(master_percent, per_track)
+            .map_err(VoiceError::Local)
+    }
+
     pub fn media_token(&self) -> &str {
         &self.token
     }
@@ -831,15 +1109,13 @@ impl NativeSession {
     }
 
     pub fn select_input(&self, guid: &str) -> Result<(), VoiceError> {
-        self.factory
-            .set_recording_device_by_guid(guid)
+        select_device(&self.factory, guid, true)
             .then_some(())
             .ok_or_else(|| "selected microphone is unavailable".into())
     }
 
     pub fn select_output(&self, guid: &str) -> Result<(), VoiceError> {
-        self.factory
-            .set_playout_device_by_guid(guid)
+        select_device(&self.factory, guid, false)
             .then_some(())
             .ok_or_else(|| "selected speaker is unavailable".into())
     }
@@ -1002,6 +1278,9 @@ impl NativeSession {
                 "unrelated voice participant present; aborting isolated test".into(),
             ));
         }
+        // Install participant intent before subscribe can attach replacement
+        // tracks; the UI receives Report::Roster only after reconciliation.
+        self.local_control.reconcile_participants(&snapshot)?;
         let available: BTreeMap<_, _> = snapshot
             .participants
             .iter()
@@ -1093,14 +1372,7 @@ impl NativeSession {
             .map_err(|_| "voice subscription state unavailable")?
             .get(track_id)
             .cloned();
-        if let Some(track) = self
-            .remote_tracks
-            .lock()
-            .map_err(|_| "remote voice state unavailable")?
-            .remove(track_id)
-        {
-            track.set_enabled(false);
-        }
+        self.local_control.remove_remote_track(track_id);
         if let Some(mid) = mid {
             self.api
                 .post_empty("close", &self.token, json!({"mid":mid}))
@@ -1115,15 +1387,9 @@ impl NativeSession {
     }
 
     pub fn set_remote_muted(&self, track_id: &str, muted: bool) -> Result<(), VoiceError> {
-        let tracks = self
-            .remote_tracks
-            .lock()
-            .map_err(|_| "remote voice state unavailable")?;
-        let track = tracks
-            .get(track_id)
-            .ok_or_else(|| "remote audio track is unavailable".to_owned())?;
-        track.set_enabled(!muted);
-        Ok(())
+        self.local_control
+            .set_remote_muted(track_id, muted)
+            .map_err(VoiceError::Local)
     }
 
     pub async fn diagnostics(&mut self) -> Result<Diagnostics, VoiceError> {
@@ -1270,6 +1536,139 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    #[test]
+    fn participant_intent_precedes_replacement_track_and_cancel_silences_late_callbacks() {
+        let factory = PeerConnectionFactory::default();
+        let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let first: MediaStreamTrack = factory.create_audio_track("first", source.clone()).into();
+        let replacement: MediaStreamTrack =
+            factory.create_audio_track("replacement", source).into();
+        let control = JoinControl::new();
+        let mut per_participant = BTreeMap::new();
+        per_participant.insert(
+            "p1".into(),
+            TrackPlayback {
+                gain_percent: 75,
+                muted: true,
+            },
+        );
+        control
+            .set_participant_playback_preferences(180, &per_participant)
+            .unwrap();
+        let snapshot = Snapshot {
+            participants: vec![Participant {
+                id: "p1".into(),
+                name: "Test fixture".into(),
+                country_code: None,
+                muted: false,
+                deafened: false,
+                tracks: vec![Track {
+                    id: "old".into(),
+                    kind: "microphone".into(),
+                }],
+            }],
+            revision: None,
+        };
+        control.reconcile_participants(&snapshot).unwrap();
+        control.activate().unwrap();
+        control.add_remote_track("old".into(), first.clone());
+        assert!(!first.enabled());
+        let mut next = snapshot;
+        next.participants[0].tracks[0].id = "new".into();
+        control.reconcile_participants(&next).unwrap();
+        assert!(
+            !first.enabled(),
+            "departed track must stay silent before HTTP close"
+        );
+        assert!(!control.playback.lock().unwrap().tracks.contains_key("old"));
+        // The old MID can still resolve in the callback while HTTP close is
+        // pending. Even after the participant unmutes, the old track may not
+        // be resurrected at default gain or retained as an active track.
+        per_participant.get_mut("p1").unwrap().muted = false;
+        control
+            .set_participant_playback_preferences(180, &per_participant)
+            .unwrap();
+        let departed: MediaStreamTrack = factory.create_device_audio_track("departed").into();
+        control.add_remote_track("old".into(), departed.clone());
+        assert!(
+            !departed.enabled(),
+            "late departed callback must stay silent"
+        );
+        assert!(!control.playback.lock().unwrap().tracks.contains_key("old"));
+        per_participant.get_mut("p1").unwrap().muted = true;
+        control
+            .set_participant_playback_preferences(180, &per_participant)
+            .unwrap();
+        control.add_remote_track("new".into(), replacement.clone());
+        assert!(
+            !replacement.enabled(),
+            "new track must inherit mute before UI roster update"
+        );
+        per_participant.get_mut("p1").unwrap().muted = false;
+        control
+            .set_participant_playback_preferences(180, &per_participant)
+            .unwrap();
+        assert!(replacement.enabled());
+        assert_eq!(
+            control.playback.lock().unwrap().effective_volume("new"),
+            1.35
+        );
+        control.set_local_audio(false, true).unwrap();
+        assert!(!replacement.enabled(), "deafen silences immediately");
+        control.cancel();
+        control.set_local_audio(false, false).unwrap();
+        assert!(
+            !replacement.enabled(),
+            "post-cancel intent cannot reopen playback"
+        );
+        let late: MediaStreamTrack = factory.create_device_audio_track("late").into();
+        control.add_remote_track("new".into(), late.clone());
+        assert!(
+            !late.enabled(),
+            "late callback after cancel must remain silent"
+        );
+        assert!(
+            control
+                .set_participant_playback_preferences(201, &per_participant)
+                .is_err()
+        );
+        assert_eq!(control.playback.lock().unwrap().master_percent, 180);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "isolated private PulseAudio null device required"]
+    fn prejoin_enumeration_does_not_touch_existing_factory_or_start_capture() {
+        assert!(
+            std::env::var("PULSE_SERVER")
+                .is_ok_and(|server| server.starts_with("unix:/tmp/caper-voice-silent-"))
+        );
+        let active = PeerConnectionFactory::default();
+        assert!(active.acquire_platform_adm());
+        active.set_adm_recording_enabled(false);
+        active.set_adm_playout_enabled(false);
+        let reference_count = active.platform_adm_ref_count();
+        let devices = enumerate_audio_devices().unwrap();
+        assert!(devices.inputs.iter().any(|device| {
+            device
+                .name
+                .to_ascii_lowercase()
+                .contains("caper_silent_sink")
+        }));
+        assert!(devices.outputs.iter().any(|device| {
+            device
+                .name
+                .to_ascii_lowercase()
+                .contains("caper_silent_sink")
+        }));
+        assert!(!select_device(&active, "not-a-device", true));
+        assert!(!select_device(&active, "not-a-device", false));
+        assert_eq!(active.platform_adm_ref_count(), reference_count);
+        assert!(!active.adm_recording_enabled());
+        assert!(!active.adm_playout_enabled());
+        active.release_platform_adm();
+    }
+
     #[cfg(target_os = "linux")]
     #[tokio::test]
     #[ignore = "isolated private PulseAudio null device required; no public SFU"]
@@ -1391,6 +1790,22 @@ mod tests {
         assert!(
             track.enabled(),
             "ready unmuted peer must enable device capture"
+        );
+        control.suspend_for_mic_test().unwrap();
+        assert!(
+            !track.enabled(),
+            "local test detaches publication immediately"
+        );
+        control.set_local_audio(true, false).unwrap();
+        control.finish_mic_test().unwrap();
+        assert!(
+            !track.enabled(),
+            "test completion must preserve newer mute intent"
+        );
+        control.set_local_audio(false, false).unwrap();
+        assert!(
+            track.enabled(),
+            "later unmute reopens only the current call"
         );
         control.set_local_audio(true, false).unwrap();
         assert!(!track.enabled(), "muting must stop device capture");
@@ -1563,7 +1978,7 @@ mod tests {
                         .iter()
                         .map(|t| t.current_direction())
                         .collect::<Vec<_>>(),
-                    session.remote_tracks.lock().unwrap().len()
+                    session.local_control.playback.lock().unwrap().tracks.len()
                 );
             }
             first.close_local();
@@ -1604,6 +2019,14 @@ mod tests {
             .create_peer_connection(config.clone())
             .unwrap();
         let server = server_factory.create_peer_connection(config).unwrap();
+        let control = JoinControl::new();
+        control.activate().unwrap();
+        let (remote_tx, remote_rx) = std::sync::mpsc::channel();
+        let callback_control = control.clone();
+        client.on_track(Some(Box::new(move |event| {
+            callback_control.add_remote_track("remote-microphone".into(), event.track.clone());
+            remote_tx.send(event.track).unwrap();
+        })));
         let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
         let publication = client_factory.create_audio_track("publication", source);
         client
@@ -1648,6 +2071,18 @@ mod tests {
                 },
             )
             .unwrap();
+        control
+            .set_playback_preferences(
+                180,
+                &BTreeMap::from([(
+                    "remote-microphone".into(),
+                    TrackPlayback {
+                        gain_percent: 75,
+                        muted: false,
+                    },
+                )]),
+            )
+            .unwrap();
         let offer = server
             .create_offer(OfferOptions {
                 offer_to_receive_audio: true,
@@ -1673,6 +2108,31 @@ mod tests {
             sender.current_direction(),
             Some(RtpTransceiverDirection::SendOnly)
         );
+
+        let remote_track = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(track) = remote_rx.try_recv() {
+                    break track;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("native remote audio callback");
+        let MediaStreamTrack::Audio(audio) = remote_track else {
+            panic!("expected audio track")
+        };
+        assert!(
+            (audio.volume() - 1.35).abs() < 0.001,
+            "WebRTC remote source must receive combined software gain"
+        );
+        control.set_remote_muted("remote-microphone", true).unwrap();
+        assert_eq!(audio.volume(), 0.0);
+        assert!(!audio.enabled());
+        control
+            .set_remote_muted("remote-microphone", false)
+            .unwrap();
+        assert!((audio.volume() - 1.35).abs() < 0.001);
 
         let zero = AudioFrame::new(48_000, 1, 480);
         let work = async {
@@ -1979,7 +2439,6 @@ mod tests {
             self_id: "self".into(),
             microphone: audio.clone(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
-            remote_tracks: Arc::new(Mutex::new(BTreeMap::new())),
             state_sequence: 0,
             muted: false,
             deafened: false,
@@ -2000,10 +2459,8 @@ mod tests {
             .unwrap()
             .insert("departed".into(), "remote-mid".into());
         session
-            .remote_tracks
-            .lock()
-            .unwrap()
-            .insert("departed".into(), receiver.clone());
+            .local_control
+            .add_remote_track("departed".into(), receiver.clone());
         assert!(session.unsubscribe("departed").await.is_err());
         assert!(
             !receiver.enabled(),
@@ -2061,7 +2518,6 @@ mod tests {
             self_id: "self".into(),
             microphone: factory.create_device_audio_track("local-test-mic").into(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
-            remote_tracks: Arc::new(Mutex::new(BTreeMap::new())),
             state_sequence: 0,
             muted: false,
             deafened: false,

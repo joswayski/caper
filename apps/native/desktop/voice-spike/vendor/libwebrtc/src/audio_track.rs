@@ -26,6 +26,16 @@ pub struct RtcAudioTrack {
 
 impl RtcAudioTrack {
     media_stream_track!();
+
+    /// Software receive gain on the WebRTC audio source (not system volume).
+    /// Callers must bound the multiplier before invoking this method.
+    pub fn set_volume(&self, volume: f64) {
+        self.handle.set_volume(volume);
+    }
+
+    pub fn volume(&self) -> f64 {
+        self.handle.volume()
+    }
 }
 
 impl Debug for RtcAudioTrack {

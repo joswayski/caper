@@ -19,7 +19,7 @@ use model::{
 use state::{CallContext, Phase};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-use voice::{Voice, VoiceOperation};
+use voice::{MicrophoneState, Voice, VoiceOperation};
 use worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
 
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
@@ -92,8 +92,11 @@ fn permanent_send_rejection(status: Option<u16>) -> bool {
 enum Dialog {
     SignIn,
     Profile,
+    Audio,
+    Connection,
     CreateSpace,
     ManageSpace,
+    LeaveSpace { id: String, name: String },
     CreateChannel,
     ManageChannel(String),
 }
@@ -138,6 +141,7 @@ struct CaperApp {
     presence: BTreeMap<String, String>,
     member_page: usize,
     members_visible: bool,
+    narrow_members_visible: bool,
     channels_expanded: bool,
     sidebar_width: f32,
     navigation_open: bool,
@@ -147,6 +151,7 @@ struct CaperApp {
     member_username: String,
     managed_members: Vec<Member>,
     managed_channel: Option<String>,
+    persist_preferences: bool,
 }
 
 impl CaperApp {
@@ -188,6 +193,7 @@ impl CaperApp {
             presence: BTreeMap::new(),
             member_page: 0,
             members_visible: true,
+            narrow_members_visible: false,
             channels_expanded: true,
             sidebar_width: 280.0,
             navigation_open: false,
@@ -197,6 +203,7 @@ impl CaperApp {
             member_username: String::new(),
             managed_members: Vec::new(),
             managed_channel: None,
+            persist_preferences: fixture.is_none(),
         };
         match fixture {
             Some("error" | "login-error") => {
@@ -226,6 +233,14 @@ impl CaperApp {
                     app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
+                } else if name == "parity-member" {
+                    app.account.as_mut().unwrap().id = "fixture-maya".into();
+                    app.account.as_mut().unwrap().display_name = Some("Maya".into());
+                } else if matches!(name, "parity-audio" | "parity-audio-recorded") {
+                    app.dialog = Some(Dialog::Audio);
+                    if name == "parity-audio-recorded" {
+                        app.voice.microphone = MicrophoneState::Ready(3.6);
+                    }
                 } else if matches!(name, "parity-voice-joining" | "parity-voice-connected") {
                     // Explicit visual fixtures only: no media transport is started.
                     let call = CallContext {
@@ -234,6 +249,38 @@ impl CaperApp {
                         space_name: "Fixture Studio".into(),
                     };
                     app.voice.state.phase = if name == "parity-voice-connected" {
+                        app.voice.self_id = "fixture-owner".into();
+                        app.voice.participants = app
+                            .detail
+                            .as_ref()
+                            .unwrap()
+                            .members
+                            .iter()
+                            .map(|member| media::Participant {
+                                id: member.id.clone(),
+                                name: member.display_name.clone(),
+                                country_code: None,
+                                muted: false,
+                                deafened: false,
+                                tracks: vec![media::Track {
+                                    id: format!("fixture-track-{}", member.id),
+                                    kind: "microphone".into(),
+                                }],
+                            })
+                            .collect();
+                        app.voice.diagnostics = Some((
+                            media::Diagnostics {
+                                received_bytes: 4000,
+                                sent_bytes: 6000,
+                                receive_bitrate: 8000.0,
+                                send_bitrate: 16000.0,
+                                packets_lost: 2,
+                                max_jitter_ms: 17.0,
+                                round_trip_ms: 42.0,
+                                route: "relay",
+                            },
+                            Instant::now(),
+                        ));
                         Phase::Connected(call)
                     } else {
                         Phase::Joining(call)
@@ -1070,10 +1117,13 @@ impl CaperApp {
                 }
                 self.dialog = None;
             }
-            AdminResult::SpaceDeleted(id) => {
+            AdminResult::SpaceDeleted(id) | AdminResult::SpaceLeft(id) => {
                 self.voice.revoke_space(&id);
                 self.spaces.retain(|space| space.id != id);
                 self.dialog = None;
+                self.detail = None;
+                self.managed_members.clear();
+                self.presence.clear();
                 self.open_general();
             }
             AdminResult::ChannelCreated(channel) => {
@@ -1151,6 +1201,18 @@ impl CaperApp {
 }
 
 impl eframe::App for CaperApp {
+    fn persist_egui_memory(&self) -> bool {
+        self.persist_preferences
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.persist_preferences
+            && let Ok(json) = serde_json::to_string(&self.voice.preferences)
+        {
+            storage.set_string("audio-preferences-v1", json);
+        }
+    }
+
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
         if context.input(|input| !input.events.is_empty()) {
             self.worker.send(Command::Activity);
@@ -1162,6 +1224,11 @@ impl eframe::App for CaperApp {
         } else {
             self.shell(context);
             self.dialogs(context);
+        }
+        if !matches!(self.dialog, Some(Dialog::Audio))
+            && !matches!(self.voice.microphone, MicrophoneState::Idle)
+        {
+            self.voice.stop_mic_test();
         }
     }
 }
@@ -1311,6 +1378,9 @@ impl CaperApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(SURFACE))
             .show(context, |ui| {
+                if self.dialog.is_some() {
+                    ui.disable();
+                }
                 let content = ui.max_rect();
                 if narrow {
                     if self.navigation_open {
@@ -1332,7 +1402,7 @@ impl CaperApp {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
                             self.conversation(ui, true)
                         });
-                        if self.members_visible {
+                        if self.narrow_members_visible {
                             let members_rect = egui::Rect::from_min_max(
                                 egui::pos2(
                                     (content.right() - 280.0).max(content.left()),
@@ -1569,13 +1639,15 @@ impl CaperApp {
                                     - if self.navigation_open { 36.0 } else { 0.0 };
                                 let (rect, actions) = ui.allocate_exact_size(
                                     egui::vec2(width, 38.0),
-                                    if self.owner() {
+                                    if self.owner() || self.can_leave_space() {
                                         egui::Sense::click()
                                     } else {
                                         egui::Sense::hover()
                                     },
                                 );
-                                if self.owner() && (actions.hovered() || actions.has_focus()) {
+                                if (self.owner() || self.can_leave_space())
+                                    && (actions.hovered() || actions.has_focus())
+                                {
                                     ui.painter().rect_filled(rect, 8.0, RAISED);
                                 }
                                 let name = self
@@ -1601,11 +1673,11 @@ impl CaperApp {
                                 actions.widget_info(|| {
                                     egui::WidgetInfo::labeled(
                                         egui::WidgetType::Button,
-                                        self.owner(),
+                                        self.owner() || self.can_leave_space(),
                                         format!("{name} actions"),
                                     )
                                 });
-                                if self.owner() {
+                                if self.owner() || self.can_leave_space() {
                                     paint_icon(
                                         ui.painter(),
                                         egui::Rect::from_center_size(
@@ -1616,6 +1688,21 @@ impl CaperApp {
                                         MUTED,
                                     );
                                     egui::Popup::menu(&actions).width(width).show(|ui| {
+                                        if self.can_leave_space() {
+                                            if ui
+                                                .button(RichText::new("Leave space").color(ERROR))
+                                                .clicked()
+                                            {
+                                                if let Some(detail) = &self.detail {
+                                                    self.dialog = Some(Dialog::LeaveSpace {
+                                                        id: detail.space.id.clone(),
+                                                        name: detail.space.name.clone(),
+                                                    });
+                                                }
+                                                ui.close();
+                                            }
+                                            return;
+                                        }
                                         if ui
                                             .add(
                                                 egui::Button::image_and_text(
@@ -1819,22 +1906,96 @@ impl CaperApp {
                                 .size(11.0)
                                 .color(MUTED),
                             );
-                            for participant in &self.voice.participants {
-                                ui.horizontal(|ui| {
-                                    avatar(ui, &participant.name, 28.0, false);
-                                    ui.label(
-                                        bold(if participant.id == self.voice.self_id {
-                                            format!("{} (you)", participant.name)
-                                        } else {
-                                            participant.name.clone()
-                                        })
-                                        .size(12.0),
-                                    );
-                                    if participant.deafened {
-                                        ui.label(RichText::new("Deafened").size(10.0).color(MUTED));
-                                    } else if participant.muted {
-                                        ui.label(RichText::new("Muted").size(10.0).color(MUTED));
-                                    }
+                            for participant in self.voice.participants.clone() {
+                                ui.push_id(&participant.id, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 7.0;
+                                        avatar(ui, &participant.name, 28.0, false);
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(ui.available_width() - 58.0, 32.0),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.set_min_width(ui.available_width());
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        bold(
+                                                            if participant.id == self.voice.self_id
+                                                            {
+                                                                format!(
+                                                                    "{} (you)",
+                                                                    participant.name
+                                                                )
+                                                            } else {
+                                                                participant.name.clone()
+                                                            },
+                                                        )
+                                                        .size(12.0),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            },
+                                        );
+                                        let mut playback = self.voice.playback(&participant.id);
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(16.0, 16.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        if participant.deafened
+                                            || participant.muted
+                                            || playback.muted
+                                        {
+                                            paint_icon(
+                                                ui.painter(),
+                                                rect,
+                                                if participant.deafened || playback.muted {
+                                                    NavIcon::VolumeX
+                                                } else {
+                                                    NavIcon::MicOff
+                                                },
+                                                MUTED,
+                                            );
+                                            response.on_hover_text(if playback.muted {
+                                                "Muted for you"
+                                            } else if participant.deafened {
+                                                "Deafened"
+                                            } else {
+                                                "Microphone muted"
+                                            });
+                                        }
+                                        if participant.id != self.voice.self_id {
+                                            let options = drawn_icon_button(
+                                                ui,
+                                                NavIcon::More,
+                                                &format!("Audio for {}", participant.name),
+                                            );
+                                            egui::Popup::menu(&options).width(240.0).show(|ui| {
+                                                ui.label(bold(&participant.name));
+                                                ui.label(
+                                                    RichText::new(
+                                                        "These controls affect only what you hear.",
+                                                    )
+                                                    .size(11.0)
+                                                    .color(MUTED),
+                                                );
+                                                let volume = ui.add(
+                                                    egui::Slider::new(
+                                                        &mut playback.gain_percent,
+                                                        0..=200,
+                                                    )
+                                                    .text("Volume")
+                                                    .suffix("%"),
+                                                );
+                                                let muted =
+                                                    ui.checkbox(&mut playback.muted, "Mute for me");
+                                                if volume.changed() || muted.changed() {
+                                                    self.voice.set_participant_playback(
+                                                        &participant.id,
+                                                        playback,
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    })
                                 });
                             }
                         }
@@ -1851,7 +2012,7 @@ impl CaperApp {
             ui.add_space(8.0);
             ui.separator();
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
+                let status = ui.vertical(|ui| {
                     ui.label(
                         bold(if connected {
                             "Voice connected"
@@ -1862,6 +2023,14 @@ impl CaperApp {
                     );
                     ui.label(RichText::new(label).size(11.0).color(MUTED));
                 });
+                if status
+                    .response
+                    .interact(egui::Sense::click())
+                    .on_hover_text("Connection details")
+                    .clicked()
+                {
+                    self.dialog = Some(Dialog::Connection);
+                }
                 if drawn_icon_button(ui, NavIcon::Close, "Disconnect voice").clicked() {
                     self.voice.leave();
                 }
@@ -1916,34 +2085,101 @@ impl CaperApp {
             egui::pos2(profile.right() + 2.0, content.top()),
             content.max,
         );
-        ui.scope_builder(egui::UiBuilder::new().max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            let muted = self.voice.state.audio.muted;
-            if audio_icon_button(ui, if muted { NavIcon::MicOff } else { NavIcon::Mic }, 28.0, if muted { "Unmute microphone" } else { "Mute microphone" }, muted).clicked() {
-                self.voice.command(VoiceOperation::Mute(!muted));
-            }
-            let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted);
-            egui::Popup::menu(&input).align(egui::RectAlign::TOP_START).width(232.0).show(|ui| self.device_options(ui, true));
-            ui.add_space(2.0);
-            let deafened = self.voice.state.audio.deafened;
-            if audio_icon_button(ui, if deafened { NavIcon::VolumeX } else { NavIcon::Headphones }, 28.0, if deafened { "Undeafen audio" } else { "Deafen audio" }, deafened).clicked() {
-                self.voice.command(VoiceOperation::Deafen(!deafened));
-            }
-            let output = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened);
-            egui::Popup::menu(&output).align(egui::RectAlign::TOP_START).width(232.0).show(|ui| self.device_options(ui, false));
-            ui.add_space(2.0);
-            let settings = audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false);
-            egui::Popup::menu(&settings).align(egui::RectAlign::TOP_END).width(232.0).show(|ui| {
-                ui.label(bold("Audio settings").size(12.0).color(MUTED));
-                ui.label("Input and output devices are in the arrow menus.");
-                ui.label(RichText::new("Mic test and volume controls are not available in this desktop build.").size(11.0).color(MUTED));
-                ui.separator();
-                if ui.button(if self.account.is_some() { "Edit profile" } else { "Sign in" }).clicked() {
-                    self.dialog = Some(if self.account.is_some() { Dialog::Profile } else { Dialog::SignIn });
-                    ui.close();
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(controls)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let muted = self.voice.state.audio.muted;
+                if audio_icon_button(
+                    ui,
+                    if muted { NavIcon::MicOff } else { NavIcon::Mic },
+                    28.0,
+                    if muted {
+                        "Unmute microphone"
+                    } else {
+                        "Mute microphone"
+                    },
+                    muted,
+                )
+                .clicked()
+                {
+                    self.voice.command(VoiceOperation::Mute(!muted));
                 }
-            });
-        });
+                let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted);
+                if input.clicked() {
+                    self.voice.refresh_devices();
+                }
+                egui::Popup::menu(&input)
+                    .align(egui::RectAlign::TOP_START)
+                    .width(232.0)
+                    .show(|ui| self.device_options(ui, true));
+                ui.add_space(2.0);
+                let deafened = self.voice.state.audio.deafened;
+                if audio_icon_button(
+                    ui,
+                    if deafened {
+                        NavIcon::VolumeX
+                    } else {
+                        NavIcon::Headphones
+                    },
+                    28.0,
+                    if deafened {
+                        "Undeafen audio"
+                    } else {
+                        "Deafen audio"
+                    },
+                    deafened,
+                )
+                .clicked()
+                {
+                    self.voice.command(VoiceOperation::Deafen(!deafened));
+                }
+                let output =
+                    audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened);
+                if output.clicked() {
+                    self.voice.refresh_devices();
+                }
+                egui::Popup::menu(&output)
+                    .align(egui::RectAlign::TOP_START)
+                    .width(232.0)
+                    .show(|ui| self.device_options(ui, false));
+                ui.add_space(2.0);
+                let settings =
+                    audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false);
+                egui::Popup::menu(&settings)
+                    .align(egui::RectAlign::TOP_END)
+                    .width(232.0)
+                    .show(|ui| {
+                        if ui.button("Audio preferences").clicked() {
+                            self.voice.refresh_devices();
+                            self.dialog = Some(Dialog::Audio);
+                            ui.close();
+                        }
+                        if ui.button("Connection details").clicked() {
+                            self.dialog = Some(Dialog::Connection);
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui
+                            .button(if self.account.is_some() {
+                                "Edit profile"
+                            } else {
+                                "Sign in"
+                            })
+                            .clicked()
+                        {
+                            self.dialog = Some(if self.account.is_some() {
+                                Dialog::Profile
+                            } else {
+                                Dialog::SignIn
+                            });
+                            ui.close();
+                        }
+                    });
+            },
+        );
     }
 
     fn device_options(&mut self, ui: &mut egui::Ui, input: bool) {
@@ -1957,14 +2193,51 @@ impl CaperApp {
         } else {
             self.voice.outputs.clone()
         };
-        if devices.is_empty() {
-            ui.label("System default · devices become available after joining voice.");
+        let selected = if input {
+            &self.voice.preferences.input
+        } else {
+            &self.voice.preferences.output
+        };
+        let active = !matches!(self.voice.state.phase, Phase::Idle);
+        if ui
+            .selectable_label(
+                selected.is_none(),
+                if active {
+                    "System default (next join)"
+                } else {
+                    "System default"
+                },
+            )
+            .clicked()
+        {
+            if input {
+                self.voice.preferences.input = None;
+            } else {
+                self.voice.preferences.output = None;
+            }
+        }
+        if self.voice.refreshing_devices {
+            ui.label("Finding devices…");
+        } else if devices.is_empty() {
+            ui.label("No devices found. Check system audio settings.");
+        }
+        if let Some(error) = &self.voice.device_error {
+            ui.label(RichText::new(error).color(ERROR));
+        }
+        if ui
+            .add_enabled(
+                !self.voice.refreshing_devices,
+                egui::Button::new("Refresh devices"),
+            )
+            .clicked()
+        {
+            self.voice.refresh_devices();
         }
         for (guid, name) in devices {
             let selected = if input {
-                &self.voice.input
+                &self.voice.preferences.input
             } else {
-                &self.voice.output
+                &self.voice.preferences.output
             };
             if ui
                 .selectable_label(selected.as_deref() == Some(&guid), name)
@@ -1978,6 +2251,219 @@ impl CaperApp {
                 ui.close();
             }
         }
+        if !input {
+            ui.separator();
+            self.output_gain(ui);
+        }
+    }
+
+    fn output_gain(&mut self, ui: &mut egui::Ui) {
+        let mut gain = self.voice.preferences.master_percent;
+        let label = ui
+            .horizontal(|ui| {
+                let label = ui.label(bold("Output volume").size(13.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(format!("{gain}%")).color(MUTED));
+                });
+                label
+            })
+            .inner;
+        ui.add_space(6.0);
+        let changed = ui
+            .scope(|ui| {
+                ui.spacing_mut().slider_width = ui.available_width();
+                ui.add(
+                    egui::Slider::new(&mut gain, 0..=200)
+                        .show_value(false)
+                        .trailing_fill(true),
+                )
+                .labelled_by(label.id)
+                .changed()
+            })
+            .inner;
+        if changed {
+            self.voice.set_master_gain(gain);
+        }
+    }
+
+    fn audio_preferences(&mut self, ui: &mut egui::Ui) {
+        self.output_gain(ui);
+        ui.add_space(12.0);
+        for input in [true, false] {
+            let preferred = if input {
+                &self.voice.preferences.input
+            } else {
+                &self.voice.preferences.output
+            };
+            let devices = if input {
+                &self.voice.inputs
+            } else {
+                &self.voice.outputs
+            };
+            let label = preferred
+                .as_ref()
+                .map_or("System default", |id| {
+                    devices
+                        .iter()
+                        .find(|(guid, _)| guid == id)
+                        .map_or("Saved device (unavailable)", |(_, name)| name.as_str())
+                })
+                .to_owned();
+            ui.label(bold(if input { "Microphone" } else { "Output device" }).size(13.0));
+            let button = ui.add_sized(
+                [ui.available_width(), 36.0],
+                egui::Button::new(label)
+                    .fill(COMPOSER)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8),
+            );
+            egui::Popup::menu(&button).width(300.0).show(|ui| {
+                ui.add_enabled_ui(
+                    matches!(self.voice.microphone, MicrophoneState::Idle),
+                    |ui| self.device_options(ui, input),
+                );
+                if !matches!(self.voice.microphone, MicrophoneState::Idle) {
+                    ui.label("End the microphone test to change devices.");
+                }
+            });
+            ui.add_space(12.0);
+        }
+        ui.label(RichText::new("Device preferences and output volume are saved on this computer. Returning to the system default during a call takes effect on your next join.").size(11.0).color(MUTED));
+        if let Some(error) = &self.voice.device_error {
+            ui.label(RichText::new(error).color(ERROR));
+        }
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(12.0);
+        ui.label(bold("Microphone test").size(14.0));
+        ui.label(RichText::new("Record up to 30 seconds, then compare natural and enhanced playback. Audio stays on this computer and is discarded when you close this panel.").size(12.0).color(MUTED));
+        ui.add_space(10.0);
+        let idle = matches!(self.voice.microphone, MicrophoneState::Idle);
+        ui.add_enabled_ui(idle, |ui| {
+            ui.label("Comparison strength");
+            ui.add(egui::Slider::new(&mut self.voice.comparison_strength, 0..=100).suffix("%"));
+        });
+        ui.label(RichText::new("Enhanced playback approximates the web processing. It does not change your live-call microphone.").size(11.0).color(MUTED));
+        ui.add_space(12.0);
+        if !self.persist_preferences {
+            ui.label(
+                RichText::new("TEST FIXTURE — no recording or playback.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        }
+        ui.add_enabled_ui(self.persist_preferences, |ui| {
+            match self.voice.microphone.clone() {
+                MicrophoneState::Idle => {
+                    if primary(ui, "Record microphone", false).clicked() {
+                        self.voice.start_mic_test();
+                    }
+                }
+                MicrophoneState::Preparing => {
+                    ui.label("Preparing local audio…");
+                    if ui.button("Cancel test").clicked() {
+                        self.voice.stop_mic_test();
+                    }
+                }
+                MicrophoneState::Recording(started) => {
+                    ui.label(format!(
+                        "Recording · {} / 30 seconds",
+                        started.elapsed().as_secs().min(30)
+                    ));
+                    ui.ctx().request_repaint_after(Duration::from_millis(100));
+                    ui.horizontal(|ui| {
+                        if ui.button("Finish recording").clicked() {
+                            self.voice.finish_mic_recording();
+                        }
+                        if ui.button("Cancel test").clicked() {
+                            self.voice.stop_mic_test();
+                        }
+                    });
+                }
+                MicrophoneState::Ready(seconds) => {
+                    ui.label(format!("Recorded {seconds:.1} seconds"));
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Play natural").clicked() {
+                            self.voice.play_mic_sample(false);
+                        }
+                        if ui.button("Play enhanced").clicked() {
+                            self.voice.play_mic_sample(true);
+                        }
+                    });
+                    if ui.button("Discard recording").clicked() {
+                        self.voice.stop_mic_test();
+                    }
+                }
+                MicrophoneState::Playing { seconds, enhanced } => {
+                    ui.label(format!(
+                        "Playing {} · {seconds:.1} seconds",
+                        if enhanced { "enhanced" } else { "natural" }
+                    ));
+                    if ui.button("Stop playback").clicked() {
+                        self.voice.stop_mic_playback();
+                    }
+                }
+            }
+        });
+        if !idle && !matches!(self.voice.state.phase, Phase::Idle) {
+            ui.label(RichText::new("Your live-call microphone is paused until you discard the test or close this panel.").size(11.0).color(MUTED));
+        }
+        if let Some(error) = &self.voice.microphone_error {
+            ui.label(RichText::new(error).color(ERROR));
+        }
+    }
+
+    fn connection_details(&self, ui: &mut egui::Ui) {
+        if !self.persist_preferences {
+            ui.label(
+                RichText::new("TEST FIXTURE — synthetic statistics, no live connection.")
+                    .color(MUTED),
+            );
+            ui.add_space(12.0);
+        }
+        let Some((stats, sampled)) = &self.voice.diagnostics else {
+            ui.label(if matches!(self.voice.state.phase, Phase::Idle) {
+                "Join voice to see connection details."
+            } else {
+                "Waiting for connection statistics…"
+            });
+            return;
+        };
+        egui::Grid::new("connection-statistics")
+            .num_columns(2)
+            .spacing([28.0, 12.0])
+            .show(ui, |ui| {
+                for (label, value) in [
+                    ("Received", format!("{} bytes", stats.received_bytes)),
+                    (
+                        "Live receive",
+                        format!("{:.1} kbps", stats.receive_bitrate / 1000.0),
+                    ),
+                    ("Sent", format!("{} bytes", stats.sent_bytes)),
+                    (
+                        "Live send",
+                        format!("{:.1} kbps", stats.send_bitrate / 1000.0),
+                    ),
+                    ("Packets lost", stats.packets_lost.to_string()),
+                    ("Max jitter", format!("{:.0} ms", stats.max_jitter_ms)),
+                    ("RTT", format!("{:.0} ms", stats.round_trip_ms)),
+                    (
+                        "Route",
+                        match stats.route {
+                            "relay" => "TURN relay",
+                            "direct" => "Direct",
+                            _ => "Not observed yet",
+                        }
+                        .into(),
+                    ),
+                ] {
+                    ui.label(RichText::new(label).color(MUTED));
+                    ui.label(value);
+                    ui.end_row();
+                }
+            });
+        ui.add_space(16.0);
+        ui.label(RichText::new(format!("Sampled {}s ago. Local estimates, not billing totals. Counters reset on reconnect.", sampled.elapsed().as_secs())).size(11.0).color(MUTED));
     }
 
     fn member_presence(&mut self, ui: &mut egui::Ui) {
@@ -2086,9 +2572,10 @@ impl CaperApp {
                                         .detail
                                         .as_ref()
                                         .is_some_and(|detail| !detail.members.is_empty())
-                                        && users_button(ui, self.members_visible).clicked()
+                                        && users_button(ui, if narrow { self.narrow_members_visible } else { self.members_visible }).clicked()
                                     {
-                                        self.members_visible = !self.members_visible;
+                                        if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
+                                        else { self.members_visible = !self.members_visible; }
                                     }
                                     let already_here =
                                         self.voice.state.active_channel().is_some_and(|channel| {
@@ -2349,6 +2836,15 @@ impl CaperApp {
             })
     }
 
+    fn can_leave_space(&self) -> bool {
+        self.account
+            .as_ref()
+            .zip(self.detail.as_ref())
+            .is_some_and(|(account, detail)| {
+                !detail.space.demo && account.id != detail.space.owner_id
+            })
+    }
+
     fn dialogs(&mut self, context: &egui::Context) {
         let Some(dialog) = self.dialog.clone() else {
             return;
@@ -2365,8 +2861,11 @@ impl CaperApp {
                 }
             }
             Dialog::Profile => "Edit profile",
+            Dialog::Audio => "Audio preferences",
+            Dialog::Connection => "Connection details",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
+            Dialog::LeaveSpace { .. } => "Leave space?",
             Dialog::CreateChannel => "Create a channel",
             Dialog::ManageChannel(_) => "Overview",
         };
@@ -2386,11 +2885,16 @@ impl CaperApp {
             0.0
         };
         let available = context.viewport_rect().size() - egui::vec2(32.0, 32.0);
-        let mut close = context.input(|input| input.key_pressed(egui::Key::Escape));
+        let mut close = context.input(|input| input.key_pressed(egui::Key::Escape))
+            && !egui::Popup::is_any_open(context);
         egui::Area::new(egui::Id::new("caper-dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(context, |ui| {
+                // An Area remembers its previous size. Let settings grow when
+                // recording/replay controls appear instead of pinning the old
+                // short scroll viewport; the screen remains the upper bound.
+                ui.set_max_height(available.y);
                 egui::Frame::new()
                     .fill(SURFACE)
                     .stroke(Stroke::new(1.0, BORDER))
@@ -2440,8 +2944,25 @@ impl CaperApp {
                                         match dialog {
                                             Dialog::SignIn => unreachable!("sign-in is rendered as a full page"),
                                             Dialog::Profile => self.profile_dialog(ui),
+                                            Dialog::Audio => self.audio_preferences(ui),
+                                            Dialog::Connection => self.connection_details(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
+                                            Dialog::LeaveSpace { id, name } => {
+                                                ui.label(format!("Leave {name}? You will lose access to its channels and conversations. An owner can add you again later."));
+                                                ui.add_space(16.0);
+                                                ui.horizontal(|ui| {
+                                                    if ui.add_enabled(!self.loading, egui::Button::new("Cancel")).clicked() {
+                                                        self.dialog = None;
+                                                    }
+                                                    if ui.add_enabled(!self.loading, egui::Button::new(RichText::new(if self.loading { "Leaving…" } else { "Leave space" }).color(ERROR))).clicked()
+                                                        && let Some(account) = &self.account {
+                                                        let member = account.id.clone();
+                                                        self.voice.revoke_space(&id);
+                                                        self.admin(AdminOperation::LeaveSpace { space: id, member });
+                                                    }
+                                                });
+                                            }
                                             Dialog::CreateChannel => self.channel_dialog(ui, None),
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
                                         }
@@ -3298,17 +3819,22 @@ fn main() -> eframe::Result {
         "Caper",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
+            persist_window: fixture.is_none(),
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size(viewport_size)
                 .with_min_inner_size([320.0, 560.0]),
             ..Default::default()
         },
         Box::new(move |creation| {
-            Ok(Box::new(CaperApp::new(
-                &creation.egui_ctx,
-                api,
-                fixture.as_deref(),
-            )))
+            let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
+            if app.persist_preferences
+                && let Some(json) = creation
+                    .storage
+                    .and_then(|storage| storage.get_string("audio-preferences-v1"))
+            {
+                app.voice.preferences = voice::Preferences::restore(&json);
+            }
+            Ok(Box::new(app))
         }),
     )
 }
@@ -3340,7 +3866,10 @@ mod tests {
                 events,
                 ..Default::default()
             },
-            |context| app.shell(context),
+            |context| {
+                app.shell(context);
+                app.dialogs(context);
+            },
         )
     }
 
@@ -3360,6 +3889,156 @@ mod tests {
                 ],
             );
         }
+    }
+
+    #[test]
+    fn voice_roster_names_align_and_participant_menu_changes_only_that_listener() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let position = |output: &egui::FullOutput, label: &str, sidebar: bool| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.job.text == label && (!sidebar || text.pos.x < 340.0) =>
+                    {
+                        Some(text.pos)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {label}"))
+        };
+        for label in ["Fixture Owner (you)", "Maya", "Alex"] {
+            assert_eq!(position(&output, label, true).x, 106.0);
+        }
+        click(
+            &mut app,
+            &context,
+            egui::pos2(313.0, position(&output, "Maya", true).y + 6.0),
+        );
+        let menu = render(&mut app, &context, vec![]);
+        let mute = position(&menu, "Mute for me", false) + egui::vec2(4.0, 4.0);
+        click(&mut app, &context, mute);
+        assert!(app.voice.playback("fixture-maya").muted);
+        assert!(!app.voice.playback("fixture-alex").muted);
+        assert!(
+            !app.voice.state.audio.muted,
+            "local listener control must not mute our microphone"
+        );
+    }
+
+    #[test]
+    fn leave_space_is_nonowner_only_and_clears_private_conversation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        assert!(app.owner());
+        assert!(!app.can_leave_space());
+        app.account.as_mut().unwrap().id = "fixture-maya".into();
+        assert!(!app.owner());
+        assert!(app.can_leave_space());
+        let space = app.selected_space.clone().unwrap();
+        app.draft = "private draft".into();
+        app.pending = Some(PendingSend::prepare(None, "private draft"));
+        assert!(app.timeline.messages().next().is_some());
+        app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
+        assert!(!app.spaces.iter().any(|entry| entry.id == space));
+        assert!(app.detail.is_none());
+        assert_eq!(app.selected_channel.as_deref(), Some("general"));
+        assert!(app.timeline.messages().next().is_none());
+        assert!(app.draft.is_empty());
+        assert!(app.pending.is_none());
+        assert!(!app.can_leave_space());
+    }
+
+    #[test]
+    fn narrow_resize_does_not_cover_conversation_with_desktop_members() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-connected"),
+        );
+        render(&mut app, &context, vec![]);
+        assert!(app.members_visible);
+        let narrow = |app: &mut CaperApp| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(390.0, 844.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| app.shell(context),
+            )
+        };
+        let has_members = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Members")
+            })
+        };
+        narrow(&mut app);
+        assert!(!has_members(&narrow(&mut app)));
+        app.narrow_members_visible = true;
+        assert!(has_members(&narrow(&mut app)));
+        assert!(
+            app.members_visible,
+            "narrow toggle must preserve wide preference"
+        );
+    }
+
+    #[test]
+    fn escape_closes_device_popup_before_audio_dialog() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-audio"),
+        );
+        app.dialog = Some(Dialog::Audio);
+        render(&mut app, &context, vec![]);
+        click(&mut app, &context, egui::pos2(216.0, 867.0));
+        assert!(
+            !app.voice.state.audio.muted,
+            "dialog must block background audio controls"
+        );
+        let output = render(&mut app, &context, vec![]);
+        let device = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "System default" => {
+                    Some(text.pos + egui::vec2(4.0, 4.0))
+                }
+                _ => None,
+            })
+            .expect("device button");
+        click(&mut app, &context, device);
+        assert!(egui::Popup::is_any_open(&context));
+        let escape = |pressed| egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        render(&mut app, &context, vec![escape(true)]);
+        assert!(!egui::Popup::is_any_open(&context));
+        assert!(matches!(app.dialog, Some(Dialog::Audio)));
+        render(&mut app, &context, vec![escape(false)]);
+        render(&mut app, &context, vec![escape(true)]);
+        assert!(app.dialog.is_none());
     }
 
     #[test]

@@ -44,6 +44,8 @@ pub mod ffi {
 
         fn add_sink(self: &AudioTrack, sink: &SharedPtr<NativeAudioSink>);
         fn remove_sink(self: &AudioTrack, sink: &SharedPtr<NativeAudioSink>);
+        fn set_volume(self: &AudioTrack, volume: f64);
+        fn volume(self: &AudioTrack) -> f64;
         fn new_native_audio_sink(
             observer: Box<AudioSinkWrapper>,
             sample_rate: i32,
@@ -119,6 +121,7 @@ impl AudioSinkWrapper {
     }
 
     fn on_data(&self, data: &[i16], sample_rate: i32, nb_channels: usize, nb_frames: usize) {
-        self.observer.on_data(data, sample_rate, nb_channels, nb_frames);
+        self.observer
+            .on_data(data, sample_rate, nb_channels, nb_frames);
     }
 }

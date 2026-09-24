@@ -1,20 +1,70 @@
 use crate::{media, media_gateway, state};
 use eframe::egui;
-use media::{JoinControl, MediaApi, NativeSession, Participant, Snapshot, VoiceError};
+use media::mic_test::{MicTest, MicTestControl, PlaybackToken};
+use media::{
+    JoinControl, MediaApi, NativeSession, Participant, Snapshot, TrackPlayback, VoiceError,
+};
+use serde::{Deserialize, Serialize};
 use state::{CallContext, CallState, Phase};
+use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 use url::Url;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Preferences {
+    pub input: Option<String>,
+    pub output: Option<String>,
+    pub master_percent: u16,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            input: None,
+            output: None,
+            master_percent: 100,
+        }
+    }
+}
+
+impl Preferences {
+    pub fn restore(json: &str) -> Self {
+        let mut preferences: Self = serde_json::from_str(json).unwrap_or_default();
+        preferences.master_percent = preferences.master_percent.min(200);
+        preferences
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum MicrophoneState {
+    Idle,
+    Preparing,
+    Recording(Instant),
+    Ready(f32),
+    Playing { seconds: f32, enhanced: bool },
+}
 
 pub struct Voice {
     pub state: CallState,
     pub participants: Vec<Participant>,
     pub self_id: String,
     pub error: Option<String>,
+    pub diagnostics: Option<(media::Diagnostics, Instant)>,
     pub inputs: Vec<(String, String)>,
     pub outputs: Vec<(String, String)>,
-    pub input: Option<String>,
-    pub output: Option<String>,
+    pub preferences: Preferences,
+    pub device_error: Option<String>,
+    pub refreshing_devices: bool,
+    pub microphone: MicrophoneState,
+    pub microphone_error: Option<String>,
+    pub comparison_strength: u8,
+    microphone_generation: u64,
+    microphone_control: Option<MicTestControl>,
+    microphone_commands: Option<Sender<(bool, u16, PlaybackToken)>>,
+    device_request: u64,
+    participant_playback: BTreeMap<String, TrackPlayback>,
     base: Url,
     control: Option<JoinControl>,
     commands: Option<Sender<Operation>>,
@@ -37,6 +87,9 @@ enum Report {
     Gateway(u64, media_gateway::Event),
     Failed(u64, VoiceError),
     Changed(u64, Result<(), VoiceError>),
+    Diagnostics(u64, media::Diagnostics),
+    Devices(u64, Result<media::AudioDevices, String>),
+    Microphone(u64, Result<MicrophoneState, String>),
 }
 
 impl Voice {
@@ -47,10 +100,20 @@ impl Voice {
             participants: vec![],
             self_id: String::new(),
             error: None,
+            diagnostics: None,
             inputs: vec![],
             outputs: vec![],
-            input: None,
-            output: None,
+            preferences: Preferences::default(),
+            device_error: None,
+            refreshing_devices: false,
+            microphone: MicrophoneState::Idle,
+            microphone_error: None,
+            comparison_strength: 70,
+            microphone_generation: 0,
+            microphone_control: None,
+            microphone_commands: None,
+            device_request: 0,
+            participant_playback: BTreeMap::new(),
             base,
             control: None,
             commands: None,
@@ -85,8 +148,14 @@ impl Voice {
         let generation = self.state.join(context);
         self.error = None;
         let control = JoinControl::new();
-        if let Err(error) =
-            control.set_local_audio(self.state.audio.muted, self.state.audio.deafened)
+        if let Err(error) = control
+            .set_local_audio(self.state.audio.muted, self.state.audio.deafened)
+            .and_then(|()| {
+                control.set_participant_playback_preferences(
+                    self.preferences.master_percent,
+                    &BTreeMap::new(),
+                )
+            })
         {
             self.leave();
             self.error = Some(error);
@@ -100,8 +169,8 @@ impl Voice {
         let base = self.base.clone();
         let muted = self.state.audio.muted;
         let deafened = self.state.audio.deafened;
-        let input = self.input.clone();
-        let output = self.output.clone();
+        let input = self.preferences.input.clone();
+        let output = self.preferences.output.clone();
         let channel_id = space
             .as_ref()
             .map(|_| self.state.active_channel().unwrap().to_owned());
@@ -157,6 +226,7 @@ impl Voice {
             let mut gateway_ready = false;
             let mut roster_ready = false;
             let mut next_snapshot = Instant::now();
+            let mut next_diagnostics = Instant::now();
             let mut next_turn = session
                 .turn_refresh_delay()
                 .map(|delay| Instant::now() + delay);
@@ -271,6 +341,14 @@ impl Voice {
                         }
                     }
                 }
+                if ready && !control.is_cancelled() && Instant::now() >= next_diagnostics {
+                    if let Ok(Ok(stats)) = runtime.block_on(async {
+                        tokio::time::timeout(Duration::from_secs(2), session.diagnostics()).await
+                    }) {
+                        report(&events, &repaint, Report::Diagnostics(generation, stats));
+                    }
+                    next_diagnostics = Instant::now() + Duration::from_secs(3);
+                }
             }
             gateway.stop();
             session.leave();
@@ -281,11 +359,176 @@ impl Voice {
         if let Some(control) = self.control.take() {
             control.cancel();
         }
+        self.stop_mic_test();
         self.commands = None;
         self.active_space = None;
         self.participants.clear();
         self.self_id.clear();
+        self.diagnostics = None;
+        self.participant_playback.clear();
         self.state.leave_now();
+    }
+
+    pub fn start_mic_test(&mut self) {
+        self.stop_mic_test();
+        self.microphone_error = None;
+        if let Some(control) = &self.control
+            && let Err(error) = control.suspend_for_mic_test()
+        {
+            self.microphone_error = Some(error);
+            return;
+        }
+        let control = MicTestControl::new();
+        self.microphone_control = Some(control.clone());
+        self.microphone = MicrophoneState::Preparing;
+        let generation = self.microphone_generation;
+        let (sender, receiver) = mpsc::channel();
+        self.microphone_commands = Some(sender);
+        let events = self.events.clone();
+        let repaint = self.repaint.clone();
+        let input = self.preferences.input.clone();
+        let output = self.preferences.output.clone();
+        let strength = self.comparison_strength;
+        std::thread::spawn(move || {
+            let send = |state| report(&events, &repaint, Report::Microphone(generation, state));
+            let result = (|| -> Result<(), String> {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .map_err(|error| error.to_string())?;
+                let mut test = runtime.block_on(MicTest::start(
+                    control.clone(),
+                    input.as_deref(),
+                    output.as_deref(),
+                ))?;
+                send(Ok(MicrophoneState::Recording(Instant::now())));
+                let sample = runtime.block_on(test.record(strength))?;
+                let seconds = sample.natural.len() as f32 / sample.sample_rate as f32;
+                send(Ok(MicrophoneState::Ready(seconds)));
+                while let Ok((enhanced, volume, token)) = receiver.recv() {
+                    runtime.block_on(test.play_prepared(enhanced, volume, token))?;
+                    send(Ok(MicrophoneState::Ready(seconds)));
+                }
+                test.stop();
+                Ok(())
+            })();
+            // Includes runtime/setup failures before MicTest owns cleanup.
+            control.cancel();
+            if let Err(error) = result {
+                send(Err(error));
+            }
+        });
+    }
+
+    pub fn finish_mic_recording(&self) {
+        if let Some(control) = &self.microphone_control {
+            control.finish_recording();
+        }
+    }
+
+    pub fn play_mic_sample(&mut self, enhanced: bool) {
+        if let MicrophoneState::Ready(seconds) = self.microphone
+            && let Some(sender) = &self.microphone_commands
+            && let Some(control) = &self.microphone_control
+            && sender
+                .send((
+                    enhanced,
+                    self.preferences.master_percent,
+                    control.prepare_playback(),
+                ))
+                .is_ok()
+        {
+            self.microphone = MicrophoneState::Playing { seconds, enhanced };
+        }
+    }
+
+    pub fn stop_mic_playback(&self) {
+        if let Some(control) = &self.microphone_control {
+            control.stop_playback();
+        }
+        // Remain Playing until the worker acknowledges completion. Otherwise
+        // the previous completion could overwrite a newly queued replay state.
+    }
+
+    pub fn stop_mic_test(&mut self) {
+        self.microphone_generation += 1;
+        if let Some(control) = self.microphone_control.take() {
+            control.cancel();
+            if let Some(call) = &self.control
+                && let Err(error) = call.finish_mic_test()
+            {
+                call.cancel();
+                self.microphone_error = Some(error);
+            }
+        }
+        self.microphone_commands = None;
+        self.microphone = MicrophoneState::Idle;
+    }
+
+    pub fn refresh_devices(&mut self) {
+        if self.refreshing_devices {
+            return;
+        }
+        self.refreshing_devices = true;
+        self.device_error = None;
+        self.device_request += 1;
+        let request = self.device_request;
+        let events = self.events.clone();
+        let repaint = self.repaint.clone();
+        std::thread::spawn(move || {
+            report(
+                &events,
+                &repaint,
+                Report::Devices(request, media::enumerate_audio_devices()),
+            );
+        });
+    }
+
+    pub fn playback(&self, participant: &str) -> TrackPlayback {
+        self.participant_playback
+            .get(participant)
+            .cloned()
+            .unwrap_or(TrackPlayback {
+                gain_percent: 100,
+                muted: false,
+            })
+    }
+
+    pub fn set_participant_playback(&mut self, participant: &str, playback: TrackPlayback) {
+        if participant == self.self_id || !self.participants.iter().any(|p| p.id == participant) {
+            return;
+        }
+        self.participant_playback.insert(
+            participant.into(),
+            TrackPlayback {
+                gain_percent: playback.gain_percent.min(200),
+                muted: playback.muted,
+            },
+        );
+        self.apply_playback();
+    }
+
+    pub fn set_master_gain(&mut self, percent: u16) {
+        self.preferences.master_percent = percent.min(200);
+        self.apply_playback();
+    }
+
+    fn apply_playback(&mut self) {
+        if let Some(control) = &self.control
+            && let Err(error) = control.set_participant_playback_preferences(
+                self.preferences.master_percent,
+                &self.participant_playback,
+            )
+        {
+            self.leave();
+            self.error = Some(error);
+        }
+    }
+
+    fn roster(&mut self, snapshot: Snapshot) {
+        self.participants = snapshot.participants;
+        self.apply_playback();
     }
 
     pub fn revoke_channel(&mut self, id: &str) {
@@ -311,11 +554,11 @@ impl Voice {
                 Operation::Deafen(value)
             }
             VoiceOperation::Input(guid) => {
-                self.input = Some(guid.clone());
+                self.preferences.input = Some(guid.clone());
                 Operation::Input(guid)
             }
             VoiceOperation::Output(guid) => {
-                self.output = Some(guid.clone());
+                self.preferences.output = Some(guid.clone());
                 Operation::Output(guid)
             }
         };
@@ -341,12 +584,12 @@ impl Voice {
                     self.outputs = outputs;
                 }
                 Report::Roster(g, snapshot) if g == self.state.generation => {
-                    self.participants = snapshot.participants
+                    self.roster(snapshot);
                 }
                 Report::Gateway(g, media_gateway::Event::Snapshot { snapshot, .. })
                     if g == self.state.generation =>
                 {
-                    self.participants = snapshot.participants
+                    self.roster(snapshot);
                 }
                 Report::Gateway(g, media_gateway::Event::AccessDenied { detail, .. })
                     if g == self.state.generation =>
@@ -375,6 +618,34 @@ impl Voice {
                         self.leave();
                     }
                     self.error = Some(error.to_string());
+                }
+                Report::Diagnostics(g, stats) if g == self.state.generation => {
+                    self.diagnostics = Some((stats, Instant::now()));
+                }
+                Report::Microphone(g, state) if g == self.microphone_generation => match state {
+                    Ok(state) => self.microphone = state,
+                    Err(error) => {
+                        self.stop_mic_test();
+                        self.microphone_error = Some(error);
+                    }
+                },
+                Report::Devices(request, result) if request == self.device_request => {
+                    self.refreshing_devices = false;
+                    match result {
+                        Ok(devices) => {
+                            self.inputs = devices
+                                .inputs
+                                .into_iter()
+                                .map(|device| (device.id, device.name))
+                                .collect();
+                            self.outputs = devices
+                                .outputs
+                                .into_iter()
+                                .map(|device| (device.id, device.name))
+                                .collect();
+                        }
+                        Err(error) => self.device_error = Some(error),
+                    }
                 }
                 _ => {}
             }
@@ -412,6 +683,127 @@ mod tests {
             channel_name: id.into(),
             space_name: "General".into(),
         }
+    }
+
+    #[test]
+    fn preferences_preserve_asymmetric_device_ids_and_clamp_gain() {
+        let preferences =
+            Preferences::restore(r#"{"input":"mic-a","output":"speaker-b","master_percent":175}"#);
+        assert_eq!(preferences.input.as_deref(), Some("mic-a"));
+        assert_eq!(preferences.output.as_deref(), Some("speaker-b"));
+        assert_eq!(preferences.master_percent, 175);
+        assert_eq!(
+            Preferences::restore(&serde_json::to_string(&preferences).unwrap()),
+            preferences
+        );
+        assert_eq!(
+            Preferences::restore(r#"{"master_percent":0}"#).master_percent,
+            0
+        );
+        assert_eq!(
+            Preferences::restore(r#"{"master_percent":201}"#).master_percent,
+            200
+        );
+        assert_eq!(Preferences::restore("broken"), Preferences::default());
+    }
+
+    #[test]
+    fn participant_preferences_survive_roster_changes_but_not_call_replacement() {
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            egui::Context::default(),
+        );
+        let snapshot: Snapshot = serde_json::from_str(r#"{"participants":[
+            {"id":"self","name":"Me","muted":false,"deafened":false,"tracks":[{"id":"own","kind":"microphone"}]},
+            {"id":"a","name":"A","muted":false,"deafened":false,"tracks":[{"id":"track-a","kind":"microphone"}]},
+            {"id":"b","name":"B","muted":false,"deafened":false,"tracks":[{"id":"track-b","kind":"microphone"}]}
+        ]}"#).unwrap();
+        voice.self_id = "self".into();
+        voice.roster(snapshot.clone());
+        voice.set_master_gain(75);
+        voice.set_participant_playback(
+            "a",
+            TrackPlayback {
+                gain_percent: 135,
+                muted: true,
+            },
+        );
+        voice.set_participant_playback(
+            "self",
+            TrackPlayback {
+                gain_percent: 0,
+                muted: true,
+            },
+        );
+        assert!(!voice.participant_playback.contains_key("self"));
+        assert_eq!(voice.playback("a").gain_percent, 135);
+        assert!(voice.playback("a").muted);
+        assert_eq!(voice.playback("b").gain_percent, 100);
+        assert!(!voice.playback("b").muted);
+        let mut republished = snapshot;
+        republished.participants[1].tracks[0].id = "replacement-a".into();
+        voice.roster(republished);
+        assert!(voice.playback("a").muted);
+        assert_eq!(voice.playback("a").gain_percent, 135);
+        let generation = voice.state.generation;
+        voice.leave();
+        voice
+            .events
+            .send(Report::Diagnostics(
+                generation,
+                media::Diagnostics {
+                    received_bytes: 555,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        voice.receive();
+        assert!(voice.participant_playback.is_empty());
+        assert!(
+            voice.diagnostics.is_none(),
+            "late statistics must not resurrect a ended call"
+        );
+        assert_eq!(voice.preferences.master_percent, 75);
+    }
+
+    #[test]
+    fn mic_sample_commands_use_current_gain_and_discard_rejects_late_completion() {
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            egui::Context::default(),
+        );
+        let (sender, receiver) = mpsc::channel();
+        voice.microphone_commands = Some(sender);
+        voice.microphone_control = Some(MicTestControl::new());
+        voice.microphone = MicrophoneState::Ready(2.7);
+        voice.set_master_gain(143);
+        voice.play_mic_sample(true);
+        let (enhanced, volume, _) = receiver.try_recv().unwrap();
+        assert!(enhanced);
+        assert_eq!(volume, 143);
+        voice.stop_mic_playback();
+        voice.play_mic_sample(false);
+        assert!(
+            receiver.try_recv().is_err(),
+            "do not queue overlapping playback"
+        );
+        let generation = voice.microphone_generation;
+        voice.stop_mic_test();
+        voice
+            .events
+            .send(Report::Microphone(
+                generation,
+                Ok(MicrophoneState::Ready(2.7)),
+            ))
+            .unwrap();
+        voice
+            .events
+            .send(Report::Microphone(generation, Err("old error".into())))
+            .unwrap();
+        voice.receive();
+        assert!(matches!(voice.microphone, MicrophoneState::Idle));
+        assert!(voice.microphone_error.is_none());
+        assert!(voice.microphone_commands.is_none());
     }
 
     #[test]
