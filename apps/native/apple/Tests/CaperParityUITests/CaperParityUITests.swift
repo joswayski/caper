@@ -346,12 +346,12 @@ final class CaperParityUITests: XCTestCase {
         #if os(macOS)
         let sounds = app.checkBoxes["sound-effects"]
         XCTAssertTrue(sounds.waitForExistence(timeout: 2))
-        XCTAssertEqual(sounds.value as? String, "1")
+        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 1)
         sounds.tap()
-        XCTAssertEqual(sounds.value as? String, "0")
+        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 0)
         capture("audio-effects-disabled", app: app)
         sounds.tap()
-        XCTAssertEqual(sounds.value as? String, "1")
+        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 1)
         #endif
         let gain = app.sliders["Output gain"]
         XCTAssertTrue(gain.waitForExistence(timeout: 2))
