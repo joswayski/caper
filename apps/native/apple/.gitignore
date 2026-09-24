@@ -1,0 +1,11 @@
+/.build/
+/dist/
+/DerivedData/
+/DerivedData-Tests/
+/DerivedData-Parity/
+/ParityResults.xcresult/
+/parity-artifacts/
+/.swiftpm/
+Package.resolved
+/CaperApple.xcodeproj/
+/Resources/Fonts/

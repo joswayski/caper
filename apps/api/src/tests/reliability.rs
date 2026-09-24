@@ -511,8 +511,9 @@ async fn upstream(router: Router) -> (Config, tokio::task::JoinHandle<()>) {
 }
 
 #[tokio::test]
-async fn provider_rejected_departed_track_preserves_listener_only_without_sdp_mutation() {
+async fn provider_rejected_unavailable_track_preserves_listener_only_without_sdp_mutation() {
     let missing = json!({"requiresImmediateRenegotiation":false,"tracks":[{"mid":"","errorCode":"not_found_track_error"}]});
+    let empty = json!({"requiresImmediateRenegotiation":false,"tracks":[{"errorCode":"empty_track_error"}]});
     let mut offered = missing.clone();
     offered["sessionDescription"] = json!({"type":"offer","sdp":"v=0"});
     let mut pending = missing.clone();
@@ -521,13 +522,21 @@ async fn provider_rejected_departed_track_preserves_listener_only_without_sdp_mu
     allocated["tracks"][0]["mid"] = json!("1");
     let mut session_error = missing.clone();
     session_error["errorCode"] = json!("session_error");
-    for (http_status, response_body, safe) in [
-        (StatusCode::OK, missing.clone(), true),
-        (StatusCode::OK, offered, false),
-        (StatusCode::OK, pending, false),
-        (StatusCode::OK, allocated, false),
-        (StatusCode::OK, session_error, false),
-        (StatusCode::BAD_GATEWAY, missing, false),
+    let mut empty_allocated = empty.clone();
+    empty_allocated["tracks"][0]["mid"] = json!("2");
+    let mut empty_offered = empty.clone();
+    empty_offered["sessionDescription"] = json!({"type":"offer","sdp":"v=0"});
+    for (http_status, response_body, source_leaves, safe) in [
+        (StatusCode::OK, missing.clone(), true, true),
+        (StatusCode::OK, offered, true, false),
+        (StatusCode::OK, pending, true, false),
+        (StatusCode::OK, allocated, true, false),
+        (StatusCode::OK, session_error, true, false),
+        (StatusCode::BAD_GATEWAY, missing, true, false),
+        (StatusCode::OK, empty.clone(), false, true),
+        (StatusCode::OK, empty_allocated, false, false),
+        (StatusCode::OK, empty_offered, false, false),
+        (StatusCode::BAD_GATEWAY, empty, false, false),
     ] {
         let (s, _) = state();
         let speaker = joined(&s, "phone").await;
@@ -551,9 +560,11 @@ async fn provider_rejected_departed_track_preserves_listener_only_without_sdp_mu
                 let s = s.clone();
                 let body = response_body.clone();
                 async move {
-                    // The source leaves after Caper validated the pull but before
-                    // the real provider adapter receives its HTTP response.
-                    remove_participant(&s, source_id).await;
+                    // A departed publication and an existing publication with
+                    // no source packets are distinct safe-rejection cases.
+                    if source_leaves {
+                        remove_participant(&s, source_id).await;
+                    }
                     (http_status, Json(body))
                 }
             }
@@ -580,6 +591,7 @@ async fn provider_rejected_departed_track_preserves_listener_only_without_sdp_mu
             assert!(p.tracks.contains_key("laptop-mic"));
             assert!(!p.operation && !p.pending_offer);
             assert!(p.subscriptions.is_empty());
+            assert_eq!(r.participants.contains_key(&source_id), !source_leaves);
             assert!(!r.cleanup.iter().any(|job| matches!(&job.action, CleanupAction::Close { session: target, .. } | CleanupAction::Discover { session: target } if target == &session)));
         } else {
             assert_eq!(status, StatusCode::BAD_GATEWAY);

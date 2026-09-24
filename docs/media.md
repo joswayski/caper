@@ -730,7 +730,7 @@ The follow-up disconnect audit also covers these interactions:
 | Join/publish/subscribe/negotiate/close reaches a draining API | Explicit `503` + `code: api_draining` proves admission rejection before mutation. Retry up to three times after 250/500/1000 ms within the original request deadline. Generic 5xx/timeouts do not authorize replay. |
 | A speaker leaves before subscription starts | `404` + `code: track_gone` skips only that track; continue subscribing to other participants. Authentication errors still invalidate the session. |
 | A speaker leaves while a successful subscription is being created | Preserve the listener, finish any returned SDP offer, then close the unwanted MID from the latest roster. Do not discard the listener's own microphone/session. |
-| Cloudflare explicitly rejects a departed track during subscription | A successful HTTP response with one `not_found_track_error`/`track_error`, no MID/SDP, and explicit `requiresImmediateRenegotiation: false` becomes `track_gone`; release the operation lock and preserve the listener. HTTP errors, partial offers, allocated MIDs, and session errors remain ambiguous and do not take this path. |
+| Cloudflare explicitly rejects an unavailable track during subscription | A successful HTTP response with one `not_found_track_error`/`empty_track_error`/`track_error`, no MID/SDP, and explicit `requiresImmediateRenegotiation: false` becomes `track_gone`; release the operation lock and preserve the listener. This includes a connected publisher that is not sending source media yet. HTTP errors, partial offers, allocated MIDs, and session errors remain ambiguous and do not take this path. |
 | Closing a departed track fails or times out | Remove local playback immediately; retry transient HTTP cleanup failures on subsequent reconciliation/lease heartbeat without rejoining. API close commits track removal and a cleanup job atomically. Provider cleanup failure never revokes the listener or its other tracks. |
 | SSE fails while authenticated lease renewals work | Retry SSE independently and keep voice/layout stable. Snapshots still repair state, but normal real-time delivery requires SSE recovery. |
 | A previous call still has a pending device request | New signaling/media queues do not wait on old work. Old rollback cannot restart the new call. |
@@ -744,6 +744,19 @@ the connected heading, connection details, peer identity, and microphone remain
 unchanged. API tests exercise the actual provider HTTP adapter against a local
 stub for rejected pulls and verify the boundary with ambiguous responses. These
 are fault-injection checks, not live SFU or physical-device verification.
+
+The native voice audit extends this safe-rejection path to Cloudflare's documented
+[`empty_track_error`](https://developers.cloudflare.com/realtime/sfu/observability/error-codes/).
+The regression previously returned 502 and removed the listener; it now preserves
+both sessions when no MID or SDP was allocated. This is not a confirmed diagnosis
+of the native live smoke's uncorrelated 502. After approval and merge, deploy the
+API correction before repeating multi-client acceptance (no migration or secret change):
+
+```sh
+MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+```
 
 Failure-injection coverage includes these cases and cancellation during retry
 backoff. Deploy the **API first, then web**, and refresh both clients before
@@ -1836,10 +1849,10 @@ Original DeepFilter integration validation, September 6, 2026:
   speakerphone echo, speech preservation, sustained CPU/gaming load, Firefox,
   and Safari remain unvalidated.
 
-Future native clients are separate implementations, not wrappers around this
-browser adapter. Native capture, echo cancellation, and feeding processed PCM
-into a native WebRTC sender remain roadmap work; no native client currently ships
-from this repository.
+Native development clients are separate implementations, not wrappers around this
+browser adapter. Native audio and noise-processing parity are not established by
+these browser checks. See [native acceptance](#native-distribution-and-acceptance);
+no production-ready native client ships from this repository.
 
 ## Cost and acceptance
 
@@ -1939,7 +1952,8 @@ API uses the stored display name instead of the submitted name. Country flags us
 the API-provided Cloudflare country code; no flag is invented when location is
 unavailable. The web login page sends email codes and then requires a unique
 username and display name. Account login is enabled when `AUTH_SECRET`, the database
-URLs, and SES settings are configured. Desktop/native account screens remain future work.
+URLs, and SES settings are configured. Native development account screens use the
+same service with bearer sessions; their platform acceptance is tracked separately.
 Each code is six uppercase characters from `ABCDEFGHJKMNPQRSTWXYZ23456789`,
 excluding visually ambiguous `0/O`, `1/I/L`, and `U/V`. Codes expire after 10
 minutes and have three attempts by default. A replacement code consumes the prior
@@ -2020,7 +2034,7 @@ hooks, and browser forwarding remain removed. Server functions retain CSRF middl
 The production web service owns no `/api` routes; Traefik sends same-origin
 `/api/*` requests directly to Rust.
 
-### Public API: web and future native clients
+### Public API: web and native clients
 
 The public browser API is **`https://caper.chat/api/*`**, routed by Traefik
 directly to the existing Rust `caper-api` service. `https://caper.chat/*` serves
@@ -2046,14 +2060,15 @@ not URLs, cookies, or persistent storage. Possession authorizes that call sessio
 | POST | `/api/media/snapshot`, `/publish`, `/subscribe`, `/negotiate`, `/close`, `/state`, `/leave` | Capability-protected operations; all paths under `/api/media` |
 
 Web verification defaults to an `HttpOnly`, `Secure`, `SameSite=Lax` cookie.
-Future native desktop and mobile clients will request `tokenTransport: "bearer"`
+Native desktop and mobile clients request `tokenTransport: "bearer"`
 and store the returned opaque token in the OS credential vault (Keychain/Keystore),
 never plain preferences or web storage. Protected routes accept either transport. Logout
 revokes the same database session for every client type. Guest media capabilities
 are not account credentials.
 
-Native account screens and secure-vault integration are not implemented yet. The
-web account flow uses the secure same-origin cookie transport.
+Native development account screens and OS-vault integrations live in `apps/native`;
+they are not yet accepted on every physical platform. The web account flow uses
+the secure same-origin cookie transport.
 Arbitrary third-party browser CORS access, API keys and developer OAuth consent
 are not implemented; native/server HTTP clients do not require CORS. Browser WebRTC
 does not prove native audio support.
@@ -2064,6 +2079,87 @@ revealing signup order or the internal sequence. Stored as `external_id` for
 integrations and external references, the API returns this value as `id`, alongside
 `username` and `displayName`. Usernames are globally unique, changeable handles;
 changing a username or email does not change either account ID.
+
+### Native distribution and acceptance
+
+The [native clients](../apps/native/README.md) are separately implemented,
+browser-free development clients. They use the existing HTTPS API and application
+WebSocket, not a native-only backend. Keep the website available while native
+feature parity and platform acceptance remain incomplete. No backend migration,
+provider secret, production restart, or infrastructure change is required by the
+native development build workflow.
+
+**Download a build after merge:** relevant `main` pushes run **Native development
+builds** automatically. To request a new build and retrieve its artifacts:
+
+```sh
+gh workflow run native.yml --repo joswayski/caper --ref main
+gh run list --repo joswayski/caper --workflow native.yml --limit 5
+# Select the successful run for the intended commit, then substitute its ID:
+gh run download RUN_ID --repo joswayski/caper \
+  --pattern 'caper-development-*' --dir caper-development
+```
+
+Downloads need GitHub repository access and expire after 14 days. Each target has
+its own directory and `SHA256SUMS`; run `sha256sum --check SHA256SUMS` on Linux or
+`shasum -a 256 --check SHA256SUMS` on macOS **inside that directory**. On Windows,
+compare `(Get-FileHash .\Caper-windows-x64.zip -Algorithm SHA256).Hash` with the
+checksum file. `BUILD.json` records the tested checkout revision, which for a PR
+is generally its merge commit. Checksums detect changed bytes, not publisher
+identity. These artifacts are not a signed release or proof of voice support.
+
+**Signing and stores are separate from compiling:** PR CI receives no developer
+certificates and does not publish releases or submit to stores.
+
+- **macOS:** Apple Developer Program membership supports Developer ID
+  distribution outside the Mac App Store. The Account Holder must provision a
+  Developer ID Application certificate/private key. A distributable app needs
+  hardened-runtime signing, notarization with `notarytool`, and ticket stapling.
+  Development/ad-hoc signing does not substitute for Developer ID notarization.
+  See [Apple's distribution guidance](https://developer.apple.com/developer-id/).
+- **iPhone:** register the final bundle ID and App Store Connect app, then use
+  the correct development/ad-hoc provisioning profile for registered devices,
+  or an App Store distribution archive for TestFlight. An unsigned simulator
+  `.app` cannot run on a phone, even with a paid developer membership. TestFlight
+  also has review/distribution requirements; no automatic approval is promised.
+  See [Apple's preparation guide](https://developer.apple.com/documentation/xcode/preparing_your_app_for_distribution).
+- **Windows:** unsigned portable executables can be distributed, but SmartScreen,
+  Smart App Control, and organization policy may warn or block execution. There
+  is no guaranteed per-app override. Trusted code signing may use a certificate
+  authority or a signing service; a monthly service is not the only option.
+  See [Microsoft's Smart App Control guidance](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview).
+- **Android:** a debug-signed APK is only a development download. Fresh CI runners
+  generate different debug keys, so replacing a prior CI build may require
+  uninstalling it and losing local state. A stable, protected release keystore
+  and Play App Signing/upload-key setup are needed before a supported upgrade or
+  store channel. Do not commit keys or reuse a public debug key for a release.
+- **Linux:** the `.deb` and archive target the documented native library baseline.
+  Test installation on a clean supported distribution; a CI build does not prove
+  all distributions, Wayland compositors, audio servers, or credential vaults work.
+
+Before creating a signed release pipeline, keep credentials in a protected GitHub
+environment with required reviewers, limit signing to reviewed commits, and
+import certificates into temporary build keychains. Never provide signing secrets
+to pull-request code or send certificates/private keys in a thread. Publishing,
+store submission, and changing repository environments require operator approval.
+
+**Locked-screen calling remains a required acceptance gate.** An iOS background
+audio declaration or an Android foreground-service permission alone does not
+implement a call. A native media engine must own real capture/playback independently
+of a view, authenticate Caper's SFU signaling, renew call/TURN leases, and release
+the microphone immediately on hangup. iOS must configure an appropriate audio
+session and handle interruption/route changes. Android must start a microphone
+foreground service while the app is eligible and permission is granted, display
+its ongoing notification, and handle focus/routing/service teardown. Neither a
+simulator nor browser device emulation proves those behaviors on physical phones.
+
+Record each OS/version/device, exact commit, network/forced-TURN conditions, call
+duration, lock/background behavior, battery/resource observations, mute/deafen,
+Bluetooth/wired route changes, interruptions and recovery before closing this gate.
+Incoming direct-call notifications/ringing are not present in Caper's backend and
+are not implied by comparing ongoing channel calls with Discord.
+
+### Account diagnostics visibility
 
 `DEBUG_USERS` is an optional, server-only comma-separated username allowlist for
 client diagnostics. Entries are trimmed and compared as exact, case-insensitive

@@ -8,6 +8,7 @@ node_modules
 **/dist
 target
 apps/web
+apps/native
 docs
 .env
 .env.*

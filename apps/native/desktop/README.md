@@ -1,0 +1,194 @@
+# Caper Desktop for Windows and Linux
+
+Browser-free native Caper client built with Rust, eframe/egui, wgpu and winit.
+It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
+
+## Available now
+
+- Passwordless email request/verification and first-account profile onboarding.
+- Bearer sessions stored in Windows Credential Manager or the Linux Secret
+  Service. If the vault is unavailable, the session remains in memory only and
+  the UI warns that sign-in will not survive restart. There is no plaintext
+  credential fallback. Vault entries are isolated by canonical API origin, so a
+  production credential is never restored for a staging/custom HTTPS origin.
+- Logout revokes the server session and removes the OS credential.
+- Account space/channel navigation, including accessible private channels.
+- Bounded read-only hover prefetch, retained conversation cursors and last-channel
+  restoration. Navigation rechecks access; mutations and revocation discard
+  cached data and fence in-flight completions.
+- HTTP message history and idempotent writes. A timeout or lost response retains
+  the same client message UUID and original text for retry; a definitive
+  validation rejection unlocks editing and the next send gets a new UUID. A
+  matching gateway delivery confirms the pending write even if HTTP finishes
+  late or fails.
+- Unified `/api/chat/events` gateway subscriptions with ordered replay,
+  deduplication, gap resync, heartbeat handling, reconnect status, and stale
+  result isolation across logout/channel changes.
+- Guest General, account spaces, private-channel grants, pagination, typing,
+  paginated member presence, owner space/channel/member management, and confirmed
+  non-owner leave-space with immediate call teardown and conversation clearing.
+- Experimental native voice: raw Google libwebrtc with platform audio devices,
+  Caper SFU offer/answer publication and subscription, voice roster, lease
+  snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
+  active call running; explicit replacement, logout and access denial silence
+  locally. Mute/deafen and input/output selection use native ADM.
+- Prejoin device discovery, saved device/output-volume preferences, per-person
+  local mute and 0–200% software playback gain, and aggregate connection
+  statistics. Participant mute survives microphone-track replacement and takes
+  effect locally even while signaling is waiting for HTTP.
+- Persisted 0–200% input gain and voice-contour strength, with on-device DPDFNet-8
+  HR denoising and RNNoise fallback. Account-enabled audio diagnostics show only
+  local numeric processing counters; ordinary connection details remain public.
+- Native playback of the web client's bundled interaction sounds; no network
+  audio fetch and no sounds in static fixtures.
+- Explicit local microphone recording (30 seconds maximum), natural/enhanced
+  comparison playback, and cancellation on dismissal/leave. Samples stay in
+  memory, never go to the API, and are discarded when the test ends. During a
+  test, live microphone publication is suspended; newer mute intent is retained.
+
+The account bearer is sent only in the HTTP/WebSocket `Authorization` header.
+The short-lived chat capability is separate, held only in memory, and sent only
+in `x-caper-chat-token` for message writes. Neither appears in URLs or logs.
+HTTP redirects are disabled, so credentials cannot be forwarded to another
+origin.
+
+## Build dependencies
+
+The workspace pins Rust **1.94.0** and eframe **0.33.3** in its independent
+`Cargo.lock`. Builds default to `CARGO_BUILD_JOBS=2` for 4 GB runners.
+
+Ubuntu 24.04 CI/build host:
+
+```sh
+# clang-21/lld-21 are not in the stock Noble repositories. Configure the
+# signed apt.llvm.org llvm-toolchain-noble-21 repository first.
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libwayland-dev \
+  libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
+  libdbus-1-dev dbus-x11 libglib2.0-dev libasound2-dev clang-21 lld-21
+rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+./apps/native/desktop/build.sh
+```
+
+Windows Server 2025 / Windows 11 build host:
+
+1. Install Visual Studio 2022 or newer Build Tools with **Desktop development with C++**
+   and a Windows 10/11 SDK.
+2. Install rustup and the stable `1.94.0-x86_64-pc-windows-msvc` toolchain.
+3. Open the x64 Visual Studio developer environment, then run
+   `powershell -ExecutionPolicy Bypass -File apps/native/desktop/build.ps1`.
+   Packaging uses its `VCToolsRedistDir` to locate the signed app-local runtime.
+
+Outputs are unsigned:
+
+- `dist/Caper-linux-x64.tar.gz`
+- `dist/Caper-linux-x64.deb`
+- `dist/Caper-windows-x64.zip`
+
+The `.deb` is built against Ubuntu 24.04 (glibc 2.39) and declares native
+X11/Wayland, D-Bus, PulseAudio/ALSA and Vulkan-or-GL runtime dependencies. It is not a static or
+distribution-independent Linux binary. Linux session persistence also requires
+an unlocked Secret Service provider such as GNOME Keyring.
+
+Run the unpacked binary directly, or install the Debian package with
+`sudo apt install ./Caper-linux-x64.deb`. The production endpoint is
+`https://caper.chat`; development may use `--api-url http://localhost:PORT` or
+`CAPER_API_URL`. Plain HTTP is rejected for non-loopback hosts.
+
+## Calling and known parity gaps
+
+Voice is **experimental**, not live/physical-device accepted. Source and local
+tests exercise signaling, cancellation and native ICE gathering; they do not
+prove two-client SFU/TURN or actual mic/speaker quality. Playback gain uses a
+narrow bridge to WebRTC's software track volume, not system volume. Independent
+device enumeration does not start capture or alter an active call's ADM. A
+missing saved device fails explicitly rather than silently opening another mic.
+Explicit/default input and output selection applies synchronously to the local
+call, including while signaling is pending. The Linux pinned Pulse ADM exposes
+one dynamic default pseudo-device in the orb, not two explicit monitor GUIDs:
+the two-null-sink regression verifies A→B by changing the private server's default
+and resetting the input, not by selecting two explicit GUIDs.
+
+Mute, route changes, comparison, and zero gain fence publication synchronously.
+Reopening live capture replaces the private ADM, peer pair, and decoder before
+accepting a new publication epoch, then resets denoiser/contour state. Local
+delayed-PCM tests cover that boundary; hardware-driver buffering still requires
+physical-device validation.
+
+Live input and local comparison use gain → bundled DPDFNet-8 HR (or RNNoise)
+→ voice contour. Natural replay is post-gain/post-denoise; enhanced replay adds
+the live contour. The model and native ONNX Runtime 1.23.2 are pinned to the web
+assets/runtime version. FFT/OLA and recurrent-state reference tests pass; the
+contour approximates the browser filters/compressor, not bit-for-bit Web Audio.
+Private null-device speech tests exercise actual capture and positive decoded
+local-peer PCM, replay, and stop. They do not establish physical quality or
+remote SFU reception. Pure sine capture was suppressed while speech succeeded;
+the suppression mechanism is not established.
+
+Linux packages carry the checked native runtime and licenses. Windows also
+stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
+from the active Visual Studio toolchain and are not immutable hash-pinned. Windows
+package execution remains an exact-head CI/platform acceptance requirement.
+No camera, screen sharing, native notifications, installers, signing or updates.
+IME/accessibility and sustained multi-network voice need separate acceptance.
+The `.deb` and archives are unsigned release artifacts, not installers.
+
+An earlier opt-in, ignored live smoke used two locally muted/deafened NativeSessions
+with a private PulseAudio null sink/monitor. On 2026-09-24 both published and
+reached connected transports, but the combined snapshot/reconcile step returned HTTP 502 on
+one run and later `unauthorized` on another; two-way subscription/RTP was not
+verified. This is not evidence of physical capture or listening. Do not run the
+public smoke without isolated virtual devices and explicit authorization.
+
+A separate **local-only** connected-peer test found that ADM disabled plus a
+disabled device track emitted 0 RTP bytes; enabling ADM without the track also
+emitted 0, while a virtual null-source input and synthetic zero-PCM track each
+emitted RTP. Production starts with synthetic silence, sends the pending local
+SDP immediately after setting the offer (like the web client), and only opens
+the selected device after the current gateway and roster are ready. Cancel
+closes the local peer and disables ADM before remote leave finishes.
+
+The owned-session-only live smoke was rerun on 2026-09-24 at 04:39:57–04:40:12
+UTC with private virtual devices. Both peers connected and subscribed, but
+the ten-second receive check failed: A sent/received **451/0 bytes**, B
+**1396/0 bytes**. No unrelated roster was observed. This test fed a silent null
+source, not speech, and checked aggregate RTP bytes rather than decoded audio.
+It is an unresolved silent-transport observation, not proof that normal speech
+cannot be received. Silence handling versus a relay/receive fault was not
+distinguished. The failed process closed local peers;
+remote leave completion was not independently confirmed (server leases expire).
+The ignored test now awaits remote leave before asserting its RTP result and
+reports safe direction/track counts. It has not been rerun with that diagnostic.
+
+A physical microphone is not required for meaningful automated audio tests.
+The private null-device regression injects locally generated speech into the
+virtual microphone, requires nonzero captured and denoised PCM, and checks that
+a second local peer decodes it. A remote acceptance test must likewise establish
+nonzero input/publication and decoded reception instead of relying on silence
+or transport connectivity alone. Local success does not prove SFU forwarding.
+
+A non-ignored, local-only native test receives actual RTP after adding a
+subscription to an existing transport and after ICE renewal. It caught a separate
+binding-default bug that changed receive transceivers to inactive during renewal;
+restart offers now retain existing receive directions without adding an unused
+receiver to a publish-only session. This does **not** diagnose or resolve the
+silent live-test observation above. Further public tests require explicit
+authorization and the same isolation controls.
+
+## Validation
+
+```sh
+cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -- --check
+CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)" CARGO_BUILD_JOBS=2 cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked
+CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$PWD/apps/native/desktop/target/libwebrtc/linux-x64-release" CARGO_BUILD_JOBS=2 cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked --all-targets --no-deps -- -D warnings
+```
+
+For deterministic visual inspection without live accounts, launch
+`caper-desktop --fixture login` or `--fixture parity-channel`. These are
+explicitly labeled static previews; the chat fixture at loopback port 3001
+does not provide live SFU media. Use normal `--api-url` for networked chat tests.
+`parity-voice-joining` and `parity-voice-connected` preview Cancel/Leave and the
+audio bar without starting a media transport.
+
+After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
+vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

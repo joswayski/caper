@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Adapted from Captures. Caper uses browser capture, so native recording/codec
-# packages from Captures are not needed. No Cloudflare credentials are seeded.
+# Browser/API and native desktop build prerequisites. No Cloudflare credentials
+# or audio devices are seeded; physical voice acceptance remains separate.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
@@ -13,11 +13,34 @@ step() {
 }
 
 step "checking Linux build dependencies"
+if ! command -v clang-21 >/dev/null 2>&1 || ! command -v ld.lld-21 >/dev/null 2>&1; then
+  # The pinned WebRTC archive's Chromium libc++ headers need Clang 21.
+  # Restrict this signing key to LLVM's versioned Debian 12 repository.
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 3 \
+    https://apt.llvm.org/llvm-snapshot.gpg.key \
+    | sudo tee /usr/share/keyrings/caper-llvm.asc >/dev/null
+  printf '%s\n' 'deb [signed-by=/usr/share/keyrings/caper-llvm.asc] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main' \
+    | sudo tee /etc/apt/sources.list.d/caper-llvm.list >/dev/null
+fi
 packages=(
   build-essential
+  clang-21
   curl
   file
+  libasound2
+  libasound2-dev
+  libdbus-1-dev
+  libegl1-mesa-dev
+  libglib2.0-dev
+  libpulse0
   libssl-dev
+  libwayland-dev
+  libx11-dev
+  libxcursor-dev
+  libxi-dev
+  libxkbcommon-dev
+  libxrandr-dev
+  lld-21
   pkg-config
   postgresql
 )

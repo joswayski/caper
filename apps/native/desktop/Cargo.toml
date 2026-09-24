@@ -1,0 +1,67 @@
+[package]
+name = "caper-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "Apache-2.0"
+description = "Native Caper desktop client"
+
+[workspace]
+members = ["voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/livekit/rust-sdks"
+
+[workspace.dependencies]
+webrtc-sys = { path = "voice-spike/vendor/webrtc-sys", version = "0.3.46" }
+webrtc-sys-build = { path = "voice-spike/vendor/webrtc-sys/build", version = "0.3.19" }
+anyhow = "1.0"
+cc = "1.0"
+env_logger = "0.11"
+lazy_static = "1.4"
+log = "0.4"
+parking_lot = "0.12"
+serde = "1"
+serde_json = "1.0"
+thiserror = "2"
+tokio = { version = "1", default-features = false }
+tokio-stream = "0.1"
+
+[dependencies]
+eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence"] }
+egui_extras = { version = "0.33.3", default-features = false, features = ["svg"] }
+keyring = { version = "3.6.3", default-features = false }
+libwebrtc = { path = "voice-spike/vendor/libwebrtc" }
+nnnoiseless = "=0.5.2"
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rodio = { version = "=0.21.1", default-features = false, features = ["playback", "wav"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.47", features = ["rt-multi-thread", "time", "sync"] }
+tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+url = "2.5"
+uuid = { version = "1.18", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "dx12"] }
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = "debuginfo"
+lto = "thin"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
