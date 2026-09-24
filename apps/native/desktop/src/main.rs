@@ -64,6 +64,7 @@ struct PendingSend {
     id: String,
     text: String,
     sending: bool,
+    rejection: Option<String>,
 }
 
 impl PendingSend {
@@ -73,11 +74,13 @@ impl PendingSend {
                 id: uuid::Uuid::new_v4().to_string(),
                 text: draft.into(),
                 sending: true,
+                rejection: None,
             },
             |pending| Self {
                 id: pending.id.clone(),
                 text: pending.text.clone(),
                 sending: true,
+                rejection: None,
             },
         )
     }
@@ -269,6 +272,19 @@ impl CaperApp {
                     app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
+                } else if name == "parity-rejected" {
+                    let mut pending = PendingSend::prepare(
+                        None,
+                        "This fixture message was rejected. Edit or dismiss it without losing your next draft.",
+                    );
+                    pending.sending = false;
+                    pending.rejection =
+                        Some("Message could not be accepted (test fixture).".into());
+                    app.pending = Some(pending);
+                } else if name == "parity-profile" {
+                    app.username = "fixture_owner".into();
+                    app.display_name = "Fixture Owner".into();
+                    app.dialog = Some(Dialog::Profile);
                 } else if name == "parity-member" {
                     app.account.as_mut().unwrap().id = "fixture-maya".into();
                     app.account.as_mut().unwrap().display_name = Some("Maya".into());
@@ -1031,7 +1047,6 @@ impl CaperApp {
                         .is_some_and(|session| pending.confirmed_by(&message, &session.author.id))
                 }) {
                     self.pending = None;
-                    self.draft.clear();
                     self.error = None;
                 }
                 let remote = self
@@ -1138,7 +1153,6 @@ impl CaperApp {
                     });
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
                     self.pending = None;
-                    self.draft.clear();
                 } else {
                     if let Some(pending) = &mut self.pending {
                         pending.sending = false;
@@ -1149,11 +1163,11 @@ impl CaperApp {
             Err(error) if matches!(error.status, Some(401 | 403)) => self
                 .clear_channel("Your messaging session expired. Select the channel to reconnect."),
             Err(error) if permanent_send_rejection(error.status) => {
-                self.pending = None;
-                self.error = Some(format!(
-                    "{} Edit the message before sending again.",
-                    error.message
-                ));
+                if let Some(pending) = &mut self.pending {
+                    pending.sending = false;
+                    pending.rejection = Some(error.message);
+                }
+                self.error = None;
             }
             Err(error) => {
                 if let Some(pending) = &mut self.pending {
@@ -1178,6 +1192,18 @@ impl CaperApp {
             self.reload_selected_channel(channel, general);
             self.pending = pending;
             self.draft = draft;
+        }
+    }
+
+    fn discard_rejected(&mut self) -> Option<String> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| !pending.sending && pending.rejection.is_some())
+        {
+            self.pending.take().map(|pending| pending.text)
+        } else {
+            None
         }
     }
 
@@ -1263,7 +1289,11 @@ impl CaperApp {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
-        if self.pending.as_ref().is_some_and(|pending| pending.sending) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.sending || pending.rejection.is_some())
+        {
             return;
         }
         let text = self
@@ -1291,6 +1321,9 @@ impl CaperApp {
         }
         let pending = PendingSend::prepare(self.pending.as_ref(), &text);
         let id = pending.id.clone();
+        if self.pending.is_none() && self.draft == text {
+            self.draft.clear();
+        }
         self.pending = Some(pending);
         self.error = None;
         self.set_typing(false);
@@ -1472,6 +1505,22 @@ impl CaperApp {
             context.request_repaint_after(Duration::from_millis(100));
         }
     }
+
+    fn restore_preferences(&mut self, storage: &dyn eframe::Storage) {
+        if !self.persist_preferences {
+            return;
+        }
+        if let Some(json) = storage.get_string("audio-preferences-v1") {
+            self.voice.preferences = voice::Preferences::restore(&json);
+        }
+        if let Some(width) = storage
+            .get_string("sidebar-width-v1")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|width| (220.0..=440.0).contains(width))
+        {
+            self.sidebar_width = width;
+        }
+    }
 }
 
 impl eframe::App for CaperApp {
@@ -1480,6 +1529,9 @@ impl eframe::App for CaperApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.persist_preferences {
+            storage.set_string("sidebar-width-v1", self.sidebar_width.to_string());
+        }
         if self.persist_preferences
             && let Ok(json) = serde_json::to_string(&self.voice.preferences)
         {
@@ -1766,14 +1818,65 @@ impl CaperApp {
                     ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
                         self.sidebar(ui, sidebar_width)
                     });
-                    let separator = ui.interact(
-                        separator_rect,
-                        ui.id().with("sidebar-resize"),
-                        egui::Sense::drag(),
-                    );
+                    let separator = ui
+                        .interact(
+                            separator_rect.expand2(egui::vec2(3.0, 0.0)),
+                            egui::Id::new("sidebar-resize"),
+                            egui::Sense::click_and_drag(),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                        .on_hover_text(
+                            "Drag to resize. Arrow keys to adjust. Double-click to reset.",
+                        );
+                    separator.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Slider,
+                            true,
+                            "Channel sidebar width",
+                        )
+                    });
                     if separator.dragged() {
-                        self.sidebar_width =
-                            (self.sidebar_width + separator.drag_delta().x).clamp(220.0, 440.0);
+                        self.sidebar_width = (sidebar_width + separator.drag_delta().x)
+                            .clamp(220.0, (content.width() - 380.0).clamp(220.0, 440.0));
+                    }
+                    if separator.double_clicked() {
+                        self.sidebar_width = 280.0;
+                    }
+                    if separator.clicked() {
+                        separator.request_focus();
+                    }
+                    if separator.has_focus() {
+                        ui.memory_mut(|memory| {
+                            memory.set_focus_lock_filter(
+                                separator.id,
+                                egui::EventFilter {
+                                    horizontal_arrows: true,
+                                    ..Default::default()
+                                },
+                            )
+                        });
+                        ui.input_mut(|input| {
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+                                self.sidebar_width = sidebar_width - 10.0;
+                            }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+                                self.sidebar_width = sidebar_width + 10.0;
+                            }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::Home) {
+                                self.sidebar_width = 220.0;
+                            }
+                            if input.consume_key(egui::Modifiers::NONE, egui::Key::End) {
+                                self.sidebar_width = 440.0;
+                            }
+                        });
+                        self.sidebar_width = self
+                            .sidebar_width
+                            .clamp(220.0, (content.width() - 380.0).clamp(220.0, 440.0));
+                        ui.painter().vline(
+                            separator_rect.center().x,
+                            separator_rect.y_range(),
+                            Stroke::new(2.0, TERRACOTTA),
+                        );
                     }
                     ui.scope_builder(egui::UiBuilder::new().max_rect(conversation_rect), |ui| {
                         self.conversation(ui, false)
@@ -3176,13 +3279,27 @@ impl CaperApp {
                     for message in messages {
                         self.message(ui, &message);
                     }
-                    if let Some(pending) = &self.pending {
+                    if let Some(pending) = self.pending.clone() {
                         let author = self.session.as_ref().map_or_else(
                             || self.identity_name(),
                             |session| session.author.name.clone(),
                         );
                         message_row(ui, &author, "Now", &pending.text, false, true);
-                        if !pending.sending {
+                        if let Some(rejection) = &pending.rejection {
+                            egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
+                                ui.colored_label(ERROR, format!("Not sent. {rejection}"));
+                                ui.horizontal(|ui| {
+                                    let button = |label| egui::Button::new(RichText::new(label).size(12.0)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).min_size(egui::vec2(60.0, 32.0));
+                                    if ui.add_enabled(self.draft.is_empty(), button("Edit"))
+                                        .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
+                                        && let Some(text) = self.discard_rejected() {
+                                        self.draft = text;
+                                        ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
+                                    }
+                                    if ui.add(button("Dismiss")).clicked() { self.discard_rejected(); }
+                                });
+                            });
+                        } else if !pending.sending {
                             ui.horizontal(|ui| {
                                 ui.colored_label(ERROR, "Not confirmed yet.");
                                 if ui.button("Retry send").clicked() {
@@ -3428,12 +3545,27 @@ impl CaperApp {
         ui.label("Username");
         ui.add_sized(
             [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.username).vertical_align(egui::Align::Center),
+            egui::TextEdit::singleline(&mut self.username)
+                .vertical_align(egui::Align::Center)
+                .char_limit(32),
+        );
+        self.username = normalize_username(&self.username);
+        ui.label(
+            RichText::new("3–32 lowercase letters, numbers, or underscores.")
+                .small()
+                .color(MUTED),
         );
         ui.label("Display name");
         ui.add_sized(
             [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.display_name).vertical_align(egui::Align::Center),
+            egui::TextEdit::singleline(&mut self.display_name)
+                .vertical_align(egui::Align::Center)
+                .char_limit(64),
+        );
+        ui.label(
+            RichText::new("Shown to other people. It does not need to be unique.")
+                .small()
+                .color(MUTED),
         );
         if primary(
             ui,
@@ -3442,7 +3574,7 @@ impl CaperApp {
             } else {
                 "Save profile"
             },
-            self.loading,
+            self.loading || self.username.len() < 3 || self.display_name.trim().is_empty(),
         )
         .clicked()
         {
@@ -3681,9 +3813,13 @@ impl CaperApp {
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&member.display_name).strong());
                             ui.label(
-                                RichText::new(format!("@{}", member.username))
-                                    .size(10.0)
-                                    .color(MUTED),
+                                RichText::new(format!(
+                                    "@{}{}",
+                                    member.username,
+                                    if member.owner { " · Owner" } else { "" }
+                                ))
+                                .size(10.0)
+                                .color(MUTED),
                             );
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4054,6 +4190,15 @@ fn presence_avatar(ui: &mut egui::Ui, name: &str, size: f32, status: &str) {
     );
 }
 
+fn normalize_username(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+        .take(32)
+        .collect()
+}
+
 fn normalize_channel(value: &str) -> String {
     let mut output = String::new();
     for character in value.to_lowercase().chars() {
@@ -4298,12 +4443,8 @@ fn main() -> eframe::Result {
         },
         Box::new(move |creation| {
             let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
-            if app.persist_preferences
-                && let Some(json) = creation
-                    .storage
-                    .and_then(|storage| storage.get_string("audio-preferences-v1"))
-            {
-                app.voice.preferences = voice::Preferences::restore(&json);
+            if let Some(storage) = creation.storage {
+                app.restore_preferences(storage);
             }
             Ok(Box::new(app))
         }),
@@ -4810,6 +4951,209 @@ mod tests {
         assert!(permanent_send_rejection(Some(422)));
         assert!(!permanent_send_rejection(None));
         assert!(!permanent_send_rejection(Some(503)));
+    }
+
+    fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.pos + egui::vec2(4.0, 4.0))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing {label}"))
+    }
+
+    #[test]
+    fn rejected_message_requires_explicit_edit_or_dismiss_and_protects_new_draft() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        app.draft = "rejected original".into();
+        app.send_message();
+        assert!(app.draft.is_empty());
+        let original_id = app.pending.as_ref().unwrap().id.clone();
+        app.sent(Err(crate::worker::SendFailure {
+            status: Some(422),
+            message: "Rejected fixture".into(),
+        }));
+        app.draft = "next unsent draft".into();
+        app.send_message();
+        assert_eq!(app.pending.as_ref().unwrap().id, original_id);
+        assert!(
+            !app.pending.as_ref().unwrap().sending,
+            "rejected IDs cannot be retried"
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Edit"));
+        assert_eq!(
+            app.draft, "next unsent draft",
+            "Edit must not overwrite new text"
+        );
+        assert!(app.pending.is_some());
+        click(&mut app, &context, text_position(&output, "Dismiss"));
+        assert!(app.pending.is_none());
+        assert_eq!(app.draft, "next unsent draft");
+
+        app.draft = "rejected original".into();
+        app.send_message();
+        let second_id = app.pending.as_ref().unwrap().id.clone();
+        app.sent(Err(crate::worker::SendFailure {
+            status: Some(400),
+            message: "Rejected again".into(),
+        }));
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Edit"));
+        assert_eq!(app.draft, "rejected original");
+        assert!(app.pending.is_none());
+        assert!(context.memory(|memory| memory.has_focus(egui::Id::new("message-composer"))));
+        app.send_message();
+        assert_ne!(app.pending.as_ref().unwrap().id, second_id);
+    }
+
+    #[test]
+    fn both_confirmation_paths_preserve_the_next_draft() {
+        for via_gateway in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            app.session = Some(session());
+            app.draft = "sent original".into();
+            app.send_message();
+            assert!(app.draft.is_empty());
+            app.draft = "different new draft".into();
+            let mut message = app.timeline.messages().last().unwrap().clone();
+            message.seq = (message.seq.parse::<u64>().unwrap() + 1).to_string();
+            message.id = "confirmation".into();
+            message.client_message_id = app.pending.as_ref().unwrap().id.clone();
+            message.content.text = "sent original".into();
+            message.author = app.session.as_ref().unwrap().author.clone();
+            if via_gateway {
+                app.gateway(crate::gateway::GatewayEvent::Message {
+                    generation: app.generation,
+                    channel: message.channel_id.clone(),
+                    message: Box::new(message),
+                });
+            } else {
+                app.sent(Ok(message));
+            }
+            assert!(app.pending.is_none());
+            assert_eq!(app.draft, "different new draft");
+        }
+    }
+
+    #[test]
+    fn profile_normalizes_username_and_blocks_incomplete_submission() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-profile"),
+        );
+        app.username = "A. B_1@".into();
+        render(&mut app, &context, vec![]);
+        assert_eq!(app.username, "ab_1");
+        for (username, name) in [("ab", "Valid name"), ("abc", "   ")] {
+            app.username = username.into();
+            app.display_name = name.into();
+            let output = render(&mut app, &context, vec![]);
+            click(&mut app, &context, text_position(&output, "Save profile"));
+            assert!(!app.loading, "incomplete profile must not be submitted");
+        }
+        assert_eq!(
+            super::normalize_username(&"Z_2".repeat(12)),
+            "z_2z_2z_2z_2z_2z_2z_2z_2z_2z_2z_"
+        );
+        app.username = "abc".into();
+        app.display_name = "Valid name".into();
+        let output = render(&mut app, &context, vec![]);
+        click(&mut app, &context, text_position(&output, "Save profile"));
+        assert!(app.loading);
+    }
+
+    #[test]
+    fn sidebar_keyboard_and_persistence_preserve_width_without_fixture_leaks() {
+        #[derive(Default)]
+        struct Storage(std::collections::BTreeMap<String, String>);
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.0.insert(key.into(), value);
+            }
+            fn flush(&mut self) {}
+        }
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        render(&mut app, &context, vec![]);
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("sidebar-resize")));
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        for (key, width) in [
+            (egui::Key::ArrowRight, 290.0),
+            (egui::Key::End, 440.0),
+            (egui::Key::ArrowRight, 440.0),
+            (egui::Key::Home, 220.0),
+            (egui::Key::ArrowLeft, 220.0),
+        ] {
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            assert_eq!(app.sidebar_width, width);
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        let mut storage = Storage::default();
+        eframe::App::save(&mut app, &mut storage);
+        assert!(
+            storage.0.is_empty(),
+            "fixtures must not overwrite real preferences"
+        );
+        app.persist_preferences = true;
+        app.sidebar_width = 337.0;
+        eframe::App::save(&mut app, &mut storage);
+        app.sidebar_width = 280.0;
+        app.restore_preferences(&storage);
+        assert_eq!(app.sidebar_width, 337.0);
+        for invalid in ["NaN", "inf", "219", "441"] {
+            app.sidebar_width = 280.0;
+            storage.0.insert("sidebar-width-v1".into(), invalid.into());
+            app.restore_preferences(&storage);
+            assert_eq!(app.sidebar_width, 280.0);
+        }
     }
 
     #[test]
