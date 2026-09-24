@@ -165,6 +165,18 @@ final class ProtocolTests: XCTestCase {
         )
     }
 
+    func testProfileValidationMatchesServerScalarAndASCIIBoundaries() {
+        XCTAssertNil(ProfileValidation.error(username: " Jo_ ", displayName: String(repeating: "🪐", count: 64)))
+        XCTAssertNil(ProfileValidation.error(username: String(repeating: "a", count: 32), displayName: " Name "))
+        XCTAssertNotNil(ProfileValidation.error(username: "ab", displayName: "Name"))
+        XCTAssertNotNil(ProfileValidation.error(username: String(repeating: "a", count: 33), displayName: "Name"))
+        XCTAssertNotNil(ProfileValidation.error(username: "Kelvin", displayName: "Name"), "Only ASCII letters are normalized by the server")
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: String(repeating: "🪐", count: 65)))
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: String(repeating: "e\u{301}", count: 33)))
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: " \n "))
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: "Name\u{0007}"))
+    }
+
     func testMessageValidationCountsCharactersAndRejectsControls() {
         XCTAssertNil(MessageValidation.error(for: String(repeating: "🪐", count: 4_000)))
         XCTAssertEqual(MessageValidation.error(for: String(repeating: "🪐", count: 4_001)), "Messages can be at most 4,000 characters.")

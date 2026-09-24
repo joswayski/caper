@@ -144,6 +144,21 @@ public enum Sequence: Error, Equatable {
     }
 }
 
+public enum ProfileValidation {
+    public static func error(username: String, displayName: String) -> String? {
+        let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !(3...32).contains(username.utf8.count) || !username.utf8.allSatisfy({
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+        }) { return "Username must be 3–32 letters, numbers, or underscores." }
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !(1...64).contains(name.unicodeScalars.count)
+            || name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
+            return "Display name must be 1–64 characters without control characters."
+        }
+        return nil
+    }
+}
+
 public enum MessageValidation {
     public static func error(for text: String) -> String? {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Write a message first." }

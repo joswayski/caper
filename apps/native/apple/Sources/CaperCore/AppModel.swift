@@ -100,6 +100,11 @@ public final class AppModel {
     }
 
     public func saveProfile(username: String, displayName: String) async {
+        guard !busy else { return }
+        if let validation = ProfileValidation.error(username: username, displayName: displayName) {
+            error = validation
+            return
+        }
         generation += 1
         clearNavigationCache()
         let attempt = generation

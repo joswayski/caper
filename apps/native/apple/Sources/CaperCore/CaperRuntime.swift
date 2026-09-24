@@ -27,10 +27,15 @@ import Foundation
             return AppModel()
         }
         let store = FixtureTokenStore(token: environment["CAPER_TEST_BEARER"])
-        return AppModel(
+        let model = AppModel(
             api: APIClient(baseURL: baseURL, tokenStore: store),
             preferredInitialSpaceID: environment["CAPER_TEST_SPACE_ID"]
         )
+        if environment["CAPER_UI_FIXTURE"] == "profile-validation" {
+            model.phase = .onboarding
+            model.error = "TEST FIXTURE — username already taken. Choose another username."
+        }
+        return model
     }
 }
 

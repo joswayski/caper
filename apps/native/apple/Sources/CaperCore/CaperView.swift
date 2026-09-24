@@ -905,8 +905,16 @@ private struct ProfileView: View {
         VStack(spacing: 22) {
             Wordmark(); Text("Finish your profile").font(CaperTheme.font(28, weight: .bold))
             CaperField(title: "Username", text: $username)
+            Text("3–32 letters, numbers, or underscores. Usernames are saved in lowercase.")
+                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             CaperField(title: "Display name", text: $displayName)
-            Button("Continue") { Task { await model.saveProfile(username: username, displayName: displayName) } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || username.isEmpty || displayName.isEmpty)
+            Text("Display name: 1–64 characters.")
+                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
+            Button(model.busy ? "Saving…" : "Continue") { Task { await model.saveProfile(username: username, displayName: displayName) } }
+                .buttonStyle(CaperPrimaryButton())
+                .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                .accessibilityIdentifier("profile-continue")
         }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
     }
 }

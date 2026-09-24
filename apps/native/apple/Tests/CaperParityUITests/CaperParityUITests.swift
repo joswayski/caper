@@ -375,6 +375,22 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-preferences", app: app)
     }
 
+    func testProfileValidationAndErrorRenderWithoutSubmitting() {
+        let app = launch(fixture: "profile-validation")
+        let username = app.textFields["Username"]
+        let displayName = app.textFields["Display name"]
+        let submit = app.buttons["profile-continue"]
+        XCTAssertTrue(username.waitForExistence(timeout: 5))
+        XCTAssertFalse(submit.isEnabled)
+        username.tap(); username.typeText("ab")
+        displayName.tap(); displayName.typeText("Fixture Name")
+        XCTAssertFalse(submit.isEnabled, "two-letter usernames cannot submit")
+        assertStaticText("TEST FIXTURE — username already taken. Choose another username.", in: app)
+        capture("profile-validation", app: app)
+        username.tap(); username.typeText("_user")
+        XCTAssertTrue(submit.isEnabled)
+    }
+
     func testRejectedMessageActionsRenderWithoutSending() {
         let app = launch(fixture: "chat-rejected")
         #if os(iOS)
