@@ -12,6 +12,8 @@
   --terracotta-bright: #db6849;
   --caper: #637a43;
   --radius: 6px;
+  /* Avatars are squircles: rounded squares that match the 8px control corners. */
+  --radius-avatar: 30%;
   font-family: "Satoshi", "Avenir Next", "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--blackout);

@@ -417,9 +417,8 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
                 return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={publicRoster || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                   <span className="participant-avatar">
                     <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
-                    <ParticipantCountry code={participant.countryCode} />
                   </span>
-                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><small aria-hidden={!participantStatus}>{participantStatus ?? "\u00a0"}</small></span>
+                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} /><small aria-hidden={!participantStatus}>{participantStatus ?? "\u00a0"}</small></span>
                   {!publicRoster && <VoiceActivity
                     stream={stream}
                     muted={activityMuted}
@@ -471,6 +470,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
       summary: <button className="voice-stack" type="button" aria-expanded={open} aria-controls="voice-occupants" aria-label={`${roster.length} in voice. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => { setRosterOpen(!open); setVolumeParticipant(undefined); }}>
         {roster.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${isSpeaking(participant) ? " speaking" : ""}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>)}
         <small aria-hidden="true">{roster.length}</small>
+        <ChevronDown aria-hidden="true" />
       </button>,
       list: <div className="voice-occupants" id="voice-occupants" data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{rosterList}</div>

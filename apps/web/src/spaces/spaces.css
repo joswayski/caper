@@ -93,7 +93,7 @@
 .member-presence-connecting { padding: 0 8px; color: var(--text-muted); font-size: .7rem; }
 .spaces-room .people-panel .space-member-presence ul { max-height: 232px; overflow-y: auto; margin: 8px 0; scrollbar-width: thin; }
 .space-member-presence li { display: flex; gap: 10px; min-height: 44px; padding: 4px 8px; }
-.member-presence-avatar { position: relative; display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 50%; background: var(--surface-raised); font-size: .75rem; }
+.member-presence-avatar { position: relative; display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: var(--radius-avatar); color: #fff; background: #354027; font-size: .75rem; }
 .space-member-presence li > span:last-child { display: grid; align-items: center; min-width: 0; }
 .space-member-presence strong { overflow: hidden; color: var(--text); font-size: .75rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .member-presence-pages { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text-muted); font-size: .65rem; }
@@ -166,7 +166,7 @@
 .member-add button { border-color: #805143; color: var(--terracotta-bright); }
 .member-manager ul { max-height: 238px; display: grid; gap: 2px; margin: 14px 0 0; padding: 0; overflow-y: auto; list-style: none; }
 .member-manager li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 9px; min-height: 44px; padding: 5px 3px; }
-.member-avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: #354027; font-size: .7rem; font-weight: 850; }
+.member-avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--radius-avatar); background: #354027; font-size: .7rem; font-weight: 850; }
 .member-manager li > span:nth-child(2) { min-width: 0; display: grid; }
 .member-manager li strong, .member-manager li small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .member-manager li strong { font-size: .76rem; }
