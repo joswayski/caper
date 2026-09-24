@@ -1,7 +1,57 @@
 import XCTest
+import AVFoundation
 @testable import CaperCore
 
 final class ProtocolTests: XCTestCase {
+    #if os(macOS)
+    @MainActor
+    func testTimedMicrophoneStopReplaysSavedFileWithoutRecorderCurrentTime() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("caper-mic-test-fixture-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1))
+        try { () throws in
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 22_050))
+            buffer.frameLength = 22_050
+            try file.write(from: buffer)
+        }()
+        // Closing the writer mirrors the recorder having already stopped itself at 30 seconds.
+        let test = MacMicrophoneTest(fileURL: url)
+        XCTAssertEqual(MacMicrophoneTest.recordedDuration(at: url), 0.5, accuracy: 0.01)
+        test.finishRecording()
+        XCTAssertTrue(test.hasRecording, "Automatic stop must keep a playable recording even when no recorder is active")
+        test.close()
+    }
+    #endif
+
+    func testVoiceStatisticsAggregatesAudioAndClassifiesOnlySelectedRoute() {
+        let stats: [String: VoiceStatistic] = [
+            "in": VoiceStatistic(type: "inbound-rtp", values: ["kind": "audio", "bytesReceived": 3_000, "packetsLost": 4, "jitter": 0.017]),
+            "out": VoiceStatistic(type: "outbound-rtp", values: ["kind": "audio", "bytesSent": 5_000]),
+            "video": VoiceStatistic(type: "inbound-rtp", values: ["kind": "video", "bytesReceived": 900_000, "packetsLost": 300]),
+            "transport": VoiceStatistic(type: "transport", values: ["selectedCandidatePairId": "selected"]),
+            "selected": VoiceStatistic(type: "candidate-pair", values: ["localCandidateId": "relay", "currentRoundTripTime": 0.042]),
+            "old": VoiceStatistic(type: "candidate-pair", values: ["localCandidateId": "direct", "currentRoundTripTime": 3]),
+            "relay": VoiceStatistic(type: "local-candidate", values: ["candidateType": "relay", "address": "192.0.2.1"]),
+            "direct": VoiceStatistic(type: "local-candidate", values: ["candidateType": "host"])
+        ]
+        let (_, first) = VoiceDiagnostics.read(stats, timestampUs: 1_000_000, previous: nil)
+        let (current, _) = VoiceDiagnostics.read(stats, timestampUs: 3_000_000,
+            previous: VoiceStatisticsSample(timestampUs: first.timestampUs, receivedBytes: 1_000, sentBytes: 4_000))
+        XCTAssertEqual(current.receivedBytes, 3_000)
+        XCTAssertEqual(current.sentBytes, 5_000)
+        XCTAssertEqual(current.receiveBitrate, 8_000)
+        XCTAssertEqual(current.sendBitrate, 4_000)
+        XCTAssertEqual(current.packetsLost, 4)
+        XCTAssertEqual(current.maxJitterMs, 17)
+        XCTAssertEqual(current.roundTripMs, 42)
+        XCTAssertEqual(current.route, "relay", "Only the selected pair determines the route")
+        let (reset, _) = VoiceDiagnostics.read(stats, timestampUs: 4_000_000,
+            previous: VoiceStatisticsSample(timestampUs: 3_000_000, receivedBytes: 5_000, sentBytes: 6_000))
+        XCTAssertNil(reset.receiveBitrate, "A counter reset is not a negative bitrate")
+        XCTAssertNil(reset.sendBitrate)
+    }
+
     func testSequenceComparisonDoesNotRoundThroughDouble() throws {
         XCTAssertEqual(try Sequence.compare("9007199254740993", "9007199254740992"), .orderedDescending)
         XCTAssertEqual(try Sequence.compare("184467440737095516160", "99999999999999999999"), .orderedDescending)
@@ -127,6 +177,12 @@ final class ProtocolTests: XCTestCase {
 
     @MainActor
     func testDeafenRestoresMuteIntentIncludingChangesWhileDeafened() async {
+        let key = "caper.voice.outputGain"
+        let original = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let original { UserDefaults.standard.set(original, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
         let voice = VoiceClient(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
         await voice.setMuted(false)
         await voice.setDeafened(true)
@@ -150,6 +206,11 @@ final class ProtocolTests: XCTestCase {
         voice.setParticipantGain(-10, participantID: "remote")
         voice.setParticipantMuted(true, participantID: "remote")
         XCTAssertEqual(voice.outputGain, 200)
+        XCTAssertEqual(VoiceClient(api: APIClient(baseURL: URL(string: "https://caper.invalid")!)).outputGain, 200,
+                       "A new call reads the saved output gain")
+        voice.setOutputGain(-4)
+        XCTAssertEqual(VoiceClient(api: APIClient(baseURL: URL(string: "https://caper.invalid")!)).outputGain, 0,
+                       "Saved gain stays within the supported 0–200 range")
         XCTAssertEqual(voice.participantGains["remote"], 0)
         XCTAssertTrue(voice.locallyMutedParticipants.contains("remote"))
     }

@@ -70,7 +70,8 @@ public final class VoiceClient {
     public var muted = false
     public var deafened = false
     public var participants: [VoiceParticipant] = []
-    public var outputGain = 100
+    public var outputGain = UserDefaults.standard.object(forKey: "caper.voice.outputGain") == nil
+        ? 100 : min(200, max(0, UserDefaults.standard.integer(forKey: "caper.voice.outputGain")))
     public var participantGains: [String: Int] = [:]
     public var locallyMutedParticipants: Set<String> = []
     public var error: String?
@@ -79,6 +80,7 @@ public final class VoiceClient {
     public var availableOutputs: [AudioDevice] = []
     public var selectedInputID: String?
     public var selectedOutputID: String?
+    public private(set) var diagnostics: VoiceDiagnostics?
     public internal(set) var context: VoiceContext?
 
     private let api: APIClient
@@ -104,6 +106,7 @@ public final class VoiceClient {
     private var joinName = "Guest"
     private var signalingOwner: Int?
     private var generation = 0
+    private var previousStatistics: VoiceStatisticsSample?
     private var delegate: PeerDelegate?
     private let factory: RTCPeerConnectionFactory
     private let gateway: Gateway
@@ -262,6 +265,7 @@ public final class VoiceClient {
 
     public func setOutputGain(_ value: Int) {
         outputGain = min(200, max(0, value))
+        UserDefaults.standard.set(outputGain, forKey: "caper.voice.outputGain")
         refreshLocalPlayback()
     }
 
@@ -442,6 +446,7 @@ public final class VoiceClient {
     }
 
     private func detachLocal(preservingContext: Bool = false) {
+        diagnostics = nil; previousStatistics = nil
         pollTask?.cancel(); pollTask = nil
         turnTask?.cancel(); turnTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
@@ -597,11 +602,24 @@ public final class VoiceClient {
         #else
         // The embedded WebRTC build follows the macOS system route and does
         // not expose a supported per-device switch API.
-        availableInputs = []
+        availableInputs = AVCaptureDevice.default(for: .audio).map { [AudioDevice(id: $0.uniqueID, name: $0.localizedName)] } ?? []
         availableOutputs = []
-        selectedInputID = nil
+        selectedInputID = availableInputs.first?.id
         selectedOutputID = nil
         #endif
+    }
+
+    public func refreshDiagnostics() async {
+        guard phase == .connected, let peer else { return }
+        let attempt = generation
+        let report: RTCStatisticsReport = await withCheckedContinuation { continuation in
+            peer.statistics { continuation.resume(returning: $0) }
+        }
+        guard generation == attempt, self.peer === peer, phase == .connected else { return }
+        let stats = report.statistics.mapValues { VoiceStatistic(type: $0.type, values: $0.values) }
+        let (current, sample) = VoiceDiagnostics.read(stats, timestampUs: report.timestamp_us, previous: previousStatistics)
+        diagnostics = current
+        previousStatistics = sample
     }
 
     private static func microphonePermission() async -> Bool {

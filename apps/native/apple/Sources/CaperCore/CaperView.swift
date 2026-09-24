@@ -935,6 +935,9 @@ private struct CaperPrimaryButton: ButtonStyle {
 
 private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
+    #if os(macOS)
+    @State private var micTest = MacMicrophoneTest()
+    #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Audio preferences").font(CaperTheme.font(20, weight: .bold))
@@ -958,16 +961,75 @@ private struct AudioPreferencesView: View {
             Text("Use the iPhone system picker to switch available routes during a call.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             #else
-            Text("Caper follows the input and output selected in macOS System Settings. The embedded WebRTC build does not expose safe per-device switching.")
+            Text("Input shows the current macOS default. Output and live WebRTC routing follow System Settings; this build cannot switch devices per call.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            Divider().overlay(CaperTheme.border)
+            Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
+            Text("Record up to 30 seconds, then listen back. This test runs only before joining voice; it never sends audio to a channel.")
+                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            HStack {
+                Button(micTest.recording ? "Stop testing" : "Mic Test") {
+                    if micTest.recording { micTest.stopRecording() }
+                    else { Task { await micTest.start() } }
+                }
+                .accessibilityIdentifier("local-mic-test")
+                .disabled(voice.phase != .idle && voice.phase != .failed && !micTest.recording)
+                if micTest.recording { ProgressView(value: Double(micTest.level)).frame(width: 130).accessibilityLabel("Microphone level") }
+            }
+            if micTest.hasRecording {
+                HStack {
+                    Button("Play natural") { micTest.play(enhanced: false) }
+                    Button("Play EQ comparison") { micTest.play(enhanced: true) }
+                    Button("Stop playback") { micTest.stopPlayback() }
+                }
+                HStack {
+                    Text("Comparison EQ").font(CaperTheme.font(12, weight: .bold))
+                    Slider(value: comparisonStrength, in: 0...100, step: 1)
+                        .accessibilityLabel("Comparison EQ strength")
+                    Text("\(micTest.strength)%")
+                }
+                Text("Comparison EQ adds a high-pass filter, warmth and presence to local playback only. It does not process your live microphone.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            }
+            if let error = micTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            if voice.phase == .connected {
+                Divider().overlay(CaperTheme.border)
+                Text("Connection statistics").font(CaperTheme.font(14, weight: .bold))
+                if let stats = voice.diagnostics {
+                    AudioRouteRow(title: "Receive / send", value: "\(stats.receiveBitrate.map { String($0) } ?? "—") / \(stats.sendBitrate.map { String($0) } ?? "—") bps")
+                    AudioRouteRow(title: "Packets lost / max jitter", value: "\(stats.packetsLost) / \(stats.maxJitterMs.map { String($0) } ?? "—") ms")
+                    AudioRouteRow(title: "RTT / route", value: "\(stats.roundTripMs.map { String($0) } ?? "—") ms / \(stats.route == "relay" ? "TURN relay" : stats.route == "direct" ? "Direct" : "Not observed yet")")
+                    Text("Local estimates; counters reset on reconnect. No addresses or device IDs are shown.")
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                } else {
+                    Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
+            }
             #endif
         }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
             .task { await voice.refreshAudioDevices() }
+            #if os(macOS)
+            .onChange(of: voice.phase) { _, phase in
+                if phase != .idle && phase != .failed { micTest.close() }
+            }
+            .onDisappear { micTest.close() }
+            .task(id: voice.phase) {
+                while !Task.isCancelled && voice.phase == .connected {
+                    await voice.refreshDiagnostics()
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                }
+            }
+            #endif
     }
 
     private var outputGain: Binding<Double> {
         Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)) })
     }
+    #if os(macOS)
+    private var comparisonStrength: Binding<Double> {
+        Binding(get: { Double(micTest.strength) }, set: { micTest.strength = Int($0) })
+    }
+    #endif
 }
 
 private struct AudioRouteRow: View {

@@ -228,7 +228,9 @@ final class CaperParityUITests: XCTestCase {
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
         #else
-        assertStaticText("Caper follows the input and output selected in macOS System Settings. The embedded WebRTC build does not expose safe per-device switching.", in: app, timeout: 2)
+        assertStaticText("Input shows the current macOS default. Output and live WebRTC routing follow System Settings; this build cannot switch devices per call.", in: app, timeout: 2)
+        XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
+        assertStaticText("Record up to 30 seconds, then listen back. This test runs only before joining voice; it never sends audio to a channel.", in: app, timeout: 2)
         #endif
         capture("audio-preferences", app: app)
     }
