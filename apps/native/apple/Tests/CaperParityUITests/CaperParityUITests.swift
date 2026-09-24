@@ -214,7 +214,10 @@ final class CaperParityUITests: XCTestCase {
 
     func testAccountCanSendExactlyOneMessageAndComposerClears() {
         let app = launch()
-        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
+        // The first cold Intel launch can still be opening its account space
+        // after 10 seconds. Keep the exact content assertion, but allow startup
+        // to finish before testing the separate send/delivery deadlines below.
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 30)
         let composer = app.descendants(matching: .any)["message-composer"]
         XCTAssertTrue(composer.exists)
         let message = "Native parity send \(UUID().uuidString)"
