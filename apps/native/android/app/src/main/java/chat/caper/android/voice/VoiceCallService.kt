@@ -98,9 +98,9 @@ class VoiceCallService : Service() {
             ACTION_MUTE -> scope.launch {
                 val (current, attempt) = currentCall() ?: return@launch
                 runCatching { current.setMuted(!current.muted) {
-                    commitCallResult(current, attempt) { it.copy(muted = current.muted) }
+                    commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened) }
                 } }
-                    .onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted, error = null) } }
+                    .onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened, error = null) } }
                     .onFailure { localControlFailed(current, attempt, it, "Mute is local; voice status will retry.") }
             }
             ACTION_DEAFEN -> scope.launch {
@@ -113,12 +113,7 @@ class VoiceCallService : Service() {
             }
             ACTION_STOP -> stopCall()
             ACTION_ROUTE -> selectRoute(intent.getIntExtra(EXTRA_ROUTE_ID, -1))
-            ACTION_OUTPUT_VOLUME -> scope.launch {
-                val value = intent.getIntExtra(EXTRA_VOLUME, 100).coerceIn(0, 200)
-                val (current, attempt) = currentCall() ?: return@launch
-                current.setOutputVolume(value)
-                commitCallResult(current, attempt) { it.copy(outputVolume = value) }
-            }
+            ACTION_OUTPUT_VOLUME -> setOutputVolume(this, intent.getIntExtra(EXTRA_VOLUME, 100))
             ACTION_PARTICIPANT_VOLUME -> scope.launch {
                 val id = intent.getStringExtra(EXTRA_PARTICIPANT_ID) ?: return@launch
                 val value = intent.getIntExtra(EXTRA_VOLUME, 100).coerceIn(0, 200)
@@ -145,7 +140,8 @@ class VoiceCallService : Service() {
         activeAttempt = attempt
         val preferences = getSharedPreferences("audio", MODE_PRIVATE)
         update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName, muted = true,
-            inputGain = preferences.getInt("inputGain", 100), processingStrength = preferences.getInt("strength", 25)) }
+            inputGain = preferences.getInt("inputGain", 100), processingStrength = preferences.getInt("strength", 25),
+            outputVolume = preferences.getInt("outputVolume", 100)) }
         val current = try {
             startForegroundNotification()
             acquireAudio()
@@ -295,7 +291,7 @@ class VoiceCallService : Service() {
         heartbeat?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         joining?.cancel()
         val token = current?.closeLocal()
-        update { VoiceState() }
+        update { VoiceState(inputGain = it.inputGain, processingStrength = it.processingStrength, outputVolume = it.outputVolume) }
         releaseAudio()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         if (stopService) stopSelf()
@@ -456,7 +452,12 @@ class VoiceCallService : Service() {
         fun toggleMute(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_MUTE)) }
         fun toggleDeafen(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_DEAFEN)) }
         fun selectRoute(context: Context, id: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_ROUTE).putExtra(EXTRA_ROUTE_ID, id)) }
-        fun setOutputVolume(context: Context, value: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_OUTPUT_VOLUME).putExtra(EXTRA_VOLUME, value)) }
+        fun setOutputVolume(context: Context, value: Int) {
+            val next = value.coerceIn(0, 200)
+            context.getSharedPreferences("audio", Context.MODE_PRIVATE).edit().putInt("outputVolume", next).apply()
+            active?.engine?.setOutputVolume(next)
+            update { it.copy(outputVolume = next) }
+        }
         fun setInputGain(context: Context, value: Int) {
             val next = value.coerceIn(0, 200)
             context.getSharedPreferences("audio", Context.MODE_PRIVATE).edit().putInt("inputGain", next).apply()

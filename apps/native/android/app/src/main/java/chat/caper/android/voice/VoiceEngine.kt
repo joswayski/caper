@@ -57,7 +57,7 @@ class VoiceEngine(
     private var peerDisposing = false // guarded by remoteLock
     private val participantVolumes = mutableMapOf<String, Int>()
     private val locallyMutedParticipants = mutableSetOf<String>()
-    private var outputVolume = 100
+    private var outputVolume = audioPreferences.getInt("outputVolume", 100).coerceIn(0, 200)
     private val localMute = VoiceLocalMute(lock, { syncStateLocked() }) { muted, _ ->
         resources.use {
             capture?.publication(connected.get() && !muted)
@@ -261,11 +261,9 @@ class VoiceEngine(
 
     suspend fun setDeafened(value: Boolean, onLocalApplied: () -> Unit = {}) = localMute.setDeafened(value, onLocalApplied)
 
-    suspend fun setOutputVolume(value: Int) = lock.withLock {
-        synchronized(remoteLock) {
-            outputVolume = value.coerceIn(0, 200)
-            applyRemoteAudioPreferencesLocked()
-        }
+    fun setOutputVolume(value: Int) = synchronized(remoteLock) {
+        outputVolume = value.coerceIn(0, 200)
+        applyRemoteAudioPreferencesLocked()
     }
 
     suspend fun setParticipantVolume(id: String, value: Int) = lock.withLock {

@@ -274,6 +274,22 @@ def main() -> None:
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
 
+    # Inspect prejoin audio controls without starting capture or playback.
+    tap(description="Audio and account settings")
+    audio = capture("caper-android-audio-prejoin", "Processing strength")
+    for label in ("Input gain", "Processing strength", "Output volume"):
+        assert find(audio, description=label) is not None, f"Missing labeled slider: {label}"
+    assert find(audio, text="25%") is not None
+    output = find(audio, description="Output volume")
+    left, top, right, bottom = map(int, re.findall(r"\d+", output.attrib["bounds"]))
+    adb("shell", "input", "tap", str(left + 1), str((top + bottom) // 2))
+    wait_for(text="0%")
+    tap(description="Close")
+    tap(description="Audio and account settings")
+    zero = capture("caper-android-audio-prejoin-zero-output", "0%")
+    assert find(zero, text="Test microphone") is not None
+    tap(description="Close")
+
     tap(description="Manage planning")
     overview = capture("caper-android-channel-settings", "Overview")
     for required in ("Private channel", "Only you and the people you add can view or join.", "Delete channel"):
@@ -303,6 +319,10 @@ def main() -> None:
     wait_for(text="Fixture Studio")
     browse = capture("caper-android-browse", "Fixture Studio")
     assert find(browse, text="CHANNELS") is not None
+    tap(description="Audio and account settings")
+    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Processing strength")
+    assert find(audio_narrow, description="Input gain") is not None
+    tap(description="Close")
 
     # Run after parity captures so the stable seeded reference conversation is
     # unchanged. This crosses the real Compose input -> HTTP send -> gateway UI

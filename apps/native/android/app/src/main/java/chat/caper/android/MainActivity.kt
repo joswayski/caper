@@ -656,6 +656,7 @@ internal data class VoiceJoinIntent(
     val preferences = remember(context) { context.getSharedPreferences("audio", android.content.Context.MODE_PRIVATE) }
     var inputGain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
     var strength by remember { mutableIntStateOf(preferences.getInt("strength", 25)) }
+    var outputVolume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
     // Preparation owns its scope until it can release the recorder, even when
     // this dialog has already left composition.
     val cleanupScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
@@ -683,7 +684,7 @@ internal data class VoiceJoinIntent(
         val next = cleanupScope.launch(start = CoroutineStart.LAZY) {
             if (!dialogActive || ticket != generation || recording !== clip) return@launch
             playingEnhanced = enhanced
-            try { clip.play(enhanced, VoiceCallService.state.value.outputVolume) }
+            try { clip.play(enhanced, outputVolume) }
             catch (error: CancellationException) { throw error }
             catch (error: Throwable) { testError = error.message ?: "Local playback failed." }
             finally {
@@ -785,10 +786,12 @@ internal data class VoiceJoinIntent(
         } else Text("Choose audio input and output in Android system settings. Available communication routes appear here during a call on Android 12 and newer.", color = TextMuted, fontSize = 12.sp)
         Text("Android communication routes follow the selected system device; separate microphone and speaker hardware selectors are not available.", color = TextMuted, fontSize = 11.sp)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input gain", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
-        Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, valueRange = 0f..200f)
+        Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input gain" }, valueRange = 0f..200f)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Processing strength", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
-        Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, valueRange = 0f..100f)
+        Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Processing strength" }, valueRange = 0f..100f)
         Text("DPDFNet-8 with RNNoise fallback, then voice EQ, compression and limiting. Defaults to 25%.", color = TextMuted, fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$outputVolume%", color = TextMuted, fontSize = 11.sp) }
+        Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) }, modifier = Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton({ if (testing) stopTest() else {
                 finishing = true
@@ -811,8 +814,6 @@ internal data class VoiceJoinIntent(
         if (voice.phase == VoiceState.Phase.CONNECTED) {
             Text("Connected to #${voice.channelName}", color = CaperGreen, fontSize = 12.sp)
             Text("Mute and deafen controls remain available in the account bar and ongoing notification.", color = TextMuted, fontSize = 12.sp)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("${voice.outputVolume}%", color = TextMuted, fontSize = 11.sp) }
-            Slider(voice.outputVolume.toFloat(), { VoiceCallService.setOutputVolume(context, it.toInt()) }, valueRange = 0f..200f)
             if (state.account?.debugEnabled == true && voice.processing.size == 5) {
                 val report = voice.processing
                 DiagnosticRow("Microphone processing", when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" })
