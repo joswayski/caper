@@ -4,8 +4,8 @@ import WebRTC
 import AVFoundation
 #if os(macOS)
 import CaperRTCBridge
-#endif
-#if os(iOS)
+#else
+import CaperRTCBridgeIOS
 import AVFAudio
 #endif
 
@@ -83,7 +83,6 @@ public final class VoiceClient {
     public var availableOutputs: [AudioDevice] = []
     public var selectedInputID: String?
     public var selectedOutputID: String?
-    #if os(macOS)
     public private(set) var inputGain = 100
     public private(set) var voiceProcessingStrength = 25
     public var noiseSuppressionStatus: String {
@@ -95,11 +94,15 @@ public final class VoiceClient {
             : "Noise suppression unavailable · microphone audio stays silent."
         }
     }
+    #if os(macOS)
     public var audioProcessingReport: CaperAudioProcessingReport? { audioDevice.audioProcessingReport }
     private let audioDevice: CaperMacAudioDevice
+    #else
+    public var audioProcessingReport: CaperIOSAudioProcessingReport? { audioDevice.audioProcessingReport }
+    private let audioDevice: CaperIOSAudioDevice
+    #endif
     private var comparisonPeer: RTCPeerConnection?
     private var comparisonGeneration: Int?
-    #endif
     public private(set) var diagnostics: VoiceDiagnostics?
     public internal(set) var context: VoiceContext?
 
@@ -145,6 +148,9 @@ public final class VoiceClient {
         RTCInitializeSSL()
         #if os(macOS)
         let audioDevice = CaperMacAudioDevice()
+        #else
+        let audioDevice = CaperIOSAudioDevice()
+        #endif
         self.audioDevice = audioDevice
         let inputGain = UserDefaults.standard.object(forKey: "caper.voice.inputGain") == nil ? 100 : UserDefaults.standard.integer(forKey: "caper.voice.inputGain")
         let strength = UserDefaults.standard.object(forKey: "caper.voice.processingStrength") == nil ? 25 : UserDefaults.standard.integer(forKey: "caper.voice.processingStrength")
@@ -154,6 +160,7 @@ public final class VoiceClient {
         voiceProcessingStrength = initialStrength
         audioDevice.inputGain = initialGain
         audioDevice.processingStrength = initialStrength
+        #if os(macOS)
         for (key, select) in [("caper.voice.inputUID", true), ("caper.voice.outputUID", false)] {
             let uid = UserDefaults.standard.string(forKey: key) ?? ""
             if select { _ = audioDevice.selectInputUID(uid) }
@@ -161,7 +168,7 @@ public final class VoiceClient {
         }
         factory = CaperCreateAudioPeerFactory(audioDevice)
         #else
-        factory = RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(), decoderFactory: RTCDefaultVideoDecoderFactory())
+        factory = CaperCreateIOSAudioPeerFactory(audioDevice)
         #endif
         gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { _, _ in }
     }
@@ -178,6 +185,15 @@ public final class VoiceClient {
 
     public func join(channelID: String?, context: VoiceContext, name: String) async {
         guard phase == .idle || phase == .failed else { return }
+        #if os(iOS)
+        // A prejoin comparison must be stopped before this new generation can
+        // claim the same ADM. The sheet's later cleanup is intentionally stale.
+        if comparisonGeneration != nil {
+            audioDevice.publicationEnabled = false
+            _ = audioDevice.endComparison()
+            comparisonGeneration = nil; comparisonPeer = nil
+        }
+        #endif
         generation += 1
         let attempt = generation
         stateSequence = 0; restartSequence = 0
@@ -198,7 +214,7 @@ public final class VoiceClient {
                 return
             }
             token = joined.token; selfID = joined.id
-            #if os(macOS)
+            #if os(macOS) || os(iOS)
             // A canceled or denied join must not initialize local audio. Warm
             // inference only for the current owned lease, before creating media.
             guard await prepareMicrophoneDenoise(), generation == attempt, phase == .joining else {
@@ -276,7 +292,7 @@ public final class VoiceClient {
             mediaSubscriptionID = subscriptionID
             publishedMID = mid
             phase = .connected
-            #if os(macOS)
+            #if os(macOS) || os(iOS)
             audioDevice.publicationEnabled = !muted
             #endif
             track.isEnabled = !muted
@@ -304,7 +320,7 @@ public final class VoiceClient {
             muted = true
         } else { muted = value }
         #endif
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
         #endif
         microphone?.isEnabled = phase == .connected && !muted
@@ -326,7 +342,7 @@ public final class VoiceClient {
         #else
         muted = value ? true : muteBeforeDeafen
         #endif
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
         #endif
         microphone?.isEnabled = phase == .connected && !muted
@@ -357,7 +373,11 @@ public final class VoiceClient {
     /// Stops capture, playback and transport synchronously. Remote cleanup is
     /// deliberately detached so provider latency can never resurrect or delay leave.
     public func leaveImmediately() {
+        #if os(iOS)
+        guard phase != .idle || comparisonGeneration != nil else { return }
+        #else
         guard phase != .idle else { return }
+        #endif
         generation += 1
         let oldToken = token
         let oldChannelID = channelID
@@ -516,7 +536,7 @@ public final class VoiceClient {
     }
 
     private func detachLocal(preservingContext: Bool = false) {
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         audioDevice.publicationEnabled = false
         _ = audioDevice.endComparison()
         comparisonPeer = nil; comparisonGeneration = nil
@@ -682,17 +702,39 @@ public final class VoiceClient {
         #endif
     }
 
-    #if os(macOS)
     func prepareMicrophoneDenoise() async -> Bool {
+        #if os(iOS)
+        if phase == .idle || phase == .failed {
+            do { try activateAudioSession() } catch { return false }
+        }
+        #endif
         let device = audioDevice
-        return await Task.detached(priority: .userInitiated) { device.prepareDenoise() }.value
+        let ready = await Task.detached(priority: .userInitiated) { device.prepareDenoise() }.value
+        #if os(iOS)
+        if !ready { releaseIdleAudioPreparation() }
+        #endif
+        return ready
     }
+
+    #if os(iOS)
+    func releaseIdleAudioPreparation() {
+        if (phase == .idle || phase == .failed) && comparisonGeneration == nil { deactivateAudioSession() }
+    }
+    #endif
 
     /// Keep publication gated through recording and playback; stale tests cannot open a replacement call.
     func beginMicrophoneComparison() -> Int? {
         if phase == .idle || phase == .failed {
+            #if os(iOS)
+            do { try activateAudioSession() } catch { return nil }
+            #endif
             guard comparisonGeneration == nil || comparisonGeneration == generation && comparisonPeer == nil,
-                  audioDevice.beginComparison() else { return nil }
+                  audioDevice.beginComparison() else {
+                #if os(iOS)
+                releaseIdleAudioPreparation()
+                #endif
+                return nil
+            }
             comparisonGeneration = generation
             return generation
         }
@@ -710,12 +752,21 @@ public final class VoiceClient {
         return generation
     }
 
+    #if os(macOS)
     func finishMicrophoneRecording(generation attempt: Int) -> CaperAudioComparison? {
         guard generation == attempt, comparisonGeneration == attempt,
               ((phase == .idle || phase == .failed) && comparisonPeer == nil ||
                phase == .connected && comparisonPeer === peer) else { return nil }
         return audioDevice.endComparison()
     }
+    #else
+    func finishMicrophoneRecording(generation attempt: Int) -> CaperIOSAudioComparison? {
+        guard generation == attempt, comparisonGeneration == attempt,
+              ((phase == .idle || phase == .failed) && comparisonPeer == nil ||
+               phase == .connected && comparisonPeer === peer) else { return nil }
+        return audioDevice.endComparison()
+    }
+    #endif
 
     func endMicrophoneComparison(generation attempt: Int) {
         guard generation == attempt, comparisonGeneration == attempt,
@@ -727,8 +778,12 @@ public final class VoiceClient {
             audioDevice.publicationEnabled = !muted
         }
         comparisonPeer = nil; comparisonGeneration = nil
+        #if os(iOS)
+        if phase == .idle || phase == .failed { deactivateAudioSession() }
+        #endif
     }
 
+    #if os(macOS)
     func comparisonOutputDeviceID() -> UInt32 { audioDevice.resolvedOutputDeviceID }
 
     @discardableResult public func selectInput(_ uid: String) -> Bool {
@@ -744,6 +799,7 @@ public final class VoiceClient {
         UserDefaults.standard.set(uid, forKey: "caper.voice.outputUID")
         return true
     }
+    #endif
 
     public func setInputGain(_ value: Int) {
         inputGain = min(200, max(0, value))
@@ -756,7 +812,6 @@ public final class VoiceClient {
         audioDevice.processingStrength = voiceProcessingStrength
         UserDefaults.standard.set(voiceProcessingStrength, forKey: "caper.voice.processingStrength")
     }
-    #endif
 
     public func refreshDiagnostics() async {
         guard phase == .connected, let peer else { return }
@@ -786,7 +841,16 @@ public final class VoiceClient {
         defer { audio.unlockForConfiguration() }
         try audio.setCategory(.playAndRecord, with: [.allowBluetooth, .defaultToSpeaker])
         try audio.setMode(.voiceChat)
+        try AVAudioSession.sharedInstance().setPreferredSampleRate(48_000)
+        try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.02)
         try audio.setActive(true)
+    }
+
+    private func deactivateAudioSession() {
+        let audio = RTCAudioSession.sharedInstance()
+        audio.lockForConfiguration()
+        try? audio.setActive(false)
+        audio.unlockForConfiguration()
     }
 
     private func installAudioObservers(generation attempt: Int) {
@@ -800,13 +864,16 @@ public final class VoiceClient {
         })
         audioObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                guard self?.generation == attempt else { return }
-                await self?.refreshAudioDevices()
+                guard let self, self.generation == attempt else { return }
+                self.audioDevice.audioRouteInterrupted() // fail closed before route reconfiguration
+                await self.refreshAudioDevices()
+                if self.generation == attempt && self.phase == .connected { self.scheduleReconnect(generation: attempt) }
             }
         })
         audioObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereLostNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.generation == attempt else { return }
+                self.audioDevice.audioRouteInterrupted()
                 self.microphone?.isEnabled = false
             }
         })
@@ -816,7 +883,7 @@ public final class VoiceClient {
                 do {
                     try self.activateAudioSession()
                     guard self.generation == attempt, self.phase == .connected else { return }
-                    self.microphone?.isEnabled = !self.muted
+                    self.scheduleReconnect(generation: attempt)
                 } catch { self.scheduleReconnect(generation: attempt) }
             }
         })
@@ -831,11 +898,14 @@ public final class VoiceClient {
     private func handleAudioInterruption(_ note: Notification, generation attempt: Int) {
         guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-        if type == .began { microphone?.isEnabled = false }
+        if type == .began {
+            audioDevice.audioRouteInterrupted()
+            microphone?.isEnabled = false
+        }
         else if phase == .connected,
                 let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
                 AVAudioSession.InterruptionOptions(rawValue: optionsRaw).contains(.shouldResume) {
-            do { try activateAudioSession(); microphone?.isEnabled = !muted }
+            do { try activateAudioSession(); scheduleReconnect(generation: attempt) }
             catch { scheduleReconnect(generation: attempt) }
         } else if phase == .connected {
             muted = true

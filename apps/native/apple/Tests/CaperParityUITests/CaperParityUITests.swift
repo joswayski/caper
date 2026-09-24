@@ -319,6 +319,10 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("\(displayedGain)%", in: app, timeout: 2)
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
+        XCTAssertTrue(app.sliders["Input gain"].exists)
+        XCTAssertTrue(app.sliders["Live voice processing"].exists)
+        XCTAssertTrue(app.buttons["local-mic-test"].exists)
+        assertStaticText("On-device noise suppression starts when you test or join.", in: app, timeout: 2)
         #else
         XCTAssertTrue(app.descendants(matching: .any)["audio-input-device"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["audio-output-device"].exists)
@@ -345,6 +349,39 @@ final class CaperParityUITests: XCTestCase {
         #endif
         capture("audio-preferences", app: app)
     }
+
+    #if os(iOS)
+    func testPhoneRecordedComparisonAndStatisticsFixtureWithoutCapture() {
+        for (fixture, label, screenshot) in [
+            ("audio-recorded", "TEST FIXTURE — completed local recording layout only; no microphone or playback.", "ios-audio-recorded-fixture"),
+            ("audio-statistics", "TEST FIXTURE — synthetic statistics layout; no voice connection.", "ios-audio-statistics-fixture"),
+        ] {
+            let app = launch(fixture: fixture)
+            app.buttons["Open navigation"].tap()
+            let settings = app.descendants(matching: .any)["account-settings-menu"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 5))
+            let frame = settings.frame, window = app.windows.firstMatch.frame
+            app.coordinate(withNormalizedOffset: CGVector(dx: frame.midX / window.width, dy: frame.midY / window.height)).tap()
+            app.descendants(matching: .any)["Audio preferences"].tap()
+            let controls = app.scrollViews["audio-preferences-controls"]
+            XCTAssertTrue(controls.waitForExistence(timeout: 5))
+            controls.swipeUp()
+            assertStaticText(label, in: app)
+            if fixture == "audio-recorded" {
+                for title in ["Play natural", "Play enhanced", "Stop playback"] {
+                    let button = app.buttons[title]
+                    XCTAssertTrue(button.exists)
+                    XCTAssertFalse(button.isEnabled, "Fixture must not play synthetic audio")
+                }
+                XCTAssertTrue(app.sliders["Live voice processing"].exists)
+            } else {
+                assertStaticText("Connection statistics", in: app)
+                assertStaticText("42 ms / TURN relay", in: app)
+            }
+            capture(screenshot, app: app)
+        }
+    }
+    #endif
 
     #if os(macOS)
     func testFailedChannelNavigationKeepsConversationAndDraftThenRetries() async throws {

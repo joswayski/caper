@@ -1110,6 +1110,8 @@ private struct AudioPreferencesView: View {
     #if os(macOS)
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
+    #else
+    @State private var micTest = IOSMicrophoneTest()
     #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1125,18 +1127,19 @@ private struct AudioPreferencesView: View {
                 .accessibilityIdentifier("close-audio-preferences")
                 .keyboardShortcut(.cancelAction)
             }
-            #if os(macOS)
             ScrollView {
                 controls.fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityIdentifier("audio-preferences-controls")
+            #if os(macOS)
             .frame(width: 426, height: 500)
             #else
-            controls
+            .frame(maxHeight: 580)
             #endif
-        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
+        }.padding(22)
+            .frame(minWidth: 360)
+            .background(CaperTheme.surface)
             .task { await voice.refreshAudioDevices() }
-            #if os(macOS)
             .onChange(of: voice.phase) { _, phase in
                 if phase != .idle && phase != .failed { micTest.close() }
             }
@@ -1147,7 +1150,6 @@ private struct AudioPreferencesView: View {
                     do { try await Task.sleep(for: .seconds(2)) } catch { return }
                 }
             }
-            #endif
     }
 
     private var controls: some View {
@@ -1162,6 +1164,10 @@ private struct AudioPreferencesView: View {
                 ForEach(voice.availableOutputs) { route in Text(route.name).tag(route.id) }
             }.accessibilityIdentifier("audio-output-device")
             if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            #else
+            AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
+            AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+            #endif
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Input gain"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
                 Slider(value: inputGain, in: 0...200, step: 1)
@@ -1178,10 +1184,6 @@ private struct AudioPreferencesView: View {
                 Text(voice.noiseSuppressionStatus)
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
-            #else
-            AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
-            AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
-            #endif
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Output gain").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                 Slider(value: outputGain, in: 0...200, step: 1)
@@ -1201,10 +1203,16 @@ private struct AudioPreferencesView: View {
             #else
             Text("Caper routes this call to the selected devices without changing macOS system defaults.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #endif
             Divider().overlay(CaperTheme.border)
             Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
+            #if os(macOS)
             Text("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.")
                 .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #else
+            Text("Record up to 30 seconds from the current mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.")
+                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            #endif
             HStack {
                 Button(micTest.recording ? "Stop testing" : "Mic Test") {
                     if micTest.recording { micTest.stopRecording() }
@@ -1244,7 +1252,6 @@ private struct AudioPreferencesView: View {
                     Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 }
             }
-            #endif
         }
     }
 
@@ -1262,6 +1269,7 @@ private struct AudioPreferencesView: View {
             routeError = voice.selectOutput(uid) ? nil : "Could not switch output. The previous route is still selected."
         })
     }
+    #endif
     private var inputGain: Binding<Double> {
         Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) })
     }
@@ -1275,10 +1283,8 @@ private struct AudioPreferencesView: View {
                          receiveBitrate: 12_800, sendBitrate: 24_000,
                          packetsLost: 3, maxJitterMs: 17, roundTripMs: 42, route: "relay")
     }
-    #endif
 }
 
-#if os(macOS)
 private struct AudioDiagnosticsView: View {
     let voice: VoiceClient
     @State private var copyStatus = ""
@@ -1292,9 +1298,14 @@ private struct AudioDiagnosticsView: View {
                 Text(voice.noiseSuppressionStatus).font(CaperTheme.font(12))
                 HStack {
                     Button("Copy diagnostics") {
+                        #if os(macOS)
                         NSPasteboard.general.clearContents()
                         copyStatus = NSPasteboard.general.setString(report, forType: .string)
                             ? "Copied diagnostics" : "Copy failed; select the report below."
+                        #else
+                        UIPasteboard.general.string = report
+                        copyStatus = "Copied diagnostics"
+                        #endif
                     }
                     Text(copyStatus).font(CaperTheme.font(11))
                 }
@@ -1304,7 +1315,12 @@ private struct AudioDiagnosticsView: View {
     }
 
     private var reportJSON: String {
-        var values: [String: Any] = ["platform": "macOS", "processing": NSNull()]
+        #if os(macOS)
+        let platform = "macOS"
+        #else
+        let platform = "iOS"
+        #endif
+        var values: [String: Any] = ["platform": platform, "processing": NSNull()]
         if let stats = voice.audioProcessingReport {
             values["processing"] = [
                 "mode": stats.mode, "processedHops": stats.processedHops,
@@ -1317,7 +1333,6 @@ private struct AudioDiagnosticsView: View {
         return report
     }
 }
-#endif
 
 private struct AudioRouteRow: View {
     let title: String
