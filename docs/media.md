@@ -2159,6 +2159,35 @@ Bluetooth/wired route changes, interruptions and recovery before closing this ga
 Incoming direct-call notifications/ringing are not present in Caper's backend and
 are not implied by comparing ongoing channel calls with Discord.
 
+### Native generated-speech acceptance
+
+On 2026-09-24 at 21:02:26–21:02:35 UTC, the opt-in Linux native
+`generated_speech_public_sfu_two_native_sessions` test passed in 8.80 seconds
+against the live General SFU. Source was merged PR148 plus the follow-up test
+harness. No server deployment was performed for this test.
+
+- Two owned native sessions, isolated PulseAudio with only two null sinks and
+  their monitors, generated flite speech, and no physical microphone/speaker.
+  Playback used a different sink from capture to prevent feedback.
+- Actual native gain/denoise/contour publication peaks: 22,947 on each client
+  over 240/239 observed frames. Actual remote decoded PCM peaks: 22,591 and
+  21,505 over 278/183 frames. These are measurements, not packet-count proxies.
+- General was empty before joining. Both clients stayed muted until owned-only
+  subscription checks completed. A roster watch stopped on unexpected people
+  or roster uncertainty; no unrelated participant was observed. The whole
+  join/subscribe/speech operation was bounded to 20 seconds, with no retry.
+- Local capture and transport closed before assertions. Both remote leave
+  requests acknowledged, and a final presence read found neither owned client.
+  The private audio service was stopped after the test.
+
+This establishes two-way native speech through the SFU for this Linux virtual
+audio setup. It does not explain the earlier silent-input zero-RTP observation,
+or establish physical quality, Windows/Apple/phone capture, forced TURN,
+multi-network, sustained, Bluetooth, lock-screen, or interruption acceptance.
+The test is ignored by default and requires `CAPER_SPEECH_SFU_SMOKE=authorized-20s`
+and its exact private PulseAudio socket. Each public run needs explicit approval;
+do not run all ignored tests as a batch. Local roster/probe regressions run in CI.
+
 ### Account diagnostics visibility
 
 `DEBUG_USERS` is an optional, server-only comma-separated username allowlist for
