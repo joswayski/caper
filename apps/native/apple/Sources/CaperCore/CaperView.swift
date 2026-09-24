@@ -473,9 +473,17 @@ private struct AccountBar: View {
                     Spacer()
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
+            Button { Task { await voice.setMuted(!voice.muted) } } label: {
+                Image(systemName: voice.muted ? "mic.slash.fill" : "mic.fill")
+                    .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
+            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Microphone")
+                .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
+            Button { Task { await voice.setDeafened(!voice.deafened) } } label: {
+                Image(systemName: voice.deafened ? "speaker.slash.fill" : "headphones")
+                    .foregroundStyle(voice.deafened ? CaperTheme.terracottaBright : CaperTheme.muted)
+            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Headphones")
+                .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
             if voice.phase == .connected || voice.phase == .reconnecting {
-                Button { Task { await voice.setMuted(!voice.muted) } } label: { Image(systemName: voice.muted ? "mic.slash.fill" : "mic.fill") }.buttonStyle(SidebarIconButton())
-                Button { Task { await voice.setDeafened(!voice.deafened) } } label: { Image(systemName: voice.deafened ? "speaker.slash.fill" : "headphones") }.buttonStyle(SidebarIconButton())
                 Button(role: .destructive) { voice.leaveImmediately() } label: { Image(systemName: "phone.down.fill") }.buttonStyle(SidebarIconButton())
             }
             Menu {
@@ -551,6 +559,10 @@ private struct ChatView: View {
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
+            if let error = voice.error {
+                Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 8)
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {

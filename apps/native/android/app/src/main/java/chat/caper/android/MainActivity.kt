@@ -359,15 +359,21 @@ internal data class VoiceJoinIntent(
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
     var pendingVoiceJoin by remember { mutableStateOf<VoiceJoinIntent?>(null) }
+    var voicePermissionError by remember(channel.id) { mutableStateOf<String?>(null) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         val requested = pendingVoiceJoin
         pendingVoiceJoin = null
         val current = latestState
-        if (grants[Manifest.permission.RECORD_AUDIO] == true && requested?.isCurrent(current, viewModel.accountEpoch) == true) {
-            VoiceCallService.start(
-                context, requested.channelId, requested.spaceId, requested.channelName,
-                requested.spaceName, requested.displayName, requested.demo,
-            )
+        if (requested?.isCurrent(current, viewModel.accountEpoch) == true) {
+            if (grants[Manifest.permission.RECORD_AUDIO] == true) {
+                voicePermissionError = null
+                VoiceCallService.start(
+                    context, requested.channelId, requested.spaceId, requested.channelName,
+                    requested.spaceName, requested.displayName, requested.demo,
+                )
+            } else {
+                voicePermissionError = "Microphone permission is required to join voice. Allow microphone access in Android app settings or try Join again."
+            }
         }
     }
     var draft by remember(channel.id) { mutableStateOf("") }
@@ -383,6 +389,7 @@ internal data class VoiceJoinIntent(
             Spacer(Modifier.width(10.dp))
             if (BuildConfig.ENABLE_NATIVE_VOICE) Button({
                 if (inCall) VoiceCallService.stop(context) else {
+                    voicePermissionError = null
                     val space = requireNotNull(state.selectedSpace?.space)
                     pendingVoiceJoin = VoiceJoinIntent(
                         channel.id, space.id, channel.name, space.name,
@@ -399,6 +406,9 @@ internal data class VoiceJoinIntent(
             IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(Icons.Default.People, if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
+        (voicePermissionError ?: voice.error.takeIf { voice.channelId == channel.id })?.let { error ->
+            Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
+        }
         MessageTimeline(state, viewModel, Modifier.weight(1f))
         TypingLine(state.typingAuthors)
         HorizontalDivider(color = Border)

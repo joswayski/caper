@@ -47,7 +47,7 @@ android {
         versionCode = 1
         versionName = "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("boolean", "ENABLE_NATIVE_VOICE", providers.gradleProperty("caperEnableNativeVoice").orElse("false").get())
+        buildConfigField("boolean", "ENABLE_NATIVE_VOICE", "true")
     }
 
     buildTypes {

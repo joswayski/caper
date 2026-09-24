@@ -178,6 +178,21 @@ final class CaperParityUITests: XCTestCase {
         #if os(iOS)
         app.buttons["Open navigation"].tap()
         #endif
+        let microphone = app.buttons["microphone-toggle"]
+        let headphones = app.buttons["deafen-toggle"]
+        XCTAssertTrue(microphone.waitForExistence(timeout: 5))
+        XCTAssertTrue(headphones.exists)
+        XCTAssertEqual(microphone.value as? String, "On")
+        microphone.tap()
+        XCTAssertEqual(microphone.value as? String, "Muted")
+        headphones.tap()
+        XCTAssertEqual(headphones.value as? String, "Deafened")
+        capture("audio-muted", app: app)
+        headphones.tap()
+        XCTAssertEqual(headphones.value as? String, "On")
+        XCTAssertEqual(microphone.value as? String, "Muted", "Undeafen must preserve an explicitly muted microphone")
+        microphone.tap()
+        XCTAssertEqual(microphone.value as? String, "On")
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         #if os(iOS)

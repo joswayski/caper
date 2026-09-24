@@ -95,7 +95,7 @@ def nodes(root: ET.Element):
     return root.iter("node")
 
 
-def find(root: ET.Element, *, text: str | None = None, description: str | None = None, contains: str | None = None) -> ET.Element | None:
+def find(root: ET.Element, *, text: str | None = None, description: str | None = None, contains: str | None = None, resource_id: str | None = None) -> ET.Element | None:
     for node in nodes(root):
         if text is not None and node.get("text") == text:
             return node
@@ -103,18 +103,20 @@ def find(root: ET.Element, *, text: str | None = None, description: str | None =
             return node
         if contains is not None and contains in (node.get("text", "") + node.get("content-desc", "")):
             return node
+        if resource_id is not None and node.get("resource-id") == resource_id:
+            return node
     return None
 
 
-def wait_for(*, text: str | None = None, description: str | None = None, contains: str | None = None, seconds: int = 20) -> ET.Element:
+def wait_for(*, text: str | None = None, description: str | None = None, contains: str | None = None, resource_id: str | None = None, seconds: int = 20) -> ET.Element:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         root = hierarchy()
-        match = find(root, text=text, description=description, contains=contains)
+        match = find(root, text=text, description=description, contains=contains, resource_id=resource_id)
         if match is not None:
             return root
         time.sleep(0.5)
-    raise AssertionError(f"UI did not show text={text!r}, description={description!r}, contains={contains!r}")
+    raise AssertionError(f"UI did not show text={text!r}, description={description!r}, contains={contains!r}, resource_id={resource_id!r}")
 
 
 def center(node: ET.Element) -> tuple[int, int]:
@@ -122,9 +124,9 @@ def center(node: ET.Element) -> tuple[int, int]:
     return (left + right) // 2, (top + bottom) // 2
 
 
-def tap(*, text: str | None = None, description: str | None = None) -> None:
-    root = wait_for(text=text, description=description)
-    node = find(root, text=text, description=description)
+def tap(*, text: str | None = None, description: str | None = None, resource_id: str | None = None) -> None:
+    root = wait_for(text=text, description=description, resource_id=resource_id)
+    node = find(root, text=text, description=description, resource_id=resource_id)
     assert node is not None
     x, y = center(node)
     adb("shell", "input", "tap", str(x), str(y))
@@ -332,6 +334,26 @@ def main() -> None:
     assert len(matching) == 1, "Fixture history did not contain exactly one sent message"
     assert matching[0]["author"] == {"id": "owner0000001", "name": "Fixture Owner", "isGuest": False}
     assert matching[0]["channelId"] == "chan00000001" and matching[0]["content"]["version"] == 1
+
+    # Exercise the actual default voice entry and Android permission controller.
+    # Only notifications are pre-granted; microphone denial and approval happen
+    # through the system UI. The loopback fixture rejects join, never fakes audio.
+    voice_ready = capture("caper-android-voice-ready", "Join")
+    assert find(voice_ready, text="Join") is not None
+    adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
+    tap(text="Join")
+    deny = "com.android.permissioncontroller:id/permission_deny_button"
+    wait_for(resource_id=deny)
+    capture("caper-android-voice-permission", "Caper")
+    tap(resource_id=deny)
+    denied = capture("caper-android-voice-permission-denied", "Microphone permission is required")
+    assert find(denied, text="Join") is not None and find(denied, text="Leave") is None
+    tap(text="Join")
+    tap(resource_id="com.android.permissioncontroller:id/permission_allow_foreground_only_button")
+    failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
+    assert find(failed, text="Join") is not None and find(failed, text="Leave") is None
+    assert find(failed, contains="Microphone permission is required") is None
+    assert find(failed, contains="Message #general") is not None, "Failed voice must leave chat usable"
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 

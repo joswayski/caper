@@ -707,7 +707,7 @@ The follow-up disconnect audit also covers these interactions:
 | Join/publish/subscribe/negotiate/close reaches a draining API | Explicit `503` + `code: api_draining` proves admission rejection before mutation. Retry up to three times after 250/500/1000 ms within the original request deadline. Generic 5xx/timeouts do not authorize replay. |
 | A speaker leaves before subscription starts | `404` + `code: track_gone` skips only that track; continue subscribing to other participants. Authentication errors still invalidate the session. |
 | A speaker leaves while a successful subscription is being created | Preserve the listener, finish any returned SDP offer, then close the unwanted MID from the latest roster. Do not discard the listener's own microphone/session. |
-| Cloudflare explicitly rejects a departed track during subscription | A successful HTTP response with one `not_found_track_error`/`track_error`, no MID/SDP, and explicit `requiresImmediateRenegotiation: false` becomes `track_gone`; release the operation lock and preserve the listener. HTTP errors, partial offers, allocated MIDs, and session errors remain ambiguous and do not take this path. |
+| Cloudflare explicitly rejects an unavailable track during subscription | A successful HTTP response with one `not_found_track_error`/`empty_track_error`/`track_error`, no MID/SDP, and explicit `requiresImmediateRenegotiation: false` becomes `track_gone`; release the operation lock and preserve the listener. This includes a connected publisher that is not sending source media yet. HTTP errors, partial offers, allocated MIDs, and session errors remain ambiguous and do not take this path. |
 | Closing a departed track fails or times out | Remove local playback immediately; retry transient HTTP cleanup failures on subsequent reconciliation/lease heartbeat without rejoining. API close commits track removal and a cleanup job atomically. Provider cleanup failure never revokes the listener or its other tracks. |
 | SSE fails while authenticated lease renewals work | Retry SSE independently and keep voice/layout stable. Snapshots still repair state, but normal real-time delivery requires SSE recovery. |
 | A previous call still has a pending device request | New signaling/media queues do not wait on old work. Old rollback cannot restart the new call. |
@@ -721,6 +721,19 @@ the connected heading, connection details, peer identity, and microphone remain
 unchanged. API tests exercise the actual provider HTTP adapter against a local
 stub for rejected pulls and verify the boundary with ambiguous responses. These
 are fault-injection checks, not live SFU or physical-device verification.
+
+The native voice audit extends this safe-rejection path to Cloudflare's documented
+[`empty_track_error`](https://developers.cloudflare.com/realtime/sfu/observability/error-codes/).
+The regression previously returned 502 and removed the listener; it now preserves
+both sessions when no MID or SDP was allocated. This is not a confirmed diagnosis
+of the native live smoke's uncorrelated 502. After approval and merge, deploy the
+API correction before repeating multi-client acceptance (no migration or secret change):
+
+```sh
+MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+```
 
 Failure-injection coverage includes these cases and cancellation during retry
 backoff. Deploy the **API first, then web**, and refresh both clients before

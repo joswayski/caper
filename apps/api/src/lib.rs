@@ -580,7 +580,7 @@ fn rejected_remote_track(value: &Value) -> bool {
                         .is_none_or(|v| v.is_null() || v.as_str() == Some(""))
                     && matches!(
                         tracks[0].get("errorCode").and_then(Value::as_str),
-                        Some("not_found_track_error" | "track_error")
+                        Some("not_found_track_error" | "empty_track_error" | "track_error")
                     )
             })
 }

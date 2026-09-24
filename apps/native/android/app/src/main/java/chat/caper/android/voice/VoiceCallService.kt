@@ -92,15 +92,19 @@ class VoiceCallService : Service() {
             )
             ACTION_MUTE -> scope.launch {
                 val (current, attempt) = currentCall() ?: return@launch
-                runCatching { current.setMuted(!state.value.muted) }
+                runCatching { current.setMuted(!current.muted) {
+                    commitCallResult(current, attempt) { it.copy(muted = current.muted) }
+                } }
                     .onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted, error = null) } }
-                    .onFailure { commitCallResult(current, attempt) { it.copy(muted = current.muted, error = "Mute is local; voice status will retry.") } }
+                    .onFailure { localControlFailed(current, attempt, it, "Mute is local; voice status will retry.") }
             }
             ACTION_DEAFEN -> scope.launch {
                 val (current, attempt) = currentCall() ?: return@launch
-                runCatching { current.setDeafened(!state.value.deafened) }
+                runCatching { current.setDeafened(!current.deafened) {
+                    commitCallResult(current, attempt) { it.copy(deafened = current.deafened, muted = current.muted) }
+                } }
                     .onSuccess { commitCallResult(current, attempt) { it.copy(deafened = current.deafened, muted = current.muted, error = null) } }
-                    .onFailure { commitCallResult(current, attempt) { it.copy(deafened = current.deafened, muted = current.muted, error = "Deafen is local; voice status will retry.") } }
+                    .onFailure { localControlFailed(current, attempt, it, "Deafen is local; voice status will retry.") }
             }
             ACTION_STOP -> stopCall()
             ACTION_ROUTE -> selectRoute(intent.getIntExtra(EXTRA_ROUTE_ID, -1))
@@ -187,6 +191,10 @@ class VoiceCallService : Service() {
                         var wait = current.turnRefreshAfterMs() ?: return@launch
                         while (isActive) { delay(wait.coerceAtLeast(1_000)); wait = current.refreshTurn() ?: return@launch }
                     } catch (error: Throwable) {
+                        if (error is TimeoutCancellationException) {
+                            failCall(current, IOException("TURN renewal timed out.", error))
+                            return@launch
+                        }
                         if (error is CancellationException) throw error
                         failCall(current, error)
                     }
@@ -219,8 +227,11 @@ class VoiceCallService : Service() {
             org.webrtc.PeerConnection.PeerConnectionState.DISCONNECTED -> recover(current, attempt)
             org.webrtc.PeerConnection.PeerConnectionState.FAILED -> recover(current, attempt)
             org.webrtc.PeerConnection.PeerConnectionState.CONNECTED -> if (state.value.phase == VoiceState.Phase.RECONNECTING) {
-                recovery?.cancel(); recovery = null
-                update { it.copy(phase = VoiceState.Phase.CONNECTED, error = null) }; notifyState()
+                // Transport may reconnect before the API acknowledges the ICE
+                // transaction. Do not cancel the job or lose its pending ACK.
+                if (recovery?.isActive != true) {
+                    update { it.copy(phase = VoiceState.Phase.CONNECTED, error = null) }; notifyState()
+                }
             }
             else -> Unit
         }
@@ -233,6 +244,8 @@ class VoiceCallService : Service() {
             try {
                 withTimeout(20_000) { current.recoverIce() }
                 commitCallResult(current, attempt) { it.copy(phase = VoiceState.Phase.CONNECTED) }
+            } catch (error: TimeoutCancellationException) {
+                failCall(current, IOException("Voice recovery timed out.", error))
             } catch (error: Throwable) {
                 if (error !is CancellationException) failCall(current, error)
             }
@@ -252,6 +265,13 @@ class VoiceCallService : Service() {
 
     private fun participants(current: VoiceEngine, attempt: Long, value: List<Participant>) {
         commitCallResult(current, attempt) { it.copy(participants = value) }
+    }
+
+    private fun localControlFailed(current: VoiceEngine, attempt: Long, error: Throwable, warning: String) {
+        handleVoiceControlError(error,
+            terminal = { failCall(current, error) },
+            transient = { commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened, error = warning) } },
+        )
     }
 
     private fun stopCall(stopService: Boolean = true) {
@@ -279,8 +299,9 @@ class VoiceCallService : Service() {
                 .setOnAudioFocusChangeListener { change ->
                     if (change < 0) scope.launch {
                         val (current, attempt) = currentCall() ?: return@launch
-                        runCatching { current.setMuted(true) }
-                        commitCallResult(current, attempt) { it.copy(muted = true) }
+                        runCatching { current.setMuted(true) {
+                            commitCallResult(current, attempt) { it.copy(muted = true) }
+                        } }.onFailure { localControlFailed(current, attempt, it, "Audio focus was lost; voice status will retry.") }
                     }
                 }.build().also { request ->
                     check(audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "Audio focus unavailable." }
@@ -448,7 +469,13 @@ data class VoiceDiagnostics(
 )
 
 internal fun transientVoiceControlError(error: Throwable): Boolean = when (error) {
-    is ApiException -> error.status == 408 || error.status == 429 || error.status >= 500
+    is ApiException -> error.code == "ice_restart_retry" || error.status == 408 || error.status == 429 ||
+        (error.status >= 500 && error.code != "ice_restart_invalid")
     is IOException -> true
     else -> false
+}
+
+internal fun handleVoiceControlError(error: Throwable, terminal: () -> Unit, transient: () -> Unit) {
+    if (error is CancellationException) throw error
+    if (transientVoiceControlError(error)) transient() else terminal()
 }

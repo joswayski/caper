@@ -22,8 +22,8 @@ sign-in and text conversations, owner space/channel/member management, private
 grants, presence, typing, and the responsive rail/sidebar/conversation layout.
 Implementation checkpoints are not acceptance: check each platform's README and
 the exact revision's CI results before relying on a feature. Windows/Linux do not
-implement calling yet. Apple and Android contain experimental native audio code,
-disabled in default builds; neither supports a verified locked-phone call. Visual
+implement calling yet. Apple and Android expose native voice in default builds,
+but neither has a verified locked-phone call. Visual
 matching, audio controls, platform lifecycle behavior, and physical-device
 acceptance remain in progress.
 
