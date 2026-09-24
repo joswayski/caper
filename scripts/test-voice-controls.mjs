@@ -33,7 +33,7 @@ async function fixture() {
   for (const element of document.body.children) element.hidden = true;
   const mount = document.createElement('div'); document.body.append(mount);
   const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], commands: [], revision: 0 };
-  const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture' };
+  const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture', debugEnabled: true };
   const space = { id: 'workspace123', name: 'Test space', ownerId: account.id };
   const channels = ['alpha', 'beta'].map(name => ({ id: name.padEnd(12, '0'), name, spaceId: space.id, private: false }));
   const author = { id: account.id, name: account.displayName, isGuest: false };
@@ -262,10 +262,48 @@ try {
   wait(`voiceFixture.outputGain`);
   const gain = () => evaluate(`return voiceFixture.outputGain.gain.value;`);
   assert.ok(Math.abs(gain() - 0.9) < 0.00001, 'Master volume must reach the audio graph');
+  if (evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`)) {
+    browser('click', '.chat-heading');
+    assert.equal(evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`), '0');
+    browser('focus', '.participant-menu-button');
+    wait(`document.querySelector('.participant-menu-button').matches(':focus') && getComputedStyle(document.querySelector('.participant-menu-button')).opacity === '1'`);
+    assert.equal(evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`), '1', 'Keyboard focus reveals Audio');
+    browser('click', '.chat-heading');
+  }
+  browser('hover', '.participant:has(.participant-menu-button)');
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`), '1');
   click('Audio controls for Peach Donkey');
   browser('focus', '[aria-label="Peach Donkey volume"]'); browser('press', 'PageUp');
   wait(`document.querySelector('[aria-label="Peach Donkey volume"]').getAttribute('aria-valuenow') === '110' && Math.abs(voiceFixture.outputGain.gain.value - 0.99) < 0.00001`);
   assert.ok(Math.abs(gain() - 0.99) < 0.00001, '90% master × 110% participant must produce 99% gain');
+  screenshot('participant-audio');
+  browser('click', '.chat-heading');
+  assert.equal(evaluate(`return !!document.querySelector('.participant-volume');`), false, 'Outside click closes participant controls');
+  for (const key of ['Home', 'End', 'Home', 'End']) {
+    browser('focus', '.channel-sidebar-resize'); browser('press', key);
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'false');
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'true');
+  }
+  for (const width of [250, 330, 440]) {
+    const [x, y, target] = evaluate(`const r = document.querySelector('.channel-sidebar-resize').getBoundingClientRect(); const p = document.querySelector('.people-panel').getBoundingClientRect(); return [r.left + r.width / 2, r.top + 100, p.left + ${width}];`);
+    browser('mouse', 'move', String(x), String(y)); browser('mouse', 'down', 'left');
+    browser('mouse', 'move', String(target), String(y)); browser('mouse', 'up', 'left');
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'false');
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'true');
+  }
+  click('Input Options');
+  assert.ok(evaluate(`return document.querySelector('details[open] .call-settings-panel').getBoundingClientRect().width <= 280;`), 'Input menu stays compact in a wide sidebar');
+  screenshot('compact-input-wide-sidebar');
+  browser('press', 'Escape');
+  browser('hover', '.participant:has(.participant-menu-button)');
+  click('Audio controls for Peach Donkey');
+  browser('press', 'Escape');
+  assert.equal(evaluate(`return !!document.querySelector('.participant-volume');`), false);
+  click('Audio controls for Peach Donkey');
   click('Audio controls for Peach Donkey');
   click('Output Options'); browser('focus', '[aria-label="Output volume"]'); browser('press', 'Home');
   wait(`voiceFixture.outputGain.gain.value === 0`);
@@ -276,15 +314,41 @@ try {
   browser('press', 'PageDown'); browser('press', 'Escape');
   click('Mute microphone'); wait(`document.querySelector('[aria-label="Unmute microphone"]')`);
   click('Deafen audio'); wait(`document.querySelector('[aria-label="Undeafen audio"]')`);
+  evaluate(`clearInterval(voiceFixture.client.statsTimer);`);
   evaluate(`voiceFixture.client.diagnostics = { join: 'Fixture join', microphoneSessionMs: 10, signalingMs: 20, transportMs: 30, rosterMs: 40, receivedBytes: 10000, receiveBitrate: 32000, sentBytes: 10000, sendBitrate: 32000, packetsLost: 0, maxJitterMs: 1, roundTripMs: 12, route: 'direct' }; voiceFixture.client.emit();`);
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Connection details', '--exact');
   wait(`document.querySelector('dialog[open] .call-diagnostics')`);
   assert.deepEqual(bounds(), initialBounds, 'Diagnostics must overlay rather than reflow messages');
   centeredDialog();
+  evaluate(`navigator.clipboard.writeText = async text => { voiceFixture.copied = text; };`);
+  browser('find', 'role', 'button', 'click', '--name', 'Copy connection details', '--exact');
+  assert.equal(evaluate(`return JSON.parse(voiceFixture.copied).signalingMs;`), 20);
+  assert.ok(evaluate(`return document.querySelector('dialog[open]').textContent.includes('Copied connection details');`));
   screenshot('voice-connection-details');
-  browser('press', 'Escape');
+  browser('mouse', 'move', '5', '5'); browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
   wait(`!document.querySelector('dialog[open]')`);
   assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), 'User Settings', 'Dialog close should restore focus to its settings trigger');
+
+  click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Audio diagnostics', '--exact');
+  wait(`document.querySelector('dialog[open] .audio-debug')`);
+  browser('click', '.audio-debug p:first-child');
+  assert.ok(evaluate(`return !!document.querySelector('dialog[open]');`), 'Inside click must not dismiss diagnostics');
+  browser('mouse', 'move', '5', '5'); browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
+  wait(`!document.querySelector('dialog[open]')`);
+
+  evaluate(`
+    voiceFixture.effectStarts = 0;
+    const start = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) { voiceFixture.effectStarts++; return start.apply(this, args); };
+    voiceFixture.client.participants = voiceFixture.client.participants.filter(person => person.id !== 'peer');
+    voiceFixture.client.emit();
+  `);
+  wait(`voiceFixture.effectStarts === 1`);
+  evaluate(`voiceFixture.client.participants = [...voiceFixture.client.participants]; voiceFixture.client.emit(); await new Promise(r => setTimeout(r, 200));`);
+  assert.equal(evaluate(`return voiceFixture.effectStarts;`), 1, 'A departure plays once; repeated snapshots do not repeat it');
+  evaluate(`voiceFixture.client.participants = [...voiceFixture.people]; voiceFixture.client.emit(); await new Promise(r => setTimeout(r, 200));`);
+  assert.equal(evaluate(`return voiceFixture.effectStarts;`), 1, 'An arrival must not play the departure sound');
+  console.log('PASS participant audio visibility/dismissal, resized roster toggles, compact menu width, diagnostics copy/dismissal, and departure sound (mock signaling/WebRTC)');
 
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
@@ -351,7 +415,7 @@ try {
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
   wait(`document.querySelector('dialog[open] [role="alert"]')`);
   assert.ok(evaluate(`return document.querySelector('dialog[open]').textContent.includes('Connect a microphone');`));
-  assert.equal(evaluate(`return !!document.querySelector('dialog[open] [role="status"]');`), false);
+  assert.equal(evaluate(`return !!document.querySelector('dialog[open] > [role="status"]');`), false, 'Mic preparation status must clear after capture fails');
   evaluate(`voiceFixture.captureError = undefined;`);
   browser('find', 'role', 'button', 'click', '--name', 'Try again', '--exact');
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
@@ -407,6 +471,7 @@ try {
   evaluate(`await voiceFixture.cleanup();`);
   console.log('PASS voice navigation persistence, explicit channel switching, pre-join mute/deafen and red hover/dropdown states, busy-device errors, join cancellation, profile, audio settings, recording cleanup, and narrow layout (mock signaling/WebRTC)');
 } catch (error) {
+  screenshot('failure');
   console.error(evaluate(`return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase, channels: [...document.querySelectorAll('.channel-select')].map(node => [node.textContent, node.getAttribute('aria-current')]), voice: [...document.querySelectorAll('.voice-button')].map(node => [node.textContent, node.getAttribute('aria-disabled')]), pages: document.querySelectorAll('.call-page').length };`));
   throw error;
 } finally {

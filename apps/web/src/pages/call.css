@@ -38,6 +38,7 @@
 .device-menu summary { width: 16px; border-radius: 0 4px 4px 0; }
 .device-menu summary svg { width: 12px; height: 12px; }
 .device-menu[open] > summary svg { transform: rotate(180deg); }
+.device-menu .call-settings-panel { left: auto; right: 0; width: min(280px, 100%); border-radius: 8px; }
 .call-settings-panel > div { display: grid; gap: 12px; }
 .call-settings-panel a { overflow-wrap: anywhere; }
 .call-settings-panel strong { color: var(--text-muted); font-size: .72rem; }
@@ -79,6 +80,10 @@
 .participant-status svg { width: 15px; height: 15px; }
 .participant-menu-button { height: 28px; flex: 0 0 auto; padding: 0 7px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font-size: .7rem; font-weight: 700; cursor: pointer; }
 .participant-menu-button:hover, .participant-menu-button[aria-expanded="true"] { color: var(--text); background: var(--border); }
+@media (hover: hover) and (pointer: fine) {
+  .participant-menu-button { opacity: 0; pointer-events: none; }
+  .participant:is(:hover, :focus-within, .volume-open) .participant-menu-button { opacity: 1; pointer-events: auto; }
+}
 .participant-volume { position: absolute; z-index: 2; top: 52px; right: 8px; width: 220px; display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
 .participant-volume div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .participant-volume strong { font-size: .78rem; }
