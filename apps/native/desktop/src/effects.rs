@@ -1,6 +1,8 @@
 use rodio::{Decoder, OutputStreamBuilder, Sink, Source, buffer::SamplesBuffer};
 use std::collections::VecDeque;
 use std::io::Cursor;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::time::{Duration, Instant};
 
@@ -43,17 +45,23 @@ impl Request {
 pub struct Effects {
     sender: Option<SyncSender<Request>>,
     last_slider: Option<Instant>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Effects {
     pub fn new(enabled: bool) -> Self {
+        let cancelled = Arc::new(AtomicBool::new(false));
         let sender = enabled.then(|| {
             let (sender, receiver) = mpsc::sync_channel::<Request>(16);
+            let cancelled = cancelled.clone();
             std::thread::spawn(move || {
                 let buffers: Vec<_> = WAVS.iter().map(|wav| decode(wav)).collect();
                 let mut stream = None;
                 let mut active: VecDeque<Sink> = VecDeque::new();
                 while let Ok(request) = receiver.recv() {
+                    if cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
                     if !request.fresh(Instant::now()) {
                         continue;
                     }
@@ -67,6 +75,9 @@ impl Effects {
                         continue;
                     };
                     // Opening a slow output device must not play old clicks later.
+                    if cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
                     if !request.fresh(Instant::now()) {
                         continue;
                     }
@@ -88,6 +99,7 @@ impl Effects {
         Self {
             sender,
             last_slider: None,
+            cancelled,
         }
     }
 
@@ -128,6 +140,14 @@ impl Effects {
     }
 }
 
+impl Drop for Effects {
+    fn drop(&mut self) {
+        // Dropping the sender wakes the worker; cancellation discards queued
+        // clicks rather than playing them while the worker shuts down.
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
+
 fn decode(wav: &'static [u8]) -> Option<SamplesBuffer> {
     let decoder = Decoder::try_from(Cursor::new(wav)).ok()?;
     let channels = decoder.channels();
@@ -164,6 +184,7 @@ mod tests {
         let mut effects = Effects {
             sender: Some(sender),
             last_slider: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
         };
         effects.slider(0.8);
         effects.slider(0.1);
@@ -173,5 +194,13 @@ mod tests {
         assert!(receiver.try_recv().is_err());
         assert!(request.fresh(request.requested + Duration::from_millis(120)));
         assert!(!request.fresh(request.requested + Duration::from_millis(121)));
+        let cancellation = effects.cancelled.clone();
+        assert!(!cancellation.load(Ordering::Acquire));
+        drop(effects);
+        assert!(cancellation.load(Ordering::Acquire));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
     }
 }

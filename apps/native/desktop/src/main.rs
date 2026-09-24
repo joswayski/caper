@@ -133,6 +133,7 @@ struct CaperApp {
     worker: Worker,
     voice: Voice,
     effects: Effects,
+    sound_effects: bool,
     announced_voice: Option<u64>,
     generation: u64,
     loading: bool,
@@ -194,6 +195,7 @@ impl CaperApp {
             worker,
             voice,
             effects: Effects::new(fixture.is_none()),
+            sound_effects: true,
             announced_voice: None,
             generation: 1,
             loading: fixture.is_none(),
@@ -1513,6 +1515,13 @@ impl CaperApp {
         if let Some(json) = storage.get_string("audio-preferences-v1") {
             self.voice.preferences = voice::Preferences::restore(&json);
         }
+        if let Some(enabled) = storage
+            .get_string("sound-effects-v1")
+            .and_then(|value| value.parse::<bool>().ok())
+        {
+            self.sound_effects = enabled;
+            self.effects = Effects::new(enabled);
+        }
         if let Some(width) = storage
             .get_string("sidebar-width-v1")
             .and_then(|value| value.parse::<f32>().ok())
@@ -1531,6 +1540,7 @@ impl eframe::App for CaperApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.persist_preferences {
             storage.set_string("sidebar-width-v1", self.sidebar_width.to_string());
+            storage.set_string("sound-effects-v1", self.sound_effects.to_string());
         }
         if self.persist_preferences
             && let Ok(json) = serde_json::to_string(&self.voice.preferences)
@@ -2587,6 +2597,16 @@ impl CaperApp {
                     .align(egui::RectAlign::TOP_END)
                     .width(232.0)
                     .show(|ui| {
+                        if ui
+                            .checkbox(&mut self.sound_effects, "Caper sound effects")
+                            .changed()
+                        {
+                            self.effects =
+                                Effects::new(self.sound_effects && self.persist_preferences);
+                            if self.sound_effects {
+                                self.effects.play(Effect::ToggleOn);
+                            }
+                        }
                         if ui.button("Audio preferences").clicked() {
                             self.voice.refresh_devices();
                             self.dialog = Some(Dialog::Audio);
@@ -4877,6 +4897,23 @@ mod tests {
         assert!(app.voice.state.audio.muted && app.voice.state.audio.deafened);
         click(&mut app, &context, egui::pos2(262.0, 867.0));
         assert!(!app.voice.state.audio.muted && !app.voice.state.audio.deafened);
+        click(&mut app, &context, egui::pos2(307.0, 867.0));
+        let output = render(&mut app, &context, vec![]);
+        assert!(app.sound_effects);
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Caper sound effects"),
+        );
+        assert!(!app.sound_effects);
+        click(&mut app, &context, egui::pos2(307.0, 867.0));
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Caper sound effects"),
+        );
+        assert!(app.sound_effects);
         for fixture in ["parity-voice-joining", "parity-voice-connected"] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
@@ -5144,10 +5181,18 @@ mod tests {
         );
         app.persist_preferences = true;
         app.sidebar_width = 337.0;
+        app.sound_effects = false;
         eframe::App::save(&mut app, &mut storage);
         app.sidebar_width = 280.0;
+        app.sound_effects = true;
         app.restore_preferences(&storage);
         assert_eq!(app.sidebar_width, 337.0);
+        assert!(!app.sound_effects);
+        app.sound_effects = true;
+        eframe::App::save(&mut app, &mut storage);
+        app.sound_effects = false;
+        app.restore_preferences(&storage);
+        assert!(app.sound_effects);
         for invalid in ["NaN", "inf", "219", "441"] {
             app.sidebar_width = 280.0;
             storage.0.insert("sidebar-width-v1".into(), invalid.into());
