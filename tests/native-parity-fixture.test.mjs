@@ -52,6 +52,19 @@ test('email code auth and validated profile persist across account and member re
   assert.equal(detail.value.members.find(({ id }) => id === ids.owner).displayName, 'New Name');
 });
 
+test('persistent navigation failure survives prefetch until explicitly cleared', async (t) => {
+  const { request } = await setup(t);
+  const path = `/api/spaces/${ids.space}`;
+  await request('/__fixture/control', { method: 'POST', body: { failure: { path, method: 'GET', status: 503, persistent: true } } });
+  assert.equal((await request(path, { auth: true })).response.status, 503, 'hover read fails');
+  assert.equal((await request(path, { auth: true })).response.status, 503, 'click read still fails');
+  await request('/__fixture/control', { method: 'POST', body: { clearFailures: true } });
+  assert.equal((await request(path, { auth: true })).response.status, 200, 'explicit retry can succeed');
+  await request('/__fixture/control', { method: 'POST', body: { failure: { path, status: 502 } } });
+  assert.equal((await request(path, { auth: true })).response.status, 502);
+  assert.equal((await request(path, { auth: true })).response.status, 200, 'ordinary failures remain one-shot');
+});
+
 test('space, channel, and member CRUD enforce production-shaped validation and idempotency', async (t) => {
   const { request } = await setup(t);
   assert.equal((await request('/api/spaces', { method: 'POST', auth: true, body: { name: 'bad\nname' } })).response.status, 400);

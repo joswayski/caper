@@ -313,8 +313,12 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.sliders["Input gain"].exists)
         XCTAssertTrue(app.sliders["Live voice processing"].exists)
         app.sliders["Input gain"].adjust(toNormalizedSliderPosition: 0)
+        // XCTest's normalized drag may land a few steps above the endpoint.
+        // Exercise keyboard adjustment too, and still require exact 0/100.
+        for _ in 0..<12 { app.sliders["Input gain"].typeKey(.leftArrow, modifierFlags: []) }
         XCTAssertEqual(outputGain(of: app.sliders["Input gain"]), 0)
         app.sliders["Live voice processing"].adjust(toNormalizedSliderPosition: 1)
+        for _ in 0..<12 { app.sliders["Live voice processing"].typeKey(.rightArrow, modifierFlags: []) }
         XCTAssertEqual(outputGain(of: app.sliders["Live voice processing"]), 100)
         assertStaticText("The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.", in: app, timeout: 2)
         assertStaticText("On-device noise suppression starts when you test or join.", in: app, timeout: 2)
@@ -334,7 +338,7 @@ final class CaperParityUITests: XCTestCase {
         var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
         control.httpMethod = "POST"
         control.setValue("application/json", forHTTPHeaderField: "content-type")
-        control.httpBody = Data(#"{"failure":{"path":"/api/spaces/space0000001","method":"GET","status":503,"error":"TEST FIXTURE: space temporarily unavailable."}}"#.utf8)
+        control.httpBody = Data(#"{"failure":{"path":"/api/spaces/space0000001","method":"GET","status":503,"persistent":true,"error":"TEST FIXTURE: space temporarily unavailable."}}"#.utf8)
         let (_, response) = try await URLSession.shared.data(for: control)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         app.buttons["channel-chan00000002"].tap()
@@ -343,6 +347,9 @@ final class CaperParityUITests: XCTestCase {
         assertElement("selected-channel-name", label: "# general", in: app)
         XCTAssertEqual(composer.value as? String, "Keep this draft")
         capture("navigation-retry", app: app)
+        control.httpBody = Data(#"{"clearFailures":true}"#.utf8)
+        let (_, recovered) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((recovered as? HTTPURLResponse)?.statusCode, 200)
         retry.tap()
         let design = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "# design"), object: app.descendants(matching: .any)["selected-channel-name"])
         XCTAssertEqual(XCTWaiter.wait(for: [design], timeout: 10), .completed)

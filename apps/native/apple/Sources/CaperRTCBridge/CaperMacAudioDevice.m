@@ -225,7 +225,15 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
 + (NSArray<CaperAudioRoute *> *)outputRoutes { return CaperRoutes(NO); }
 - (uint32_t)resolvedOutputDeviceID { return CaperResolveRoute(_outputUID, NO); }
 - (NSInteger)inputGain { return atomic_load(&_gain); }
-- (void)setInputGain:(NSInteger)value { atomic_store(&_gain, (int)MAX(0, MIN(200, value))); }
+- (void)setInputGain:(NSInteger)value {
+    int next = (int)MAX(0, MIN(200, value));
+    int previous = atomic_load_explicit(&_gain, memory_order_acquire);
+    if ((previous == 0) != (next == 0)) {
+        // Discard any queued PCM from the prior gain regime when reopening.
+        atomic_fetch_add_explicit(&_publicationEpoch, 1, memory_order_acq_rel);
+    }
+    atomic_store_explicit(&_gain, next, memory_order_release);
+}
 - (NSInteger)processingStrength { return atomic_load(&_strength); }
 - (void)setProcessingStrength:(NSInteger)value { atomic_store(&_strength, (int)MAX(0, MIN(100, value))); }
 - (BOOL)publicationEnabled { return atomic_load_explicit(&_publicationEnabled, memory_order_acquire); }
@@ -274,7 +282,8 @@ BOOL CaperSyntheticComparisonStopWorks(void) {
 static uint32_t CaperCaptureEpoch(CaperMacAudioDevice *device) {
     uint32_t before = atomic_load_explicit(&device->_publicationEpoch, memory_order_acquire);
     bool allowed = atomic_load_explicit(&device->_publicationEnabled, memory_order_acquire) &&
-        !atomic_load_explicit(&device->_comparing, memory_order_acquire);
+        !atomic_load_explicit(&device->_comparing, memory_order_acquire) &&
+        atomic_load_explicit(&device->_gain, memory_order_acquire) != 0;
     return allowed && before == atomic_load_explicit(&device->_publicationEpoch, memory_order_acquire) ? before : 0;
 }
 
@@ -290,7 +299,12 @@ BOOL CaperSyntheticCaptureEntryFenceWorks(void) {
     uint32_t publicEntry = CaperCaptureEpoch(device);
     device.publicationEnabled = NO;
     device.publicationEnabled = YES; // Closed and reopened during render.
-    return publicEntry && CaperEpochAtDelivery(device, publicEntry) == 0 &&
+    if (!publicEntry || CaperEpochAtDelivery(device, publicEntry) != 0) return NO;
+    uint32_t gainEntry = CaperCaptureEpoch(device);
+    device.inputGain = 0;
+    if (CaperCaptureEpoch(device) || CaperEpochAtDelivery(device, gainEntry)) return NO;
+    device.inputGain = 170;
+    return CaperEpochAtDelivery(device, gainEntry) == 0 &&
         CaperEpochAtDelivery(device, CaperCaptureEpoch(device)) != 0;
 }
 
@@ -306,25 +320,35 @@ static OSStatus CaperDeliverCapture(CaperMacAudioDevice *device, AudioUnitRender
     uint32_t epoch = CaperEpochAtDelivery(device, entryEpoch);
     unsigned offset = 0, count = 0;
     BOOL processed = YES;
+    int gain = atomic_load_explicit(&device->_gain, memory_order_acquire);
     if (!device->_syntheticTest) {
         // The bounded worker returns post-gain, post-DPDFNet PCM here. It never
         // runs inference on the AUHAL callback or exposes raw capture on lag.
         processed = CaperDenoisePipelineProcess(device->_denoiser, device->_capture,
             device->_capture, device->_captureEpochs, frames,
-            atomic_load_explicit(&device->_gain, memory_order_relaxed), epoch);
+            gain, epoch);
+    }
+    if (gain == 0) {
+        // The worker may still return delayed model/OLA output from a previous
+        // nonzero input. Natural comparison, enhanced comparison and publication
+        // must all be exact silence *now*, not when that queue eventually drains.
+        memset(device->_capture, 0, frames * sizeof(int16_t));
+        memset(device->_captureEpochs, 0, frames * sizeof(uint32_t));
+        device->_processing = (CaperVoiceDSP){0};
+        device->_processingEpoch = 0;
     }
     if (comparing) {
         offset = atomic_load_explicit(&device->_comparisonFrames, memory_order_relaxed);
         count = MIN(frames, device->_comparisonCapacityFrames - MIN(offset, device->_comparisonCapacityFrames));
         if (count) { memcpy(device->_comparisonNatural + offset, device->_capture, count * sizeof(int16_t)); }
     }
-    if (processed) {
+    if (processed && gain != 0) {
         if (device->_syntheticTest) {
             for (UInt32 i = 0; i < frames; i++) device->_captureEpochs[i] = epoch;
         }
         CaperProcessVoiceEpochs(device->_capture, device->_captureEpochs, frames,
             atomic_load_explicit(&device->_inputRate, memory_order_relaxed),
-            device->_syntheticTest ? atomic_load_explicit(&device->_gain, memory_order_relaxed) : 100,
+            device->_syntheticTest ? gain : 100,
             atomic_load_explicit(&device->_strength, memory_order_relaxed),
             &device->_processing, &device->_processingEpoch);
     }
@@ -342,7 +366,8 @@ static OSStatus CaperDeliverCapture(CaperMacAudioDevice *device, AudioUnitRender
         }
     }
     CaperGatePublishedPCM(device->_capture, frames,
-        atomic_load_explicit(&device->_publicationEnabled, memory_order_acquire) && !comparing);
+        atomic_load_explicit(&device->_publicationEnabled, memory_order_acquire) &&
+        atomic_load_explicit(&device->_gain, memory_order_acquire) != 0 && !comparing);
     if (device->_syntheticTest) {
         int peak = 0;
         for (UInt32 i = 0; i < frames; i++) { peak = MAX(peak, abs((int)device->_capture[i])); }

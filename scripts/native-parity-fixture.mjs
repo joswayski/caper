@@ -89,6 +89,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === '/health') return json(response, 200, { fixture: true });
       if (path === '/__fixture/control' && method === 'POST') {
         if (body.reset) state = initialState();
+        if (body.clearFailures) state.failures = [];
         if (body.failure) state.failures.push(body.failure);
         if (body.disconnect) for (const client of sockets) client.socket.destroy();
         if (body.typing) broadcast('chat', body.typing.channelId ?? ids.general, {
@@ -99,7 +100,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       const failureIndex = state.failures.findIndex((failure) => failure.path === path && (!failure.method || failure.method === method));
       if (failureIndex >= 0) {
-        const [failure] = state.failures.splice(failureIndex, 1);
+        const failure = state.failures[failureIndex];
+        if (!failure.persistent) state.failures.splice(failureIndex, 1);
         return reject(response, failure.status, failure.error ?? 'TEST FIXTURE: requested failure.');
       }
       const user = identity(request);

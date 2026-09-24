@@ -43,17 +43,18 @@ int main(int argc, char **argv) {
     engine = CaperDenoisePipelineCreate(fallbackOnly ? nullptr : argv[1], rate);
     assert(engine);
     std::rewind(inputFile);
-    int reopened = 0, privateNatural = 0, transitionSilence = 0;
+    int reopened = 0, transitionSilence = 0;
     for (int hop = 0; hop < 105; ++hop) {
         if (std::fread(input.data(), sizeof(int16_t), frames, inputFile) != frames) {
             std::rewind(inputFile);
             assert(std::fread(input.data(), sizeof(int16_t), frames, inputFile) == frames);
         }
         const uint32_t epoch = hop < 45 ? 11 : hop < 60 ? 0 : 13;
-        assert(CaperDenoisePipelineProcess(engine, input.data(), input.data(), epochs.data(), frames, 150, epoch));
+        const int gain = hop < 45 ? 150 : hop < 60 ? 0 : 170;
+        assert(CaperDenoisePipelineProcess(engine, input.data(), input.data(), epochs.data(), frames, gain, epoch));
         for (unsigned i = 0; i < frames; ++i) {
-            // Natural comparison remains available locally even when private.
-            if (!epoch && std::abs(int(input[i])) > 10) ++privateNatural;
+            // The worker can still return buffered pre-zero samples here;
+            // the HAL callback must suppress them for all destinations.
             if (hop >= 60 && epochs[i] != 13) ++transitionSilence;
             if (hop >= 60 && epochs[i] == 13 && std::abs(int(input[i])) > 10) ++reopened;
         }
@@ -61,7 +62,7 @@ int main(int argc, char **argv) {
     }
     std::fclose(inputFile);
     assert(!CaperDenoisePipelineFailed(engine));
-    assert(privateNatural > 100 && reopened > 100 && transitionSilence > 0);
+    assert(reopened > 100 && transitionSilence > 0);
     CaperDenoisePipelineDestroy(engine);
 
     engine = CaperDenoisePipelineCreate(fallbackOnly ? nullptr : argv[1], rate);

@@ -125,6 +125,27 @@ final class AudioBridgeTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertGreaterThan(audiblePeak, 100, "The real local peer must decode nonzero PCM when publication opens")
+
+        // A warmed capture contour can have delayed nonzero output. Moving gain
+        // to zero must silence all three destinations immediately, including
+        // natural/enhanced local comparison despite continued injected speech.
+        device.processingStrength = 100
+        device.inputGain = 0
+        XCTAssertTrue(device.beginComparison())
+        for _ in 0..<12 {
+            XCTAssertTrue(device.injectSyntheticPCM(pcm))
+            XCTAssertEqual(device.syntheticLastPublishedPeak, 0)
+        }
+        let silent = try XCTUnwrap(device.endComparison())
+        XCTAssertEqual(silent.natural.count, 12 * pcm.count)
+        XCTAssertTrue(silent.natural.allSatisfy { $0 == 0 }, "Natural comparison is exact zero after a warmed nonzero capture")
+        XCTAssertTrue(silent.enhanced.allSatisfy { $0 == 0 }, "Enhanced comparison cannot retain contour history")
+
+        device.inputGain = 170
+        for _ in 0..<12 {
+            XCTAssertTrue(device.injectSyntheticPCM(pcm))
+            XCTAssertGreaterThan(device.syntheticLastPublishedPeak, 1_000, "A new gain epoch resumes only fresh capture")
+        }
     }
 
     private static func peak(_ data: Data) -> Int {
