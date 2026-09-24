@@ -33,7 +33,7 @@ async function fixture() {
   for (const element of document.body.children) element.hidden = true;
   const mount = document.createElement('div'); document.body.append(mount);
   const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], commands: [], revision: 0 };
-  const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture' };
+  const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture', debugEnabled: true };
   const space = { id: 'workspace123', name: 'Test space', ownerId: account.id };
   const channels = ['alpha', 'beta'].map(name => ({ id: name.padEnd(12, '0'), name, spaceId: space.id, private: false }));
   const author = { id: account.id, name: account.displayName, isGuest: false };
@@ -191,6 +191,22 @@ try {
   browser('set', 'viewport', '1280', '900', '2');
   evaluate(`await (${fixture.toString()})();`);
   wait(`document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.voice-button[aria-disabled="false"]')`);
+  for (const label of ['Input Options', 'Output Options', 'User Settings']) {
+    click(label);
+    for (const position of ['top', 'side', 'bottom']) {
+      const [x, y] = evaluate(`const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return ${JSON.stringify(position)} === 'top' ? [Math.round(r.left + r.width / 2), Math.round(r.top + 5)] : ${JSON.stringify(position)} === 'side' ? [Math.round(r.right - 5), Math.round(r.top + r.height / 2)] : [Math.round(r.left + r.width / 2), Math.round(r.bottom - 5)];`);
+      browser('mouse', 'move', String(x), String(y)); browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
+      assert.equal(evaluate(`return document.querySelector('button[aria-label="${label}"]').getAttribute('aria-expanded');`), 'true', 'Empty-space clicks must leave the menu open');
+      assert.ok(evaluate(`return document.querySelector('.call-settings-panel').contains(document.activeElement);`), 'Panel background safely takes focus');
+    }
+    browser('press', 'Escape');
+    assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), label);
+    assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel');`), false);
+    click(label);
+    browser('click', '.chat-heading');
+    assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel');`), false, 'Outside click still dismisses settings');
+  }
+  console.log('PASS empty-panel clicks, Escape focus restoration, and outside dismissal');
   const bounds = () => evaluate(`return ['.chat-heading', '.chat-composer'].map(selector => { const r = document.querySelector(selector).getBoundingClientRect(); return [r.top, r.height]; });`);
   const initialBounds = bounds();
   assert.equal(evaluate(`return document.querySelector('.account-name').textContent;`), 'UI fixture', 'Profile must use display name, not username');
@@ -215,31 +231,35 @@ try {
   browser('press', 'Escape');
   wait(`!document.querySelector('dialog[open]')`);
   click('Input Options');
-  assert.equal(evaluate(`return !!document.querySelector('details[open] select');`), false, 'Device menu must have direct choices');
+  assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel select');`), true, 'Device menu must use a dropdown');
   browser('focus', '[aria-label="Input volume"]'); browser('press', 'End');
   assert.equal(evaluate(`return document.querySelector('[aria-label="Input volume"]').getAttribute('aria-valuenow');`), '200');
   browser('press', 'Home');
   assert.equal(evaluate(`return document.querySelector('[aria-label="Input volume"]').getAttribute('aria-valuenow');`), '0');
   browser('press', 'End');
-  wait(`getComputedStyle(document.querySelector('summary[aria-label="Input Options"] svg')).transform === 'matrix(-1, 0, 0, -1, 0, 0)'`);
-  assert.equal(evaluate(`return getComputedStyle(document.querySelector('summary[aria-label="Input Options"] svg')).transform;`), 'matrix(-1, 0, 0, -1, 0, 0)', 'Open chevron must point up');
-  browser('check', 'input[name="input-device"][value="headset"]');
-  assert.equal(evaluate(`return document.querySelector('input[name="input-device"]:checked').value;`), 'headset');
+  wait(`getComputedStyle(document.querySelector('button[aria-label="Input Options"] svg')).transform === 'matrix(-1, 0, 0, -1, 0, 0)'`);
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('button[aria-label="Input Options"] svg')).transform;`), 'matrix(-1, 0, 0, -1, 0, 0)', 'Open chevron must point up');
+  browser('click', 'select[name="input-device"]');
+  screenshot('voice-input-dropdown');
+  browser('press', 'Escape');
+  assert.ok(evaluate(`return !!document.querySelector('.call-settings-panel');`), 'Escape closes the native dropdown before its parent panel');
+  browser('select', 'select[name="input-device"]', 'headset');
+  assert.equal(evaluate(`return document.querySelector('select[name="input-device"]').value;`), 'headset');
   screenshot('voice-input-options');
   click('Output Options');
-  assert.equal(evaluate(`return document.querySelector('summary[aria-label="Input Options"]').parentElement.open;`), false);
-  browser('check', 'input[name="output-device"][value="headphones"]');
-  assert.equal(evaluate(`return document.querySelector('input[name="output-device"]:checked').value;`), 'headphones');
+  assert.equal(evaluate(`return document.querySelector('button[aria-label="Input Options"]').getAttribute('aria-expanded');`), 'false');
+  browser('select', 'select[name="output-device"]', 'headphones');
+  assert.equal(evaluate(`return document.querySelector('select[name="output-device"]').value;`), 'headphones');
   browser('focus', '[aria-label="Output volume"]'); browser('press', 'PageDown');
-  assert.equal(evaluate(`return document.querySelector('details[open] .output-volume output').textContent;`), '90%');
+  assert.equal(evaluate(`return document.querySelector('.call-settings-panel .output-volume output').textContent;`), '90%');
   screenshot('voice-output-options');
   browser('press', 'Escape');
-  assert.equal(evaluate(`return document.querySelector('summary[aria-label="Output Options"]').parentElement.open;`), false);
+  assert.equal(evaluate(`return document.querySelector('button[aria-label="Output Options"]').getAttribute('aria-expanded');`), 'false');
   click('User Settings');
-  assert.equal(evaluate(`return !!document.querySelector('details[open] [role="slider"]');`), false);
-  assert.equal(evaluate(`return document.querySelector('details[open]').textContent.includes('@fixture');`), false);
-  assert.equal(evaluate(`return !!document.querySelector('details[open] a[href="/profile"]');`), false);
-  assert.ok(evaluate(`return [...document.querySelectorAll('details[open] button')].every(button => { const style = getComputedStyle(button); return style.borderTopWidth === '0px' && style.backgroundColor === 'rgba(0, 0, 0, 0)'; });`), 'Menu actions must not look like bordered inputs');
+  assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel [role="slider"]');`), false);
+  assert.equal(evaluate(`return document.querySelector('.call-settings-panel').textContent.includes('@fixture');`), false);
+  assert.equal(evaluate(`return !!document.querySelector('.call-settings-panel a[href="/profile"]');`), false);
+  assert.ok(evaluate(`return [...document.querySelectorAll('.call-settings-panel button')].every(button => { const style = getComputedStyle(button); return style.borderTopWidth === '0px' && style.backgroundColor === 'rgba(0, 0, 0, 0)'; });`), 'Menu actions must not look like bordered inputs');
   screenshot('voice-settings');
   browser('press', 'Escape');
 
@@ -262,10 +282,48 @@ try {
   wait(`voiceFixture.outputGain`);
   const gain = () => evaluate(`return voiceFixture.outputGain.gain.value;`);
   assert.ok(Math.abs(gain() - 0.9) < 0.00001, 'Master volume must reach the audio graph');
+  if (evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`)) {
+    browser('click', '.chat-heading');
+    assert.equal(evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`), '0');
+    browser('focus', '.participant-menu-button');
+    wait(`document.querySelector('.participant-menu-button').matches(':focus') && getComputedStyle(document.querySelector('.participant-menu-button')).opacity === '1'`);
+    assert.equal(evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`), '1', 'Keyboard focus reveals Audio');
+    browser('click', '.chat-heading');
+  }
+  browser('hover', '.participant:has(.participant-menu-button)');
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`), '1');
   click('Audio controls for Peach Donkey');
   browser('focus', '[aria-label="Peach Donkey volume"]'); browser('press', 'PageUp');
   wait(`document.querySelector('[aria-label="Peach Donkey volume"]').getAttribute('aria-valuenow') === '110' && Math.abs(voiceFixture.outputGain.gain.value - 0.99) < 0.00001`);
   assert.ok(Math.abs(gain() - 0.99) < 0.00001, '90% master × 110% participant must produce 99% gain');
+  screenshot('participant-audio');
+  browser('click', '.chat-heading');
+  assert.equal(evaluate(`return !!document.querySelector('.participant-volume');`), false, 'Outside click closes participant controls');
+  for (const key of ['Home', 'End', 'Home', 'End']) {
+    browser('focus', '.channel-sidebar-resize'); browser('press', key);
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'false');
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'true');
+  }
+  for (const width of [250, 330, 440]) {
+    const [x, y, target] = evaluate(`const r = document.querySelector('.channel-sidebar-resize').getBoundingClientRect(); const p = document.querySelector('.people-panel').getBoundingClientRect(); return [r.left + r.width / 2, r.top + 100, p.left + ${width}];`);
+    browser('mouse', 'move', String(x), String(y)); browser('mouse', 'down', 'left');
+    browser('mouse', 'move', String(target), String(y)); browser('mouse', 'up', 'left');
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'false');
+    browser('click', '.voice-stack');
+    assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), 'true');
+  }
+  click('Input Options');
+  assert.ok(evaluate(`return document.querySelector('.call-settings-panel').getBoundingClientRect().width <= 280;`), 'Input menu stays compact in a wide sidebar');
+  screenshot('compact-input-wide-sidebar');
+  browser('press', 'Escape');
+  browser('hover', '.participant:has(.participant-menu-button)');
+  click('Audio controls for Peach Donkey');
+  browser('press', 'Escape');
+  assert.equal(evaluate(`return !!document.querySelector('.participant-volume');`), false);
+  click('Audio controls for Peach Donkey');
   click('Audio controls for Peach Donkey');
   click('Output Options'); browser('focus', '[aria-label="Output volume"]'); browser('press', 'Home');
   wait(`voiceFixture.outputGain.gain.value === 0`);
@@ -276,15 +334,42 @@ try {
   browser('press', 'PageDown'); browser('press', 'Escape');
   click('Mute microphone'); wait(`document.querySelector('[aria-label="Unmute microphone"]')`);
   click('Deafen audio'); wait(`document.querySelector('[aria-label="Undeafen audio"]')`);
+  evaluate(`clearInterval(voiceFixture.client.statsTimer);`);
   evaluate(`voiceFixture.client.diagnostics = { join: 'Fixture join', microphoneSessionMs: 10, signalingMs: 20, transportMs: 30, rosterMs: 40, receivedBytes: 10000, receiveBitrate: 32000, sentBytes: 10000, sendBitrate: 32000, packetsLost: 0, maxJitterMs: 1, roundTripMs: 12, route: 'direct' }; voiceFixture.client.emit();`);
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Connection details', '--exact');
   wait(`document.querySelector('dialog[open] .call-diagnostics')`);
   assert.deepEqual(bounds(), initialBounds, 'Diagnostics must overlay rather than reflow messages');
   centeredDialog();
+  evaluate(`navigator.clipboard.writeText = async text => { voiceFixture.copied = text; };`);
+  browser('find', 'role', 'button', 'click', '--name', 'Copy connection details', '--exact');
+  assert.equal(evaluate(`return JSON.parse(voiceFixture.copied).signalingMs;`), 20);
+  assert.ok(evaluate(`return document.querySelector('dialog[open]').textContent.includes('Copied connection details');`));
   screenshot('voice-connection-details');
-  browser('press', 'Escape');
+  browser('mouse', 'move', '5', '5'); browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
   wait(`!document.querySelector('dialog[open]')`);
   assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), 'User Settings', 'Dialog close should restore focus to its settings trigger');
+
+  click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Audio diagnostics', '--exact');
+  wait(`document.querySelector('dialog[open] .audio-debug')`);
+  browser('click', '.audio-debug p:first-child');
+  assert.ok(evaluate(`return !!document.querySelector('dialog[open]');`), 'Inside click must not dismiss diagnostics');
+  browser('mouse', 'move', '5', '5'); browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
+  wait(`!document.querySelector('dialog[open]')`);
+
+  evaluate(`
+    voiceFixture.effectStarts = 0;
+    voiceFixture.effectDurations = [];
+    const start = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) { voiceFixture.effectStarts++; voiceFixture.effectDurations.push(this.buffer.duration); return start.apply(this, args); };
+    voiceFixture.client.participants = voiceFixture.client.participants.filter(person => person.id !== 'peer');
+    voiceFixture.client.emit();
+  `);
+  wait(`voiceFixture.effectStarts === 1`);
+  evaluate(`voiceFixture.client.participants = [...voiceFixture.client.participants]; voiceFixture.client.emit(); await new Promise(r => setTimeout(r, 200));`);
+  assert.equal(evaluate(`return voiceFixture.effectStarts;`), 1, 'A departure plays once; repeated snapshots do not repeat it');
+  evaluate(`voiceFixture.client.participants = [...voiceFixture.people]; voiceFixture.client.emit(); await new Promise(r => setTimeout(r, 200));`);
+  assert.equal(evaluate(`return voiceFixture.effectStarts;`), 1, 'An arrival must not play the departure sound');
+  console.log('PASS participant audio visibility/dismissal, resized roster toggles, compact menu width, diagnostics copy/dismissal, and departure sound (mock signaling/WebRTC)');
 
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
@@ -317,11 +402,11 @@ try {
 
   browser('set', 'viewport', '390', '844', '2');
   click('Input Options');
-  assert.ok(evaluate(`const r = document.querySelector('details[open] .call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
+  assert.ok(evaluate(`const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
   screenshot('voice-controls-narrow');
   browser('press', 'Escape');
   click('Output Options');
-  assert.ok(evaluate(`const r = document.querySelector('details[open] .call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
+  assert.ok(evaluate(`const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`));
   screenshot('voice-output-narrow');
   browser('press', 'Escape');
   click('User Settings'); screenshot('voice-settings-narrow'); browser('press', 'Escape');
@@ -338,7 +423,12 @@ try {
   assert.ok(evaluate(`return voiceFixture.sampleGains.every(node => Math.abs(node.gain.value - 1.9) < 0.00001);`), 'Mic-test playback must amplify to 190% without setting native volume above one');
   browser('press', 'Escape'); wait(`!document.querySelector('dialog[open]')`);
   wait(`voiceFixture.sampleGains.every(node => node.context.state === 'closed')`);
+  const beforeDisconnect = evaluate(`return voiceFixture.effectStarts;`);
   click('Leave voice'); wait(`document.querySelector('[aria-label="Join voice"]')`);
+  wait(`voiceFixture.effectStarts === ${beforeDisconnect + 1}`);
+  assert.ok(evaluate(`return Math.abs(voiceFixture.effectDurations.at(-1) - 0.890159) < 0.001;`), 'Self-disconnect plays the supplied 0.89-second WAV');
+  assert.notEqual(evaluate(`return voiceFixture.effectDurations[0];`), evaluate(`return voiceFixture.effectDurations.at(-1);`), 'Remote departure and self-disconnect must be distinct sounds');
+  console.log('PASS supplied self-disconnect sound is distinct from remote departure');
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
   click('Close audio settings'); wait(`!document.querySelector('dialog[open]')`);
@@ -351,7 +441,7 @@ try {
   click('User Settings'); browser('find', 'role', 'button', 'click', '--name', 'Mic test', '--exact');
   wait(`document.querySelector('dialog[open] [role="alert"]')`);
   assert.ok(evaluate(`return document.querySelector('dialog[open]').textContent.includes('Connect a microphone');`));
-  assert.equal(evaluate(`return !!document.querySelector('dialog[open] [role="status"]');`), false);
+  assert.equal(evaluate(`return !!document.querySelector('dialog[open] > [role="status"]');`), false, 'Mic preparation status must clear after capture fails');
   evaluate(`voiceFixture.captureError = undefined;`);
   browser('find', 'role', 'button', 'click', '--name', 'Try again', '--exact');
   wait(`document.querySelector('dialog[open] .mic-test-button')`);
@@ -407,6 +497,7 @@ try {
   evaluate(`await voiceFixture.cleanup();`);
   console.log('PASS voice navigation persistence, explicit channel switching, pre-join mute/deafen and red hover/dropdown states, busy-device errors, join cancellation, profile, audio settings, recording cleanup, and narrow layout (mock signaling/WebRTC)');
 } catch (error) {
+  screenshot('failure');
   console.error(evaluate(`return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase, channels: [...document.querySelectorAll('.channel-select')].map(node => [node.textContent, node.getAttribute('aria-current')]), voice: [...document.querySelectorAll('.voice-button')].map(node => [node.textContent, node.getAttribute('aria-disabled')]), pages: document.querySelectorAll('.call-page').length };`));
   throw error;
 } finally {

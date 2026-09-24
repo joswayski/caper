@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
@@ -47,6 +47,7 @@ function deviceOptions(devices: MediaDeviceInfo[], kind: MediaDeviceKind) {
 }
 
 function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallViewState["diagnostics"]> }) {
+  const [copyStatus, setCopyStatus] = useState("");
   const values = [
     ["Joined", diagnostics.join],
     ["Microphone + session", `${Math.round(diagnostics.microphoneSessionMs)} ms`],
@@ -65,16 +66,21 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
   return <section className="call-diagnostics" aria-label="Connection statistics">
     <dl>{values.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     <p>Local estimates, not billing totals. Counters reset on reconnect.</p>
+    <button type="button" className="voice-button" onClick={() => void navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2)).then(() => setCopyStatus("Copied connection details"), () => setCopyStatus("Copy failed; try again."))}>Copy connection details</button>
+    <span role="status">{copyStatus}</span>
   </section>;
 }
 
-function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: { label: string; settings?: boolean; open: boolean; onOpenChange: (open: boolean) => void; menuRef?: RefObject<HTMLDetailsElement | null>; children: ReactNode }) {
-  return <details ref={menuRef} open={open} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
-    if (event.key === "Escape") { onOpenChange(false); event.currentTarget.querySelector("summary")?.focus(); }
+function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: { label: string; settings?: boolean; open: boolean; onOpenChange: (open: boolean) => void; menuRef?: RefObject<HTMLDivElement | null>; children: ReactNode }) {
+  const panelId = useId();
+  return <div ref={menuRef} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
+    // Let native device pickers handle Escape without also removing their panel.
+    if (event.target instanceof HTMLSelectElement) return;
+    if (event.key === "Escape" && open && !event.defaultPrevented) { onOpenChange(false); event.currentTarget.querySelector<HTMLButtonElement>(".call-settings-trigger")?.focus(); }
   }}>
-    <Tooltip content={label}><summary aria-label={label} onClick={(event) => { event.preventDefault(); onOpenChange(!open); }}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</summary></Tooltip>
-    <div className="call-settings-panel">{children}</div>
-  </details>;
+    <button type="button" className="call-settings-trigger" title={label} aria-label={label} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => onOpenChange(!open)}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
+    {open && <div id={panelId} className="call-settings-panel" role="group" aria-label={`${label} panel`} tabIndex={-1}>{children}</div>}
+  </div>;
 }
 
 function ParticipantCountry({ code }: { code?: string }) {
@@ -199,7 +205,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   const [availability, setAvailability] = useState<Record<string, boolean>>({});
   const [audioPanel, setAudioPanel] = useState<"mic" | "connection" | "debug">();
   const [audioMenu, setAudioMenu] = useState<"input" | "output" | "settings">();
-  const audioMenuRef = useRef<HTMLDetailsElement>(null);
+  const audioMenuRef = useRef<HTMLDivElement>(null);
   const audioDialog = useRef<HTMLDialogElement>(null);
   const audioReturnFocus = useRef<HTMLElement | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -222,6 +228,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
+  const volumeMenuRef = useRef<HTMLLIElement>(null);
+  const previousVoiceRoster = useRef<{ selfId: string; ids: Set<string> } | undefined>(undefined);
   const [collapsedRosters, setCollapsedRosters] = useState<ReadonlySet<string>>(() => new Set());
   const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence["participants"]>>({});
   const [voiceChannel, setVoiceChannel] = useState(channel);
@@ -286,6 +294,34 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       playSound("channel-join");
     } else if (idle) joined.current = false;
   }, [connected, idle]);
+
+  useEffect(() => {
+    const previous = previousVoiceRoster.current;
+    if (!connected || !state.selfId) { previousVoiceRoster.current = undefined; return; }
+    const ids = new Set(state.participants.map((person) => person.id));
+    if (previous?.selfId === state.selfId && [...previous.ids].some((id) => id !== state.selfId && !ids.has(id))) playSound("channel-leave");
+    previousVoiceRoster.current = { selfId: state.selfId, ids };
+  }, [connected, state.selfId, state.participants]);
+
+  useEffect(() => {
+    if (!volumeParticipant) return;
+    const dismiss = (event: PointerEvent | FocusEvent) => {
+      if (!volumeMenuRef.current?.contains(event.target as Node)) setVolumeParticipant(undefined);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      volumeMenuRef.current?.querySelector<HTMLButtonElement>(".participant-menu-button")?.focus();
+      setVolumeParticipant(undefined);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("focusin", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("focusin", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [volumeParticipant]);
 
   useEffect(() => {
     let current = true;
@@ -389,7 +425,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     if (audioPanel) {
       // The menu item becomes hidden when the dialog takes focus. Return to
       // its visible disclosure, rather than the browser's hidden opener.
-      audioReturnFocus.current = document.activeElement?.closest("details")?.querySelector("summary") ?? null;
+      audioReturnFocus.current = document.activeElement?.closest(".call-settings")?.querySelector(".call-settings-trigger") ?? null;
       audioDialog.current?.showModal();
     } else {
       audioDialog.current?.close();
@@ -408,7 +444,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   };
   const leave = () => {
     setVoiceError(undefined);
-    if (connected) playSound("channel-leave");
+    if (connected) playSound("disconnect");
     void act(() => clientRef.current!.leave());
   };
   const closeAudioPanel = () => {
@@ -465,7 +501,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
                 const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
                 const activityMuted = participantMuted && !state.monitoring;
                 const speaking = isSpeaking(participant);
-                return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={!own || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
+                return <li ref={own && volumeParticipant === participant.id ? volumeMenuRef : undefined} className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={!own || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                   <span className="participant-avatar">
                     <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   </span>
@@ -529,7 +565,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     if (own) rosterPlaced = true;
     const key = voiceChannelKey(channelId);
     const label = channelLabel(channelId);
-    const open = !collapsedRosters.has(key) || (own && !!volumeParticipant);
+    const open = !collapsedRosters.has(key);
     const listId = `voice-occupants-${key.replace(/[^\w-]/g, "")}`;
     const busy = pendingJoin && voiceChannel?.id === channelId;
     const switching = !idle && !inVoiceHere(channelId);
@@ -611,22 +647,24 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
             <div className={`voice-action-group${state.muted ? " active" : ""}`}>
               <Tooltip content={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"}><button type="button" className={`voice-icon-button ${state.muted ? "active" : ""}`} aria-disabled={state.monitoring} aria-label={state.muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={state.muted} onClick={() => { if (state.monitoring) return; const muted = !state.muted; playSound(muted ? "toggle-off" : "toggle-on"); setActionError(undefined); void clientRef.current!.setMuted(muted).catch((error) => setActionError(error instanceof Error ? error.message : "Mute state could not be shared.")); }}>{state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}</button></Tooltip>
               <AudioMenu label="Input Options" open={audioMenu === "input"} onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)} menuRef={audioMenu === "input" ? audioMenuRef : undefined}>
-                <fieldset className="device-options" disabled={controlsDisabled}>
-                  <legend>Microphone</legend>
-                  {deviceOptions(devices, "audioinput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="input-device" value={device.deviceId} checked={deviceId === device.deviceId} onChange={() => { if (connected) void act(() => clientRef.current!.changeMicrophone(device.deviceId), () => setDeviceId(device.deviceId)); else setDeviceId(device.deviceId); }} /><span>{label}</span></label>)}
-                  {!deviceOptions(devices, "audioinput").length && <p>System default · test your mic to see available devices.</p>}
-                </fieldset>
+                <label className="device-select">Microphone
+                  <select name="input-device" value={deviceId} disabled={controlsDisabled} onChange={(event) => { const id = event.target.value; if (connected) void act(() => clientRef.current!.changeMicrophone(id), () => setDeviceId(id)); else setDeviceId(id); }}>
+                    {deviceOptions(devices, "audioinput").map(({ device, label }) => <option key={device.deviceId} value={device.deviceId}>{label}</option>)}
+                    {!deviceOptions(devices, "audioinput").length && <option value="">System default</option>}
+                  </select>
+                </label>
                 <div className="volume-control output-volume"><span>Input volume <output>{state.inputVolume}%</output></span><Slider label="Input volume" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /></div>
               </AudioMenu>
             </div>
             <div className={`voice-action-group${state.deafened ? " active" : ""}`}>
               <Tooltip content={state.monitoring ? "Stop mic test to change deafen" : state.deafened ? "Undeafen" : "Deafen"}><button type="button" className={`voice-icon-button ${state.deafened ? "active" : ""}`} aria-disabled={state.monitoring} aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"} aria-pressed={state.deafened} onClick={() => { if (state.monitoring) return; const deafened = !state.deafened; playSound(deafened ? "toggle-off" : "toggle-on"); setActionError(undefined); void clientRef.current!.setDeafened(deafened).catch((error) => setActionError(error instanceof Error ? error.message : "Deafen state could not be shared.")); }}>{state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}</button></Tooltip>
               <AudioMenu label="Output Options" open={audioMenu === "output"} onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)} menuRef={audioMenu === "output" ? audioMenuRef : undefined}>
-                {outputSelectable ? <fieldset className="device-options">
-                  <legend>Audio output</legend>
-                  {deviceOptions(devices, "audiooutput").map(({ device, label }) => <label key={device.deviceId}><input type="radio" name="output-device" value={device.deviceId} checked={output === device.deviceId} onChange={() => setOutput(device.deviceId)} /><span>{label}</span></label>)}
-                  {!deviceOptions(devices, "audiooutput").length && <p>System default · test your mic to see available devices.</p>}
-                </fieldset> : <p className="noise-status">Choose audio output in system settings.</p>}
+                {outputSelectable ? <label className="device-select">Audio output
+                  <select name="output-device" value={output} onChange={(event) => setOutput(event.target.value)}>
+                    {deviceOptions(devices, "audiooutput").map(({ device, label }) => <option key={device.deviceId} value={device.deviceId}>{label}</option>)}
+                    {!deviceOptions(devices, "audiooutput").length && <option value="">System default</option>}
+                  </select>
+                </label> : <p className="noise-status">Choose audio output in system settings.</p>}
                 <div className="volume-control output-volume"><span>Output volume <output>{outputVolume}%</output></span><Slider label="Output volume" value={outputVolume} max={200} onChange={setOutputVolume} /></div>
               </AudioMenu>
             </div>
@@ -661,7 +699,14 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
         <p className="noise-status">Your username is unique. Your display name is what people see in conversations.</p>
         {profileOpen && account && <ProfileForm account={account} onSaved={(updated) => { setAccount(updated); setName(updated.displayName ?? ""); setProfileOpen(false); }} />}
       </dialog>
-      <dialog ref={audioDialog} className="audio-dialog" aria-labelledby="audio-dialog-title" onCancel={(event) => { event.preventDefault(); closeAudioPanel(); }}>
+      <dialog ref={audioDialog} className="audio-dialog" aria-labelledby="audio-dialog-title" onPointerDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) {
+          event.preventDefault();
+          closeAudioPanel();
+        }
+      }} onCancel={(event) => { event.preventDefault(); closeAudioPanel(); }}>
         <div className="audio-dialog-heading">
           <h2 id="audio-dialog-title">{audioPanel === "mic" ? "Mic test" : audioPanel === "debug" ? "Audio diagnostics" : "Connection details"}</h2>
           <button type="button" className="voice-icon-button" aria-label="Close audio settings" onClick={closeAudioPanel}><X aria-hidden="true" /></button>

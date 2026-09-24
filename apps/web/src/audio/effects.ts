@@ -3,6 +3,7 @@ export type SoundEffect =
   | "toggle-on"
   | "slider-tick"
   | "channel-leave"
+  | "disconnect"
   | "warning"
   | "channel-join"
   | "new-message"
@@ -11,7 +12,7 @@ export type SoundEffect =
 const MAX_VOICES = 4;
 const MAX_DEFERRED_PLAY_MS = 120;
 const effects: readonly SoundEffect[] = [
-  "toggle-off", "toggle-on", "slider-tick", "channel-leave", "warning", "channel-join", "new-message", "delete",
+  "toggle-off", "toggle-on", "slider-tick", "channel-leave", "disconnect", "warning", "channel-join", "new-message", "delete",
 ];
 const buffers = new Map<SoundEffect, Promise<AudioBuffer>>();
 const active: AudioBufferSourceNode[] = [];
