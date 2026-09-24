@@ -16,6 +16,6 @@ let package = Package(
         .target(name: "CaperCore", dependencies: [.product(name: "WebRTC", package: "WebRTC")]),
         .executableTarget(name: "CaperMacOS", dependencies: ["CaperCore"]),
         .executableTarget(name: "CaperIOS", dependencies: ["CaperCore"]),
-        .testTarget(name: "CaperCoreTests", dependencies: ["CaperCore"]),
+        .testTarget(name: "CaperCoreTests", dependencies: ["CaperCore", .product(name: "WebRTC", package: "WebRTC")]),
     ]
 )

@@ -3,10 +3,26 @@ import Foundation
 public struct APIError: LocalizedError, Equatable {
     public let status: Int
     public let message: String
+    public let code: String?
     public var errorDescription: String? { message }
+
+    public init(status: Int, message: String, code: String? = nil) {
+        self.status = status; self.message = message; self.code = code
+    }
+
+    var endsVoiceAccess: Bool {
+        code != "ice_restart_retry" && code != "track_gone" && [401, 403, 404].contains(status)
+    }
+
+    var retryableVoiceControl: Bool {
+        if code == "ice_restart_invalid" { return false }
+        if code == "ice_restart_retry" { return true }
+        return status == 408 || status == 429 || status >= 500
+            || (status == 409 && code == "ice_restart_pending")
+    }
 }
 
-private struct ErrorBody: Decodable { let error: String?; let attemptsRemaining: Int? }
+private struct ErrorBody: Decodable { let error: String?; let attemptsRemaining: Int?; let code: String? }
 private struct Challenge: Decodable { let challengeId: String }
 private struct Verification: Decodable { let account: Account; let token: String }
 private struct SessionInput: Encodable { let name: String }
@@ -194,7 +210,7 @@ public actor APIClient {
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else {
             let detail = try? decoder.decode(ErrorBody.self, from: data)
-            throw APIError(status: http.statusCode, message: detail?.error ?? "That request did not work.")
+            throw APIError(status: http.statusCode, message: detail?.error ?? "That request did not work.", code: detail?.code)
         }
         if T.self == Empty.self { return Empty() as! T }
         do { return try decoder.decode(T.self, from: data) }

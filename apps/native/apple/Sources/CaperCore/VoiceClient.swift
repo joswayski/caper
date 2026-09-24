@@ -107,26 +107,43 @@ public final class VoiceClient {
     private var delegate: PeerDelegate?
     private let factory: RTCPeerConnectionFactory
     private let gateway: Gateway
+    private let requestMicrophonePermission: @MainActor () async -> Bool
     #if os(iOS)
     private var audioObservers: [NSObjectProtocol] = []
     #endif
 
-    public init(api: APIClient) {
+    public convenience init(api: APIClient) {
+        self.init(api: api, requestMicrophonePermission: Self.microphonePermission)
+    }
+
+    init(api: APIClient, requestMicrophonePermission: @escaping @MainActor () async -> Bool) {
         self.api = api
+        self.requestMicrophonePermission = requestMicrophonePermission
         RTCInitializeSSL()
         factory = RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(), decoderFactory: RTCDefaultVideoDecoderFactory())
         gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { _, _ in }
+    }
+
+    static func configuration(iceServers: [IceServer]) -> RTCConfiguration {
+        let configuration = RTCConfiguration()
+        configuration.sdpSemantics = .unifiedPlan
+        // Caper sends gathered SDP, not trickled candidates. Continuous
+        // gathering deliberately never enters .complete in native WebRTC.
+        configuration.continualGatheringPolicy = .gatherOnce
+        configuration.iceServers = iceServers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
+        return configuration
     }
 
     public func join(channelID: String?, context: VoiceContext, name: String) async {
         guard phase == .idle || phase == .failed else { return }
         generation += 1
         let attempt = generation
+        stateSequence = 0; restartSequence = 0
         joinName = name
         self.context = context
         phase = .joining; error = nil; self.channelID = channelID
         do {
-            guard await Self.microphonePermission() else { throw VoiceError.permission }
+            guard await requestMicrophonePermission() else { throw VoiceError.permission }
             guard generation == attempt, phase == .joining else { return }
             #if os(iOS)
             try activateAudioSession()
@@ -138,10 +155,7 @@ public final class VoiceClient {
                 return
             }
             token = joined.token; selfID = joined.id
-            let configuration = RTCConfiguration()
-            configuration.sdpSemantics = .unifiedPlan
-            configuration.continualGatheringPolicy = .gatherContinually
-            configuration.iceServers = joined.iceServers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
+            let configuration = Self.configuration(iceServers: joined.iceServers)
             let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: ["DtlsSrtpKeyAgreement": kRTCMediaConstraintsValueTrue])
             let delegate = PeerDelegate()
             guard let peer = factory.peerConnection(with: configuration, constraints: constraints, delegate: delegate) else { throw VoiceError.setup }
@@ -184,11 +198,15 @@ public final class VoiceClient {
             transceiver.setDirection(.sendOnly, error: &directionError)
             if let directionError { throw directionError }
             let offer = try await peer.offer(for: RTCMediaConstraints(mandatoryConstraints: [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue], optionalConstraints: nil))
+            try checkCurrentAttempt(attempt, peer: peer)
             try await peer.setLocalDescription(offer)
+            try checkCurrentAttempt(attempt, peer: peer)
             try await Self.waitForGathering(peer)
+            try checkCurrentAttempt(attempt, peer: peer)
             let mid = transceiver.mid
             guard let local = peer.localDescription, !mid.isEmpty else { throw VoiceError.setup }
             let published: SignalingResponse = try await api.media(channelID: channelID, operation: "publish", token: joined.token, body: PublishBody(mid: mid, sessionDescription: SDP(type: "offer", sdp: local.sdp)))
+            try checkCurrentAttempt(attempt, peer: peer)
             guard let answer = published.sessionDescription else { throw VoiceError.invalidAnswer }
             try await peer.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: answer.sdp))
             guard generation == attempt, phase == .joining else {
@@ -197,12 +215,17 @@ public final class VoiceClient {
                 return
             }
             try await Self.waitForConnected(peer)
+            try checkCurrentAttempt(attempt, peer: peer)
             await refreshRoster(expectedGeneration: attempt, expectedPeer: peer)
             guard generation == attempt, self.peer === peer, error == nil else { throw VoiceError.setup }
-            mediaSubscriptionID = await gateway.subscribeMedia(channelID: channelID, token: joined.token) { [weak self] event in
+            let subscriptionID = await gateway.subscribeMedia(channelID: channelID, token: joined.token) { [weak self] event in
                 self?.receiveMedia(event, generation: attempt, peer: peer)
             }
-            guard generation == attempt, self.peer === peer else { throw VoiceError.setup }
+            guard generation == attempt, self.peer === peer else {
+                await gateway.unsubscribe(subscriptionID)
+                return
+            }
+            mediaSubscriptionID = subscriptionID
             publishedMID = mid
             phase = .connected
             track.isEnabled = !muted
@@ -222,7 +245,7 @@ public final class VoiceClient {
             muteBeforeDeafen = value
             muted = true
         } else { muted = value }
-        microphone?.isEnabled = !muted
+        microphone?.isEnabled = phase == .connected && !muted
         await syncState()
     }
 
@@ -235,7 +258,7 @@ public final class VoiceClient {
             else { track.isEnabled = false }
         }
         muted = value ? true : muteBeforeDeafen
-        microphone?.isEnabled = !muted
+        microphone?.isEnabled = phase == .connected && !muted
         await syncState()
     }
 
@@ -302,7 +325,7 @@ public final class VoiceClient {
             try await apply(snapshot: snapshot, generation: attempt, peer: peer, token: token)
         } catch {
             guard generation == attempt else { return }
-            if let apiError = error as? APIError, [401, 403].contains(apiError.status) {
+            if let apiError = error as? APIError, apiError.endsVoiceAccess {
                 detachLocal(); phase = .failed; self.error = "Voice access ended. Rejoin to recover."
             } else { scheduleReconnect(generation: attempt) }
         }
@@ -311,7 +334,7 @@ public final class VoiceClient {
     private func receiveMedia(_ event: [String: Any], generation attempt: Int, peer expectedPeer: RTCPeerConnection) {
         guard generation == attempt, peer === expectedPeer else { return }
         if event["type"] as? String == "subscription.error" {
-            if let status = event["status"] as? Int, [401, 403].contains(status) {
+            if let status = event["status"] as? Int, [401, 403, 404].contains(status) {
                 detachLocal(); phase = .failed; error = "Voice access ended. Rejoin to recover."
             } else { scheduleReconnect(generation: attempt) }
             return
@@ -323,7 +346,12 @@ public final class VoiceClient {
             guard let self, let expectedPeer, let token = self.token,
                   self.generation == attempt, self.peer === expectedPeer else { return }
             do { try await self.apply(snapshot: snapshot, generation: attempt, peer: expectedPeer, token: token) }
-            catch { if self.generation == attempt { self.scheduleReconnect(generation: attempt) } }
+            catch {
+                guard self.generation == attempt, self.peer === expectedPeer else { return }
+                if let failure = error as? APIError, failure.endsVoiceAccess {
+                    self.detachLocal(); self.phase = .failed; self.error = "Voice access ended. Rejoin to recover."
+                } else { self.scheduleReconnect(generation: attempt) }
+            }
         }
     }
 
@@ -342,19 +370,28 @@ public final class VoiceClient {
                     remoteAudio.removeAll { $0 === track }
                 }
                 participantByMID.removeValue(forKey: mid)
-                try? await api.media(channelID: callChannelID, operation: "close", token: token, body: CloseBody(mid: mid))
+                try await api.media(channelID: callChannelID, operation: "close", token: token, body: CloseBody(mid: mid))
                 guard generation == attempt, self.peer === peer else { return }
             }
         }
         for participant in snapshot.participants where participant.id != selfID {
             for track in participant.tracks where track.kind == "microphone" && subscribed[track.id] == nil {
                 guard generation == attempt, self.peer === peer else { return }
-                let response: SignalingResponse = try await api.media(channelID: callChannelID, operation: "subscribe", token: token, body: SubscribeBody(trackId: track.id))
-                guard generation == attempt, self.peer === peer, let mid = response.tracks?.first?.mid else { return }
+                let response: SignalingResponse
+                do { response = try await api.media(channelID: callChannelID, operation: "subscribe", token: token, body: SubscribeBody(trackId: track.id)) }
+                catch let failure as APIError where failure.status == 404 && failure.code == "track_gone" {
+                    try checkCurrentAttempt(attempt, peer: peer)
+                    continue
+                }
+                try checkCurrentAttempt(attempt, peer: peer)
+                guard let mid = response.tracks?.first?.mid, !mid.isEmpty else { throw VoiceError.invalidAnswer }
                 if let offer = response.sessionDescription {
                     try await peer.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: offer.sdp))
+                    try checkCurrentAttempt(attempt, peer: peer)
                     let answer = try await peer.answer(for: RTCMediaConstraints(mandatoryConstraints: [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue], optionalConstraints: nil))
+                    try checkCurrentAttempt(attempt, peer: peer)
                     try await peer.setLocalDescription(answer)
+                    try checkCurrentAttempt(attempt, peer: peer)
                     try await Self.waitForGathering(peer)
                     guard generation == attempt, self.peer === peer, let local = peer.localDescription else { return }
                     try await api.media(channelID: callChannelID, operation: "negotiate", token: token, body: NegotiateBody(sessionDescription: SDP(type: "answer", sdp: local.sdp)))
@@ -390,7 +427,7 @@ public final class VoiceClient {
             try await api.media(channelID: expectedChannelID, operation: "state", token: token, body: body)
             guard generation == attempt, peer === expectedPeer else { return }
         }
-        catch let failure as APIError where failure.status == 401 || failure.status == 403 {
+        catch let failure as APIError where failure.endsVoiceAccess {
             guard generation == attempt, peer === expectedPeer else { return }
             generation += 1
             detachLocal(); phase = .failed; error = "Voice access ended. Rejoin to recover."
@@ -488,7 +525,9 @@ public final class VoiceClient {
             let sequence = restartSequence
             peer.restartIce()
             let offer = try await peer.offer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
+            try checkCurrentAttempt(attempt, peer: peer)
             try await peer.setLocalDescription(offer)
+            try checkCurrentAttempt(attempt, peer: peer)
             try await Self.waitForGathering(peer)
             guard generation == attempt, self.peer === peer, let local = peer.localDescription else { throw CancellationError() }
             let restarted: SignalingResponse = try await retryControl(generation: attempt, peer: peer) {
@@ -506,8 +545,15 @@ public final class VoiceClient {
         } catch {
             guard generation == attempt, self.peer === peer else { return }
             releaseSignaling(generation: attempt, peer: peer)
-            scheduleReconnect(generation: attempt)
+            if let failure = error as? APIError, failure.endsVoiceAccess {
+                detachLocal(); phase = .failed; self.error = "Voice access ended. Rejoin to recover."
+            } else { scheduleReconnect(generation: attempt) }
         }
+    }
+
+    private func checkCurrentAttempt(_ attempt: Int, peer: RTCPeerConnection) throws {
+        try Task.checkCancellation()
+        guard generation == attempt, self.peer === peer else { throw CancellationError() }
     }
 
     private func acquireSignaling(generation attempt: Int, peer: RTCPeerConnection) async throws {
@@ -535,10 +581,9 @@ public final class VoiceClient {
                 return result
             }
             catch is CancellationError { throw CancellationError() }
-            catch let failure as APIError where failure.status == 401 || failure.status == 403 { throw failure }
-            catch let failure as APIError where failure.status == 408 || failure.status == 409 || failure.status == 429 || failure.status >= 500 {
-                guard attempt < 3 else { throw failure }
-            } catch {
+            catch let failure as APIError {
+                guard failure.retryableVoiceControl, attempt < 3 else { throw failure }
+            } catch let error as URLError {
                 guard attempt < 3 else { throw error }
             }
             try await Task.sleep(for: .seconds(delay)); delay *= 2
@@ -641,16 +686,17 @@ public final class VoiceClient {
     }
     #endif
 
-    private static func waitForGathering(_ peer: RTCPeerConnection) async throws {
+    static func waitForGathering(_ peer: RTCPeerConnection) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
         while peer.iceGatheringState != .complete {
             try Task.checkCancellation()
+            guard peer.connectionState != .closed else { throw CancellationError() }
             guard ContinuousClock.now < deadline else { throw VoiceError.timeout }
             try await Task.sleep(for: .milliseconds(50))
         }
     }
 
-    private static func waitForConnected(_ peer: RTCPeerConnection) async throws {
+    static func waitForConnected(_ peer: RTCPeerConnection) async throws {
         let deadline = ContinuousClock.now + .seconds(12)
         while peer.connectionState != .connected {
             try Task.checkCancellation()
@@ -691,7 +737,7 @@ private final class PeerDelegate: NSObject, RTCPeerConnectionDelegate, @unchecke
     }
 }
 
-private extension RTCPeerConnection {
+extension RTCPeerConnection {
     func offer(for constraints: RTCMediaConstraints) async throws -> RTCSessionDescription { try await withCheckedThrowingContinuation { continuation in offer(for: constraints) { value, error in value.map { continuation.resume(returning: $0) } ?? continuation.resume(throwing: error ?? VoiceError.setup) } } }
     func answer(for constraints: RTCMediaConstraints) async throws -> RTCSessionDescription { try await withCheckedThrowingContinuation { continuation in answer(for: constraints) { value, error in value.map { continuation.resume(returning: $0) } ?? continuation.resume(throwing: error ?? VoiceError.setup) } } }
     func setLocalDescription(_ description: RTCSessionDescription) async throws { try await withCheckedThrowingContinuation { continuation in setLocalDescription(description) { error in error.map { continuation.resume(throwing: $0) } ?? continuation.resume() } } }

@@ -5,7 +5,7 @@ import XCTest
 final class CaperParityUITests: XCTestCase {
     private var launchedApp: XCUIApplication?
 
-    private func launch(fixture: String? = nil, signedIn: Bool = true, experimentalVoice: Bool = false) -> XCUIApplication {
+    private func launch(fixture: String? = nil, signedIn: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
@@ -13,7 +13,6 @@ final class CaperParityUITests: XCTestCase {
             app.launchEnvironment["CAPER_TEST_BEARER"] = "fixture-owner-token"
             app.launchEnvironment["CAPER_TEST_SPACE_ID"] = "space0000001"
         }
-        if experimentalVoice { app.launchEnvironment["CAPER_EXPERIMENTAL_VOICE"] = "1" }
         if let fixture { app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture }
         app.launch()
         launchedApp = app
@@ -169,9 +168,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
     }
 
-    func testExperimentalAudioPreferencesWithoutJoiningVoice() {
-        let app = launch(experimentalVoice: true)
+    func testVoiceEntryAndAudioPreferencesWithoutFeatureFlag() {
+        let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
+        let join = app.buttons["join-voice-button"]
+        XCTAssertTrue(join.waitForExistence(timeout: 5))
+        XCTAssertTrue(join.isEnabled, "Normal launches must expose voice without a test-only environment flag")
+        capture("voice-ready", app: app)
         #if os(iOS)
         app.buttons["Open navigation"].tap()
         #endif
@@ -212,7 +215,7 @@ final class CaperParityUITests: XCTestCase {
         #else
         assertStaticText("Caper follows the input and output selected in macOS System Settings. The embedded WebRTC build does not expose safe per-device switching.", in: app, timeout: 2)
         #endif
-        capture("experimental-audio-preferences", app: app)
+        capture("audio-preferences", app: app)
     }
 
     func testActionableLoginError() async throws {

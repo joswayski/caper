@@ -618,17 +618,16 @@ private struct VoiceHeaderButton: View {
     let model: AppModel
     @Bindable var voice: VoiceClient
     var body: some View {
-        if ProcessInfo.processInfo.environment["CAPER_EXPERIMENTAL_VOICE"] == "1" {
-            if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
-                Button("Cancel") { voice.leaveImmediately() }.buttonStyle(VoiceJoinButton())
-            } else if sameChannel, voice.phase == .connected {
-                Button { voice.leaveImmediately() } label: { Label("Leave", systemImage: "phone.down.fill") }.buttonStyle(VoiceJoinButton())
-            } else if voice.phase == .leaving {
-                ProgressView().controlSize(.small)
-            } else {
-                Button(action: joinSelectedChannel) { Label("Join", systemImage: "headphones") }
-                    .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil)
-            }
+        if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
+            Button("Cancel") { voice.leaveImmediately() }.buttonStyle(VoiceJoinButton())
+        } else if sameChannel, voice.phase == .connected {
+            Button { voice.leaveImmediately() } label: { Label("Leave", systemImage: "phone.down.fill") }.buttonStyle(VoiceJoinButton())
+        } else if voice.phase == .leaving {
+            ProgressView().controlSize(.small)
+        } else {
+            Button(action: joinSelectedChannel) { Label("Join", systemImage: "headphones") }
+                .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil)
+                .accessibilityIdentifier("join-voice-button")
         }
     }
 

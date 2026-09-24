@@ -43,6 +43,79 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testVoiceErrorsPreserveMachineCodeAndDistinguishProviderRetryFromRevocation() async throws {
+        for (status, code, retry, revoked) in [
+            (403, "ice_restart_retry", true, false),
+            (403, "forbidden", false, true),
+            (404, "track_gone", false, false),
+            (404, "channel_missing", false, true),
+            (502, "ice_restart_invalid", false, false),
+            (503, "unavailable", true, false),
+            (409, "ice_restart_pending", true, false),
+            (409, "conflict", false, false),
+        ] {
+            MockURLProtocol.handler = { request in
+                XCTAssertEqual(request.url?.path, "/api/channels/Abcdef123456/media/restart-ice")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-media-token"), "media-secret")
+                XCTAssertFalse(request.url!.absoluteString.contains("secret"))
+                return (status, Data("{\"error\":\"controlled failure\",\"code\":\"\(code)\"}".utf8))
+            }
+            do {
+                try await client().media(channelID: "Abcdef123456", operation: "restart-ice", token: "media-secret", body: [String: String]())
+                XCTFail("Expected a structured media error")
+            } catch let failure as APIError {
+                XCTAssertEqual(failure.code, code)
+                XCTAssertEqual(failure.retryableVoiceControl, retry)
+                XCTAssertEqual(failure.endsVoiceAccess, revoked)
+            }
+        }
+    }
+
+    @MainActor
+    func testLateVoiceJoinIsLeftWithoutPublishingOrReplacingNewCall() async throws {
+        let voice = VoiceClient(api: client(), requestMicrophonePermission: { true })
+        let old = VoiceContext(channelID: "Aaaaaaaaaaaa", channelName: "old", spaceID: "Space1234567", spaceName: "Space")
+        let replacement = VoiceContext(channelID: "Bbbbbbbbbbbb", channelName: "new", spaceID: "Space1234567", spaceName: "Space")
+        let oldStarted = expectation(description: "old join waiting for response")
+        let newStarted = expectation(description: "new join waiting for response")
+        var oldRequest: MockURLProtocol?
+        var newRequest: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            if urlRequest.url?.path == "/api/channels/\(old.channelID)/media/join" {
+                oldRequest = request; oldStarted.fulfill(); return true
+            }
+            if urlRequest.url?.path == "/api/channels/\(replacement.channelID)/media/join" {
+                newRequest = request; newStarted.fulfill(); return true
+            }
+            return false
+        }
+        MockURLProtocol.handler = { request in
+            // Any publish/state request is a failure: neither delayed join
+            // may acquire or enable local media after its explicit stop.
+            XCTAssertTrue(request.url!.path.hasSuffix("/media/leave"))
+            let expected = request.url!.path.contains(old.channelID) ? "old-media" : "new-media"
+            XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-media-token"), expected)
+            return (204, Data())
+        }
+        let oldJoin = Task { await voice.join(channelID: old.channelID, context: old, name: "Old") }
+        await fulfillment(of: [oldStarted], timeout: 2)
+        voice.leaveImmediately()
+        XCTAssertEqual(voice.phase, .idle)
+        let newJoin = Task { await voice.join(channelID: replacement.channelID, context: replacement, name: "New") }
+        await fulfillment(of: [newStarted], timeout: 2)
+        oldRequest?.respond(status: 200, data: Data(#"{"token":"old-media","id":"old","iceServers":[]}"#.utf8))
+        await oldJoin.value
+        XCTAssertEqual(voice.phase, .joining)
+        XCTAssertEqual(voice.context, replacement)
+        XCTAssertNil(voice.error)
+        voice.leaveImmediately()
+        newRequest?.respond(status: 200, data: Data(#"{"token":"new-media","id":"new","iceServers":[]}"#.utf8))
+        await newJoin.value
+        XCTAssertEqual(voice.phase, .idle)
+        XCTAssertNil(voice.context)
+    }
+
     func testAccountAndChatCapabilitiesUseSeparateHeadersAndNeverURLs() async throws {
         var requests: [URLRequest] = []
         MockURLProtocol.handler = { request in

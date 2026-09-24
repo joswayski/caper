@@ -102,6 +102,8 @@ targets:
     sources: Tests/CaperCoreTests
     dependencies:
       - target: CaperCoreMacOS
+      - package: WebRTC
+        product: WebRTC
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: chat.caper.core-tests
