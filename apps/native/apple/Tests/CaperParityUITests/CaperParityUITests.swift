@@ -129,6 +129,34 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         capture("members-hidden", app: app)
     }
+
+    func testCompletedLocalRecordingLayoutWithoutCapture() {
+        let app = launch(fixture: "audio-recorded")
+        app.descendants(matching: .any)["account-settings-menu"].tap()
+        app.descendants(matching: .any)["Audio preferences"].tap()
+        assertStaticText("TEST FIXTURE — completed local recording layout only; no microphone or playback.", in: app)
+        XCTAssertTrue(app.buttons["local-mic-test"].exists)
+        for title in ["Play natural", "Play EQ comparison", "Stop playback"] {
+            let button = app.buttons[title]
+            XCTAssertTrue(button.exists, "Missing \(title) in the completed recording layout")
+            XCTAssertFalse(button.isEnabled, "A visual fixture must not play synthetic audio")
+        }
+        XCTAssertTrue(app.sliders["Comparison EQ strength"].exists)
+        assertStaticText("25%", in: app)
+        capture("audio-recorded-test-fixture", app: app)
+    }
+
+    func testConnectionStatisticsLayoutWithoutVoiceConnection() {
+        let app = launch(fixture: "audio-statistics")
+        app.descendants(matching: .any)["account-settings-menu"].tap()
+        app.descendants(matching: .any)["Audio preferences"].tap()
+        assertStaticText("TEST FIXTURE — synthetic statistics layout; no voice connection.", in: app)
+        assertStaticText("Connection statistics", in: app)
+        assertStaticText("12800 / 24000 bps", in: app)
+        assertStaticText("3 / 17 ms", in: app)
+        assertStaticText("42 ms / TURN relay", in: app)
+        capture("audio-statistics-test-fixture", app: app)
+    }
     #endif
 
     func testLogin() {

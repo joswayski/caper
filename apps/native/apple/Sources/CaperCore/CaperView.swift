@@ -976,11 +976,13 @@ private struct AudioPreferencesView: View {
                 .disabled(voice.phase != .idle && voice.phase != .failed && !micTest.recording)
                 if micTest.recording { ProgressView(value: Double(micTest.level)).frame(width: 130).accessibilityLabel("Microphone level") }
             }
-            if micTest.hasRecording {
+            if recordedPreview { Text("TEST FIXTURE — completed local recording layout only; no microphone or playback.")
+                .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
+            if micTest.hasRecording || recordedPreview {
                 HStack {
-                    Button("Play natural") { micTest.play(enhanced: false) }
-                    Button("Play EQ comparison") { micTest.play(enhanced: true) }
-                    Button("Stop playback") { micTest.stopPlayback() }
+                    Button("Play natural") { micTest.play(enhanced: false) }.disabled(recordedPreview)
+                    Button("Play EQ comparison") { micTest.play(enhanced: true) }.disabled(recordedPreview)
+                    Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview)
                 }
                 HStack {
                     Text("Comparison EQ").font(CaperTheme.font(12, weight: .bold))
@@ -992,10 +994,12 @@ private struct AudioPreferencesView: View {
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
             if let error = micTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
-            if voice.phase == .connected {
+            if voice.phase == .connected || statisticsPreview {
                 Divider().overlay(CaperTheme.border)
                 Text("Connection statistics").font(CaperTheme.font(14, weight: .bold))
-                if let stats = voice.diagnostics {
+                if statisticsPreview { Text("TEST FIXTURE — synthetic statistics layout; no voice connection.")
+                    .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
+                if let stats = statisticsPreview ? previewStatistics : voice.diagnostics {
                     AudioRouteRow(title: "Receive / send", value: "\(stats.receiveBitrate.map { String($0) } ?? "—") / \(stats.sendBitrate.map { String($0) } ?? "—") bps")
                     AudioRouteRow(title: "Packets lost / max jitter", value: "\(stats.packetsLost) / \(stats.maxJitterMs.map { String($0) } ?? "—") ms")
                     AudioRouteRow(title: "RTT / route", value: "\(stats.roundTripMs.map { String($0) } ?? "—") ms / \(stats.route == "relay" ? "TURN relay" : stats.route == "direct" ? "Direct" : "Not observed yet")")
@@ -1028,6 +1032,13 @@ private struct AudioPreferencesView: View {
     #if os(macOS)
     private var comparisonStrength: Binding<Double> {
         Binding(get: { Double(micTest.strength) }, set: { micTest.strength = Int($0) })
+    }
+    private var recordedPreview: Bool { CaperRuntime.isAudioPreview("audio-recorded") }
+    private var statisticsPreview: Bool { CaperRuntime.isAudioPreview("audio-statistics") }
+    private var previewStatistics: VoiceDiagnostics {
+        VoiceDiagnostics(receivedBytes: 65_432, sentBytes: 12_345,
+                         receiveBitrate: 12_800, sendBitrate: 24_000,
+                         packetsLost: 3, maxJitterMs: 17, roundTripMs: 42, route: "relay")
     }
     #endif
 }

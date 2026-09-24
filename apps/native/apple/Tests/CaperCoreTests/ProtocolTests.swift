@@ -3,6 +3,18 @@ import AVFoundation
 @testable import CaperCore
 
 final class ProtocolTests: XCTestCase {
+    @MainActor
+    func testAudioPreviewRequiresExplicitLoopbackParityMode() {
+        var environment = ["CAPER_TEST_MODE": "parity", "CAPER_UI_FIXTURE": "audio-recorded", "CAPER_API_BASE_URL": "http://127.0.0.1:3001"]
+        XCTAssertTrue(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))
+        XCTAssertFalse(CaperRuntime.isAudioPreview("audio-statistics", environment: environment))
+        environment["CAPER_API_BASE_URL"] = "https://caper.chat"
+        XCTAssertFalse(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))
+        environment["CAPER_API_BASE_URL"] = "http://localhost:3001"
+        environment.removeValue(forKey: "CAPER_TEST_MODE")
+        XCTAssertFalse(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))
+    }
+
     #if os(macOS)
     @MainActor
     func testTimedMicrophoneStopReplaysSavedFileWithoutRecorderCurrentTime() throws {
