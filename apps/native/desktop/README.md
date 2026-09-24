@@ -102,9 +102,24 @@ emitted 0, while a virtual null-source input and synthetic zero-PCM track each
 emitted RTP. Production starts with synthetic silence, sends the pending local
 SDP immediately after setting the offer (like the web client), and only opens
 the selected device after the current gateway and roster are ready. Cancel
-closes the local peer and disables ADM before remote leave finishes. The
-opt-in live smoke now restricts subscription to its two owned sessions; it
-has **not** been rerun after these changes.
+closes the local peer and disables ADM before remote leave finishes.
+
+The owned-session-only live smoke was rerun on 2026-09-24 at 04:39:57–04:40:12
+UTC with private virtual devices. Both peers connected and subscribed, but
+the ten-second receive check failed: A sent/received **451/0 bytes**, B
+**1396/0 bytes**. No unrelated roster was observed. This is a real unresolved
+receive-path failure, not working voice. The failed process closed local peers;
+remote leave completion was not independently confirmed (server leases expire).
+The ignored test now awaits remote leave before asserting its RTP result and
+reports safe direction/track counts. It has not been rerun with that diagnostic.
+
+A non-ignored, local-only native test receives actual RTP after adding a
+subscription to an existing transport and after ICE renewal. It caught a separate
+binding-default bug that changed receive transceivers to inactive during renewal;
+restart offers now retain existing receive directions without adding an unused
+receiver to a publish-only session. This does **not** diagnose or resolve the
+immediate live receive failure above. Further public tests require explicit
+authorization and the same isolation controls.
 
 ## Validation
 

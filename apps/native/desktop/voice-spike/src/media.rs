@@ -901,10 +901,7 @@ impl NativeSession {
             .map_err(|error| error.to_string())?;
         let offer = self
             .peer
-            .create_offer(OfferOptions {
-                ice_restart: true,
-                ..OfferOptions::default()
-            })
+            .create_offer(restart_offer_options(&self.peer))
             .await
             .map_err(|error| error.to_string())?;
         self.peer
@@ -1209,6 +1206,22 @@ impl Drop for NativeSession {
             self.close_local();
             detached_leave(self.api.clone(), std::mem::take(&mut self.token));
         }
+    }
+}
+
+fn restart_offer_options(peer: &PeerConnection) -> OfferOptions {
+    // The binding maps false to legacy offerToReceiveAudio=0, which removes
+    // receive directions. Keep existing receivers, but do not add an unused
+    // receive MID when this participant only publishes.
+    OfferOptions {
+        ice_restart: true,
+        offer_to_receive_audio: peer.transceivers().iter().any(|transceiver| {
+            matches!(
+                transceiver.direction(),
+                RtpTransceiverDirection::RecvOnly | RtpTransceiverDirection::SendRecv
+            )
+        }),
+        ..OfferOptions::default()
     }
 }
 
@@ -1528,14 +1541,9 @@ mod tests {
                 {
                     break (a, b);
                 }
-                assert!(
-                    Instant::now() < deadline,
-                    "No two-way RTP within 10s: A sent/received {}/{}, B sent/received {}/{}",
-                    a.sent_bytes,
-                    a.received_bytes,
-                    b.sent_bytes,
-                    b.received_bytes
-                );
+                if Instant::now() >= deadline {
+                    break (a, b);
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             };
             eprintln!(
@@ -1545,13 +1553,216 @@ mod tests {
                 second_stats.sent_bytes,
                 second_stats.received_bytes
             );
-            first.leave();
-            second.leave();
+            // Log only directions/counts, never SDP, identifiers or capabilities.
+            for session in [&first, &second] {
+                eprintln!(
+                    "negotiated directions: {:?}; received tracks: {}",
+                    session
+                        .peer
+                        .transceivers()
+                        .iter()
+                        .map(|t| t.current_direction())
+                        .collect::<Vec<_>>(),
+                    session.remote_tracks.lock().unwrap().len()
+                );
+            }
+            first.close_local();
+            second.close_local();
+            // A failed RTP assertion must not terminate the test process before
+            // the remote cleanup requests complete. Local media is already shut.
+            let (first_leave, second_leave) = tokio::join!(
+                first.api.post_empty("leave", &first.token, json!({})),
+                second.api.post_empty("leave", &second.token, json!({}))
+            );
+            first_leave.expect("remote leave A");
+            first.token.clear();
+            second_leave.expect("remote leave B");
+            second.token.clear();
             assert!(first_control.is_cancelled() && second_control.is_cancelled());
+            assert!(
+                first_stats.sent_bytes > 0
+                    && first_stats.received_bytes > 0
+                    && second_stats.sent_bytes > 0
+                    && second_stats.received_bytes > 0,
+                "No two-way RTP within 10s (aggregate counters above)"
+            );
         };
         tokio::time::timeout(Duration::from_secs(55), work)
             .await
             .expect("silent SFU smoke exceeded 55s; local Drop closed media");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn subscription_answer_receives_rtp_on_existing_transport() {
+        // No platform ADM: both factories use synthetic audio only. Model the
+        // SFU adding a send-only MID after our send-only publication connects.
+        let client_factory = PeerConnectionFactory::default();
+        let server_factory = PeerConnectionFactory::default();
+        let mut config = RtcConfiguration::default();
+        config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+        let client = client_factory
+            .create_peer_connection(config.clone())
+            .unwrap();
+        let server = server_factory.create_peer_connection(config).unwrap();
+        let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let publication = client_factory.create_audio_track("publication", source);
+        client
+            .add_transceiver(
+                publication.into(),
+                RtpTransceiverInit {
+                    direction: RtpTransceiverDirection::SendOnly,
+                    stream_ids: vec!["publisher".into()],
+                    send_encodings: vec![],
+                },
+            )
+            .unwrap();
+        let offer = client.create_offer(OfferOptions::default()).await.unwrap();
+        client.set_local_description(offer).await.unwrap();
+        assert!(!restart_offer_options(&client).offer_to_receive_audio);
+        // As with the SFU, only the answerer sends gathered candidates.
+        server
+            .set_remote_description(local_sdp(&client).unwrap().parse(SdpType::Offer).unwrap())
+            .await
+            .unwrap();
+        let answer = server
+            .create_answer(AnswerOptions::default())
+            .await
+            .unwrap();
+        server.set_local_description(answer).await.unwrap();
+        wait_for_ice(&server).await.unwrap();
+        client
+            .set_remote_description(local_sdp(&server).unwrap().parse(SdpType::Answer).unwrap())
+            .await
+            .unwrap();
+        wait_for_connection(&client).await.unwrap();
+
+        let remote_source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let remote = server_factory.create_audio_track("subscription", remote_source.clone());
+        let sender = server
+            .add_transceiver(
+                remote.into(),
+                RtpTransceiverInit {
+                    direction: RtpTransceiverDirection::SendOnly,
+                    stream_ids: vec!["remote-publisher".into()],
+                    send_encodings: vec![],
+                },
+            )
+            .unwrap();
+        let offer = server
+            .create_offer(OfferOptions {
+                offer_to_receive_audio: true,
+                ..OfferOptions::default()
+            })
+            .await
+            .unwrap();
+        server.set_local_description(offer).await.unwrap();
+        client
+            .set_remote_description(local_sdp(&server).unwrap().parse(SdpType::Offer).unwrap())
+            .await
+            .unwrap();
+        let answer = client
+            .create_answer(AnswerOptions::default())
+            .await
+            .unwrap();
+        client.set_local_description(answer).await.unwrap();
+        server
+            .set_remote_description(local_sdp(&client).unwrap().parse(SdpType::Answer).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            sender.current_direction(),
+            Some(RtpTransceiverDirection::SendOnly)
+        );
+
+        let zero = AudioFrame::new(48_000, 1, 480);
+        let work = async {
+            loop {
+                remote_source.capture_frame(&zero).await.unwrap();
+                let received: u64 = client
+                    .get_stats()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|stat| match stat {
+                        RtcStats::InboundRtp(stat) => Some(stat.inbound.bytes_received),
+                        _ => None,
+                    })
+                    .sum();
+                if received > 0 {
+                    return received;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        let received = tokio::time::timeout(Duration::from_secs(5), work).await;
+        let restart = client
+            .create_offer(restart_offer_options(&client))
+            .await
+            .unwrap();
+        client.set_local_description(restart).await.unwrap();
+        server
+            .set_remote_description(local_sdp(&client).unwrap().parse(SdpType::Offer).unwrap())
+            .await
+            .unwrap();
+        let answer = server
+            .create_answer(AnswerOptions::default())
+            .await
+            .unwrap();
+        server.set_local_description(answer).await.unwrap();
+        wait_for_ice(&server).await.unwrap();
+        client
+            .set_remote_description(local_sdp(&server).unwrap().parse(SdpType::Answer).unwrap())
+            .await
+            .unwrap();
+        let receives_after_restart = client.transceivers().iter().any(|transceiver| {
+            transceiver.current_direction() == Some(RtpTransceiverDirection::RecvOnly)
+        });
+        let directions_after_restart: Vec<_> = client
+            .transceivers()
+            .iter()
+            .map(|t| t.current_direction())
+            .collect();
+        let receiving_again = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                remote_source.capture_frame(&zero).await.unwrap();
+                let total: u64 = client
+                    .get_stats()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|stat| match stat {
+                        RtcStats::InboundRtp(stat) => Some(stat.inbound.bytes_received),
+                        _ => None,
+                    })
+                    .sum();
+                if total > received.as_ref().copied().unwrap_or(0) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        client.close();
+        server.close();
+        assert!(
+            received.is_ok(),
+            "subscription must receive RTP, not merely connect"
+        );
+        assert!(
+            receives_after_restart,
+            "ICE renewal must retain the subscribed receive direction"
+        );
+        assert_eq!(
+            directions_after_restart,
+            vec![
+                Some(RtpTransceiverDirection::SendOnly),
+                Some(RtpTransceiverDirection::RecvOnly)
+            ]
+        );
+        assert!(
+            receiving_again.is_ok(),
+            "ICE renewal must resume received RTP"
+        );
     }
 
     #[tokio::test]
