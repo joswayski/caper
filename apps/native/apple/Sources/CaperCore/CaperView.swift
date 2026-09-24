@@ -112,6 +112,7 @@ private struct WorkspaceView: View {
     @State private var sheet: WorkspaceSheet?
     @AppStorage("caper.channelSidebarWidth") private var sidebarWidth = 280.0
     @State private var sidebarDragStart: Double?
+    @FocusState private var sidebarFocused: Bool
     @State private var membersPreference: Bool?
     private let parityFixture: String?
 
@@ -160,16 +161,20 @@ private struct WorkspaceView: View {
                             .frame(maxWidth: narrow ? .infinity : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
                             .overlay(alignment: .trailing) {
                                 if !narrow {
-                                    Button {} label: {
+                                    Button { sidebarFocused = true } label: {
                                         Rectangle().fill(Color.clear).frame(width: 8).contentShape(Rectangle())
                                     }
                                         .buttonStyle(.plain)
-                                        .gesture(DragGesture().onChanged { value in
+                                        .gesture(DragGesture(coordinateSpace: .global).onChanged { value in
                                             if sidebarDragStart == nil { sidebarDragStart = sidebarWidth }
                                             resizeSidebar((sidebarDragStart ?? sidebarWidth) + Double(value.translation.width), viewport: geometry.size.width)
                                         }.onEnded { _ in sidebarDragStart = nil })
-                                        .onTapGesture(count: 2) { resizeSidebar(280, viewport: geometry.size.width) }
+                                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                                            resizeSidebar(280, viewport: geometry.size.width)
+                                            sidebarFocused = true
+                                        })
                                         .focusable()
+                                        .focused($sidebarFocused)
                                         .accessibilityLabel("Channel sidebar width")
                                         .accessibilityIdentifier("channel-sidebar-resize")
                                         .accessibilityValue("\(Int(min(sidebarWidth, sidebarMaximum(for: geometry.size.width)))) pixels")

@@ -141,7 +141,9 @@ final class CaperParityUITests: XCTestCase {
         handle.typeKey(.end, modifierFlags: [])
         XCTAssertEqual(handle.value as? String, "440 pixels")
         handle.doubleClick()
+        XCTAssertEqual(handle.value as? String, "280 pixels", "double-click resets after a keyboard resize")
         handle.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertEqual(handle.value as? String, "290 pixels", "reset keeps the resize handle focused")
         app.terminate()
         let reopened = launch()
         let saved = reopened.buttons["channel-sidebar-resize"]
