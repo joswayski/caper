@@ -78,11 +78,19 @@
 /* The real room (pages/Call.tsx), fitted to the window instead of the page. */
 .live-app .call-page { height: 100%; min-height: 0; background: transparent; transform-style: preserve-3d; }
 .live-app .call-room { width: 100%; height: 100%; min-height: 0; margin: 0; overflow: visible; border: 0; border-radius: 0 0 17px 17px; background: transparent; transform-style: preserve-3d; }
-.live-app .people-panel { border-bottom-left-radius: 17px; transform: translateZ(calc(var(--depth) * 18px)); transform-style: preserve-3d; }
+/* The sidebar and chat lift together as one plane, so their tops stay aligned
+   when the window tilts; only the voice panel rises above them. */
+.live-app .call-room { position: relative; transform: translateZ(calc(var(--depth) * 12px)); }
+.live-app .people-panel { border-bottom-left-radius: 17px; transform-style: preserve-3d; }
 /* Edge plates fade with depth: flat, they would sit in the panel's own plane. */
-.live-app .people-panel::before { position: absolute; inset: 0; z-index: -1; content: ""; border-radius: inherit; background: #06080a; opacity: var(--depth); transform: translateZ(calc(var(--depth) * -8px)); pointer-events: none; }
+.live-app .call-room::before { position: absolute; inset: 0; z-index: -1; content: ""; border-radius: inherit; background: #06080a; opacity: var(--depth); transform: translateZ(calc(var(--depth) * -10px)); pointer-events: none; }
 .live-app .voice-panel { transform: translateZ(calc(var(--depth) * 18px)); }
-.live-app .stage { overflow: hidden auto; border-bottom-right-radius: 17px; transform: translateZ(calc(var(--depth) * 6px)); }
+.live-app .stage { overflow: hidden auto; border-bottom-right-radius: 17px; }
+@media (min-width: 761px) {
+  /* Put the sidebar's channel and the chat header on one 60px header line. */
+  .live-app .sidebar-channels { padding-top: 10px; }
+  .live-app .chat-heading { min-height: 61px; }
+}
 @media (max-width: 760px) {
   .live-app .people-panel { border-radius: 0; }
   .live-app .stage { border-radius: 0 0 17px 17px; }

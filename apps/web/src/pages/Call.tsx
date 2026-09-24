@@ -223,7 +223,8 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   const controlsDisabled = (!idle && !connected) || actionPending;
   // Keep the public roster until our own call reports its participants, so
   // joining (or failing to join) never empties the list for a moment.
-  const roster = idle || (state.phase === "joining" && !state.participants.length) ? publicParticipants[mediaRoot] ?? [] : state.participants;
+  const publicRoster = idle || (state.phase === "joining" && !state.participants.length);
+  const roster = publicRoster ? publicParticipants[mediaRoot] ?? [] : state.participants;
   const identityName = account?.displayName || chatAuthor?.name || name;
   const accountPresence = !!account && !!channel?.spaceId && !channel.demo;
   const joined = useRef(false);
@@ -412,13 +413,13 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
               const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
               const activityMuted = participantMuted && !state.monitoring;
               const speaking = activeParticipants.has(participant.id) && !activityMuted;
-              return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={idle || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
+              return <li className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={publicRoster || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                 <span className="participant-avatar">
                   <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   <ParticipantCountry code={participant.countryCode} />
                 </span>
                 <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><small aria-hidden={!participantStatus}>{participantStatus ?? "\u00a0"}</small></span>
-                {!idle && <VoiceActivity
+                {!publicRoster && <VoiceActivity
                   stream={stream}
                   muted={activityMuted}
                   onActivityChange={(active) => setActiveParticipants((current) => {
@@ -428,8 +429,8 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
                     return next;
                   })}
                 />}
-                {!idle && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
-                {!idle && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
+                {!publicRoster && !self && <button className="participant-menu-button" type="button" aria-label={`Audio controls for ${participant.name}`} aria-expanded={volumeParticipant === participant.id} onClick={() => setVolumeParticipant((current) => current === participant.id ? undefined : participant.id)}>Audio</button>}
+                {!publicRoster && volumeParticipant === participant.id && <div className="participant-volume" role="group" aria-label={`${participant.name} local audio settings`}>
                   <div><strong>User volume</strong><output>{participantVolumes[participant.id] ?? 100}%</output></div>
                   <Slider
                     label={`${participant.name} volume`}
