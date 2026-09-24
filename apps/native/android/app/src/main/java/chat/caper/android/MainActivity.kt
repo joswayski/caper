@@ -373,11 +373,12 @@ internal data class VoiceJoinIntent(
     var draft by remember(channel.id) { mutableStateOf("") }
     val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Match the 34dp message-avatar column without shrinking the 48dp menu target.
+        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 11.dp else 18.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
                 Icon(Icons.Default.Menu, "Open navigation", Modifier.size(24.dp))
             }
-            Text("# ${channel.name}", Modifier.weight(1f).padding(start = if (narrow) 10.dp else 0.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("# ${channel.name}", Modifier.weight(1f).padding(start = if (narrow) 3.dp else 0.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (state.gateway != GatewayStatus.LIVE) Text(if (state.gateway == GatewayStatus.ERROR) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp)
             Spacer(Modifier.width(10.dp))
             if (BuildConfig.ENABLE_NATIVE_VOICE) Button({

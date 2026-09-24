@@ -280,10 +280,20 @@ def main() -> None:
 
     viewport(390, 844)
     launch()
+    wait_for(text="Fixture Owner")
     narrow = capture("caper-android-narrow", "Open navigation")
     assert find(narrow, text="Browse") is None, "Mobile navigation must be icon-only"
     assert find(narrow, text="caper") is None
     assert find(narrow, contains="Message #general") is not None
+    menu = find(narrow, description="Open navigation")
+    avatar = find(narrow, text="F")
+    channel = find(narrow, text="# general")
+    author = find(narrow, text="Fixture Owner")
+    assert menu is not None and avatar is not None and channel is not None and author is not None
+    assert abs(center(menu)[0] - center(avatar)[0]) <= 2, "Menu must center over the message avatars"
+    channel_left = list(map(int, re.findall(r"\d+", channel.attrib["bounds"])))[0]
+    author_left = list(map(int, re.findall(r"\d+", author.attrib["bounds"])))[0]
+    assert abs(channel_left - author_left) <= 2, "Channel title must align with message authors"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
     tap(description="Open navigation")

@@ -532,7 +532,8 @@ private struct ChatView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            // Match the 34pt message-avatar column without shrinking the 44pt menu target.
+            HStack(spacing: narrow ? 5 : 10) {
                 if narrow {
                     Button(action: browse) {
                         Image(systemName: "line.3.horizontal").font(.system(size: 18))
@@ -547,7 +548,7 @@ private struct ChatView: View {
                 if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
                 Button(action: toggleMembers) { Image(systemName: "person.2.fill") }
                     .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
-            }.padding(.horizontal, 18).frame(height: 50)
+            }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
             ScrollViewReader { proxy in

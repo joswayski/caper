@@ -253,6 +253,14 @@ final class CaperParityUITests: XCTestCase {
         let navigation = app.buttons["Open navigation"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Browse"].exists)
+        assertStaticText("Fixture Owner", in: app)
+        let avatar = app.staticTexts["F"].firstMatch
+        let author = staticTexts("Fixture Owner", in: app).firstMatch
+        let channel = app.descendants(matching: .any)["selected-channel-name"]
+        XCTAssertTrue(avatar.exists)
+        XCTAssertEqual(navigation.frame.midX, avatar.frame.midX, accuracy: 1, "Menu must center over the message avatars")
+        XCTAssertEqual(channel.frame.minX, author.frame.minX, accuracy: 1, "Channel title must align with message authors")
+        XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the menu touch target accessible")
         let members = app.buttons["Show members"]
         XCTAssertTrue(members.exists)
         XCTAssertGreaterThan(members.frame.minX, app.frame.midX, "Members belongs on the right of the header")
