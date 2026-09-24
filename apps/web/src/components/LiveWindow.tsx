@@ -108,8 +108,6 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
         <div className="live-window">
           <div className="live-titlebar">
             <span className="live-lights" aria-hidden="true"><i /><i /><i /></span>
-            <span className="live-wordmark" aria-hidden="true">caper<span>.</span></span>
-            <span className="live-location">#general</span>
             <span className="live-status" data-status={status} role="status">
               <i aria-hidden="true" />{status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Preview"}
             </span>

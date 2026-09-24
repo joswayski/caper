@@ -786,6 +786,8 @@ export default function Spaces() {
         if (!current) return;
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
           return void window.location.assign("/profile");
+        // The public channel lives on the homepage; spaces are for accounts.
+        if (!nextAccount) return void window.location.replace("/");
         const [result, demoHistory] = await Promise.all([
           nextAccount ? listSpaces() : Promise.resolve({ spaces: [], limits: undefined }),
           loadChatHistory().catch((reason) => { if (!nextAccount) throw reason; return undefined; }),

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
-import LiveWindow, { type LiveStatus } from "../components/LiveWindow";
-import type { PublicDemo } from "../spaces/server";
+import LiveWindow from "../components/LiveWindow";
+import type { GeneralChatHistory } from "../chat/types";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
@@ -11,19 +11,16 @@ const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
   account: Account | null;
-  demo: PublicDemo;
+  history: GeneralChatHistory | null;
   initialNow: number;
   latestChanges: readonly LatestChange[];
 };
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 
-export default function Home({ account, demo, initialNow, latestChanges }: HomeProps) {
+export default function Home({ account, history, initialNow, latestChanges }: HomeProps) {
   const [now, setNow] = useState(initialNow);
   const [open, setOpen] = useState(false);
-  const [status, setStatus] = useState<LiveStatus>(demo.history ? "connecting" : "preview");
-  const live = !!demo.history;
-  const onStatusChange = useCallback((next: LiveStatus) => setStatus(next), []);
 
   useEffect(() => {
     setNow(Date.now());
@@ -43,10 +40,6 @@ export default function Home({ account, demo, initialNow, latestChanges }: HomeP
 
       <section className="hero shell" data-live-bounds data-live-open={open ? "" : undefined}>
         <div className="hero-copy" inert={open}>
-          <p className="hero-status" data-status={status}>
-            <i aria-hidden="true" />
-            {status === "live" ? "Live now in #general" : status === "connecting" ? "Connecting to #general" : "Live chat is offline"}
-          </p>
           <h1 aria-label="A place for your people">
             <span className="hero-title-line">A place for</span>
             <span className="hero-title-line">
@@ -55,14 +48,6 @@ export default function Home({ account, demo, initialNow, latestChanges }: HomeP
             </span>
           </h1>
           <p className="hero-lede">Chat with anyone, about anything.</p>
-          <p className="hero-invite">
-            {live
-              ? "That window is Caper's public #general, running for real. Open it to chat, or hop into voice."
-              : "The live channel can't be reached right now, so the window is playing a preview."}
-          </p>
-          {live && <div className="hero-actions">
-            <button className="join-button" type="button" data-live-open onClick={() => setOpen(true)}>Join the conversation</button>
-          </div>}
           <p className="made-by">
             Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a> · <a href={repositoryUrl} target="_blank" rel="noreferrer">Follow on GitHub</a>
           </p>
@@ -71,7 +56,7 @@ export default function Home({ account, demo, initialNow, latestChanges }: HomeP
           </p>
         </div>
 
-        <LiveWindow account={account} history={demo.history} active={open} onActiveChange={setOpen} onStatusChange={onStatusChange} />
+        <LiveWindow account={account} history={history} active={open} onActiveChange={setOpen} />
       </section>
 
       <section className="latest-changes shell" aria-labelledby="latest-changes-heading">

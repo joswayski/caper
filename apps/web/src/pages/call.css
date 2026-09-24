@@ -2,7 +2,23 @@
 .call-header { width: min(1400px, calc(100% - 56px)); height: 80px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
 .call-destination { color: var(--text-muted); font-size: .78rem; font-weight: 700; text-decoration: none; }
 .call-destination:hover { color: var(--text); }
-.call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; margin: auto 12px 12px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); }
+.voice-panel { flex: 0 0 auto; margin: auto 12px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
+.voice-dock { display: grid; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
+.voice-join-row, .connected-channel { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.voice-join-row > svg, .voice-dock-channel > svg { width: 18px; height: 18px; flex: 0 0 auto; margin-left: 4px; color: var(--text-muted); }
+.voice-join-row > span, .voice-dock-channel > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
+.voice-join-row strong, .voice-dock-channel strong { overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.voice-join-row small, .voice-dock-channel small { overflow: hidden; color: var(--text-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.voice-join-row .voice-button { min-height: 32px; padding: 5px 10px; }
+.voice-dock-channel { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 0; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.voice-dock-channel:hover { background: var(--surface-composer); }
+.voice-dock-channel:hover small { text-decoration: underline; text-underline-offset: 2px; }
+.connected-channel[data-phase="connected"] .voice-dock-channel :is(svg, strong) { color: #8cb262; }
+.connected-channel:not([data-phase="connected"]) .voice-dock-channel :is(svg, strong) { color: #d9ab5c; }
+.voice-hangup { width: 34px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: var(--surface-composer); cursor: pointer; }
+.voice-hangup:hover, .voice-hangup:focus-visible { color: #ff7182; background: rgb(212 67 85 / .18); }
+.voice-hangup svg { width: 17px; height: 17px; }
+.call-account { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 2px; height: 42px; padding: 4px; }
 .account-profile { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .account-profile:hover { background: var(--surface-composer); }
 .account-avatar { position: relative; width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; background: var(--surface-composer); font-size: .8rem; font-weight: 800; }
@@ -41,12 +57,10 @@
 .channel-link:hover:not([aria-current]) { background: rgb(182 77 50 / .22); }
 .voice-roster-label { margin: 24px 9px 0; color: var(--text-muted); font-size: .72rem; }
 .voice-actions { min-width: 0; display: flex; align-items: center; gap: 12px; }
-.voice-join { position: relative; flex-shrink: 0; }
 .voice-button { flex-shrink: 0; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--terracotta) 65%, var(--border)); border-radius: var(--radius); color: color-mix(in srgb, var(--terracotta-bright) 65%, var(--text)); background: rgb(182 77 50 / .14); font-size: .78rem; font-weight: 750; white-space: nowrap; cursor: pointer; }
 .voice-button > svg { width: 16px; height: 16px; }
 .voice-button:hover:not([aria-disabled="true"]) { border-color: var(--terracotta-bright); background: rgb(182 77 50 / .24); }
 .voice-button[aria-disabled="true"] { opacity: .5; cursor: default; }
-.voice-status { color: var(--text-muted); font-size: .75rem; }
 .people-panel ul { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
 .participant { position: relative; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px; border-radius: 8px; }
 .participant-avatar { position: relative; flex: 0 0 auto; }
@@ -137,13 +151,6 @@
 .call-account .voice-action-group.active { background: rgb(212 67 85 / .14); }
 .call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary) { color: #ed5265; background: transparent; }
 .call-account .voice-action-group.active :is(.voice-icon-button, .device-menu summary):is(:hover, :focus-visible), .call-account .voice-action-group.active .device-menu[open] summary { color: #ff7182; background: rgb(212 67 85 / .18); }
-.connected-channel { display: flex; align-items: center; gap: 6px; margin: 0 12px 8px; padding: 8px 4px; border-top: 1px solid var(--border); }
-.connected-channel button { min-width: 0; display: grid; gap: 4px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); text-align: left; cursor: pointer; }
-.connected-channel button:first-child { flex: 1; }
-.connected-channel button:hover { background: var(--surface-raised); }
-.connected-channel strong { color: var(--text); font-size: .72rem; }
-.connected-channel span { overflow: hidden; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
-.connected-channel svg { width: 18px; height: 18px; }
 .device-options { min-width: 0; margin: 0; padding: 0; border: 0; }
 .device-options legend { margin-bottom: 8px; color: var(--text-muted); font-size: .72rem; font-weight: 700; }
 .device-options label { display: flex; align-items: center; gap: 8px; padding: 9px 8px; border-radius: 6px; color: var(--text); font-size: .8rem; cursor: pointer; }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { ChevronDown, Hash, Headphones, Menu, Mic, MicOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
+import { AudioLines, ChevronDown, Hash, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, Volume2, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import { getSystemSoundsEnabled, playSound, preloadSoundEffects, setSystemSoundsEnabled, subscribeSystemSounds } from "../audio/effects";
@@ -352,6 +352,18 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     }
     setAudioPanel(undefined);
   };
+  const joinVoice = () => {
+    if (joinDisabled) return;
+    setActionError(undefined);
+    if (!viewingVoice) {
+      const previous = clientRef.current!;
+      previous.leaveImmediately();
+      const client = createClient();
+      client.copyAudioPreferencesFrom(previous);
+    }
+    setVoiceChannel(channel);
+    void clientRef.current!.join(identityName.trim(), deviceId);
+  };
   const openMicTest = () => {
     setAudioPanel("mic");
     void act(() => connected ? clientRef.current!.setMonitoring(true) : clientRef.current!.startLocalMicTest(deviceId));
@@ -428,13 +440,27 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
             })}
           </ul>
           </div>
-          {!idle && <div className="connected-channel" role="status">
-            <button type="button" onClick={() => voiceChannel && onVoiceChannelOpen?.(voiceChannel.id, voiceChannel.spaceId)}>
-              <strong>{connected ? "Voice connected" : "Connecting voice…"}</strong>
-              <span>{voiceChannel ? `${voiceChannel.spaceName} / ${voiceChannel.name}` : "General"}</span>
-            </button>
-            <button type="button" aria-label="Disconnect voice" onClick={leave}><X aria-hidden="true" /></button>
-          </div>}
+          <div className="voice-panel">
+          <div className="voice-dock">
+            {!idle && <div className="connected-channel" data-phase={state.phase} role="status">
+              <button type="button" className="voice-dock-channel" onClick={() => voiceChannel && onVoiceChannelOpen?.(voiceChannel.id, voiceChannel.spaceId)}>
+                <AudioLines aria-hidden="true" />
+                <span>
+                  <strong>{connected ? "Voice connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}</strong>
+                  <small>{voiceChannel ? `${voiceChannel.spaceName} / ${voiceChannel.name}` : "#general"}</small>
+                </span>
+              </button>
+              <Tooltip content={connected ? "Disconnect" : "Cancel"}><button type="button" className="voice-hangup" aria-label={connected ? "Leave voice" : "Cancel joining voice"} onClick={leave}><PhoneOff aria-hidden="true" /></button></Tooltip>
+            </div>}
+            {(idle || !viewingVoice) && <div className="voice-join-row">
+              <Volume2 aria-hidden="true" />
+              <span>
+                <strong>{channel?.name ?? "general"}</strong>
+                <small>{!idle ? "Switch voice to this channel" : roster.length ? `${roster.length} in voice` : "No one in voice yet"}</small>
+              </span>
+              <Tooltip id="voice-availability" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : undefined}><button className="voice-button" type="button" aria-label="Join voice" aria-disabled={joinDisabled} onClick={joinVoice}><Speech aria-hidden="true" />Join</button></Tooltip>
+            </div>}
+          </div>
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
               <span className="account-avatar"><span aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span><PresenceDot status={accountPresence ? selfPresence : localPresence} live={accountPresence ? presenceLive : true} /></span>
@@ -473,28 +499,13 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
               {identityReady && (account ? <button type="button" onClick={() => void logout().then(() => window.location.assign("/"))}>Log out</button> : <a href="/login">Sign in</a>)}
             </AudioMenu>
           </div>
+          </div>
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
           <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady && engaged} messageSounds={engaged} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
             {!audioPanel && (state.error || actionError) && <div className="room-error chat-refresh-error" role="alert">{state.error || actionError}</div>}
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
-            <span className="voice-join">
-              <Tooltip id="voice-availability" placement="bottom" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : undefined}><button className="voice-button" type="button" aria-label={viewingVoice && connected ? "Leave voice" : viewingVoice && !idle ? "Cancel joining voice" : "Join voice"} aria-disabled={joinDisabled} onClick={() => {
-                if (joinDisabled) return;
-                if (viewingVoice && !idle) { leave(); return; }
-                setActionError(undefined);
-                if (!viewingVoice) {
-                  const previous = clientRef.current!;
-                  previous.leaveImmediately();
-                  const client = createClient();
-                  client.copyAudioPreferencesFrom(previous);
-                }
-                setVoiceChannel(channel);
-                void clientRef.current!.join(identityName.trim(), deviceId);
-              }}><Speech aria-hidden="true" />{viewingVoice && connected ? "Leave" : viewingVoice && !idle ? "Cancel" : "Join"}</button></Tooltip>
-            </span>
-            {!idle && viewingVoice && <span className="voice-status" role="status">{connected ? "Voice connected" : state.phase === "joining" ? "Joining…" : "Reconnecting…"}</span>}
             {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />
         </div>

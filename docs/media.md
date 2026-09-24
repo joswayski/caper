@@ -8,7 +8,7 @@ their history, live messages, presence and calls require membership. See
 [spaces and channel access](#spaces-and-channel-access). Signed-in participants
 use their account display name; guests receive a random name. This is not an
 outgoing-call flow. No camera, screen sharing, or server-side voice recording.
-The independently enabled [public text demo](#public-text-demo) shares the public `general` channel in `/spaces`;
+The independently enabled [public text demo](#public-text-demo) shares the public `general` channel on the homepage;
 demo reads and sends do not require an account or joining voice.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
@@ -221,7 +221,9 @@ exist yet. Spectators see who is in voice and who is muted, not who is
 speaking; speaking is detected only by call participants. When the channel
 cannot be loaded, the window plays a scripted preview labeled "Preview",
 limited to shipped features (text, typing, voice presence), and cannot be
-opened. `/spaces` still shows the public demo to guests.
+opened. `/spaces` is for accounts: it sends logged-out visitors to the homepage,
+and the login page's guest link points there too. Signed-in people still see
+the public space in their `/spaces` rail.
 
 The same Rust image has two independently deployable roles:
 
@@ -1919,7 +1921,7 @@ Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas
 
 ## Accounts
 
-The public demo in `/spaces` remains guest-accessible. For guests, the browser uses
+The public demo on the homepage remains guest-accessible. For guests, the browser uses
 `unique-names-generator` to assign a readable color-and-animal name for each visit
 and keeps it through reconnects. No account or profile is needed. The guest voice
 API is database-independent, but the unified browser screen requires chat storage
@@ -1981,7 +1983,7 @@ After the approved deployment, verify:
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 curl --fail --silent --show-error https://caper.chat/api/media/status
-# Expected: enabled is true. Then open the public demo in /spaces in two browsers and test audio/leave.
+# Expected: enabled is true. Then open the homepage window in two browsers and test audio/leave.
 ```
 
 Guest restoration validation: Rust provider mocks cover unauthenticated joins,

@@ -72,12 +72,6 @@ body {
 .hero[data-live-open] .hero-copy { visibility: hidden; opacity: 0; transform: translateX(-28px); transition: opacity .25s ease, transform .5s cubic-bezier(.16, 1, .3, 1), visibility 0s .25s; }
 .hero .live-stage { align-self: stretch; }
 .hero h1 { margin: 0; font-size: clamp(2.6rem, 3.9vw, 3.9rem); font-weight: 900; line-height: 1.16; letter-spacing: -.06em; }
-.hero-status { display: inline-flex; align-items: center; gap: 9px; margin: 0 0 22px; color: var(--text-muted); font-size: .8125rem; font-weight: 700; }
-.hero-status i { position: relative; width: 8px; height: 8px; border-radius: 50%; background: #7d8388; }
-.hero-status[data-status="live"] { color: var(--text); }
-.hero-status[data-status="live"] i { background: #8cb262; }
-.hero-status[data-status="live"] i::after { position: absolute; inset: -4px; content: ""; border: 1.5px solid #8cb262; border-radius: 50%; animation: live-ping 2s ease-out infinite; }
-.hero-status[data-status="connecting"] i { background: #d9ab5c; }
 .hero-title-line { display: block; white-space: nowrap; }
 .rolodex {
   position: relative;
@@ -135,15 +129,9 @@ body {
     filter .22s ease-in;
 }
 .hero-copy > .hero-lede { max-width: 580px; margin: 26px 0 0; color: #d1d3d4; font-size: clamp(1.12rem, 1.5vw, 1.3rem); font-weight: 600; line-height: 1.5; }
-.hero-copy > .hero-invite { max-width: 380px; margin: 14px 0 0; color: var(--text-muted); font-size: .9375rem; line-height: 1.55; }
 .hero-copy > .made-by { margin: 32px 0 0; color: var(--text-muted); font-size: .875rem; font-weight: 500; }
 .made-by a,
 .experimental-note a { color: var(--text); text-underline-offset: 4px; }
-.hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 30px; }
-.join-button { min-height: 52px; display: inline-flex; align-items: center; padding: 0 22px; border: 1px solid var(--terracotta); border-radius: 999px; color: #fff; background: var(--terracotta); font: inherit; font-weight: 700; white-space: nowrap; cursor: pointer; transition: background-color .2s ease-out, border-color .2s ease-out, transform .2s ease-out; }
-.join-button:hover { border-color: #c8644c; background: #ad472d; }
-.join-button:active { transform: translateY(1px); }
-.join-button:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 4px; }
 .hero-copy > .experimental-note { max-width: 380px; margin-top: 12px; color: var(--text-muted); font-size: .8125rem; font-weight: 400; line-height: 1.55; }
 .feedback-x { display: inline-flex; width: .75rem; height: .75rem; vertical-align: -.12em; margin: 0 2px; transition: color .2s ease-out, transform .2s ease-out; }
 .feedback-x:hover { color: var(--terracotta-bright); transform: translateY(-1px); }
@@ -179,7 +167,6 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .hero-copy, .hero[data-live-open] .hero-copy { transition: none; }
-  .hero-status[data-status="live"] i::after { animation: none; }
 }
 
 /* Below the expand breakpoint (LiveWindow EXPAND_MIN_WIDTH) the window stacks
@@ -189,12 +176,9 @@ body {
      copy continues below it. */
   .hero { height: auto; display: flex; flex-direction: column; align-items: flex-start; padding-block: 32px 64px; }
   .hero-copy, .hero[data-live-open] .hero-copy { display: contents; }
-  .hero-status { order: 1; }
   .hero h1 { order: 2; }
   .hero-copy > .hero-lede { order: 3; }
   .hero .live-stage { order: 4; width: 100%; aspect-ratio: 1.3; min-height: 0; margin-top: 20px; }
-  .hero-copy > .hero-invite { order: 5; max-width: 560px; margin-top: 20px; }
-  .hero-actions { order: 6; }
   .hero-copy > .made-by { order: 7; }
   .hero-copy > .experimental-note { order: 8; max-width: 560px; }
 }
@@ -206,11 +190,7 @@ body {
   .site-header-actions { gap: 12px; }
   .hero { padding-block: 20px 48px; }
   .hero h1 { font-size: clamp(2.2rem, 10vw, 3rem); }
-  .hero-status { margin-bottom: 16px; }
   .hero-copy > .hero-lede { margin-top: 18px; font-size: 1.08rem; }
-  .hero-copy > .hero-invite { font-size: .875rem; }
-  .hero-actions { margin-top: 22px; }
-  .join-button { min-height: 50px; }
   .hero-copy > .made-by { margin-top: 22px; }
   .hero .live-stage { aspect-ratio: .8; margin-top: 12px; margin-inline: -8px; width: calc(100% + 16px); }
   .latest-changes { padding-bottom: 64px; }

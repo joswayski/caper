@@ -388,7 +388,7 @@ try {
   assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').at(-1).channelId;`), 'alpha0000000');
   assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').at(-1).channelId;`), 'beta00000000');
   assert.ok(evaluate(`return document.querySelector('.connected-channel').textContent.includes('Test space / beta') && voiceFixture.client.muted;`), 'Voice switch must preserve mute');
-  click('Disconnect voice');
+  click('Leave voice');
   wait(`!document.querySelector('.connected-channel')`);
   evaluate(`voiceFixture.captureError = 'NotReadableError';`);
   click('Join voice');

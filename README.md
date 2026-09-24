@@ -78,7 +78,7 @@ minutes without input (`PRESENCE_IDLE_TIMEOUT_SECONDS=600`); temporary session
 records expire in Valkey rather than accumulating presence history. See the
 [gateway runbook](docs/media.md#application-gateway-and-account-presence) for
 recovery guarantees, configuration, and deployment order. With `CHAT_ENABLED=true`,
-Postgres, and Valkey, `/spaces` offers messaging in the public demo's `general`
+Postgres, and Valkey, the homepage offers messaging in the public demo's `general`
 channel. Guests can read/send without joining voice or signing in. Messages
 are persisted; the [text runbook](docs/media.md#public-text-demo) covers limits,
 replay, and staged production activation. Compose includes the gateway.

@@ -195,7 +195,6 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
   };
   const documentPress = (event: PointerEvent) => {
     if (!active || mode !== "expand" || scene.contains(event.target as Node)) return;
-    if ((event.target as Element | null)?.closest?.("[data-live-open]")) return;
     options.deactivate();
   };
 

@@ -1,9 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
-import { getPublicDemoHref } from "../spaces/server";
 
-export const Route = createFileRoute("/login")({ loader: () => getPublicDemoHref(), component: Login });
+export const Route = createFileRoute("/login")({ component: Login });
 
 function loginError(error: unknown) {
   if (error instanceof AccountApiError) {
@@ -16,7 +15,6 @@ function loginError(error: unknown) {
 }
 
 function Login() {
-  const demoHref = Route.useLoaderData();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [challengeId, setChallengeId] = useState<string>();
@@ -95,7 +93,7 @@ function Login() {
           {error && <p className="mt-5 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">{error}</p>}
           <button className="mt-7 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" type="submit" disabled={pending}>{pending ? "Sending…" : <>Email me a code <span aria-hidden="true">→</span></>}</button>
         </form>
-        <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">We only send a code when you ask. Prefer to look around first? <a className="text-content underline-offset-3" href={demoHref}>Join general as a guest.</a></small>
+        <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">We only send a code when you ask. Prefer to look around first? <a className="text-content underline-offset-3" href="/">Join #general as a guest.</a></small>
       </>}
     </section>
   </main>;
