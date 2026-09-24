@@ -105,15 +105,19 @@ public final class AppModel {
             error = validation
             return
         }
-        generation += 1
-        clearNavigationCache()
+        let onboarding = phase != .ready
+        if onboarding {
+            generation += 1
+            clearNavigationCache()
+        }
         let attempt = generation
         await work(generation: attempt) {
             let account = try await self.api.updateProfile(username: username, displayName: displayName)
             guard self.generation == attempt else { return }
             self.account = account
             self.phase = .ready
-            await self.loadSpaces()
+            if onboarding { await self.loadSpaces() }
+            else { self.chat.updateAuthor(account: account) }
         }
     }
 
@@ -567,6 +571,14 @@ public final class ChatModel {
     }
 
     public init(api: APIClient) { self.api = api }
+
+    func updateAuthor(account: Account) {
+        guard let session, !session.author.isGuest, session.author.id == account.id,
+              let name = account.displayName else { return }
+        // Account-backed sends resolve the current name server-side. Updating
+        // this presentation snapshot must not reopen chat or discard its draft.
+        self.session = ChatSession(token: session.token, author: ChatAuthor(id: account.id, name: name, isGuest: false))
+    }
 
     /// A token-free copy of only the timeline currently retained by this model.
     public func currentSnapshot() -> ChatHistory? {

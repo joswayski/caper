@@ -44,6 +44,46 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testProfileEditPreservesConversationDraftAndRejectedSend() async throws {
+        var historyRequests = 0
+        var sessionRequests = 0
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                sessionRequests += 1
+                return (200, Data(#"{"token":"chat","author":{"id":"self","name":"Old Name","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/Design123456/messages":
+                if request.httpMethod == "POST" { return (400, Data(#"{"error":"Rejected message"}"#.utf8)) }
+                historyRequests += 1
+                return (200, Data(#"{"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"Design123456","name":"design"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
+            case "/api/account/profile":
+                return (200, Data(#"{"id":"self","username":"new_user","displayName":"New Name"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "old_user", displayName: "Old Name")
+        model.phase = .ready
+        model.selectedSpaceID = "Space1234567"
+        model.selectedChannelID = "Design123456"
+        await model.chat.open(channelID: "Design123456", displayName: "Old Name")
+        model.chat.draft = "rejected first message"
+        await model.chat.send()
+        let pending = try XCTUnwrap(model.chat.pendingMessage)
+        model.chat.draft = "successor draft"
+        await model.saveProfile(username: "new_user", displayName: "New Name")
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.selectedChannelID, "Design123456")
+        XCTAssertEqual(model.chat.draft, "successor draft")
+        XCTAssertEqual(model.chat.pendingMessage?.id, pending.id)
+        XCTAssertTrue(model.chat.sendRejected)
+        XCTAssertEqual(model.chat.currentAuthor?.name, "New Name")
+        XCTAssertEqual(historyRequests, 1)
+        XCTAssertEqual(sessionRequests, 1)
+        await model.chat.stop()
+    }
+
+    @MainActor
     func testSendClearsOnlySubmittedDraftAcrossHTTPGatewayAndLateError() async throws {
         let channel = "Aaaaaaaaaaaa"
         MockURLProtocol.handler = { request in
