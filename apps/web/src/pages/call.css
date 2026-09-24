@@ -268,8 +268,8 @@
 .voice-occupants[data-open] { grid-template-rows: 1fr; }
 .voice-occupants-inner { min-height: 0; overflow: hidden; }
 .voice-occupants-inner:has(.volume-menu-open) { overflow: visible; }
-.people-panel .voice-occupants ul { max-height: 180px; display: grid; gap: 0; margin: 2px 0 6px 20px; padding: 0; overflow-y: auto; list-style: none; }
-.people-panel .voice-occupants ul.volume-menu-open { max-height: none; overflow: visible; }
+.people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; display: grid; gap: 0; margin: 2px 0 6px 20px; padding: 0; overflow-y: auto; list-style: none; }
+.people-panel .voice-occupants .voice-occupants-inner > ul.volume-menu-open { max-height: none; overflow: visible; }
 .voice-occupants .participant { gap: 8px; padding: 4px 6px; border-radius: 6px; }
 .voice-occupants .participant:hover { background: var(--surface-raised); }
 .voice-occupants .participant { min-height: 30px; }
@@ -285,7 +285,7 @@
 @media (max-width: 760px) {
   .channel-line .channel-select { padding-right: 4px; }
   .channel-line:has(.channel-manage) .channel-voice { padding-right: 50px; }
-  .people-panel .voice-occupants ul { max-height: 180px; }
+  .people-panel .voice-occupants .voice-occupants-inner > ul { max-height: 180px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .voice-occupants { transition: none; }

@@ -53,9 +53,10 @@
   .channel-section-actions { opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
   .channel-section-heading:hover .channel-section-actions, .channel-section-heading:focus-within .channel-section-actions, .channel-section-actions:has(details[open]) { opacity: 1; pointer-events: auto; }
 }
-.spaces-room .channel-navigation ul { display: grid; gap: 3px; margin: 4px 0 0; padding: 0; list-style: none; }
+/* minmax(0, 1fr): one long channel name must not widen every line past the sidebar. */
+.spaces-room .channel-navigation ul { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; margin: 4px 0 0; padding: 0; list-style: none; }
 .spaces-room .channel-navigation ul[hidden] { display: none; }
-.channel-navigation li { position: relative; display: flex; align-items: center; }
+.channel-navigation li { position: relative; min-width: 0; display: flex; align-items: center; }
 .channel-select { min-width: 0; height: 38px; flex: 1; display: flex; align-items: center; gap: 9px; padding: 0 34px 0 9px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .82rem; font-weight: 650; text-align: left; cursor: pointer; }
 .channel-select svg { width: 17px; height: 17px; flex: 0 0 auto; }
 .channel-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transform: translateY(-1px); }

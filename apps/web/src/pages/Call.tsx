@@ -507,8 +507,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       setVolumeParticipant(undefined);
     }}>
       <span className="voice-stack-faces" aria-hidden="true">
-        {people.slice(0, people.length > 3 ? 2 : 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && isSpeaking(participant) ? " speaking" : ""}`}>{participant.name.slice(0, 1).toUpperCase()}</span>)}
-        {people.length > 3 && <small>+{people.length - 2}</small>}
+        {people.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && isSpeaking(participant) ? " speaking" : ""}`}>{participant.name.slice(0, 1).toUpperCase()}</span>)}
+        {people.length > 3 && <small>+{people.length - 3}</small>}
       </span>
       <span className="voice-stack-total" aria-hidden="true"><Users /><small>{people.length}</small></span>
       <ChevronDown aria-hidden="true" />
