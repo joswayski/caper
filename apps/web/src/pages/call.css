@@ -4,18 +4,16 @@
 .call-destination:hover { color: var(--text); }
 .voice-panel { flex: 0 0 auto; margin: auto 12px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
 .voice-dock { display: grid; gap: 4px; padding: 8px; border-bottom: 1px solid var(--border); }
-.voice-join-row, .connected-channel { height: 40px; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .voice-error { display: flex; align-items: flex-start; gap: 6px; margin: 2px 0 0; padding: 7px 4px 3px 8px; border-top: 1px solid var(--border); color: #ff9b82; font-size: .7rem; line-height: 1.4; }
 .voice-error span { flex: 1; }
 .voice-error button { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .voice-error button:hover { color: var(--text); background: var(--surface-composer); }
 .voice-error svg { width: 14px; height: 14px; }
-.voice-join-row > svg, .voice-dock-channel > svg { width: 18px; height: 18px; flex: 0 0 auto; margin-left: 4px; color: var(--text-muted); }
-.voice-join-row > span, .voice-dock-channel > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
-.voice-join-row strong, .voice-dock-channel strong { overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
-.voice-join-row small, .voice-dock-channel small { overflow: hidden; color: var(--text-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
-.voice-join-row .voice-button { min-height: 32px; padding: 5px 10px; }
-.voice-join-row .voice-button[aria-busy="true"] { cursor: progress; }
+.connected-channel { height: 40px; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.voice-dock-channel > svg { width: 18px; height: 18px; flex: 0 0 auto; margin-left: 4px; color: var(--text-muted); }
+.voice-dock-channel > span { min-width: 0; flex: 1; display: grid; gap: 1px; }
+.voice-dock-channel strong { overflow: hidden; font-size: .78rem; text-overflow: ellipsis; white-space: nowrap; }
+.voice-dock-channel small { overflow: hidden; color: var(--text-muted); font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
 .voice-dock-channel { height: 100%; min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 0; border: 0; border-radius: 6px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
 .voice-dock-channel:hover { background: var(--surface-composer); }
 .voice-dock-channel:hover small { text-decoration: underline; text-underline-offset: 2px; }
@@ -216,20 +214,27 @@
 /* Voice occupants live under their channel: an avatar stack on the row
    (toggles the list) and a compact, indented list that scrolls past five. */
 .channel-row { position: relative; }
-.channel-row .channel-link { padding-right: 88px; }
+.channel-row:has(.channel-voice) .channel-link { padding-right: 136px; }
+.channel-row .channel-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel-navigation li[data-voice] { flex-wrap: wrap; }
-.channel-navigation li[data-voice] .channel-select { padding-right: 92px; }
-.voice-stack { position: absolute; z-index: 1; top: 50%; right: 8px; height: 28px; display: flex; align-items: center; padding: 0 7px 0 5px; border: 0; border-radius: 999px; color: var(--text-muted); background: transparent; transform: translateY(-50%); cursor: pointer; }
-.channel-navigation li[data-voice] .voice-stack { top: 5px; transform: none; }
-.channel-navigation li[data-voice]:has(.channel-manage) .voice-stack { right: 34px; }
+.channel-navigation li[data-voice] .channel-select { padding-right: 136px; }
+/* A channel's voice lives on its row: who is in voice, and Join. */
+.channel-voice { position: absolute; z-index: 1; top: 50%; right: 6px; display: flex; align-items: center; gap: 6px; transform: translateY(-50%); }
+.channel-navigation li[data-voice] .channel-voice { top: 5px; transform: none; }
+.channel-navigation li[data-voice]:has(.channel-manage) .channel-voice { right: 34px; }
+.voice-stack { height: 28px; display: flex; align-items: center; padding: 0 5px 0 4px; border: 0; border-radius: 999px; color: var(--text-muted); background: rgb(99 122 67 / .12); cursor: pointer; }
+.channel-join.voice-button { min-height: 28px; gap: 5px; padding: 0 9px; font-size: .72rem; }
+.channel-join.voice-button > svg { width: 14px; height: 14px; }
+.channel-join.voice-button[aria-busy="true"] { cursor: progress; }
 .voice-stack:hover { color: var(--text); background: var(--surface-raised); }
 /* A soft caper-green pulse: people are in voice right now. */
 .voice-stack { animation: voice-live 2.6s ease-in-out infinite; }
+/* Always visibly lit; the pulse goes from on to brighter, never to off. */
 @keyframes voice-live {
-  0%, 100% { box-shadow: 0 0 0 1px rgb(140 178 98 / .22), 0 0 0 0 rgb(140 178 98 / 0); }
-  50% { box-shadow: 0 0 0 1px rgb(140 178 98 / .5), 0 0 14px 1px rgb(140 178 98 / .26); }
+  0%, 100% { box-shadow: 0 0 0 1.5px rgb(140 178 98 / .55), 0 0 10px 1px rgb(140 178 98 / .28); }
+  50% { box-shadow: 0 0 0 1.5px rgb(140 178 98 / .85), 0 0 18px 3px rgb(140 178 98 / .45); }
 }
-.voice-stack > svg { width: 13px; height: 13px; margin-left: 3px; transition: transform .2s ease; }
+.voice-stack > svg { width: 11px; height: 11px; margin-left: 2px; transition: transform .2s ease; }
 .voice-stack[aria-expanded="false"] > svg { transform: rotate(-90deg); }
 .voice-stack:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 1px; }
 .voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid var(--surface-sidebar); border-radius: var(--radius-avatar); color: #fff; background: #354027; font-size: .55rem; font-weight: 900; }
@@ -255,11 +260,11 @@
 .voice-occupants .participant-volume { top: 34px; }
 .voice-elsewhere .voice-roster-label { margin-top: 16px; }
 @media (max-width: 760px) {
-  .channel-navigation li[data-voice] .voice-stack { top: 8px; }
-  .channel-navigation li[data-voice]:has(.channel-manage) .voice-stack { right: 50px; }
+  .channel-navigation li[data-voice] .channel-voice { top: 8px; }
+  .channel-navigation li[data-voice]:has(.channel-manage) .channel-voice { right: 50px; }
   .people-panel .voice-occupants ul { max-height: 180px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .voice-occupants { transition: none; }
-  .voice-stack { animation: none; box-shadow: 0 0 0 1px rgb(140 178 98 / .4); }
+  .voice-stack { animation: none; box-shadow: 0 0 0 1.5px rgb(140 178 98 / .7), 0 0 12px 2px rgb(140 178 98 / .35); }
 }

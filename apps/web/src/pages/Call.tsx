@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, Volume2, VolumeX, X } from "lucide-react";
+import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import { getSystemSoundsEnabled, playSound, preloadSoundEffects, setSystemSoundsEnabled, subscribeSystemSounds } from "../audio/effects";
@@ -463,18 +463,24 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
   // channel row (click to collapse or expand) and a compact list beneath it.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
-    if (channelId !== rosterChannelId || !roster.length) return null;
-    rosterPlaced = true;
+    const hasRoster = channelId === rosterChannelId && roster.length > 0;
+    // Join sits on the channel being viewed (like a huddle button), unless you
+    // are already in its voice.
+    const showJoin = channelId === channel?.id && (idle || !viewingVoice || pendingJoin);
+    if (!hasRoster && !showJoin) return null;
+    if (hasRoster) rosterPlaced = true;
     const open = rosterOpen || !!volumeParticipant;
-    return {
-      summary: <button className="voice-stack" type="button" aria-expanded={open} aria-controls="voice-occupants" aria-label={`${roster.length} in voice. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => { setRosterOpen(!open); setVolumeParticipant(undefined); }}>
+    const joinButton = showJoin && <Tooltip id="voice-availability" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : !idle && !viewingVoice ? "Switch voice to this channel" : "Join voice"}><button className="voice-button channel-join" type="button" aria-label="Join voice" aria-disabled={joinDisabled || pendingJoin} aria-busy={pendingJoin} onClick={joinVoice}><Speech aria-hidden="true" />Join</button></Tooltip>;
+    const stack = hasRoster && <button className="voice-stack" type="button" aria-expanded={open} aria-controls="voice-occupants" aria-label={`${roster.length} in voice. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => { setRosterOpen(!open); setVolumeParticipant(undefined); }}>
         {roster.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${isSpeaking(participant) ? " speaking" : ""}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>)}
         {roster.length > 3 && <small aria-hidden="true">+{roster.length - 3}</small>}
         <ChevronDown aria-hidden="true" />
-      </button>,
-      list: <div className="voice-occupants" id="voice-occupants" data-open={open ? "" : undefined}>
+      </button>;
+    return {
+      summary: <span className="channel-voice">{stack}{joinButton}</span>,
+      list: hasRoster ? <div className="voice-occupants" id="voice-occupants" data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{rosterList}</div>
-      </div>,
+      </div> : null,
     };
   };
   let navigation: ReactNode;
@@ -507,7 +513,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
           </div>}
           </div>
           <div className="voice-panel">
-          <div className="voice-dock">
+          {((!idle && !pendingJoin) || (voiceError && !audioPanel)) && <div className="voice-dock">
             {!idle && !pendingJoin && <div className="connected-channel" data-phase={state.phase} role="status">
               <button type="button" className="voice-dock-channel" onClick={() => voiceChannel && onVoiceChannelOpen?.(voiceChannel.id, voiceChannel.spaceId)}>
                 <AudioLines aria-hidden="true" />
@@ -518,19 +524,11 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
               </button>
               <Tooltip content={connected ? "Disconnect" : "Cancel"}><button type="button" className="voice-hangup" aria-label={connected ? "Leave voice" : "Cancel joining voice"} onClick={leave}><PhoneOff aria-hidden="true" /></button></Tooltip>
             </div>}
-            {(idle || !viewingVoice || pendingJoin) && <div className="voice-join-row">
-              <Volume2 aria-hidden="true" />
-              <span>
-                <strong>{channel?.name ?? "general"}</strong>
-                <small>{!idle && !viewingVoice ? "Switch voice to this channel" : roster.length ? `${roster.length} in voice` : "No one in voice yet"}</small>
-              </span>
-              <Tooltip id="voice-availability" content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : undefined}><button className="voice-button" type="button" aria-label="Join voice" aria-disabled={joinDisabled || pendingJoin} aria-busy={pendingJoin} onClick={joinVoice}><Speech aria-hidden="true" />Join</button></Tooltip>
-            </div>}
             {voiceError && !audioPanel && <p className="voice-error" role="alert">
               <span>{voiceError}</span>
               <button type="button" aria-label="Dismiss voice error" onClick={() => setVoiceError(undefined)}><X aria-hidden="true" /></button>
             </p>}
-          </div>
+          </div>}
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
               <span className="account-avatar"><span aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span><PresenceDot status={accountPresence ? selfPresence : localPresence} live={accountPresence ? presenceLive : true} /></span>
