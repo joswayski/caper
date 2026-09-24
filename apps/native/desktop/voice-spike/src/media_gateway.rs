@@ -380,7 +380,7 @@ fn connect_bounded(
     ))))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn set_timeout(
     stream: &mut MaybeTlsStream<std::net::TcpStream>,
     timeout: Duration,
@@ -636,23 +636,5 @@ mod tests {
         });
         assert_eq!(denied, Some(11));
         server.join().unwrap();
-    }
-}
-
-#[cfg(windows)]
-fn set_timeout(
-    stream: &mut MaybeTlsStream<std::net::TcpStream>,
-    timeout: Duration,
-) -> std::io::Result<()> {
-    match stream {
-        MaybeTlsStream::Plain(stream) => {
-            stream.set_read_timeout(Some(timeout))?;
-            stream.set_write_timeout(Some(timeout))
-        }
-        MaybeTlsStream::Rustls(stream) => {
-            stream.get_mut().set_read_timeout(Some(timeout))?;
-            stream.get_mut().set_write_timeout(Some(timeout))
-        }
-        _ => Ok(()),
     }
 }
