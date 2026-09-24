@@ -39,6 +39,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 }
 
 const listComponents = { Header: HistoryHeader, List: MessageList };
+const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
 
 export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
@@ -214,6 +215,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         initialTopMostItemIndex={{ index: "LAST", align: "end" }}
         computeItemKey={(_, message) => `${message.author?.id ?? "pending"}:${message.clientMessageId}`}
         defaultItemHeight={70}
+        // Layout sizes, not getBoundingClientRect: inside the homepage's tilted
+        // window the rect is scaled, which would hide the newest messages.
+        itemSize={measureItem}
         increaseViewportBy={{ top: 250, bottom: 150 }}
         followOutput="auto"
         atBottomThreshold={80}
