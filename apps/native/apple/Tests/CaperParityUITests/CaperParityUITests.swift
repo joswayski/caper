@@ -382,6 +382,50 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-preferences", app: app)
     }
 
+    func testProfileEditRetainsRejectedValuesAndRetries() async throws {
+        let app = launch()
+        #if os(iOS)
+        app.buttons["Open navigation"].tap()
+        #endif
+        let account = app.buttons["account-profile"]
+        XCTAssertTrue(account.waitForExistence(timeout: 10))
+        account.tap()
+        let username = app.textFields["Username"]
+        let displayName = app.textFields["Display name"]
+        let submit = app.buttons["profile-save"]
+        XCTAssertTrue(username.waitForExistence(timeout: 5))
+        let savedUsername = try XCTUnwrap(username.value as? String)
+        let originalName = try XCTUnwrap(displayName.value as? String)
+        XCTAssertFalse(savedUsername.isEmpty)
+        displayName.tap(); displayName.typeText(" UI edit")
+        let editedName = try XCTUnwrap(displayName.value as? String)
+        XCTAssertNotEqual(editedName, originalName)
+        XCTAssertTrue(submit.isEnabled)
+        var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        control.httpMethod = "POST"
+        control.setValue("application/json", forHTTPHeaderField: "content-type")
+        control.httpBody = Data(#"{"failure":{"path":"/api/account/profile","method":"POST","status":503,"error":"TEST FIXTURE: profile save temporarily unavailable."}}"#.utf8)
+        let (_, response) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        submit.tap()
+        assertStaticText("TEST FIXTURE: profile save temporarily unavailable.", in: app)
+        XCTAssertEqual(username.value as? String, savedUsername)
+        XCTAssertEqual(displayName.value as? String, editedName)
+        XCTAssertTrue(submit.isEnabled)
+        capture("profile-rejected-save", app: app)
+        submit.tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: submit)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 10), .completed)
+        // Keep the shared fixture's reference author stable for other UI cases.
+        var restore = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/account/profile")!)
+        restore.httpMethod = "POST"
+        restore.setValue("application/json", forHTTPHeaderField: "content-type")
+        restore.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        restore.httpBody = try JSONSerialization.data(withJSONObject: ["username": savedUsername, "displayName": originalName])
+        let (_, restored) = try await URLSession.shared.data(for: restore)
+        XCTAssertEqual((restored as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     func testProfileValidationAndErrorRenderWithoutSubmitting() {
         let app = launch(fixture: "profile-validation")
         let username = app.textFields["Username"]

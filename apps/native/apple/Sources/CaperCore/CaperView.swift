@@ -577,6 +577,7 @@ private struct AccountBar: View {
                     Spacer()
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
+                .accessibilityIdentifier("account-profile")
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
@@ -1053,14 +1054,33 @@ private struct LoginActionButton: ButtonStyle {
 
 private struct ProfileSheet: View {
     @Bindable var model: AppModel; let close: () -> Void
+    @State private var username = ""
+    @State private var displayName = ""
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: "Account", detail: model.account?.username.map { "@\($0)" }, close: close)
-            VStack(alignment: .leading, spacing: 14) {
-                HStack { Avatar(name: model.account?.displayName ?? "Caper", size: 42); Text(model.account?.displayName ?? "Caper").font(CaperTheme.font(16, weight: .bold)) }
-                Button("Log out", role: .destructive) { Task { await model.logout(); close() } }.buttonStyle(.bordered)
-            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack { Avatar(name: model.account?.displayName ?? "Caper", size: 42); Text(model.account?.displayName ?? "Caper").font(CaperTheme.font(16, weight: .bold)) }
+                    CaperField(title: "Username", text: $username)
+                    CaperField(title: "Display name", text: $displayName)
+                    if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
+                    Button(model.busy ? "Saving…" : "Save profile") {
+                        Task {
+                            await model.saveProfile(username: username, displayName: displayName)
+                            if model.error == nil { close() }
+                        }
+                    }.buttonStyle(CaperPrimaryButton())
+                        .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                        .accessibilityIdentifier("profile-save")
+                    Button("Log out", role: .destructive) { Task { await model.logout(); close() } }.buttonStyle(.bordered)
+                }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxHeight: 500).scrollDismissesKeyboard(.interactively)
         }.background(CaperTheme.surface)
+            .onAppear {
+                username = model.account?.username ?? ""
+                displayName = model.account?.displayName ?? ""
+            }
     }
 }
 
