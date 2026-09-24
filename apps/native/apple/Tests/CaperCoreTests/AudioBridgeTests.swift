@@ -14,6 +14,10 @@ final class AudioBridgeTests: XCTestCase {
         // No tracks or peer connections: this probe must not request microphone access or open devices.
     }
 
+    func testBundledNativeONNXModelWarmsAndProcessesWithoutHardware() {
+        XCTAssertTrue(CaperNativeDpdfnetModelWorks(), "The pinned native CPU runtime and bundled DPDFNet-8 model must run without I/O")
+    }
+
     func testSyntheticDelegateMovesExactPCMWithoutHardware() {
         XCTAssertTrue(CaperSyntheticAudioCallbacksWork(), "The M153 delegate contract must exchange signed mono PCM in both directions")
     }
@@ -47,7 +51,7 @@ final class AudioBridgeTests: XCTestCase {
     @MainActor
     func testLocalPeersCarryOnlyAllowedSyntheticCapturePCM() async throws {
         RTCInitializeSSL()
-        let device = CaperMacAudioDevice.syntheticTestDevice()
+        let device = CaperMacAudioDevice.syntheticTest()
         let factory = try XCTUnwrap(CaperCreateAudioPeerFactory(device))
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         let caller = try XCTUnwrap(factory.peerConnection(with: VoiceClient.configuration(iceServers: []), constraints: constraints, delegate: nil))
@@ -82,9 +86,12 @@ final class AudioBridgeTests: XCTestCase {
 
         // Speech-like asymmetric signal, not a trivial zero/symmetric input. PCM
         // takes the exact production capture/DSP/gate path into M153's real ADM.
-        let wave = (0..<480).map { i in Int16(11_000 * sin(2 * Double.pi * 220 * Double(i) / 48_000)
-            + 3_000 * sin(2 * Double.pi * 440 * Double(i) / 48_000)) }
-        let pcm = wave.withUnsafeBytes { Data($0) }
+        let wave: [Int16] = (0..<480).map { i in
+            let phase = 2.0 * Double.pi * 220.0 * Double(i) / 48_000.0
+            let sample = 11_000.0 * sin(phase) + 3_000.0 * sin(2.0 * phase)
+            return Int16(sample)
+        }
+        let pcm = wave.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in Data(bytes) }
         device.publicationEnabled = false
         XCTAssertTrue(device.beginComparison())
         var gatedPeak = 0

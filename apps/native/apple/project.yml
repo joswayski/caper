@@ -23,14 +23,28 @@ targets:
       - path: Sources/CaperRTCBridge/CaperMacAudioDevice.h
         headerVisibility: public
       - path: Sources/CaperRTCBridge/CaperMacAudioDevice.m
+      - path: Sources/CaperRTCBridge/CaperDpdfnet.cpp
+      - path: Sources/CaperRTCBridge/CaperDpdfnet.h
+        headerVisibility: project
       - path: Sources/CaperRTCBridge/CaperVoiceDSP.c
       - path: Sources/CaperRTCBridge/CaperVoiceDSP.h
         headerVisibility: project
       - path: Sources/CaperRTCBridge/sdk
         buildPhase: none
+      - path: ../../web/public/audio/dpdfnet8-v2/dpdfnet8_48khz_hr.onnx
+        buildPhase: resources
+      - path: ../../web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0
+        buildPhase: resources
+      - path: .build/onnxruntime-osx-universal2-1.23.2/LICENSE
+        buildPhase: resources
+      - path: .build/onnxruntime-osx-universal2-1.23.2/ThirdPartyNotices.txt
+        buildPhase: resources
     dependencies:
       - package: WebRTC
         product: WebRTC
+        link: true
+        embed: false
+      - framework: .build/onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib
         link: true
         embed: false
     settings:
@@ -39,7 +53,8 @@ targets:
         PRODUCT_MODULE_NAME: CaperRTCBridge
         SKIP_INSTALL: YES
         GENERATE_INFOPLIST_FILE: YES
-        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge"
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Sources/CaperRTCBridge $(SRCROOT)/.build/onnxruntime-osx-universal2-1.23.2/include"
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
   CaperCoreMacOS:
     type: framework
     platform: macOS
@@ -85,6 +100,10 @@ targets:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge
         embed: true
+      - framework: .build/onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib
+        link: false
+        embed: true
+        codeSign: true
       - package: WebRTC
         product: WebRTC
         link: true
@@ -135,6 +154,10 @@ targets:
     dependencies:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge
+      - framework: .build/onnxruntime-osx-universal2-1.23.2/lib/libonnxruntime.1.23.2.dylib
+        link: false
+        embed: true
+        codeSign: true
       - package: WebRTC
         product: WebRTC
     settings:

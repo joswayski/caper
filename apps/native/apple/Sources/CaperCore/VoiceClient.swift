@@ -275,10 +275,18 @@ public final class VoiceClient {
     }
 
     public func setMuted(_ value: Bool) async {
+        #if os(macOS)
+        if !value, deafened {
+            deafened = false
+            refreshLocalPlayback()
+        }
+        muted = value
+        #else
         if deafened {
             muteBeforeDeafen = value
             muted = true
         } else { muted = value }
+        #endif
         #if os(macOS)
         audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
         #endif
@@ -288,13 +296,19 @@ public final class VoiceClient {
 
     public func setDeafened(_ value: Bool) async {
         guard value != deafened else { return }
+        #if os(iOS)
         if value, !deafened { muteBeforeDeafen = muted }
+        #endif
         deafened = value
         for (mid, track) in remoteAudioByMID {
             if let participantID = participantByMID[mid] { applyLocalPlayback(to: track, participantID: participantID) }
             else { track.isEnabled = false }
         }
+        #if os(macOS)
+        muted = value
+        #else
         muted = value ? true : muteBeforeDeafen
+        #endif
         #if os(macOS)
         audioDevice.publicationEnabled = phase == .connected && !muted && comparisonGeneration == nil
         #endif

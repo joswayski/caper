@@ -254,9 +254,13 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-muted", app: app)
         headphones.tap()
         XCTAssertEqual(headphones.value as? String, "On")
+        #if os(macOS)
+        XCTAssertEqual(microphone.value as? String, "On", "Desktop undeafen also unmutes")
+        #else
         XCTAssertEqual(microphone.value as? String, "Muted", "Undeafen must preserve an explicitly muted microphone")
         microphone.tap()
         XCTAssertEqual(microphone.value as? String, "On")
+        #endif
         #if os(macOS)
         app.buttons["Input Options"].tap()
         XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 2))

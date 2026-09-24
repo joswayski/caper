@@ -1,7 +1,20 @@
 #import "CaperRTCBridge.h"
+#import "CaperDpdfnet.h"
 #import "CaperVoiceDSP.h"
 #import "sdk/objc/components/audio/RTCAudioDevice.h"
 #import <stdlib.h>
+
+BOOL CaperNativeDpdfnetModelWorks(void) {
+    NSURL *model = [[NSBundle bundleForClass:CaperMacAudioDevice.class]
+        URLForResource:@"dpdfnet8_48khz_hr" withExtension:@"onnx"];
+    CaperDpdfnet *engine = CaperDpdfnetCreate(model.fileSystemRepresentation);
+    if (!engine) { return NO; }
+    float input[480] = {0}, output[480] = {0};
+    BOOL worked = CaperDpdfnetProcess(engine, input, output) &&
+                  CaperDpdfnetProcess(engine, input, output);
+    CaperDpdfnetDestroy(engine);
+    return worked;
+}
 
 // Match the M153 selector even if the distributed macOS framework omits the declaration.
 @interface RTCPeerConnectionFactory (CaperAudioFactory)

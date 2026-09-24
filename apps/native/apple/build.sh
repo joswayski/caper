@@ -28,11 +28,17 @@ case "$MODE" in
     cp -R "$ROOT/DerivedData/Build/Products/Release/Caper.app" "$ROOT/dist/Caper.app"
     test -x "$ROOT/dist/Caper.app/Contents/MacOS/Caper"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC"
+    test -f "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/CaperRTCBridge"
+    test -f "$ROOT/dist/Caper.app/Contents/Frameworks/libonnxruntime.1.23.2.dylib"
+    test -f "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/Resources/dpdfnet8_48khz_hr.onnx"
     test -f "$ROOT/dist/Caper.app/Contents/Resources/WebRTC-LICENSE.txt"
+    test -f "$ROOT/dist/Caper.app/Contents/Resources/WebRTC-PATENTS.txt"
     test -f "$ROOT/dist/Caper.app/Contents/Resources/Satoshi-FFL.txt"
     for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Contents/Resources/Satoshi-$font.otf"; done
     lipo -archs "$ROOT/dist/Caper.app/Contents/MacOS/Caper" | tr ' ' '\n' | grep -qx "$machine"
     lipo -archs "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC" | tr ' ' '\n' | grep -qx "$machine"
+    lipo -archs "$ROOT/dist/Caper.app/Contents/Frameworks/CaperRTCBridge.framework/CaperRTCBridge" | tr ' ' '\n' | grep -qx "$machine"
+    lipo -archs "$ROOT/dist/Caper.app/Contents/Frameworks/libonnxruntime.1.23.2.dylib" | tr ' ' '\n' | grep -qx "$machine"
     otool -l "$ROOT/dist/Caper.app/Contents/MacOS/Caper" | grep -q '@executable_path/../Frameworks'
     codesign --verify --deep --strict "$ROOT/dist/Caper.app"
     rm -f "$ROOT/dist/Caper-macos-$artifact_arch.zip"
@@ -49,6 +55,7 @@ case "$MODE" in
     test -x "$ROOT/dist/Caper.app/Caper"
     test -f "$ROOT/dist/Caper.app/Frameworks/WebRTC.framework/WebRTC"
     test -f "$ROOT/dist/Caper.app/WebRTC-LICENSE.txt"
+    test -f "$ROOT/dist/Caper.app/WebRTC-PATENTS.txt"
     test -f "$ROOT/dist/Caper.app/Satoshi-FFL.txt"
     for font in Regular Medium Bold Black; do test -f "$ROOT/dist/Caper.app/Satoshi-$font.otf"; done
     lipo -archs "$ROOT/dist/Caper.app/Caper" | tr ' ' '\n' | grep -qx arm64

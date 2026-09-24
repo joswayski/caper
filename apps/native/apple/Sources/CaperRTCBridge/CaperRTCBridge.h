@@ -11,6 +11,8 @@ FOUNDATION_EXPORT BOOL CaperSyntheticAudioCallbacksWork(void);
 FOUNDATION_EXPORT BOOL CaperSyntheticVoiceDSPWorks(void);
 FOUNDATION_EXPORT BOOL CaperSyntheticComparisonStopWorks(void);
 FOUNDATION_EXPORT BOOL CaperSyntheticPublicationGateWorks(void);
+/// Runs the bundled native ONNX model without microphone, speaker or peer I/O.
+FOUNDATION_EXPORT BOOL CaperNativeDpdfnetModelWorks(void);
 
 /// A no-I/O probe. Never opens hardware or returns audio from a callback.
 @interface CaperSyntheticAudioDevice : NSObject

@@ -197,7 +197,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testDeafenRestoresMuteIntentIncludingChangesWhileDeafened() async {
+    func testDeafenAndMuteFollowPlatformIntent() async {
         let key = "caper.voice.outputGain"
         let original = UserDefaults.standard.object(forKey: key)
         defer {
@@ -215,9 +215,20 @@ final class ProtocolTests: XCTestCase {
         await voice.setMuted(true)
         await voice.setDeafened(true)
         await voice.setMuted(false)
+        #if os(macOS)
+        XCTAssertFalse(voice.muted, "unmuting also undeafens on desktop")
+        XCTAssertFalse(voice.deafened)
+        await voice.setMuted(true)
+        await voice.setDeafened(true)
+        #else
         XCTAssertTrue(voice.muted, "capture remains locally silent while deafened")
+        #endif
         await voice.setDeafened(false)
+        #if os(macOS)
+        XCTAssertFalse(voice.muted, "desktop undeafen does not restore a prior mute")
+        #else
         XCTAssertFalse(voice.muted, "an explicit mute change while deafened becomes the restored intent")
+        #endif
 
         await voice.setMuted(true)
         await voice.setDeafened(false)
