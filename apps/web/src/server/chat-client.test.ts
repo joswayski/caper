@@ -271,6 +271,30 @@ test("message sounds exclude history, own messages, and duplicate replay", async
   await tick();
 });
 
+test("a client created without sounds stays silent for new messages", async (t) => {
+  const sounds: string[] = [];
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Audio");
+  Object.defineProperty(globalThis, "Audio", { configurable: true, value: class extends EventTarget {
+    constructor(src: string) { super(); sounds.push(src); }
+    play() { return Promise.resolve(); }
+  } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, "Audio", descriptor);
+    else Reflect.deleteProperty(globalThis, "Audio");
+  });
+  const sockets = installBrowser(t);
+  let state!: ChatViewState;
+  const client = new ChatClient((next) => { state = next; }, undefined, { sounds: false });
+  t.after(() => client.stop());
+  client.start({ space: { id: "space", name: "Caper" }, channel: { id: "general", name: "general" }, messages: [], cursor: "0", hasMore: false });
+  await tick();
+  sockets[0].frame({ type: "ready", cursor: "0" });
+  sockets[0].message({ ...committed({ clientMessageId: "incoming", text: "Hi" }, "1"), author: { id: "other", name: "Other", isGuest: true } });
+  assert.equal(state.messages.length, 1, "the message is still delivered");
+  assert.equal(sounds.length, 0);
+  await tick();
+});
+
 test("optimistic send is immediate; HTTP-first confirmation uses server content/order without skipping replay", async (t) => {
   const f = await sendingFixture(t);
   const sending = f.client.send("local text");

@@ -206,6 +206,19 @@ best-effort ephemeral presence, not saved messages. This demo is not a
 permanent public space when the product launches. Voice control shares the
 application gateway; audio remains WebRTC.
 
+The homepage hero is a live window into this channel (`LiveChannel.tsx`). Its
+server render reuses the existing `GET /api/chat/general` call and keeps the
+newest 16 messages. In the browser it opens one application-gateway socket per
+visitor with a read-only chat subscription and a spectator voice-roster
+subscription. No chat session exists until the visitor focuses the composer.
+Visitors can post from the homepage. Because moderation and deletion do not
+exist yet, anything posted to General is visible on the homepage. Voice is
+joined on the demo page, not on the homepage. Speaking indicators are local
+to call participants, so spectators see who is in voice and who is muted, not
+who is talking. When the channel cannot be loaded, the window plays a scripted
+preview labeled "Preview", limited to shipped features (text, typing, voice
+presence).
+
 The same Rust image has two independently deployable roles:
 
 - `caper-api`: HTTP commands/history plus transactional-outbox publishing (3001).

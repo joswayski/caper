@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
-import LowPolyChat from "../components/LowPolyChat";
+import LiveChannel from "../components/LiveChannel";
+import type { PublicDemo } from "../spaces/server";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
@@ -10,14 +11,15 @@ const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
   account: Account | null;
-  demoHref: string;
+  demo: PublicDemo;
   initialNow: number;
   latestChanges: readonly LatestChange[];
 };
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 
-export default function Home({ account, demoHref, initialNow, latestChanges }: HomeProps) {
+export default function Home({ account, demo, initialNow, latestChanges }: HomeProps) {
+  const demoHref = demo.href;
   const [now, setNow] = useState(initialNow);
 
   useEffect(() => {
@@ -60,7 +62,7 @@ export default function Home({ account, demoHref, initialNow, latestChanges }: H
           </p>
         </div>
 
-        <LowPolyChat />
+        <LiveChannel account={account} demoHref={demoHref} history={demo.history} />
       </section>
 
       <section className="latest-changes shell" aria-labelledby="latest-changes-heading">
