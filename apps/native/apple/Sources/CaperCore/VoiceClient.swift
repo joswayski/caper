@@ -127,8 +127,8 @@ public final class VoiceClient {
     static func configuration(iceServers: [IceServer]) -> RTCConfiguration {
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan
-        // Caper sends gathered SDP, not trickled candidates. Continuous
-        // gathering deliberately never enters .complete in native WebRTC.
+        // Network recovery explicitly restarts ICE. Send pending SDP just as
+        // the web client does; never wait for all STUN/TURN probes to finish.
         configuration.continualGatheringPolicy = .gatherOnce
         configuration.iceServers = iceServers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
         return configuration
@@ -200,8 +200,6 @@ public final class VoiceClient {
             let offer = try await peer.offer(for: RTCMediaConstraints(mandatoryConstraints: [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue], optionalConstraints: nil))
             try checkCurrentAttempt(attempt, peer: peer)
             try await peer.setLocalDescription(offer)
-            try checkCurrentAttempt(attempt, peer: peer)
-            try await Self.waitForGathering(peer)
             try checkCurrentAttempt(attempt, peer: peer)
             let mid = transceiver.mid
             guard let local = peer.localDescription, !mid.isEmpty else { throw VoiceError.setup }
@@ -392,7 +390,6 @@ public final class VoiceClient {
                     try checkCurrentAttempt(attempt, peer: peer)
                     try await peer.setLocalDescription(answer)
                     try checkCurrentAttempt(attempt, peer: peer)
-                    try await Self.waitForGathering(peer)
                     guard generation == attempt, self.peer === peer, let local = peer.localDescription else { return }
                     try await api.media(channelID: callChannelID, operation: "negotiate", token: token, body: NegotiateBody(sessionDescription: SDP(type: "answer", sdp: local.sdp)))
                 } else if response.requiresImmediateRenegotiation == true { throw VoiceError.invalidAnswer }
@@ -528,7 +525,6 @@ public final class VoiceClient {
             try checkCurrentAttempt(attempt, peer: peer)
             try await peer.setLocalDescription(offer)
             try checkCurrentAttempt(attempt, peer: peer)
-            try await Self.waitForGathering(peer)
             guard generation == attempt, self.peer === peer, let local = peer.localDescription else { throw CancellationError() }
             let restarted: SignalingResponse = try await retryControl(generation: attempt, peer: peer) {
                 try await self.api.media(channelID: callChannelID, operation: "restart-ice", token: token, body: RestartBody(generation: response.turn.generation, sequence: sequence, sessionDescription: SDP(type: "offer", sdp: local.sdp)))
@@ -685,16 +681,6 @@ public final class VoiceClient {
         }
     }
     #endif
-
-    static func waitForGathering(_ peer: RTCPeerConnection) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while peer.iceGatheringState != .complete {
-            try Task.checkCancellation()
-            guard peer.connectionState != .closed else { throw CancellationError() }
-            guard ContinuousClock.now < deadline else { throw VoiceError.timeout }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-    }
 
     static func waitForConnected(_ peer: RTCPeerConnection) async throws {
         let deadline = ContinuousClock.now + .seconds(12)

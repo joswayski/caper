@@ -4,7 +4,7 @@ import WebRTC
 
 @MainActor
 final class VoiceTransportTests: XCTestCase {
-    func testGatheredNativeSDPConnectsWithoutTrickleAndCanRestart() async throws {
+    func testImmediateNativeSDPConnectsAndRestartsWithServerCandidates() async throws {
         RTCInitializeSSL()
         let factory = RTCPeerConnectionFactory()
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -19,16 +19,25 @@ final class VoiceTransportTests: XCTestCase {
             if restarting { caller.restartIce() }
             let pendingOffer = try await caller.offer(for: constraints)
             try await caller.setLocalDescription(pendingOffer)
-            try await VoiceClient.waitForGathering(caller)
-            let offer = try XCTUnwrap(caller.localDescription)
-            XCTAssertTrue(offer.sdp.contains("a=candidate:"), "The non-trickle offer must actually contain gathered candidates")
+            let local = try XCTUnwrap(caller.localDescription)
+            // Exercise the asymmetric SFU flow even if this machine gathers
+            // unusually quickly: the caller need not supply any candidates.
+            let offer = RTCSessionDescription(type: .offer, sdp: local.sdp.components(separatedBy: "\r\n")
+                .filter { !$0.hasPrefix("a=candidate:") && $0 != "a=end-of-candidates" }
+                .joined(separator: "\r\n"))
             let credentials = try XCTUnwrap(offer.sdp.components(separatedBy: "\r\n").first { $0.hasPrefix("a=ice-ufrag:") })
             if let previousCredentials { XCTAssertTrue(credentials != previousCredentials, "Restart must gather a fresh ICE generation") }
             previousCredentials = credentials
             try await callee.setRemoteDescription(offer)
             let pendingAnswer = try await callee.answer(for: constraints)
             try await callee.setLocalDescription(pendingAnswer)
-            try await VoiceClient.waitForGathering(callee)
+            // Only the local server stand-in needs a gathered answer. After
+            // restart, COMPLETE can briefly describe the old ICE generation.
+            let gatheringDeadline = ContinuousClock.now + .seconds(10)
+            while callee.iceGatheringState != .complete || callee.localDescription?.sdp.contains("a=candidate:") != true {
+                guard ContinuousClock.now < gatheringDeadline else { throw URLError(.timedOut) }
+                try await Task.sleep(for: .milliseconds(25))
+            }
             let answer = try XCTUnwrap(callee.localDescription)
             XCTAssertTrue(answer.sdp.contains("a=candidate:"))
             try await caller.setRemoteDescription(answer)
