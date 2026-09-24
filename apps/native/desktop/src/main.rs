@@ -1,7 +1,14 @@
 mod api;
 mod credentials;
 mod gateway;
+#[path = "../voice-spike/src/media.rs"]
+mod media;
+#[path = "../voice-spike/src/media_gateway.rs"]
+mod media_gateway;
 mod model;
+#[path = "../voice-spike/src/state.rs"]
+mod state;
+mod voice;
 mod worker;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
@@ -9,8 +16,10 @@ use gateway::GatewayEvent;
 use model::{
     Account, Author, ChatSession, Member, Presence, SpaceDetail, SpaceLimits, Spaces, Timeline,
 };
+use state::{CallContext, Phase};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+use voice::{Voice, VoiceOperation};
 use worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
 
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
@@ -88,6 +97,7 @@ struct Typer {
 
 struct CaperApp {
     worker: Worker,
+    voice: Voice,
     generation: u64,
     loading: bool,
     loading_older: bool,
@@ -131,10 +141,12 @@ struct CaperApp {
 impl CaperApp {
     fn new(context: &egui::Context, api: api::Api, fixture: Option<&str>) -> Self {
         configure(context);
+        let voice = Voice::new(api.base().clone(), context.clone());
         let worker = Worker::new(api, context.clone());
         let now = Instant::now();
         let mut app = Self {
             worker,
+            voice,
             generation: 1,
             loading: fixture.is_none(),
             loading_older: false,
@@ -338,6 +350,7 @@ impl CaperApp {
     }
 
     fn receive(&mut self) {
+        self.voice.receive();
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
@@ -506,6 +519,7 @@ impl CaperApp {
     }
 
     fn open_general(&mut self) {
+        self.voice.state.browse("general".into());
         self.generation += 1;
         self.loading = true;
         self.clear_channel_state();
@@ -618,6 +632,7 @@ impl CaperApp {
     }
 
     fn select_channel(&mut self, id: String, general: bool) {
+        self.voice.state.browse(id.clone());
         self.generation += 1;
         self.selected_channel = Some(id.clone());
         self.session = None;
@@ -644,6 +659,28 @@ impl CaperApp {
             .and_then(|account| account.display_name.clone())
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| "Guest".into())
+    }
+
+    fn join_voice(&mut self) {
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
+        let space = self
+            .selected_space
+            .as_ref()
+            .filter(|space| *space != "general")
+            .cloned();
+        let context = CallContext {
+            channel_id: channel,
+            channel_name: self.channel_name().into(),
+            space_name: self
+                .detail
+                .as_ref()
+                .map_or("General", |detail| detail.space.name.as_str())
+                .into(),
+        };
+        self.voice
+            .join(context, space, self.token.clone(), self.identity_name());
     }
 
     fn gateway(&mut self, event: GatewayEvent) {
@@ -853,6 +890,9 @@ impl CaperApp {
     }
 
     fn clear_channel(&mut self, message: &str) {
+        if let Some(channel) = &self.selected_channel {
+            self.voice.revoke_channel(channel);
+        }
         self.clear_channel_state();
         self.error = Some(message.into());
     }
@@ -869,6 +909,7 @@ impl CaperApp {
     }
 
     fn logout(&mut self) {
+        self.voice.leave();
         let token = self.token.take();
         self.generation += 1;
         self.worker.send(Command::StopGateway);
@@ -1006,6 +1047,7 @@ impl CaperApp {
                 self.dialog = None;
             }
             AdminResult::SpaceDeleted(id) => {
+                self.voice.revoke_space(&id);
                 self.spaces.retain(|space| space.id != id);
                 self.dialog = None;
                 self.open_general();
@@ -1029,6 +1071,7 @@ impl CaperApp {
                 self.dialog = None;
             }
             AdminResult::ChannelDeleted(id) => {
+                self.voice.revoke_channel(&id);
                 if let Some(detail) = &mut self.detail {
                     detail.channels.retain(|channel| channel.id != id);
                 }
@@ -1562,6 +1605,35 @@ impl CaperApp {
                                 self.select_channel(id.clone(), false);
                             }
                         }
+                        if !self.voice.participants.is_empty() {
+                            ui.add_space(14.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "IN VOICE · {}",
+                                    self.voice.participants.len()
+                                ))
+                                .size(11.0)
+                                .color(MUTED),
+                            );
+                            for participant in &self.voice.participants {
+                                ui.horizontal(|ui| {
+                                    avatar(ui, &participant.name, 28.0, false);
+                                    ui.label(
+                                        bold(if participant.id == self.voice.self_id {
+                                            format!("{} (you)", participant.name)
+                                        } else {
+                                            participant.name.clone()
+                                        })
+                                        .size(12.0),
+                                    );
+                                    if participant.deafened {
+                                        ui.label(RichText::new("Deafened").size(10.0).color(MUTED));
+                                    } else if participant.muted {
+                                        ui.label(RichText::new("Muted").size(10.0).color(MUTED));
+                                    }
+                                });
+                            }
+                        }
                     });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     egui::Frame::new()
@@ -1604,6 +1676,113 @@ impl CaperApp {
                                 );
                             });
                         });
+                    ui.add_space(8.0);
+                    if let Phase::Joining(context)
+                    | Phase::Connected(context)
+                    | Phase::Reconnecting(context) = &self.voice.state.phase
+                    {
+                        let label = format!("{} / {}", context.space_name, context.channel_name);
+                        let connected = matches!(self.voice.state.phase, Phase::Connected(_));
+                        egui::Frame::new()
+                            .fill(RAISED)
+                            .stroke(Stroke::new(1.0, BORDER))
+                            .inner_margin(8)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            bold(if connected {
+                                                "Voice connected"
+                                            } else {
+                                                "Connecting voice…"
+                                            })
+                                            .size(12.0),
+                                        );
+                                        ui.label(RichText::new(label).size(11.0).color(MUTED));
+                                    });
+                                    if ui.button("Leave").clicked() {
+                                        self.voice.leave();
+                                    }
+                                });
+                            });
+                        ui.add_space(8.0);
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_sized(
+                                [76.0, 32.0],
+                                egui::Button::new(if self.voice.state.audio.muted {
+                                    "Unmute"
+                                } else {
+                                    "Mute"
+                                })
+                                .fill(RAISED)
+                                .stroke(Stroke::new(1.0, BORDER))
+                                .corner_radius(8),
+                            )
+                            .clicked()
+                        {
+                            self.voice
+                                .command(VoiceOperation::Mute(!self.voice.state.audio.muted));
+                        }
+                        if ui
+                            .add_sized(
+                                [84.0, 32.0],
+                                egui::Button::new(if self.voice.state.audio.deafened {
+                                    "Undeafen"
+                                } else {
+                                    "Deafen"
+                                })
+                                .fill(RAISED)
+                                .stroke(Stroke::new(1.0, BORDER))
+                                .corner_radius(8),
+                            )
+                            .clicked()
+                        {
+                            self.voice
+                                .command(VoiceOperation::Deafen(!self.voice.state.audio.deafened));
+                        }
+                        ui.style_mut().spacing.interact_size.y = 32.0;
+                        ui.menu_button("Audio", |ui| {
+                            ui.label(bold("Microphone"));
+                            for (guid, name) in self.voice.inputs.clone() {
+                                if ui
+                                    .selectable_label(
+                                        self.voice.input.as_deref() == Some(&guid),
+                                        name,
+                                    )
+                                    .clicked()
+                                {
+                                    self.voice.command(VoiceOperation::Input(guid));
+                                    ui.close();
+                                }
+                            }
+                            if self.voice.inputs.is_empty() {
+                                ui.label("Available after joining voice");
+                            }
+                            ui.separator();
+                            ui.label(bold("Speaker"));
+                            for (guid, name) in self.voice.outputs.clone() {
+                                if ui
+                                    .selectable_label(
+                                        self.voice.output.as_deref() == Some(&guid),
+                                        name,
+                                    )
+                                    .clicked()
+                                {
+                                    self.voice.command(VoiceOperation::Output(guid));
+                                    ui.close();
+                                }
+                            }
+                            if self.voice.outputs.is_empty() {
+                                ui.label("Available after joining voice");
+                            }
+                        });
+                    });
+                    if let Some(error) = &self.voice.error {
+                        ui.colored_label(ERROR, error);
+                    }
+                    ui.add_space(8.0);
                 });
             });
     }
@@ -1711,6 +1890,22 @@ impl CaperApp {
                                     .size(11.0)
                                     .color(if self.live == "Live" { CAPER } else { MUTED }),
                             );
+                            let already_here = self.voice.state.active_channel()
+                                == self.selected_channel.as_deref();
+                            if !already_here
+                                && self.selected_channel.is_some()
+                                && ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Join voice").strong().color(TEXT),
+                                        )
+                                        .fill(TERRACOTTA)
+                                        .corner_radius(8),
+                                    )
+                                    .clicked()
+                            {
+                                self.join_voice();
+                            }
                         });
                     });
                 });

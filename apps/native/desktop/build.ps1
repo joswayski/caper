@@ -10,16 +10,18 @@ $Target = "x86_64-pc-windows-msvc"
 # A portable download must not require a separately installed VC++ runtime.
 # An explicit target keeps this flag off host-built procedural macros.
 $env:RUSTFLAGS = "$env:RUSTFLAGS -C target-feature=+crt-static".Trim()
+$env:LK_CUSTOM_WEBRTC = python (Join-Path $Native "voice-spike\fetch_libwebrtc.py") --platform windows
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python (Join-Path $Root "scripts\native_fonts.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") -- --check
+cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop -- --check
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo test --manifest-path (Join-Path $Native "Cargo.toml") --target $Target --locked
+cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --target $Target --locked --all-targets -- -D warnings
+cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --all-targets --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo build --manifest-path (Join-Path $Native "Cargo.toml") --target $Target --locked --release
+cargo build --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --release
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Dist = Join-Path $Native "dist"
@@ -29,6 +31,7 @@ New-Item $Dist, $Stage -ItemType Directory -Force | Out-Null
 Copy-Item (Join-Path $Native "target\$Target\release\caper-desktop.exe") (Join-Path $Stage "Caper.exe")
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
 Copy-Item (Join-Path $Root "shared\fonts\cache\Satoshi-FFL.txt") $Stage
+Copy-Item (Join-Path $Native "voice-spike\licenses\*") $Stage
 $Output = Join-Path $Dist "Caper-windows-x64.zip"
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Output -CompressionLevel Optimal
 Write-Host "Built: $Output (unsigned portable application)"

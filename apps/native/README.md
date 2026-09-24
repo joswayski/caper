@@ -21,9 +21,9 @@ The clients are being aligned with the current website: guest General, account
 sign-in and text conversations, owner space/channel/member management, private
 grants, presence, typing, and the responsive rail/sidebar/conversation layout.
 Implementation checkpoints are not acceptance: check each platform's README and
-the exact revision's CI results before relying on a feature. Windows/Linux do not
-implement calling yet. Apple and Android expose native voice in default builds,
-but neither has a verified locked-phone call. Visual
+the exact revision's CI results before relying on a feature. All clients expose
+native voice in default builds, but physical audio and locked-phone calls remain
+unverified. Visual
 matching, audio controls, platform lifecycle behavior, and physical-device
 acceptance remain in progress.
 

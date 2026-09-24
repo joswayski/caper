@@ -7,13 +7,36 @@ license = "Apache-2.0"
 description = "Native Caper desktop client"
 
 [workspace]
+members = ["voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/livekit/rust-sdks"
+
+[workspace.dependencies]
+webrtc-sys = { path = "voice-spike/vendor/webrtc-sys", version = "0.3.46" }
+webrtc-sys-build = { path = "voice-spike/vendor/webrtc-sys/build", version = "0.3.19" }
+anyhow = "1.0"
+cc = "1.0"
+env_logger = "0.11"
+lazy_static = "1.4"
+log = "0.4"
+parking_lot = "0.12"
+serde = "1"
+serde_json = "1.0"
+thiserror = "2"
+tokio = { version = "1", default-features = false }
+tokio-stream = "0.1"
 
 [dependencies]
 eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts"] }
 keyring = { version = "3.6.3", default-features = false }
+libwebrtc = { path = "voice-spike/vendor/libwebrtc" }
 reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1.47", features = ["rt-multi-thread", "time", "sync"] }
 tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 url = "2.5"
 uuid = { version = "1.18", features = ["v4"] }

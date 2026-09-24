@@ -21,6 +21,13 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Unified `/api/chat/events` gateway subscriptions with ordered replay,
   deduplication, gap resync, heartbeat handling, reconnect status, and stale
   result isolation across logout/channel changes.
+- Guest General, account spaces, private-channel grants, pagination, typing,
+  paginated member presence, and owner space/channel/member management.
+- Experimental native voice: raw Google libwebrtc with platform audio devices,
+  Caper SFU offer/answer publication and subscription, voice roster, lease
+  snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
+  active call running; explicit replacement, logout and access denial silence
+  locally. Mute/deafen and input/output selection use native ADM.
 
 The account bearer is sent only in the HTTP/WebSocket `Authorization` header.
 The short-lived chat capability is separate, held only in memory, and sent only
@@ -36,10 +43,12 @@ The workspace pins Rust **1.94.0** and eframe **0.33.3** in its independent
 Ubuntu 24.04 CI/build host:
 
 ```sh
+# clang-21/lld-21 are not in the stock Noble repositories. Configure the
+# signed apt.llvm.org llvm-toolchain-noble-21 repository first.
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libwayland-dev \
   libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
-  libdbus-1-dev dbus-x11
+  libdbus-1-dev dbus-x11 libglib2.0-dev clang-21 lld-21
 rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
 ./apps/native/desktop/build.sh
 ```
@@ -58,7 +67,7 @@ Outputs are unsigned:
 - `dist/Caper-windows-x64.zip`
 
 The `.deb` is built against Ubuntu 24.04 (glibc 2.39) and declares native
-X11/Wayland, D-Bus and Vulkan-or-GL runtime dependencies. It is not a static or
+X11/Wayland, D-Bus, PulseAudio/ALSA and Vulkan-or-GL runtime dependencies. It is not a static or
 distribution-independent Linux binary. Linux session persistence also requires
 an unlocked Secret Service provider such as GNOME Keyring.
 
@@ -69,27 +78,43 @@ Run the unpacked binary directly, or install the Debian package with
 
 ## Calling and known parity gaps
 
-**Voice calling is unavailable in this client and no inert call control is
-shown.** Caper's existing media path depends on native microphone capture,
-playback, WebRTC transceivers, ICE/TURN renewal, and Cloudflare Realtime SFU SDP
-negotiation. Rust WebRTC libraries exist, but this workstream could not safely
-verify interoperable capture/playback and the existing SFU state machine on
-physical Windows/Linux devices. Shipping a partial signaling-only button would
-risk leaking tracks or presenting a false connected state.
+Voice is **experimental**, not live/physical-device accepted. Source and local
+tests exercise signaling, cancellation and native ICE gathering; they do not
+prove two-client SFU/TURN or actual mic/speaker quality. The pinned binding
+does not provide safe ADM input/output gain, per-remote gain, or a local
+natural/enhanced mic-monitor path, so these browser controls are not shown.
+Mic test, processing strength and full connection diagnostics are also absent.
+Device selection is available only after an active session enumerates hardware.
+No camera, screen sharing, native notifications, installers, signing or updates.
+IME/accessibility and sustained multi-network voice need separate acceptance.
+The `.deb` and archives are unsigned release artifacts, not installers.
 
-Other current gaps versus the browser are older-history pagination, typing and
-member presence, space/channel/member administration, voice, native
-notifications, accessibility/IME acceptance, installers, signing and updates.
-The `.deb` and archives are portable release artifacts, not signed installers.
+An earlier opt-in, ignored live smoke used two locally muted/deafened NativeSessions
+with a private PulseAudio null sink/monitor. On 2026-09-24 both published and
+reached connected transports, but the combined snapshot/reconcile step returned HTTP 502 on
+one run and later `unauthorized` on another; two-way subscription/RTP was not
+verified. This is not evidence of physical capture or listening. Do not run the
+public smoke without isolated virtual devices and explicit authorization.
+
+A separate **local-only** connected-peer test found that ADM disabled plus a
+disabled device track emitted 0 RTP bytes; enabling ADM without the track also
+emitted 0, while a virtual null-source input and synthetic zero-PCM track each
+emitted RTP. Production starts with synthetic silence, sends the pending local
+SDP immediately after setting the offer (like the web client), and only opens
+the selected device after the current gateway and roster are ready. Cancel
+closes the local peer and disables ADM before remote leave finishes. The
+opt-in live smoke now restricts subscription to its two owned sessions; it
+has **not** been rerun after these changes.
 
 ## Validation
 
 ```sh
-cargo fmt --manifest-path apps/native/desktop/Cargo.toml -- --check
-CARGO_BUILD_JOBS=2 cargo test --manifest-path apps/native/desktop/Cargo.toml --locked
-CARGO_BUILD_JOBS=2 cargo clippy --manifest-path apps/native/desktop/Cargo.toml --locked --all-targets -- -D warnings
+cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -- --check
+CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)" CARGO_BUILD_JOBS=2 cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked
+CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$PWD/apps/native/desktop/target/libwebrtc/linux-x64-release" CARGO_BUILD_JOBS=2 cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked --all-targets --no-deps -- -D warnings
 ```
 
 For deterministic visual inspection without live accounts, launch
-`caper-desktop --fixture signed-out` or `--fixture error`. These are explicitly
-labeled test states and contain no fake conversation data.
+`caper-desktop --fixture login` or `--fixture parity-channel`. These are
+explicitly labeled static previews; the chat fixture at loopback port 3001
+does not provide live SFU media. Use normal `--api-url` for networked chat tests.
