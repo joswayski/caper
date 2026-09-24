@@ -115,7 +115,7 @@ private extension RTCPeerConnection {
         }
     }
     func setLocalDescription(_ value: RTCSessionDescription) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             setLocalDescription(value) { error in
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume() }
@@ -123,7 +123,7 @@ private extension RTCPeerConnection {
         }
     }
     func setRemoteDescription(_ value: RTCSessionDescription) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             setRemoteDescription(value) { error in
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume() }
