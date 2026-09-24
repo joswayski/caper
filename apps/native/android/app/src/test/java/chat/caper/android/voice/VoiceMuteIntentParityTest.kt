@@ -6,6 +6,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VoiceMuteIntentParityTest {
+    @Test fun `replacement preserves both saved mute intents without sharing mutable state`() = runTest {
+        for (previousMute in listOf(false, true)) {
+            val old = VoiceLocalMute(Mutex(), {}) { _, _ -> }
+            old.setMuted(previousMute)
+            old.setDeafened(true)
+            var applied = false to false
+            val replacement = VoiceLocalMute(Mutex(), {}) { muted, deafened -> applied = muted to deafened }
+            replacement.copyFrom(old)
+            assertTrue(replacement.muted)
+            assertTrue(replacement.deafened)
+            old.setMuted(false) // Old completions must not mutate the new intent.
+            assertTrue(replacement.deafened)
+            replacement.setDeafened(false)
+            assertEquals(previousMute to false, applied)
+            assertEquals(previousMute, replacement.muted)
+        }
+    }
+
     @Test fun `explicit unmute updates actual local and signaling state`() = runTest {
         var applied = true to true
         val local = VoiceLocalMute(Mutex(), {}) { muted, deafened -> applied = muted to deafened }

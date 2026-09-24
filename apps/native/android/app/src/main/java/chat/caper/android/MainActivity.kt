@@ -113,7 +113,7 @@ internal data class VoiceJoinIntent(
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::requestCode)
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::verify)
-                is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, null, viewModel::saveProfile)
+                is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
                 SessionScreen.Home, is SessionScreen.Spaces -> HomeScreen(
                     state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
                 )
@@ -128,7 +128,7 @@ internal data class VoiceJoinIntent(
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private -> viewModel.createChannel(name, private) { overlay = null } } }
         is Overlay.ManageChannel -> ManageChannelDialog(state, shown.channel, viewModel) { overlay = null }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and messages.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
-        Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, { overlay = null }) { username, display -> viewModel.updateProfile(username, display); overlay = null } }
+        Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
         Overlay.Audio -> AudioSettingsDialog(state, voice, { overlay = null }, viewModel::logout)
         null -> Unit
     }
@@ -339,7 +339,8 @@ internal data class VoiceJoinIntent(
     val context = LocalContext.current
     Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Row(Modifier.height(42.dp).padding(5.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
+                .semantics { contentDescription = if (state.account == null) "Sign in" else "Edit profile" }, verticalAlignment = Alignment.CenterVertically) {
                 AccountAvatar(state); Spacer(Modifier.width(7.dp))
                 Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
@@ -563,7 +564,7 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun ProfileScreen(account: Account, busy: Boolean, close: (() -> Unit)?, submit: (String, String) -> Unit) {
+@Composable private fun ProfileScreen(account: Account, busy: Boolean, error: String?, close: (() -> Unit)?, submit: (String, String) -> Unit) {
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
     val form: @Composable ColumnScope.() -> Unit = {
@@ -571,7 +572,8 @@ internal data class VoiceJoinIntent(
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(username, name) }, enabled = username.length >= 3 && name.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text("Save profile") }
+        error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text("Save profile") }
     }
     if (close == null) AuthFrame { form() } else CaperDialog("Edit profile", close) { form() }
 }
@@ -876,6 +878,9 @@ private fun formatBitrate(value: Long) = "${value / 1_000} kbps"
 }
 
 private fun normalizeUsername(value: String) = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(32)
+internal fun profileValid(username: String, displayName: String) =
+    Regex("^[a-z0-9_]{3,32}$").matches(username) && displayName.isNotBlank() &&
+        displayName.codePointCount(0, displayName.length) <= 64 && displayName.none { it.isISOControl() }
 private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\\s+"), "-").filter { it in 'a'..'z' || it == '-' }.replace(Regex("-+"), "-").removePrefix("-").take(80)
 private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))
 private fun String.codePointTake(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max))

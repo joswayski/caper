@@ -290,6 +290,20 @@ def main() -> None:
     assert find(zero, text="Test microphone") is not None
     tap(description="Close")
 
+    tap(description="Edit profile")
+    enter_first_field("ab")
+    invalid = hierarchy()
+    assert find(invalid, text="Save profile").get("enabled") == "false"
+    enter_first_field("fixture_owner")
+    adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503}})
+    tap(text="Save profile")
+    profile_error = capture("caper-android-profile-error", "temporarily unavailable")
+    assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
+    assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
+    tap(text="Save profile")
+    wait_for(description="Manage planning")
+
     tap(description="Manage planning")
     overview = capture("caper-android-channel-settings", "Overview")
     for required in ("Private channel", "Only you and the people you add can view or join.", "Delete channel"):

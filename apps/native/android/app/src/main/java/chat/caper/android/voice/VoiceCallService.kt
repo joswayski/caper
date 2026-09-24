@@ -132,14 +132,15 @@ class VoiceCallService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean) {
+    private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean, previous: VoiceEngine? = null) {
         if (engine != null) return
         val token = TokenStore(this).read()
         if (!demo && token == null) return stopSelf()
         val attempt = attempts.begin()
         activeAttempt = attempt
         val preferences = getSharedPreferences("audio", MODE_PRIVATE)
-        update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName, muted = true,
+        update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName,
+            muted = previous?.muted ?: true, deafened = previous?.deafened ?: false,
             inputGain = preferences.getInt("inputGain", 100), processingStrength = preferences.getInt("strength", 25),
             outputVolume = preferences.getInt("outputVolume", 100)) }
         val current = try {
@@ -149,6 +150,7 @@ class VoiceCallService : Service() {
             created = VoiceEngine(this, CaperApi(), token, channelId, displayName, demo) { transport ->
                 scope.launch { transportState(created, attempt, transport) }
             }
+            previous?.let { created.copyAudioIntentFrom(it) }
             created.also { engine = it }
         } catch (error: Throwable) {
             attempts.end()
@@ -432,8 +434,9 @@ class VoiceCallService : Service() {
             if (!BuildConfig.ENABLE_NATIVE_VOICE) return
             val current = active
             if (current != null && state.value.channelId != channelId) {
+                val previous = current.engine
                 current.stopCall(stopService = false)
-                current.startCall(channelId, spaceId, channelName, spaceName, displayName, demo)
+                current.startCall(channelId, spaceId, channelName, spaceName, displayName, demo, previous)
                 return
             }
             val intent = Intent(context, VoiceCallService::class.java).setAction(ACTION_START)

@@ -73,6 +73,7 @@ class VoiceEngine(
     val muted get() = localMute.muted
     val deafened get() = localMute.deafened
 
+    internal fun copyAudioIntentFrom(previous: VoiceEngine) { localMute.copyFrom(previous.localMute) }
     fun setInputGain(value: Int) { capture?.gain(value) }
     fun setProcessingStrength(value: Int) { capture?.processingStrength(value) }
     fun processingReport(): LongArray = capture?.report() ?: longArrayOf()
@@ -122,7 +123,7 @@ class VoiceEngine(
             // delivering its token. Wait for the bounded call to finish, then
             // either publish the token or leave it after a local stop.
             val joined: JoinResponse? = withContext(NonCancellable) {
-                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", true); put("deafened", false) })
+                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", muted); put("deafened", deafened) })
                 if (resources.acceptToken(result.token) { mediaToken = it; selfId = result.id; turn = result.turn }) result
                 else {
                     // Stop preceded response: closeLocal never saw this token.
@@ -566,6 +567,11 @@ internal class VoiceMuteIntent(initiallyMuted: Boolean = true) {
         private set
     private var beforeDeafen = initiallyMuted
 
+    fun copy() = VoiceMuteIntent(muted).also {
+        it.deafened = deafened
+        it.beforeDeafen = beforeDeafen
+    }
+
     fun setMuted(value: Boolean) {
         muted = value
         if (!value) {
@@ -587,11 +593,22 @@ internal class VoiceLocalMute(
     private val sync: suspend () -> Unit,
     private val apply: (Boolean, Boolean) -> Unit,
 ) {
-    private val intent = VoiceMuteIntent()
+    private var intent = VoiceMuteIntent()
     @Volatile var muted = true
         private set
     @Volatile var deafened = false
         private set
+
+    // Used before the replacement engine connects. Do not share mutable intent
+    // or carry any old peer, media capability, PCM, or comparison state.
+    fun copyFrom(previous: VoiceLocalMute) {
+        val snapshot = synchronized(previous) { previous.intent.copy() }
+        synchronized(this) {
+            intent = snapshot
+            muted = intent.muted
+            deafened = intent.deafened
+        }
+    }
 
     suspend fun setMuted(value: Boolean, onLocalApplied: () -> Unit = {}) {
         synchronized(this) {

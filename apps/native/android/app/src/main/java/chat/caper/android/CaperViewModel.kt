@@ -99,13 +99,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (request == accountGeneration) loadHome()
     }
 
-    fun updateProfile(username: String, displayName: String) = launchAction { request ->
+    fun updateProfile(username: String, displayName: String, onSuccess: () -> Unit) = launchAction { request ->
         val account = api.profile(requireAccountToken(), username, displayName)
         if (request != accountGeneration) return@launchAction
         mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
         chatToken = null
         chatAuthor = null
         createChatSession(accountGeneration)
+        onSuccess()
     }
 
     fun logout() {
