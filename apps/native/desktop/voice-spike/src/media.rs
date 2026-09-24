@@ -1139,16 +1139,7 @@ impl NativeSession {
             )
             .await
             .map_err(VoiceError::Media)?;
-        Self::from_join(
-            api,
-            joined,
-            muted,
-            deafened,
-            input_guid,
-            output_guid,
-            control,
-        )
-        .await
+        Self::from_join(api, joined, intent, input_guid, output_guid, control).await
     }
 
     // Keep the issued capability available to callers that must await cleanup
@@ -1156,8 +1147,7 @@ impl NativeSession {
     async fn from_join(
         api: MediaApi,
         joined: JoinResponse,
-        muted: bool,
-        deafened: bool,
+        intent: AudioIntent,
         input_guid: Option<&str>,
         output_guid: Option<&str>,
         control: &JoinControl,
