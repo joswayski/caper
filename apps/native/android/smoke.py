@@ -304,7 +304,6 @@ def main() -> None:
         submit = parents.get(submit)
     assert submit is not None and submit.get("enabled") == "false"
     enter_first_field("fixture_owner")
-    adb("shell", "input", "keyevent", "KEYCODE_BACK")
     fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503}})
     tap(text="Save profile")
     profile_error = capture("caper-android-profile-error", "temporarily unavailable")
