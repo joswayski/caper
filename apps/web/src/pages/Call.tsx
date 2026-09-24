@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { AudioLines, ChevronDown, Hash, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, Volume2, VolumeX, X } from "lucide-react";
+import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, Volume2, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import { getSystemSoundsEnabled, playSound, preloadSoundEffects, setSystemSoundsEnabled, subscribeSystemSounds } from "../audio/effects";
@@ -418,7 +418,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
                   <span className="participant-avatar">
                     <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   </span>
-                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} /><small aria-hidden={!participantStatus}>{participantStatus ?? "\u00a0"}</small></span>
+                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}</span>
                   {!publicRoster && <VoiceActivity
                     stream={stream}
                     muted={activityMuted}
@@ -469,7 +469,7 @@ export default function Call({ channel, spaceRail, channelNavigation, membersPan
     return {
       summary: <button className="voice-stack" type="button" aria-expanded={open} aria-controls="voice-occupants" aria-label={`${roster.length} in voice. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => { setRosterOpen(!open); setVolumeParticipant(undefined); }}>
         {roster.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${isSpeaking(participant) ? " speaking" : ""}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>)}
-        <small aria-hidden="true">{roster.length}</small>
+        {roster.length > 3 && <small aria-hidden="true">+{roster.length - 3}</small>}
         <ChevronDown aria-hidden="true" />
       </button>,
       list: <div className="voice-occupants" id="voice-occupants" data-open={open ? "" : undefined}>

@@ -75,7 +75,9 @@
 .participant-name { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; flex: 1; }
 .participant-name strong { overflow: hidden; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
 .participant-country { width: 16px; height: 12px; flex: 0 0 auto; align-self: center; border-radius: 3px; box-shadow: 0 0 0 1px rgb(0 0 0 / .25); }
-.participant-name small { color: var(--text-muted); font-size: .72rem; }
+/* Mute and deafen show as icons, like Discord; the words stay for screen readers. */
+.participant-status { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; align-self: center; color: var(--text-muted); }
+.participant-status svg { width: 15px; height: 15px; }
 .participant-menu-button { height: 28px; flex: 0 0 auto; padding: 0 7px; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font-size: .7rem; font-weight: 700; cursor: pointer; }
 .participant-menu-button:hover, .participant-menu-button[aria-expanded="true"] { color: var(--text); background: var(--border); }
 .participant-volume { position: absolute; z-index: 2; top: 52px; right: 8px; width: 220px; display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--blackout); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
@@ -221,13 +223,19 @@
 .channel-navigation li[data-voice] .voice-stack { top: 5px; transform: none; }
 .channel-navigation li[data-voice]:has(.channel-manage) .voice-stack { right: 34px; }
 .voice-stack:hover { color: var(--text); background: var(--surface-raised); }
+/* A soft caper-green pulse: people are in voice right now. */
+.voice-stack { animation: voice-live 2.6s ease-in-out infinite; }
+@keyframes voice-live {
+  0%, 100% { box-shadow: 0 0 0 1px rgb(140 178 98 / .22), 0 0 0 0 rgb(140 178 98 / 0); }
+  50% { box-shadow: 0 0 0 1px rgb(140 178 98 / .5), 0 0 14px 1px rgb(140 178 98 / .26); }
+}
 .voice-stack > svg { width: 13px; height: 13px; margin-left: 3px; transition: transform .2s ease; }
 .voice-stack[aria-expanded="false"] > svg { transform: rotate(-90deg); }
 .voice-stack:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 1px; }
 .voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid var(--surface-sidebar); border-radius: var(--radius-avatar); color: #fff; background: #354027; font-size: .55rem; font-weight: 900; }
 .voice-stack-avatar + .voice-stack-avatar { margin-left: -6px; }
 .voice-stack-avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 1px var(--caper); }
-.voice-stack small { margin-left: 5px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+.voice-stack small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
 .voice-occupants { flex-basis: 100%; display: grid; grid-template-rows: 0fr; transition: grid-template-rows .22s ease; }
 .voice-occupants[data-open] { grid-template-rows: 1fr; }
 .voice-occupants-inner { min-height: 0; overflow: hidden; }
@@ -242,8 +250,7 @@
 .voice-occupants .participant-country { width: 14px; height: 10px; border-radius: 2px; }
 .voice-occupants .participant-name { display: flex; align-items: baseline; gap: 6px; }
 .voice-occupants .participant-name strong { font-size: .8rem; font-weight: 650; }
-.voice-occupants .participant-name small { flex: 0 0 auto; font-size: .66rem; }
-.voice-occupants .participant-name small[aria-hidden="true"] { display: none; }
+.voice-occupants .participant-status svg { width: 14px; height: 14px; }
 .voice-occupants .participant-menu-button { height: 24px; font-size: .66rem; }
 .voice-occupants .participant-volume { top: 34px; }
 .voice-elsewhere .voice-roster-label { margin-top: 16px; }
@@ -254,4 +261,5 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .voice-occupants { transition: none; }
+  .voice-stack { animation: none; box-shadow: 0 0 0 1px rgb(140 178 98 / .4); }
 }

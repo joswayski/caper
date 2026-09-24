@@ -68,6 +68,8 @@
 .live-status[data-status="live"] i::after { position: absolute; inset: -4px; content: ""; border: 1.5px solid var(--live-green); border-radius: 50%; animation: live-ping 2s ease-out infinite; }
 .live-status[data-status="connecting"] i { background: #d9ab5c; }
 @keyframes live-ping { from { opacity: .8; transform: scale(.5); } to { opacity: 0; transform: scale(1.5); } }
+.live-titlebar .live-close { margin-left: auto; }
+.live-status + .live-close { margin-left: 0; }
 .live-close { display: grid; width: 32px; height: 32px; flex: none; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 8px; color: var(--text-muted); background: transparent; cursor: pointer; transition: color .15s ease, background-color .15s ease, border-color .15s ease; }
 .live-close:hover { border-color: var(--border); color: var(--text); background: var(--surface-raised); }
 .live-close:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 2px; }
@@ -102,9 +104,15 @@
   .live-stage:not([data-active]) .live-app .voice-panel { display: none; }
 }
 
-/* Fully open, the scene's own transform is removed (see liveMotion) and every
-   layer sits at depth 0. The layer structure is kept as is: switching it at the
-   end of the animation made the compositor repaint panels out of order. */
+/* Fully open, the window becomes plain 2D layout. Coplanar layers inside a 3D
+   context make hit testing unreliable (clicks can land on a scroll container
+   instead of the control drawn on top). The edge plates are fully transparent
+   by now, so dropping the 3D structure causes no visible change. */
+.live-scene[data-settled],
+.live-scene[data-settled] :is(.lz, .live-window, .live-app, .call-page, .call-room, .people-panel, .voice-panel) { transform: none; transform-style: flat; }
+.live-scene[data-settled] .live-slab,
+.live-scene[data-settled] .live-shadow,
+.live-scene[data-settled] .call-room::before { display: none; }
 
 /* At rest the whole window is one button: drag to tilt, click or tap to open. */
 .live-activator { position: absolute; inset: 44px 0 0; z-index: 5; display: grid; place-items: center; padding: 0; border: 0; border-radius: 0 0 18px 18px; color: inherit; background: transparent; font: inherit; cursor: inherit; transform: translateZ(calc(var(--depth) * 80px)); }

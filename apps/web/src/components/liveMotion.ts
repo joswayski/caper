@@ -96,7 +96,9 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     const goal = active && mode === "expand" ? 1 : 0;
     // Opening uses a slightly slower, softer curve than tilting.
     open = reduced ? goal : open + (goal - open) * (1 - Math.exp(-step / 120));
-    if (Math.abs(goal - open) < 0.0015) open = goal;
+    // Snap once the remaining motion is imperceptible, so the window becomes
+    // plain layout promptly instead of easing through an invisible tail.
+    if (Math.abs(goal - open) < 0.02) open = goal;
     const rest = mode === "expand" ? REST : NARROW_REST;
     const closed = 1 - open;
     const elapsed = reduced ? 0 : time - start;

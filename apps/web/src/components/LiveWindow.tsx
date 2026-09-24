@@ -115,9 +115,9 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
         <div className="live-window">
           <div className="live-titlebar">
             <span className="live-lights" aria-hidden="true"><i /><i /><i /></span>
-            <span className="live-status" data-status={status} role="status">
-              <i aria-hidden="true" />{status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Preview"}
-            </span>
+            {status === "preview" && <span className="live-status" data-status={status} role="status">
+              <i aria-hidden="true" />Preview
+            </span>}
             {active && <button className="live-close" type="button" data-live-control onClick={() => onActiveChange(false)} aria-label={sheet ? "Close #general" : "Minimize #general"}>
               {sheet ? <X aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
             </button>}
