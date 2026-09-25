@@ -53,6 +53,21 @@ public enum CaperTheme {
             CaperEffects.shared.preload()
             if model.phase == .loading { await model.start() }
         }
+        .task(id: model.voice.phase) {
+            while !Task.isCancelled && model.voice.phase == .connected {
+                await model.voice.sampleSpeaking()
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+            }
+            model.voice.clearSpeaking()
+        }
+        .onChange(of: model.voice.participants.map(\.id)) { old, new in
+            // Web chimes when someone else joins or leaves the call you are in.
+            guard model.voice.phase == .connected,
+                  let me = old.first(where: { model.voice.isSelf(participantID: $0) }), new.contains(me) else { return }
+            let before = Set(old).subtracting([me]), after = Set(new).subtracting([me])
+            if !before.subtracting(after).isEmpty { CaperEffects.shared.play(.leave) }
+            else if !after.subtracting(before).isEmpty { CaperEffects.shared.play(.join) }
+        }
         .onChange(of: model.voice.phase) { _, new in
             if new == .idle || new == .failed || new == .joining { announcedVoice = false }
             if new == .connected, !announcedVoice {
@@ -124,6 +139,10 @@ private struct WorkspaceView: View {
     }
 
     var body: some View {
+        workspace.task(id: model.viewedVoiceRoot) { await model.refreshVoiceAvailability() }
+    }
+
+    private var workspace: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
             let membersVisible = membersPreference ?? !narrow
@@ -139,7 +158,7 @@ private struct WorkspaceView: View {
                 Group {
                     if narrow && !model.navigationOpen {
                         ZStack(alignment: .trailing) {
-                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                 membersPreference = !membersVisible
                             }
                             if membersVisible {
@@ -203,14 +222,14 @@ private struct WorkspaceView: View {
                                 Group {
                                     if geometry.size.width >= 1100 {
                                         HStack(spacing: 0) {
-                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
                                             if membersVisible { MemberPresenceView(model: model).frame(width: 220) }
                                         }
                                     } else {
                                         VStack(spacing: 0) {
-                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
                                             if membersVisible { MemberPresenceView(model: model).frame(maxHeight: 240) }
@@ -309,7 +328,8 @@ private struct SpaceRail: View {
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border, style: StrokeStyle(lineWidth: 1, dash: [4])))
                 }
                 .buttonStyle(.plain).disabled(model.account != nil && !model.canCreateSpace)
-                .help(model.account == nil ? "Sign in to create a space" : "Create space")
+                .help(model.account == nil ? "Sign in to create a space" : model.canCreateSpace ? "Create space"
+                      : "Space limit reached (\(model.limits?.ownedSpaces ?? 20) owned, \(model.limits?.totalSpaces ?? 100) total)")
             }.padding(.vertical, 14).frame(maxWidth: .infinity)
         }
         .background(CaperTheme.blackout)
@@ -349,12 +369,21 @@ private struct ChannelSidebar: View {
                             HStack(spacing: 6) {
                                 CaperIcon(name: channelsExpanded ? "chevron-down" : "chevron-right")
                                 Text("Channels")
+                                Text("\(model.detail?.channels.count ?? 0)").font(CaperTheme.font(10, weight: .bold))
                             }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         }.buttonStyle(.plain)
                         Spacer()
                         if model.isOwner {
+                            let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
                             Button { sheet = .createChannel } label: { CaperIcon(name: "plus") }
-                                .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).accessibilityLabel("Create channel")
+                                .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).help(createHelp).accessibilityLabel("Create channel")
+                            // Web's owner-only Channel options menu.
+                            Menu {
+                                Button("Create channel") { sheet = .createChannel }.disabled(!model.canCreateChannel)
+                                Button("\(channelsExpanded ? "Collapse" : "Expand") channels") { channelsExpanded.toggle() }
+                            } label: { CaperIcon(name: "ellipsis") }
+                                .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28, height: 28)
+                                .help("Channel options").accessibilityLabel("Channel options")
                         }
                     }.frame(height: 44)
 
@@ -395,7 +424,12 @@ private struct ChannelSidebar: View {
                     }
                     if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
                        (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })) {
-                        VoiceRoster(model: model)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("In voice · \(model.voice.participants.count) · \(model.voice.context?.channelName ?? "general")")
+                                .font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                                .accessibilityIdentifier("voice-elsewhere-label")
+                            VoiceRoster(model: model)
+                        }.padding(.top, 8)
                     }
                 }.padding(.horizontal, 16)
             }
@@ -459,7 +493,7 @@ private struct ChannelVoiceSlot: View {
                         Button { collapsed.toggle() } label: {
                             HStack(spacing: 5) {
                                 ForEach(occupants.prefix(3)) { person in
-                                    Avatar(name: person.name, size: 20)
+                                    Avatar(name: person.name, size: 20, speaking: active && model.voice.speakingParticipants.contains(person.id))
                                 }
                                 if occupants.count > 3 { Text("+\(occupants.count - 3)") }
                                 CaperIcon(name: collapsed ? "chevron-right" : "chevron-down", size: 12)
@@ -472,7 +506,9 @@ private struct ChannelVoiceSlot: View {
                     Spacer(minLength: 0)
                     if !active {
                         Button("Join") { Task { await model.joinVoice(channel: channel) } }
-                            .buttonStyle(VoiceJoinButton())
+                            .buttonStyle(VoiceJoinButton()).disabled(model.voiceAvailable != true)
+                            .help(voiceAvailabilityHelp(model) ?? (model.voice.phase == .idle || model.voice.phase == .failed
+                                ? "Join voice in #\(channel.name)" : "Switch voice to #\(channel.name)"))
                             .accessibilityLabel(model.voice.phase == .idle || model.voice.phase == .failed
                                 ? "Join voice in #\(channel.name)" : "Switch voice to #\(channel.name)")
                             .accessibilityIdentifier("join-voice-\(channel.id)")
@@ -486,7 +522,8 @@ private struct ChannelVoiceSlot: View {
                             Avatar(name: person.name, size: 23)
                             Text(person.name).lineLimit(1)
                             if person.muted { CaperIcon(name: "mic-off", size: 13) }
-                            if person.deafened { CaperIcon(name: "volume-x", size: 13) }
+                            ParticipantCountry(code: person.countryCode)
+                            if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
                         }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                             .accessibilityElement(children: .combine)
                     }
@@ -545,6 +582,67 @@ private struct MemberPresenceView: View {
     }
 }
 
+#if os(macOS)
+/// Web opens a participant's audio menu on right-click. A local event monitor
+/// checks the row's frame, so nothing is layered over the row's own controls.
+private final class RightClickBox {
+    var frame: CGRect = .zero
+    var monitor: Any?
+}
+
+private struct RightClickModifier: ViewModifier {
+    let enabled: Bool
+    let action: () -> Void
+    @State private var box = RightClickBox()
+    func body(content: Content) -> some View {
+        content
+            .background(GeometryReader { proxy in
+                Color.clear
+                    .onAppear { box.frame = proxy.frame(in: .global) }
+                    .onChange(of: proxy.frame(in: .global)) { _, frame in box.frame = frame }
+            })
+            .onAppear {
+                guard enabled, box.monitor == nil else { return }
+                let box = box
+                box.monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { event in
+                    guard let height = event.window?.contentView?.bounds.height else { return event }
+                    let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+                    guard box.frame.contains(point) else { return event }
+                    action()
+                    return nil
+                }
+            }
+            .onDisappear {
+                if let monitor = box.monitor { NSEvent.removeMonitor(monitor) }
+                box.monitor = nil
+            }
+    }
+}
+
+private extension View {
+    func onRightClick(enabled: Bool, perform action: @escaping () -> Void) -> some View {
+        modifier(RightClickModifier(enabled: enabled, action: action))
+    }
+}
+#endif
+
+/// Web shows the participant's flag with "From {region}"; an emoji flag is the native equivalent.
+struct ParticipantCountry: View {
+    let code: String?
+    var body: some View {
+        if let code, code.count == 2, code.allSatisfy({ $0.isASCII && $0.isUppercase }) {
+            let name = Locale(identifier: "en_US").localizedString(forRegionCode: code) ?? code
+            Text(Self.flag(code))
+                .font(.system(size: 11)).help(name).accessibilityLabel("From \(name)")
+        }
+    }
+    static func flag(_ code: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in code.unicodeScalars { if let indicator = Unicode.Scalar(127_397 + scalar.value) { scalars.append(indicator) } }
+        return String(scalars)
+    }
+}
+
 private struct VoiceRoster: View {
     @Bindable var voice: VoiceClient
     @State private var audioParticipantID: String? = nil
@@ -553,10 +651,14 @@ private struct VoiceRoster: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(voice.participants) { participant in
                 HStack(spacing: 8) {
-                    Avatar(name: participant.name, size: 20)
+                    Avatar(name: participant.name, size: 20, speaking: voice.speakingParticipants.contains(participant.id))
+                        .accessibilityValue(voice.speakingParticipants.contains(participant.id) ? "Speaking" : "")
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
-                            .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
+                                .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                            ParticipantCountry(code: participant.countryCode)
+                        }
                         if !voice.isSelf(participantID: participant.id), voice.locallyMutedParticipants.contains(participant.id) {
                             HStack(spacing: 4) {
                                 CaperIcon(name: "volume-x", size: 10)
@@ -570,7 +672,7 @@ private struct VoiceRoster: View {
                         CaperIcon(name: "mic-off", size: 14).accessibilityHidden(false).accessibilityLabel("Muted")
                     }
                     if (voice.isSelf(participantID: participant.id) ? voice.deafened : participant.deafened) {
-                        CaperIcon(name: "volume-x", size: 14).accessibilityHidden(false).accessibilityLabel("Deafened")
+                        CaperIcon(name: "headphone-off", size: 14).accessibilityHidden(false).accessibilityLabel("Deafened")
                     }
                     if !voice.isSelf(participantID: participant.id) {
                         Button { audioParticipantID = audioParticipantID == participant.id ? nil : participant.id } label: {
@@ -589,6 +691,7 @@ private struct VoiceRoster: View {
                                         .accessibilityLabel("\(participant.name) volume")
                                     Toggle("Mute", isOn: participantMute(participant.id))
                                         .font(CaperTheme.font(12, weight: .medium))
+                                    Text("Only changes what you hear.").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                 }.padding(16).frame(width: 220).background(CaperTheme.surface)
                                 #if os(iOS)
                                 .presentationCompactAdaptation(.popover)
@@ -596,6 +699,10 @@ private struct VoiceRoster: View {
                             }
                     }
                 }.foregroundStyle(CaperTheme.muted).padding(.vertical, 4)
+                #if os(macOS)
+                .contentShape(Rectangle())
+                .onRightClick(enabled: !voice.isSelf(participantID: participant.id)) { audioParticipantID = participant.id }
+                #endif
             }
         }
     }
@@ -627,33 +734,57 @@ private struct AccountBar: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     @Binding var sheet: WorkspaceSheet?
-    #if os(macOS)
+    @State private var connectionDetails = false
+    @Bindable private var effects = CaperEffects.shared
     @State private var inputOptions = false
     @State private var outputOptions = false
+    #if os(macOS)
     @State private var audioDiagnostics = false
     #endif
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
+    /// Your own status in the space's presence, else the live chat connection (web's localPresence).
+    private var ownPresence: PresenceStatus? {
+        if let id = model.account?.id, let status = model.presence.statuses[id], status != .unknown { return status }
+        return model.chat.liveState == .connected ? .online : nil
+    }
     var body: some View {
         VStack(spacing: 0) {
             if let context = voice.context, voice.phase != .idle && voice.phase != .failed {
                 HStack(spacing: 8) {
                     Button { Task { await model.openVoiceContext() } } label: {
+                        HStack(spacing: 8) {
+                        // Web: green when connected, amber while connecting or reconnecting.
+                        let tone = voice.phase == .connected ? Color(red: 140/255, green: 178/255, blue: 98/255)
+                            : Color(red: 217/255, green: 171/255, blue: 92/255)
+                        CaperIcon(name: "audio-lines", size: 16).foregroundStyle(tone)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(voice.phase == .connected ? "Voice connected" : "Connecting voice…")
-                                .font(CaperTheme.font(11, weight: .bold))
+                            Text(voice.phase == .connected ? "Voice connected" : voice.phase == .joining ? "Connecting…" : "Reconnecting…")
+                                .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(tone)
                             Text("\(context.channelName) / \(context.spaceName)")
                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
-                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "x") }
-                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
+                    Button { if voice.phase == .connected { CaperEffects.shared.play(.disconnect) }; model.leaveVoice() } label: { CaperIcon(name: "phone-off") }
+                        .buttonStyle(SidebarIconButton()).help(voice.phase == .connected ? "Disconnect" : "Cancel")
+                        .accessibilityLabel(voice.phase == .connected ? "Leave voice" : "Cancel joining voice")
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityIdentifier("active-voice-context")
+            }
+            if let error = voice.error {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                    Button { voice.error = nil } label: { CaperIcon(name: "x", size: 14) }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Dismiss voice error")
+                }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("voice-error")
             }
             HStack(spacing: 5) {
             Button { sheet = model.account == nil ? .login : .profile } label: {
                 HStack(spacing: 7) {
                     Avatar(name: model.account?.displayName ?? "Guest", size: 30)
+                        .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
                     Text(model.account?.displayName ?? "Sign in").font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
                     Spacer()
                 }.contentShape(Rectangle())
@@ -662,33 +793,41 @@ private struct AccountBar: View {
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
-            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Microphone")
+            }.buttonStyle(SidebarIconButton()).help(voice.muted ? "Unmute" : "Mute")
+                .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
                 .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
-            #if os(macOS)
             Button { inputOptions.toggle(); CaperEffects.shared.toggle(inputOptions) } label: {
                 CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
-            }.buttonStyle(.plain).accessibilityLabel("Input Options")
+            }.buttonStyle(.plain).help("Input Options").accessibilityLabel("Input Options")
                 .popover(isPresented: $inputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: true) }
-            #endif
             Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
                 CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
                     .foregroundStyle(voice.deafened ? CaperTheme.terracottaBright : CaperTheme.muted)
-            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Headphones")
+            }.buttonStyle(SidebarIconButton()).help(voice.deafened ? "Undeafen" : "Deafen")
+                .accessibilityLabel(voice.deafened ? "Undeafen audio" : "Deafen audio")
                 .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
-            #if os(macOS)
             Button { outputOptions.toggle(); CaperEffects.shared.toggle(outputOptions) } label: {
                 CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
-            }.buttonStyle(.plain).accessibilityLabel("Output Options")
+            }.buttonStyle(.plain).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
-            #endif
             Menu {
-                Button("Audio preferences") { voice.showAudioPreferences = true }
+                // Web's User Settings menu.
+                Section("Audio settings") {
+                    Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
+                        .accessibilityIdentifier("sound-effects")
+                }
+                Button("Audio test") { voice.showAudioPreferences = true }
+                    .disabled(voice.phase == .leaving)
+                if voice.phase == .connected || CaperRuntime.isAudioPreview("audio-statistics") {
+                    Button("Connection details") { connectionDetails = true }
+                }
                 #if os(macOS)
                 if model.account?.debugEnabled == true {
                     Button("Audio diagnostics") { audioDiagnostics = true }
                 }
                 #endif
                 if model.account != nil { Button("Log out", role: .destructive) { Task { await model.logout() } } }
+                else { Button("Sign in") { sheet = .login } }
             } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).frame(width: 28)
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
             }.padding(4).frame(height: 42).background(CaperTheme.raised)
@@ -696,6 +835,7 @@ private struct AccountBar: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
         .padding(12)
         .sheet(isPresented: $voice.showAudioPreferences) { AudioPreferencesView(voice: voice, debugEnabled: model.account?.debugEnabled == true).presentationBackground(CaperTheme.surface) }
+        .sheet(isPresented: $connectionDetails) { ConnectionDetailsView(voice: voice) { connectionDetails = false }.presentationBackground(CaperTheme.surface) }
         #if os(macOS)
         .sheet(isPresented: $audioDiagnostics) {
             VStack(alignment: .leading, spacing: 18) {
@@ -707,15 +847,30 @@ private struct AccountBar: View {
     }
 }
 
-#if os(macOS)
+/// Web's Input Options / Output Options menus.
+/// Web's PresenceDot: colored by status, labelled "Online", "Idle (last known;
+/// reconnecting)" or "Status unavailable".
+private struct PresenceDot: View {
+    let status: PresenceStatus?
+    var live = true
+    var body: some View {
+        let label = status.map { "\($0.rawValue.prefix(1).uppercased())\($0.rawValue.dropFirst())\(live ? "" : " (last known; reconnecting)")" } ?? "Status unavailable"
+        Circle().fill(color).frame(width: 10, height: 10).overlay(Circle().stroke(CaperTheme.raised, lineWidth: 2))
+            .help(label).accessibilityElement().accessibilityLabel(label)
+    }
+    private var color: Color {
+        switch status { case .online?: CaperTheme.green; case .idle?: Color(red: 0.72, green: 0.60, blue: 0.35); default: CaperTheme.border }
+    }
+}
+
 private struct AccountAudioMenu: View {
     @Bindable var voice: VoiceClient
     let input: Bool
-    @Environment(\.dismiss) private var dismiss
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(input ? "Microphone" : "Audio output").font(CaperTheme.font(13, weight: .bold))
+            #if os(macOS)
             Picker("Device", selection: Binding(get: { (input ? voice.selectedInputID : voice.selectedOutputID) ?? "" }, set: { uid in
                 let changed = input ? voice.selectInput(uid) : voice.selectOutput(uid)
                 error = changed ? nil : "Could not switch devices. Check system audio settings."
@@ -725,31 +880,44 @@ private struct AccountAudioMenu: View {
                     Text(device.name).tag(device.id)
                 }
             }.labelsHidden()
+            #else
+            // iPhone follows the system audio route.
+            HStack {
+                Text((input ? voice.availableInputs.first(where: { $0.id == voice.selectedInputID }) : voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID }))?.name ?? "System default")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Spacer()
+                if !input {
+                    SystemAudioRoutePicker().frame(width: 44, height: 36).accessibilityLabel("Choose system audio route")
+                }
+            }
+            #endif
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
             if input {
                 Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
                 Slider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
                     .accessibilityLabel("Input volume")
-                Text("Voice processing · \(voice.voiceProcessingStrength)%").font(CaperTheme.font(12))
-                Slider(value: Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)); CaperEffects.shared.slider($0 / 100) }), in: 0...100, step: 1)
-                    .accessibilityLabel("Voice processing")
             } else {
                 Text("Output volume · \(voice.outputGain)%").font(CaperTheme.font(12))
                 Slider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
                     .accessibilityLabel("Output volume")
             }
-            Button("Audio preferences") { dismiss(); voice.showAudioPreferences = true }
         }.padding(16).frame(width: 260).background(CaperTheme.surface)
+            #if os(iOS)
+            .presentationCompactAdaptation(.popover)
+            #endif
             .task { await voice.refreshAudioDevices() }
     }
 }
-#endif
 
 private struct Avatar: View {
     let name: String; let size: CGFloat
+    var speaking = false
     var body: some View {
         Text(String(name.prefix(1)).uppercased()).font(CaperTheme.font(size * 0.36, weight: .black))
             .frame(width: size, height: size).background(CaperTheme.raised).clipShape(Circle())
+            // Web: caper-green border with a soft outer ring while speaking.
+            .overlay { if speaking { Circle().stroke(CaperTheme.green, lineWidth: 2) } }
+            .background { if speaking { Circle().fill(CaperTheme.green.opacity(0.2)).padding(-3) } }
     }
 }
 
@@ -757,6 +925,7 @@ private struct ConversationStage: View {
     @Bindable var model: AppModel
     let narrow: Bool
     let browse: () -> Void
+    var createChannel: () -> Void = {}
     let membersVisible: Bool
     let toggleMembers: () -> Void
     var body: some View {
@@ -767,6 +936,7 @@ private struct ConversationStage: View {
                 Text("No accessible channels").font(CaperTheme.font(20, weight: .bold))
                 Text(model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
                     .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                if model.isOwner { Button("Create channel", action: createChannel).buttonStyle(VoiceJoinButton()).padding(.top, 6) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.conversation)
         } else { ChatView(model: model, narrow: narrow, browse: browse, membersVisible: membersVisible, toggleMembers: toggleMembers) }
     }
@@ -780,49 +950,59 @@ private struct ChatView: View {
     let browse: () -> Void
     let membersVisible: Bool
     let toggleMembers: () -> Void
+    /// Web shows Connecting…/Offline only after a second without the gateway.
+    @State private var showConnectionStatus = false
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
         self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
     }
     var body: some View {
         VStack(spacing: 0) {
-            // Match the 34pt message-avatar column without shrinking the 44pt menu target.
             HStack(spacing: narrow ? 5 : 10) {
                 if narrow {
+                    // Web's narrow toggle: the menu icon with a visible "Browse" label.
                     Button(action: browse) {
-                        CaperIcon(name: "menu", size: 18)
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("Open navigation")
+                        HStack(spacing: 6) {
+                            CaperIcon(name: "menu", size: 15)
+                            Text("Browse").font(CaperTheme.font(11, weight: .bold))
+                        }.foregroundStyle(CaperTheme.muted).padding(.horizontal, 9).frame(height: 34)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border, lineWidth: 1))
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Browse")
                 }
                 Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                     .accessibilityLabel("# \(chat.channelName.lowercased())")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
                 VoiceHeaderButton(model: model, voice: voice)
-                if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
+                if chat.liveState != .connected && showConnectionStatus {
+                    Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("chat-connection-status")
+                }
                 Button { CaperEffects.shared.toggle(!membersVisible); toggleMembers() } label: { CaperIcon(name: "users", size: 20) }
-                    .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
+                    .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
+                    .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
-            if let error = voice.error {
-                Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 8)
-            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        HStack {
-                            if chat.hasMore {
-                                Button(chat.loadingOlder ? "Loading…" : chat.olderError == nil ? "Load older messages" : "Retry older messages") {
+                        HStack(spacing: 6) {
+                            if chat.olderError != nil {
+                                Text("Couldn’t load older messages.")
+                                Button("Retry") { Task { await chat.loadOlder() } }.disabled(chat.loadingOlder)
+                                    .accessibilityIdentifier("load-older-messages")
+                            } else if chat.hasMore {
+                                Button(chat.loadingOlder ? "Loading…" : "Load older messages") {
                                     Task { await chat.loadOlder() }
                                 }.disabled(chat.loadingOlder)
                                     .accessibilityIdentifier("load-older-messages")
                             }
                             else { Text("Beginning of conversation") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44)
-                        if let error = chat.olderError {
-                            Text(error).font(CaperTheme.font(11)).foregroundStyle(.red).padding(.horizontal, 18).padding(.bottom, 8)
+                        if chat.loading && chat.messages.isEmpty {
+                            Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                         }
                         ForEach(chat.messages) { message in MessageRow(message: message).id(message.id) }
                         if let pending = chat.pendingMessage {
@@ -850,7 +1030,7 @@ private struct ChatView: View {
 
             HStack(spacing: 7) {
                 if !chat.typingNames.isEmpty {
-                    ProgressView().controlSize(.mini)
+                    TypingDots()
                     Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                 }
                 Spacer()
@@ -878,14 +1058,58 @@ private struct ChatView: View {
                 .accessibilityIdentifier("send-message-button")
             }.padding(.horizontal, 18).padding(.vertical, 12)
             if chat.draft.unicodeScalars.count >= 3000 {
-                Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).padding(.bottom, 6)
+                Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
+            .task(id: chat.liveState) {
+                showConnectionStatus = false
+                guard chat.liveState != .connected else { return }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                showConnectionStatus = true
+            }
+    }
+    /// Web's counter tones at 3500 / 3750 / 3900 characters.
+    private var counterTone: Color {
+        let count = chat.draft.unicodeScalars.count
+        if count >= 3900 { return Color(red: 1, green: 130/255, blue: 124/255) }
+        if count >= 3750 { return Color(red: 237/255, green: 163/255, blue: 97/255) }
+        if count >= 3500 { return Color(red: 228/255, green: 199/255, blue: 106/255) }
+        return CaperTheme.muted
     }
     private var typingLabel: String {
         if chat.typingNames.count > 2 { return "Several people are typing…" }
         let names = chat.typingNames.joined(separator: " and ")
         return "\(names) \(chat.typingNames.count == 1 ? "is" : "are") typing…"
+    }
+}
+
+/// Web's three bouncing typing dots (chat.css typing-bounce).
+private struct TypingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(paused: reduceMotion)) { timeline in
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { index in
+                    let phase = reduceMotion ? 0 : Self.bounce(timeline.date.timeIntervalSinceReferenceDate - Double(index) * 0.15)
+                    Circle().frame(width: 4, height: 4).opacity(0.45 + 0.55 * phase).offset(y: -3 * phase)
+                }
+            }.foregroundStyle(CaperTheme.muted).accessibilityHidden(true)
+        }
+    }
+    /// 0→1→0 over the first 60% of a 1.2 s cycle, like the web keyframes.
+    static func bounce(_ time: Double) -> Double {
+        let t = (time.truncatingRemainder(dividingBy: 1.2) + 1.2).truncatingRemainder(dividingBy: 1.2) / 1.2
+        guard t < 0.6 else { return 0 }
+        return t < 0.3 ? t / 0.3 : (0.6 - t) / 0.3
+    }
+}
+
+/// Web's Join tooltip while voice availability is unknown or off.
+@MainActor private func voiceAvailabilityHelp(_ model: AppModel) -> String? {
+    switch model.voiceAvailable {
+    case true?: return nil
+    case false?: return "Joining is not available at this time."
+    case nil: return "Checking voice availability…"
     }
 }
 
@@ -896,12 +1120,13 @@ private struct VoiceHeaderButton: View {
         if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
             Button { model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Cancel") } }.buttonStyle(VoiceJoinButton())
         } else if sameChannel, voice.phase == .connected {
-            Button { CaperEffects.shared.play(.leave); model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
+            Button { CaperEffects.shared.play(.disconnect); model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
         } else if voice.phase == .leaving {
             ProgressView().controlSize(.small)
         } else {
             Button(action: joinSelectedChannel) { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Join") } }
-                .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil)
+                .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil || model.voiceAvailable != true)
+                .help(voiceAvailabilityHelp(model) ?? "Join voice")
                 .accessibilityIdentifier("join-voice-button")
         }
     }
@@ -991,8 +1216,13 @@ private struct ProfileView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                Wordmark(); Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
+                Wordmark()
+                Text("ONE LAST THING").font(CaperTheme.font(12, weight: .bold)).tracking(2).foregroundStyle(CaperTheme.muted)
+                    .padding(.top, 20)
+                Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
+                Text("Your username is unique. Your display name is what people see in conversations.")
+                    .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
                 Text("3-32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -1007,6 +1237,11 @@ private struct ProfileView: View {
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
                     .accessibilityIdentifier("profile-continue")
+                HStack {
+                    Spacer()
+                    Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
+                        .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                }
             }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
         }.background(CaperTheme.blackout)
     }
@@ -1025,7 +1260,7 @@ private struct WorkspaceSheetView: View {
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
-            case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
+            case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
             }
         }.frame(minWidth: 320, idealWidth: item.id.contains("manage") ? 600 : 460)
     }
@@ -1056,8 +1291,8 @@ private struct LoginSheet: View {
                     Button("Email me a code") { Task { await model.requestCode(email: email) } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || email.isEmpty)
                 } else {
                     CaperField(title: "Verification code", text: $code)
-                    Button("Verify") { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || code.isEmpty)
-                    Button("Use another email") { model.challengeID = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
+                    Button("Verify") { Task { await model.verify(code: code); if model.account != nil && model.phase != .onboarding { close() } } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || code.isEmpty)
+                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
                 }
                 if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
             }.padding(22)
@@ -1094,10 +1329,26 @@ private struct LoginPage: View {
                         .accessibilityIdentifier("guest-general-button")
                 } else {
                     CaperField(title: "Sign-in code", text: $code)
+                        .disabled(model.loginAttemptsRemaining == 0)
+                        .onChange(of: code) { _, value in
+                            // Web accepts the unambiguous code alphabet only, uppercased, six characters.
+                            let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
+                            let filtered = String(value.uppercased().filter { allowed.contains($0) }.prefix(6))
+                            if filtered != value { code = filtered }
+                        }
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
-                    Button { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } } label: {
-                        HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
-                    }.buttonStyle(LoginActionButton()).disabled(model.busy || code.isEmpty).padding(.top, 28)
+                    if model.loginAttemptsRemaining == 1 {
+                        Text("One attempt left. Check the code carefully.").font(CaperTheme.font(14, weight: .bold)).padding(.top, 12)
+                    }
+                    if model.loginAttemptsRemaining == 0 {
+                        Button { code = ""; Task { await model.requestCode(email: email) } } label: {
+                            HStack { Text(model.busy ? "Sending…" : "Email me a new code"); Spacer(); Image(systemName: "arrow.right") }
+                        }.buttonStyle(LoginActionButton()).disabled(model.busy).padding(.top, 28)
+                    } else {
+                        Button { Task { await model.verify(code: code); if model.account != nil && model.phase != .onboarding { close() } } } label: {
+                            HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
+                        }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 28)
+                    }
                     Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18)
                 }
             }
@@ -1211,32 +1462,81 @@ private struct ChannelEditor: View {
     @State private var name = ""; @State private var privateChannel = false; @State private var members: [Member] = []; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
     @State private var membersError: String?
+    @State private var memberError: String?
     @State private var loadingMembers = false
+    @FocusState private var nameFocused: Bool
+    private var dirty: Bool { channel.map { name != $0.name || privateChannel != $0.private } ?? false }
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: channel == nil ? "Create a channel" : "Overview", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    CaperField(title: "Channel name", text: Binding(get: { name }, set: { name = WorkspaceValidation.normalizeChannelName($0) }))
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Channel name").font(CaperTheme.font(12, weight: .bold))
+                        HStack(spacing: 8) {
+                            if channel == nil { CaperIcon(name: privateChannel ? "lock" : "hash", size: 16).foregroundStyle(CaperTheme.muted) }
+                            TextField("project-updates", text: Binding(get: { name }, set: { name = WorkspaceValidation.normalizeChannelName($0) }))
+                                .focused($nameFocused).onSubmit(submit)
+                        }.textFieldStyle(CaperTextFieldStyle())
+                    }
+                    if channel == nil {
+                        Text("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.")
+                            .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
+                    }
                     Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in \(model.detail?.space.name ?? "this space") can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) } }.toggleStyle(.switch)
-                    Button(channel == nil ? "Create channel" : "Save changes") { run { if let existing = channel { channel = try await model.updateChannel(existing, name: name, privateChannel: privateChannel) } else { try await model.createChannel(name: name, privateChannel: privateChannel); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
+                    if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
+                    if channel == nil {
+                        HStack {
+                            Spacer()
+                            Button("Cancel", action: close).buttonStyle(.bordered).keyboardShortcut(.cancelAction)
+                            Button(pending ? "Creating…" : "Create channel", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 160)
+                                .disabled(pending).keyboardShortcut(.defaultAction)
+                        }
+                    }
                     if let channel, channel.private {
-                        Divider().overlay(CaperTheme.border); Text("Members  \(members.count)").font(CaperTheme.font(14, weight: .bold))
+                        Divider().overlay(CaperTheme.border)
+                        HStack { Text("Members").font(CaperTheme.font(14, weight: .bold)); Text("\(members.count)").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if loadingMembers { ProgressView("Loading members…") }
                         if let membersError {
                             Text(membersError).foregroundStyle(.red)
                             Button("Retry loading members") { Task { await loadMembers(channel) } }.disabled(loadingMembers)
                         }
-                        HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()); Button("Add") { run { let member = try await model.addChannelMember(channel, username: username); members.removeAll { $0.id == member.id }; members.append(member); username = "" } }.buttonStyle(.bordered) }
+                        HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()).onSubmit { addMember(channel) }; Button("Add") { addMember(channel) }.buttonStyle(.bordered) }
                             .disabled(pending || loadingMembers || membersError != nil)
-                        ForEach(members) { member in HStack { Avatar(name: member.displayName, size: 30); Text(member.displayName); Spacer(); if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } } }.font(CaperTheme.font(12)) }
-                            .disabled(pending || loadingMembers || membersError != nil)
+                        if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
+                        ForEach(members) { member in
+                            HStack {
+                                Avatar(name: member.displayName, size: 30)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(member.displayName).font(CaperTheme.font(12, weight: .bold))
+                                    Text("@\(member.username)\(member.owner ? " · Owner" : "")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                                }
+                                Spacer()
+                                if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } }
+                            }.font(CaperTheme.font(12))
+                        }.disabled(pending || loadingMembers || membersError != nil)
                     }
-                    if channel != nil { Divider().overlay(CaperTheme.border); Button("Delete channel", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(.bordered).disabled(pending) }
-                    if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
+                    if channel != nil {
+                        Divider().overlay(CaperTheme.border)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Delete channel").font(CaperTheme.font(14, weight: .bold))
+                            Text("Delete this channel for everyone in the space.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            Button("Delete channel", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(.bordered).disabled(pending)
+                        }
+                    }
                 }.padding(22)
             }
-        }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false }
+            if dirty {
+                // Web's save bar appears only when something changed.
+                HStack {
+                    Text("You have unsaved changes.").font(CaperTheme.font(12))
+                    Spacer()
+                    Button("Reset") { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; error = nil }.buttonStyle(.bordered).disabled(pending)
+                    Button(pending ? "Saving…" : "Save changes", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 150).disabled(pending)
+                }.padding(.horizontal, 22).padding(.vertical, 12).background(CaperTheme.raised)
+                    .accessibilityIdentifier("channel-save-bar")
+            }
+        }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; if channel == nil { nameFocused = true } }
         .task(id: channel?.private) { if let channel, channel.private { await loadMembers(channel) } }
         .sheet(isPresented: $confirmDelete) {
             if let channel {
@@ -1247,6 +1547,24 @@ private struct ChannelEditor: View {
                 }
             }
         }
+    }
+    private func submit() {
+        guard !pending else { return }
+        if let existing = channel {
+            guard dirty else { return }
+            run { let updated = try await model.updateChannel(existing, name: name, privateChannel: privateChannel); channel = updated; name = updated.name; privateChannel = updated.private }
+        } else {
+            run {
+                let created = try await model.createChannel(name: name, privateChannel: privateChannel)
+                // Web opens a new private channel's overview so people can be added.
+                if let created, created.private { channel = created; name = created.name; privateChannel = created.private } else { close() }
+            }
+        }
+    }
+    private func addMember(_ channel: Channel) {
+        guard !username.isEmpty else { memberError = "Enter an exact username."; return }
+        memberError = nil
+        run { let member = try await model.addChannelMember(channel, username: username); members.removeAll { $0.id == member.id }; members.append(member); username = "" }
     }
     private func loadMembers(_ channel: Channel) async {
         guard !loadingMembers else { return }
@@ -1278,12 +1596,14 @@ private struct CaperPrimaryButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)).opacity(isEnabled ? 1 : 0.45) }
 }
 
+/// Web's "Audio test" (Call.tsx audio dialog + MicPlayback.tsx).
 private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     var debugEnabled = false
     @State private var controlsHeight: CGFloat = 500
+    @State private var speakerTest = SpeakerTest()
+    @State private var meter = Array(repeating: Float(0), count: 40)
     #if os(macOS)
-    @Bindable private var effects = CaperEffects.shared
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
     #else
@@ -1292,14 +1612,14 @@ private struct AudioPreferencesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text("Audio preferences").font(CaperTheme.font(20, weight: .bold))
+                Text("Audio test").font(CaperTheme.font(20, weight: .bold))
                     .accessibilityIdentifier("audio-preferences-sheet")
                 Spacer()
                 Button { voice.showAudioPreferences = false } label: {
                     CaperIcon(name: "x").frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close audio preferences")
+                .accessibilityLabel("Close audio settings")
                 .accessibilityIdentifier("close-audio-preferences")
                 .keyboardShortcut(.cancelAction)
             }
@@ -1309,109 +1629,158 @@ private struct AudioPreferencesView: View {
             }
             .accessibilityIdentifier("audio-preferences-controls")
             #if os(macOS)
-            .frame(width: 426, height: min(controlsHeight, 500))
+            .frame(width: 520, height: min(controlsHeight, 560))
             #else
-            .frame(height: min(controlsHeight, 580))
+            .frame(height: min(controlsHeight, 620))
             #endif
         }.padding(22)
             .frame(minWidth: 360)
             .background(CaperTheme.surface)
             #if os(iOS)
-            .presentationDetents([.height(min(controlsHeight, 580) + 90)])
+            .presentationDetents([.height(min(controlsHeight, 620) + 90)])
             #endif
             .task { await voice.refreshAudioDevices() }
             .onChange(of: voice.phase) { _, phase in
                 if phase != .idle && phase != .failed { micTest.close() }
             }
-            .onDisappear { micTest.close() }
-            .task(id: voice.phase) {
-                while !Task.isCancelled && voice.phase == .connected {
-                    await voice.refreshDiagnostics()
-                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            .onChange(of: voice.outputGain) { _, gain in speakerTest.setGain(gain) }
+            .onDisappear { micTest.close(); speakerTest.stop() }
+            .task(id: micTest.recording) {
+                // Web's input meter: 40 segments, a new level every 80 ms.
+                guard micTest.recording else { meter = Array(repeating: 0, count: 40); return }
+                while !Task.isCancelled && micTest.recording {
+                    meter = Array(meter.dropFirst()) + [min(1, sqrt(micTest.level) * 2.5)]
+                    do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
                 }
             }
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 18) {
+            Text("Only you can hear these tests.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             #if os(macOS)
-            Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
-                .toggleStyle(.checkbox)
-                .accessibilityIdentifier("sound-effects")
-            Picker("Input", selection: inputRoute) {
+            HStack(alignment: .top, spacing: 18) { microphoneColumn; speakerColumn }
+            #else
+            microphoneColumn
+            speakerColumn
+            #endif
+            microphoneTestCard
+            if debugEnabled {
+                DisclosureGroup("Audio diagnostics") { AudioDiagnosticsView(voice: voice) }
+            }
+        }
+    }
+
+    private var microphoneColumn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            Picker("Microphone", selection: inputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableInputs) { route in Text(route.name).tag(route.id) }
-            }.accessibilityIdentifier("audio-input-device")
-            Picker("Output", selection: outputRoute) {
+            }.accessibilityIdentifier("audio-input-device").disabled(micTest.recording)
+            if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            #else
+            AudioRouteRow(title: "Microphone", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
+            #endif
+            HStack { Text("Microphone volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
+            Slider(value: inputGain, in: 0...200, step: 1)
+                .accessibilityLabel("Test microphone volume")
+                .accessibilityValue("\(voice.inputGain)%")
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var speakerColumn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            Picker("Speaker", selection: outputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableOutputs) { route in Text(route.name).tag(route.id) }
             }.accessibilityIdentifier("audio-output-device")
-            if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
             #else
-            AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
             HStack {
-                AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+                AudioRouteRow(title: "Speaker", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
                 SystemAudioRoutePicker().frame(width: 44, height: 36)
                     .accessibilityLabel("Choose system audio route")
                     .accessibilityIdentifier("system-audio-route-picker")
             }
             #endif
-            VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Input volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
-                Slider(value: inputGain, in: 0...200, step: 1)
-                    .accessibilityLabel("Input volume")
-                    .accessibilityValue("\(voice.inputGain)%")
+            HStack { Text("Speaker volume"); Spacer(); Text("\(voice.outputGain)%") }.font(CaperTheme.font(12))
+            Slider(value: outputGain, in: 0...200, step: 1)
+                .accessibilityLabel("Test speaker volume")
+                .accessibilityValue("\(voice.outputGain)%")
+            Button(speakerTest.playing ? "Stop speaker test" : "Test speakers") { speakerTest.toggle(voice: voice) }
+                .buttonStyle(VoiceJoinButton())
+                .accessibilityIdentifier("speaker-test")
+                .accessibilityValue(speakerTest.playing ? "Playing" : "")
+            if let error = speakerTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var microphoneTestCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(micTest.recording ? "Recording…" : "Try your microphone").font(CaperTheme.font(14, weight: .bold))
+                Spacer()
+                if let started = micTest.startedAt {
+                    TimelineView(.periodic(from: started, by: 0.1)) { timeline in
+                        Text(String(format: "%.1fs", min(30, timeline.date.timeIntervalSince(started))))
+                            .font(CaperTheme.font(11, weight: .bold)).monospacedDigit().foregroundStyle(CaperTheme.terracottaBright)
+                    }
+                }
             }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Voice processing"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12))
+            Text("Less noise. Clearer voice.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack { Text("Voice enhancement"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12))
                 Slider(value: liveStrength, in: 0...100, step: 1)
                     .accessibilityLabel("Voice processing")
                     .accessibilityValue("\(voice.voiceProcessingStrength)%")
+                    .disabled(micTest.recording)
+                HStack { Text("Natural"); Spacer(); Text("Enhanced") }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
             }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Output volume").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
-                Slider(value: outputGain, in: 0...200, step: 1)
-                    .accessibilityLabel("Output volume")
-                    .accessibilityValue("\(voice.outputGain)%")
-            }
-            Divider().overlay(CaperTheme.border)
-            Text("Microphone test").font(CaperTheme.font(14, weight: .bold))
-            HStack {
-                Button(micTest.recording ? "Stop Testing" : "Mic Test") {
+            HStack(spacing: 14) {
+                Button(micTest.recording ? "Stop recording" : "Test microphone") {
                     if micTest.recording { micTest.stopRecording() }
                     else { Task { await micTest.start(voice: voice) } }
                 }
+                .buttonStyle(VoiceJoinButton())
                 .accessibilityIdentifier("local-mic-test")
                 .disabled(recordedPreview || (voice.phase != .idle && voice.phase != .failed && voice.phase != .connected && !micTest.recording))
-                if micTest.recording { Text("Recording your voice").font(CaperTheme.font(11)) }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Input level").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                    HStack(alignment: .center, spacing: 2) {
+                        ForEach(meter.indices, id: \.self) { index in
+                            Capsule().fill(micTest.recording ? CaperTheme.green : CaperTheme.border)
+                                .frame(width: 3, height: 3 + CGFloat((meter[index] * 8).rounded()) * 4)
+                        }
+                    }.frame(height: 36)
+                        .accessibilityElement().accessibilityLabel(micTest.recording ? "Received microphone level" : "Microphone level inactive")
+                }
             }
             if recordedPreview { Text("TEST FIXTURE — completed local recording layout only; no microphone or playback.")
                 .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
-            if micTest.hasRecording || recordedPreview {
-                HStack {
-                    Button("Play natural") { micTest.play(enhanced: false) }.disabled(recordedPreview)
-                    Button("Play enhanced") { micTest.play(enhanced: true) }.disabled(recordedPreview)
-                    Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview)
-                }
-            }
             if let error = micTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
-            if debugEnabled {
-                DisclosureGroup("Audio diagnostics") { AudioDiagnosticsView(voice: voice) }
+            if micTest.hasRecording || recordedPreview {
+                HStack(alignment: .top, spacing: 12) {
+                    sampleCard(title: "Natural", enhanced: false)
+                    sampleCard(title: "Enhanced", enhanced: true)
+                }.accessibilityElement(children: .contain).accessibilityLabel("Recorded samples")
+                Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview || micTest.playing == nil)
             }
-            if voice.phase == .connected || statisticsPreview {
-                Divider().overlay(CaperTheme.border)
-                Text("Connection statistics").font(CaperTheme.font(14, weight: .bold))
-                if statisticsPreview { Text("TEST FIXTURE — synthetic statistics layout; no voice connection.")
-                    .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
-                if let stats = statisticsPreview ? previewStatistics : voice.diagnostics {
-                    AudioRouteRow(title: "Receive / send", value: "\(stats.receiveBitrate.map { String($0) } ?? "—") / \(stats.sendBitrate.map { String($0) } ?? "—") bps")
-                    AudioRouteRow(title: "Packets lost / max jitter", value: "\(stats.packetsLost) / \(stats.maxJitterMs.map { String($0) } ?? "—") ms")
-                    AudioRouteRow(title: "RTT / route", value: "\(stats.roundTripMs.map { String($0) } ?? "—") ms / \(stats.route == "relay" ? "TURN relay" : stats.route == "direct" ? "Direct" : "Not observed yet")")
-                } else {
-                    Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                }
+        }.padding(14).overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+    }
+
+    private func sampleCard(title: String, enhanced: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(CaperTheme.font(12, weight: .bold))
+            Button(micTest.playing == enhanced ? "Playing…" : "Play \(title.lowercased())") { micTest.play(enhanced: enhanced) }
+                .disabled(recordedPreview)
+                .accessibilityLabel("Play \(title.lowercased())")
+            if micTest.silent {
+                Text("No audible signal detected. Check your mic and try again.").font(CaperTheme.font(11)).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+            .background(enhanced ? CaperTheme.raised : .clear).clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private var outputGain: Binding<Double> {
@@ -1425,6 +1794,7 @@ private struct AudioPreferencesView: View {
     }
     private var outputRoute: Binding<String> {
         Binding(get: { voice.selectedOutputID ?? "" }, set: { uid in
+            speakerTest.stop()
             routeError = voice.selectOutput(uid) ? nil : "Could not switch output. The previous route is still selected."
         })
     }
@@ -1436,6 +1806,81 @@ private struct AudioPreferencesView: View {
         Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)); CaperEffects.shared.slider($0 / 100) })
     }
     private var recordedPreview: Bool { CaperRuntime.isAudioPreview("audio-recorded") }
+}
+
+/// Web's "Connection details" (Call.tsx ConnectionDiagnostics): only counters
+/// this client measures; web's join timing rows need join instrumentation.
+private struct ConnectionDetailsView: View {
+    @Bindable var voice: VoiceClient
+    let close: () -> Void
+    @State private var copyStatus = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Connection details").font(CaperTheme.font(20, weight: .bold))
+                Spacer()
+                Button(action: close) { CaperIcon(name: "x").frame(width: 28, height: 28) }
+                    .buttonStyle(.plain).accessibilityLabel("Close audio settings").keyboardShortcut(.cancelAction)
+            }
+            if statisticsPreview { Text("TEST FIXTURE — synthetic statistics layout; no voice connection.")
+                .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
+            if let stats = statisticsPreview ? previewStatistics : voice.diagnostics {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Self.rows(stats), id: \.0) { row in AudioRouteRow(title: row.0, value: row.1) }
+                }.accessibilityElement(children: .contain).accessibilityLabel("Connection statistics")
+                Text("Counters reset on reconnect.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                HStack {
+                    Button("Copy connection details") { copy(stats) }.buttonStyle(VoiceJoinButton())
+                    Text(copyStatus).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
+            } else if voice.phase == .connected {
+                Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            } else {
+                Text("Join voice to see connection details.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            }
+        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
+            .task(id: voice.phase) {
+                while !Task.isCancelled && voice.phase == .connected {
+                    await voice.refreshDiagnostics()
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                }
+            }
+    }
+
+    static func rows(_ stats: VoiceDiagnostics) -> [(String, String)] {
+        func megabytes(_ bytes: Int64) -> String { String(format: "%.2f MB", Double(bytes) / 1e6) }
+        func kbps(_ bits: Int?) -> String { bits.map { "\(Int((Double($0) / 1_000).rounded())) kbps" } ?? "Not observed yet" }
+        func ms(_ value: Int?) -> String { value.map { "\($0) ms" } ?? "Not observed yet" }
+        return [
+            ("Received", megabytes(stats.receivedBytes)),
+            ("Live receive", kbps(stats.receiveBitrate)),
+            ("Sent", megabytes(stats.sentBytes)),
+            ("Live send", kbps(stats.sendBitrate)),
+            ("Packets lost", String(stats.packetsLost)),
+            ("Max jitter", ms(stats.maxJitterMs)),
+            ("RTT", ms(stats.roundTripMs)),
+            ("Route", stats.route == "relay" ? "TURN relay" : stats.route == "direct" ? "Direct" : "Not observed yet"),
+        ]
+    }
+
+    private func copy(_ stats: VoiceDiagnostics) {
+        let object: [String: Any] = [
+            "receivedBytes": stats.receivedBytes, "sentBytes": stats.sentBytes,
+            "receiveBitrate": stats.receiveBitrate ?? 0, "sendBitrate": stats.sendBitrate ?? 0,
+            "packetsLost": stats.packetsLost, "maxJitterMs": stats.maxJitterMs ?? 0,
+            "roundTripMs": stats.roundTripMs ?? 0, "route": stats.route,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { copyStatus = "Copy failed; try again."; return }
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        copyStatus = NSPasteboard.general.setString(text, forType: .string) ? "Copied connection details" : "Copy failed; try again."
+        #else
+        UIPasteboard.general.string = text
+        copyStatus = "Copied connection details"
+        #endif
+    }
+
     private var statisticsPreview: Bool { CaperRuntime.isAudioPreview("audio-statistics") }
     private var previewStatistics: VoiceDiagnostics {
         VoiceDiagnostics(receivedBytes: 65_432, sentBytes: 12_345,

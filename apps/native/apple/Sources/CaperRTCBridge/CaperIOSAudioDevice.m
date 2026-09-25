@@ -6,6 +6,7 @@
 #import <AudioUnit/AudioUnit.h>
 #import <stdatomic.h>
 #import <unistd.h>
+#import <math.h>
 
 enum { kCaperIOSMaxFrames = 8192 };
 static const unsigned kCaperIOSComparisonActive = 1u << 31;
@@ -40,6 +41,7 @@ static const unsigned kCaperIOSComparisonActive = 1u << 31;
     _Atomic uint32_t _publicationEpoch;
     _Atomic int _gain, _strength, _syntheticPeak;
     _Atomic double _sampleRate;
+    _Atomic float _comparisonLevel;
     BOOL _initializedInput, _initializedOutput, _synthetic, _comparisonOwnsUnit, _terminating;
     uint64_t _lifecycle;
     CaperDenoisePipeline *_denoiser;
@@ -60,6 +62,7 @@ static const unsigned kCaperIOSComparisonActive = 1u << 31;
         atomic_init(&_comparisonState, 0);
         atomic_init(&_comparisonFrames, 0); atomic_init(&_sampleRate, 0);
         atomic_init(&_syntheticPeak, 0);
+        atomic_init(&_comparisonLevel, 0);
     }
     return self;
 }
@@ -175,7 +178,12 @@ static OSStatus CaperIOSDeliver(CaperIOSAudioDevice *device, AudioUnitRenderActi
     if (comparing) {
         offset = atomic_load(&device->_comparisonFrames);
         count = MIN(frames, device->_comparisonCapacity - MIN(offset, device->_comparisonCapacity));
-        if (count) memcpy(device->_natural + offset, device->_capture, count * sizeof(int16_t));
+        if (count) {
+            memcpy(device->_natural + offset, device->_capture, count * sizeof(int16_t));
+            double sum = 0;
+            for (unsigned i = 0; i < count; ++i) { double sample = device->_capture[i] / 32768.0; sum += sample * sample; }
+            atomic_store(&device->_comparisonLevel, (float)sqrt(sum / count));
+        }
     }
     if (gain && processed) {
         CaperProcessVoiceEpochs(device->_capture, device->_captureEpochs, frames, atomic_load(&device->_sampleRate),
@@ -282,6 +290,8 @@ static OSStatus CaperIOSOutput(void *context, AudioUnitRenderActionFlags *flags,
 }
 - (BOOL)stopRecording { atomic_store(&_recording, false); [self stopUnitIfIdle]; return YES; }
 - (BOOL)stopPlayout { atomic_store(&_playing, false); [self stopUnitIfIdle]; return YES; }
+
+- (float)comparisonLevel { return atomic_load(&_comparisonLevel); }
 
 - (BOOL)beginComparison {
     id<RTCAudioDeviceDelegate> delegate;

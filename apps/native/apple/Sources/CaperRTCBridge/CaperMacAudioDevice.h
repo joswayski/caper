@@ -42,6 +42,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)beginComparison;
 - (nullable CaperAudioComparison *)endComparison;
 @property(nonatomic, readonly) BOOL isComparing;
+/// RMS (0...1) of the latest natural comparison chunk, for the local input meter.
+@property(nonatomic, readonly) float comparisonLevel;
 /// Warm the bundled DPDFNet model before starting capture. Never call on HAL.
 - (BOOL)prepareDenoise;
 @property(nonatomic, readonly) BOOL denoiseFailed;

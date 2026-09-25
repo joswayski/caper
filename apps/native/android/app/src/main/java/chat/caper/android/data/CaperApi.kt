@@ -18,7 +18,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
-class ApiException(val status: Int, override val message: String, val code: String? = null) : IOException(message)
+class ApiException(val status: Int, override val message: String, val code: String? = null, val attemptsRemaining: Int? = null) : IOException(message)
 
 class CaperApi(
     val client: OkHttpClient = OkHttpClient.Builder()
@@ -110,6 +110,10 @@ class CaperApi(
         request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/members/${member.pathId()}", "DELETE", token)
     }
 
+    /** Web: GET `${mediaRoot}/status` — the channel's media root, or the demo root for General. */
+    suspend fun mediaStatus(accountToken: String?, channel: String, demo: Boolean): MediaStatus =
+        get(if (demo) "/api/media/status" else "/api/channels/${channel.pathId()}/media/status", accountToken.takeUnless { demo })
+
     suspend inline fun <reified T> media(
         accountToken: String?,
         channel: String,
@@ -148,7 +152,7 @@ class CaperApi(
             val text = response.body.string()
             if (!response.isSuccessful) {
                 val detail = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
-                throw ApiException(response.code, detail?.error ?: "Request failed (${response.code}).", detail?.code)
+                throw ApiException(response.code, detail?.error ?: "Request failed (${response.code}).", detail?.code, detail?.attemptsRemaining)
             }
             if (T::class == Unit::class || response.code == 204 || text.isBlank()) Unit as T
             else json.decodeFromString(text)

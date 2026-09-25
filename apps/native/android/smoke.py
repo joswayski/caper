@@ -323,15 +323,22 @@ def main() -> None:
 
     # Inspect prejoin audio controls without starting capture or playback.
     tap(description="Audio and account settings")
-    audio = capture("caper-android-audio-prejoin", "Voice processing")
-    for label in ("Input volume", "Voice processing", "Output volume"):
+    settings = capture("caper-android-audio-settings", "Audio test")
+    for label in ("Caper sound effects", "Audio test", "Log out"):
+        assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
+    assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
+    tap(text="Audio test")
+    audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")
+    for label in ("Test microphone volume", "Voice processing", "Test speaker volume"):
         assert find(audio, description=label) is not None, f"Missing labeled slider: {label}"
-    for removed in ("DPDFNet", "RNNoise", "voice EQ", "Android system settings", "communication routes", "Join voice", "Signed in as"):
+    for label in ("Microphone volume", "Speaker volume", "Voice enhancement", "Test speakers", "Test microphone", "Try your microphone", "Input level"):
+        assert find(audio, text=label) is not None, f"Missing audio test copy: {label}"
+    for removed in ("DPDFNet", "RNNoise", "voice EQ", "Android system settings", "communication routes", "Join voice", "Signed in as", "Mic Test"):
         assert find(audio, contains=removed) is None, f"Unexpected explanatory copy: {removed}"
-    assert find(audio, text="Audio device") is None, "Do not show a routing section without routes"
+    assert find(audio, text="Choose speakers in system settings.") is not None, "Do not show a routing section without routes"
     assert find(audio, text="Connection details") is None
     assert find(audio, text="25%") is not None
-    output = find(audio, description="Output volume")
+    output = find(audio, description="Test speaker volume")
     left, top, right, bottom = map(int, re.findall(r"\d+", output.attrib["bounds"]))
     # Compose's accessibility bounds include padding outside the touch track.
     # Drag the current 100% thumb past the minimum instead of tapping padding;
@@ -341,8 +348,9 @@ def main() -> None:
     wait_for(text="0%")
     tap(description="Close")
     tap(description="Audio and account settings")
+    tap(text="Audio test")
     zero = capture("caper-android-audio-prejoin-zero-output", "0%")
-    assert find(zero, text="Mic Test") is not None
+    assert find(zero, text="Test microphone") is not None
     tap(description="Close")
 
     tap(description="Edit profile")
@@ -358,7 +366,7 @@ def main() -> None:
     fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503,
                          "error": "TEST FIXTURE: profile save temporarily unavailable."}})
     tap(text="Save profile")
-    profile_error = capture("caper-android-profile-error", "temporarily unavailable")
+    profile_error = capture("caper-android-profile-error", "Your profile could not be saved. Please try again.")
     assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
     assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
     assert sum(1 for node in nodes(profile_error) if node.get("text") == "Edit profile") == 1
@@ -377,22 +385,16 @@ def main() -> None:
     viewport(390, 844)
     launch()
     wait_for(text="Fixture Owner")
-    narrow = capture("caper-android-narrow", "Open navigation")
-    assert find(narrow, text="Browse") is None, "Mobile navigation must be icon-only"
+    narrow = capture("caper-android-narrow", "Browse")
     assert find(narrow, text="caper") is None
     assert find(narrow, contains="Message #general") is not None
-    menu = find(narrow, description="Open navigation")
-    avatar = find(narrow, text="F")
+    menu = find(narrow, text="Browse")
     channel = find(narrow, text="# general")
-    author = find(narrow, text="Fixture Owner")
-    assert menu is not None and avatar is not None and channel is not None and author is not None
-    assert abs(center(menu)[0] - center(avatar)[0]) <= 2, "Menu must center over the message avatars"
-    channel_left = list(map(int, re.findall(r"\d+", channel.attrib["bounds"])))[0]
-    author_left = list(map(int, re.findall(r"\d+", author.attrib["bounds"])))[0]
-    assert abs(channel_left - author_left) <= 2, "Channel title must align with message authors"
+    assert menu is not None and channel is not None, "Narrow navigation shows the web's Menu + Browse toggle"
+    assert center(menu)[0] < center(channel)[0], "Browse must precede the channel title, as on the web"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
-    tap(description="Open navigation")
+    tap(text="Browse")
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")
     browse = capture("caper-android-browse", "Fixture Studio")
@@ -401,7 +403,7 @@ def main() -> None:
     wait_for(description="Expand channels")
     tap(description="Close navigation")
     wait_for(contains="Message #general")
-    tap(description="Open navigation")
+    tap(text="Browse")
     collapsed_browse = capture("caper-android-browse-collapsed", "Expand channels")
     assert find(collapsed_browse, text="planning") is None, "Browse must retain the collapsed state"
     tap(description="Channel options")
@@ -411,8 +413,9 @@ def main() -> None:
     tap(description="Expand channels")
     wait_for(text="planning")
     tap(description="Audio and account settings")
-    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Voice processing")
-    assert find(audio_narrow, description="Input volume") is not None
+    tap(text="Audio test")
+    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Only you can hear these tests.")
+    assert find(audio_narrow, description="Test microphone volume") is not None
     tap(description="Close")
 
     # Spectator snapshots are fixture-only; the media join endpoint remains 503.
@@ -449,7 +452,7 @@ def main() -> None:
         fixture({"mediaAccessDenied": {"channelId": "chan00000002", "denied": False}})
     tap(description="Close navigation")
     assert find(hierarchy(), contains="Message #general") is not None, "Spectator updates changed selected chat"
-    tap(description="Open navigation")
+    tap(text="Browse")
 
     # Run after parity captures so the stable seeded reference conversation is
     # unchanged. This crosses the real Compose input -> HTTP send -> gateway UI

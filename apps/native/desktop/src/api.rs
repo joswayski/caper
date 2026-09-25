@@ -18,6 +18,8 @@ pub struct Api {
 pub struct ApiError {
     pub status: Option<StatusCode>,
     pub message: String,
+    /// Remaining sign-in code attempts, when the server reports them.
+    pub attempts_remaining: Option<u64>,
 }
 
 impl std::fmt::Display for ApiError {
@@ -301,6 +303,19 @@ impl Api {
         )
     }
 
+    /// Whether voice is enabled for the General demo (`channel` None, no
+    /// credentials) or for one account channel, as web reads it.
+    pub fn media_status(&self, token: Option<&str>, channel: Option<&str>) -> bool {
+        let path = match channel {
+            Some(channel) => format!("api/channels/{channel}/media/status"),
+            None => "api/media/status".into(),
+        };
+        let token = channel.and(token);
+        // Web treats any failure or non-success response as not enabled.
+        self.request::<Value>(Method::GET, &path, token, None, None)
+            .is_ok_and(|status| status["enabled"].as_bool() == Some(true))
+    }
+
     pub fn logout(&self, token: &str) -> Result<(), ApiError> {
         let response = self.raw(Method::POST, "api/auth/logout", Some(token), None, None)?;
         checked(response).map(|_| ())
@@ -344,6 +359,7 @@ impl Api {
         request.send().map_err(|_| ApiError {
             status: None,
             message: "Could not reach Caper. Check your connection and try again.".into(),
+            attempts_remaining: None,
         })
     }
 }
@@ -353,14 +369,15 @@ fn checked(response: Response) -> Result<Response, ApiError> {
     if status.is_success() {
         return Ok(response);
     }
-    let message = response
-        .json::<Value>()
-        .ok()
+    let body = response.json::<Value>().ok();
+    let message = body
+        .as_ref()
         .and_then(|body| body["error"].as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("Caper request failed ({status})."));
     Err(ApiError {
         status: Some(status),
         message,
+        attempts_remaining: body.and_then(|body| body["attemptsRemaining"].as_u64()),
     })
 }
 
@@ -368,5 +385,6 @@ fn invalid(message: &str) -> ApiError {
     ApiError {
         status: None,
         message: message.into(),
+        attempts_remaining: None,
     }
 }

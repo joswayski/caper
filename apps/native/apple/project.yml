@@ -97,7 +97,11 @@ targets:
   CaperCoreIOS:
     type: framework
     platform: iOS
-    sources: Sources/CaperCore
+    sources:
+      - Sources/CaperCore
+      - path: ../../web/public/audio/effects
+        buildPhase: resources
+        excludes: [README.md]
     dependencies:
       - target: CaperRTCBridgeIOS
         embed: false

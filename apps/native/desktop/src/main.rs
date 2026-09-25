@@ -8,6 +8,7 @@ mod media;
 mod media_gateway;
 mod model;
 mod navigation;
+mod regions;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
 mod voice;
@@ -22,7 +23,7 @@ use model::{
 use state::{CallContext, Phase};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
-use voice::{MicrophoneState, Voice, VoiceOperation};
+use voice::{MicrophoneState, Recorded, Voice, VoiceOperation};
 use worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
 
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
@@ -57,6 +58,9 @@ enum NavIcon {
     Headphones,
     VolumeX,
     Menu,
+    PhoneOff,
+    HeadphoneOff,
+    AudioLines,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,10 +139,23 @@ struct CaperApp {
     effects: Effects,
     sound_effects: bool,
     announced_voice: Option<u64>,
+    /// Who else was in the call last frame, for web's join/leave chimes.
+    voice_roster: Option<(u64, String, BTreeSet<String>)>,
     generation: u64,
     loading: bool,
     loading_older: bool,
     older_error: Option<String>,
+    /// The first history load failed; shown in the pane with "Try again".
+    load_error: Option<String>,
+    /// When the live state last changed, for web's 1 s status delay.
+    live_changed: Instant,
+    was_live: bool,
+    /// Auto-loading older history waits until the list has settled once.
+    older_armed: bool,
+    /// History height before older messages were prepended, to keep position.
+    older_anchor: Option<f32>,
+    history_height: f32,
+    history_offset: Option<f32>,
     has_more: bool,
     error: Option<String>,
     warning: Option<String>,
@@ -154,6 +171,7 @@ struct CaperApp {
     live: String,
     email: String,
     challenge: Option<String>,
+    attempts_remaining: Option<u64>,
     code: String,
     username: String,
     display_name: String,
@@ -172,6 +190,9 @@ struct CaperApp {
     voice_join_request: u64,
     channel_rosters: BTreeMap<String, Vec<model::VoiceOccupant>>,
     unavailable_rosters: BTreeSet<String>,
+    /// Web's `/status` answers by media root; absent while checking.
+    media_availability: BTreeMap<String, bool>,
+    media_status_root: Option<String>,
     collapsed_rosters: BTreeSet<String>,
     sidebar_width: f32,
     navigation_open: bool,
@@ -185,9 +206,11 @@ struct CaperApp {
     form_name: String,
     form_private: bool,
     member_username: String,
+    member_error: Option<&'static str>,
     managed_members: Vec<Member>,
     managed_channel: Option<String>,
     persist_preferences: bool,
+    connection_copy_status: &'static str,
 }
 
 impl CaperApp {
@@ -202,10 +225,18 @@ impl CaperApp {
             effects: Effects::new(fixture.is_none()),
             sound_effects: true,
             announced_voice: None,
+            voice_roster: None,
             generation: 1,
             loading: fixture.is_none(),
             loading_older: false,
             older_error: None,
+            load_error: None,
+            live_changed: now,
+            was_live: false,
+            older_armed: false,
+            older_anchor: None,
+            history_height: 0.0,
+            history_offset: None,
             has_more: false,
             error: None,
             warning: None,
@@ -221,6 +252,7 @@ impl CaperApp {
             live: "Connecting…".into(),
             email: String::new(),
             challenge: None,
+            attempts_remaining: None,
             code: String::new(),
             username: String::new(),
             display_name: String::new(),
@@ -239,6 +271,8 @@ impl CaperApp {
             voice_join_request: 0,
             channel_rosters: BTreeMap::new(),
             unavailable_rosters: BTreeSet::new(),
+            media_availability: BTreeMap::new(),
+            media_status_root: None,
             collapsed_rosters: BTreeSet::new(),
             sidebar_width: 280.0,
             navigation_open: false,
@@ -252,9 +286,11 @@ impl CaperApp {
             form_name: String::new(),
             form_private: false,
             member_username: String::new(),
+            member_error: None,
             managed_members: Vec::new(),
             managed_channel: None,
             persist_preferences: fixture.is_none(),
+            connection_copy_status: "",
         };
         match fixture {
             Some("error" | "login-error") => {
@@ -282,6 +318,25 @@ impl CaperApp {
                         .as_ref()
                         .map_or_else(Vec::new, |detail| detail.members[..2].to_vec());
                     app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
+                } else if matches!(name, "parity-no-channels" | "parity-no-channels-member") {
+                    app.detail.as_mut().unwrap().channels.clear();
+                    app.selected_channel = None;
+                    if name.ends_with("-member") {
+                        app.account.as_mut().unwrap().id = "fixture-maya".into();
+                    }
+                } else if name == "parity-create-channel" {
+                    app.dialog = Some(Dialog::CreateChannel);
+                } else if name == "parity-create-space" {
+                    app.dialog = Some(Dialog::CreateSpace);
+                } else if name == "parity-channel-dirty" {
+                    app.form_name = "planning-notes".into();
+                    app.form_private = true;
+                    app.managed_channel = Some("chan00000003".into());
+                    app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
+                } else if name == "parity-voice-checking" {
+                    app.media_availability.clear();
+                } else if name == "parity-voice-unavailable" {
+                    app.media_availability.insert("chan00000001".into(), false);
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
                 } else if matches!(name, "parity-voice-rosters" | "parity-voice-rosters-narrow") {
@@ -291,7 +346,7 @@ impl CaperApp {
                             model::VoiceOccupant {
                                 id: "fixture-maya".into(),
                                 name: "Maya".into(),
-                                country_code: None,
+                                country_code: Some("CA".into()),
                                 muted: false,
                                 deafened: false,
                             },
@@ -305,6 +360,34 @@ impl CaperApp {
                         ],
                     );
                     app.navigation_open = name.ends_with("-narrow");
+                } else if name == "parity-typing" {
+                    app.typers.insert(
+                        "fixture-maya".into(),
+                        Typer {
+                            author: Author {
+                                id: "fixture-maya".into(),
+                                name: "Maya".into(),
+                                is_guest: false,
+                            },
+                            revision: 1,
+                            expires: Instant::now() + Duration::from_secs(3_600),
+                        },
+                    );
+                    app.draft = "a".repeat(3_760);
+                } else if name == "parity-load-error" {
+                    app.timeline = Timeline::default();
+                    app.load_error =
+                        Some("Could not reach Caper. Check your connection and try again.".into());
+                    app.live = "Offline".into();
+                    app.live_changed = Instant::now() - Duration::from_secs(2);
+                } else if name == "parity-loading" {
+                    app.timeline = Timeline::default();
+                    app.loading = true;
+                } else if name == "parity-older-error" {
+                    app.has_more = true;
+                    app.older_error = Some("History unavailable".into());
+                    app.live = "Reconnecting…".into();
+                    app.live_changed = Instant::now() - Duration::from_secs(2);
                 } else if name == "parity-rejected" {
                     let mut pending = PendingSend::prepare(
                         None,
@@ -318,6 +401,11 @@ impl CaperApp {
                     app.username = "fixture_owner".into();
                     app.display_name = "Fixture Owner".into();
                     app.dialog = Some(Dialog::Profile);
+                } else if name == "parity-onboarding" {
+                    let account = app.account.as_mut().unwrap();
+                    account.username = None;
+                    account.display_name = None;
+                    app.dialog = Some(Dialog::Profile);
                 } else if name == "parity-member" {
                     app.account.as_mut().unwrap().id = "fixture-maya".into();
                     app.account.as_mut().unwrap().display_name = Some("Maya".into());
@@ -327,9 +415,18 @@ impl CaperApp {
                 } else if matches!(name, "parity-audio" | "parity-audio-recorded") {
                     app.dialog = Some(Dialog::Audio);
                     if name == "parity-audio-recorded" {
-                        app.voice.microphone = MicrophoneState::Ready(3.6);
+                        app.voice.microphone = MicrophoneState::Ready(Recorded {
+                            seconds: 3.6,
+                            silent: false,
+                        });
                     }
-                } else if matches!(name, "parity-voice-joining" | "parity-voice-connected") {
+                } else if matches!(
+                    name,
+                    "parity-voice-joining"
+                        | "parity-voice-connected"
+                        | "parity-voice-speaking"
+                        | "parity-connection"
+                ) {
                     // Explicit visual fixtures only: no media transport is started.
                     let call = CallContext {
                         channel_id: "chan00000001".into(),
@@ -337,7 +434,7 @@ impl CaperApp {
                         space_name: "Fixture Studio".into(),
                     };
                     app.voice.active_space = Some("space0000001".into());
-                    app.voice.state.phase = if name == "parity-voice-connected" {
+                    app.voice.state.phase = if name != "parity-voice-joining" {
                         app.voice.self_id = "fixture-owner".into();
                         app.voice.participants = app
                             .detail
@@ -367,9 +464,28 @@ impl CaperApp {
                                 max_jitter_ms: 17.0,
                                 round_trip_ms: 42.0,
                                 route: "relay",
+                                checks: Some("3 sent · 3 answered".into()),
                             },
                             Instant::now(),
                         ));
+                        app.voice.join_times = Some(voice::JoinTimes {
+                            joined_ms: 812.0,
+                            session_ms: 356.0,
+                            transport_ms: 204.0,
+                            ice_ms: Some(188.0),
+                            roster_ms: 41.0,
+                        });
+                        if name == "parity-connection" {
+                            app.dialog = Some(Dialog::Connection);
+                        }
+                        if name == "parity-voice-speaking" {
+                            // Fixture levels: you and Maya lit, Alex quiet.
+                            let lit = Instant::now() + Duration::from_secs(3_600);
+                            app.voice.activity = media::VoiceActivity {
+                                local: Some(lit),
+                                participants: [("fixture-maya".to_owned(), lit)].into(),
+                            };
+                        }
                         Phase::Connected(call)
                     } else {
                         Phase::Joining(call)
@@ -429,6 +545,11 @@ impl CaperApp {
             },
         ];
         self.spaces = vec![demo, space.clone()];
+        self.limits = Some(model::SpaceLimits {
+            owned_spaces: 20,
+            total_spaces: 100,
+            channels_per_space: 100,
+        });
         self.selected_space = Some(space.id.clone());
         self.selected_channel = Some(channel.id.clone());
         self.detail = Some(SpaceDetail {
@@ -508,6 +629,74 @@ impl CaperApp {
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
         self.live = "Live".into();
+        // Fixtures never contact a media service; voice reads as enabled.
+        self.media_status_root = Some(self.media_root().0);
+        for root in ["general", "chan00000001", "chan00000002", "chan00000003"] {
+            self.media_availability.insert(root.into(), true);
+        }
+    }
+
+    /// The viewed channel's media root (web `mediaRoot`): General's demo
+    /// service, or the viewed account channel's.
+    fn media_root(&self) -> (String, Option<String>) {
+        match (&self.detail, &self.selected_channel) {
+            (Some(detail), Some(channel)) if !detail.space.demo => {
+                (channel.clone(), Some(channel.clone()))
+            }
+            _ => ("general".into(), None),
+        }
+    }
+
+    /// Web re-reads `/status` whenever the viewed media root changes.
+    fn refresh_media_status(&mut self) {
+        let (root, channel) = self.media_root();
+        if !self.persist_preferences || self.media_status_root.as_deref() == Some(root.as_str()) {
+            return;
+        }
+        self.media_status_root = Some(root.clone());
+        self.worker.send(Command::MediaStatus {
+            root,
+            token: channel.as_ref().and(self.token.clone()),
+            channel,
+        });
+    }
+
+    /// Why Join is unavailable for the viewed channel, as web's tooltip says.
+    fn join_unavailable(&self) -> Option<&'static str> {
+        match self.media_availability.get(&self.media_root().0) {
+            Some(true) => None,
+            Some(false) => Some("Joining is not available at this time."),
+            None => Some("Checking voice availability…"),
+        }
+    }
+
+    /// Web plays channel-leave when someone else leaves and channel-join when
+    /// someone else arrives, comparing rosters within one call only.
+    fn chime_roster_changes(&mut self) {
+        if !matches!(self.voice.state.phase, Phase::Connected(_)) || self.voice.self_id.is_empty() {
+            self.voice_roster = None;
+            return;
+        }
+        let generation = self.voice.state.generation;
+        let self_id = self.voice.self_id.clone();
+        let others: BTreeSet<String> = self
+            .voice
+            .participants
+            .iter()
+            .map(|participant| participant.id.clone())
+            .filter(|id| *id != self_id)
+            .collect();
+        if let Some((previous_generation, previous_self, previous)) = &self.voice_roster
+            && *previous_generation == generation
+            && *previous_self == self_id
+        {
+            if previous.iter().any(|id| !others.contains(id)) {
+                self.effects.play(Effect::Leave);
+            } else if others.iter().any(|id| !previous.contains(id)) {
+                self.effects.play(Effect::Join);
+            }
+        }
+        self.voice_roster = Some((generation, self_id, others));
     }
 
     fn receive(&mut self) {
@@ -518,6 +707,7 @@ impl CaperApp {
             self.announced_voice = Some(self.voice.state.generation);
             self.effects.play(Effect::Join);
         }
+        self.chime_roster_changes();
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
@@ -540,12 +730,18 @@ impl CaperApp {
                         Ok(challenge) => {
                             self.challenge = Some(challenge);
                             self.code.clear();
+                            self.attempts_remaining = None;
                         }
                         Err(error) => self.error = Some(error),
                     }
                 }
-                Event::Verified { generation, result } if generation == self.generation => {
+                Event::Verified {
+                    generation,
+                    result,
+                    attempts_remaining,
+                } if generation == self.generation => {
                     self.loading = false;
+                    self.attempts_remaining = attempts_remaining;
                     match result {
                         Ok((token, account, spaces)) => {
                             self.establish(token.clone(), account, spaces);
@@ -610,7 +806,7 @@ impl CaperApp {
                             self.accept_channel(history, session, general, &channel)
                         }
                         Err(error) if error.access_denied => self.clear_channel(&error.message),
-                        Err(error) => self.error = Some(error.message),
+                        Err(error) => self.load_error = Some(error.message),
                     }
                 }
                 Event::OlderLoaded {
@@ -622,6 +818,9 @@ impl CaperApp {
                 {
                     self.loading_older = false;
                     self.accept_older(&channel, result);
+                }
+                Event::MediaStatus { root, enabled } => {
+                    self.media_availability.insert(root, enabled);
                 }
                 Event::VoiceChecked {
                     request,
@@ -744,6 +943,9 @@ impl CaperApp {
             self.clear_channel("Caper returned messages from another channel.");
             return;
         }
+        self.older_armed = false;
+        self.older_anchor = None;
+        self.load_error = None;
         if let Err(error) = self.timeline.reset(history.messages, &history.cursor) {
             self.clear_channel(&error);
             return;
@@ -1038,6 +1240,9 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.older_armed = false;
+        self.older_anchor = None;
+        self.load_error = None;
         self.pending = None;
         self.draft.clear();
         self.typers.clear();
@@ -1074,6 +1279,7 @@ impl CaperApp {
         let target = detail.channels.iter().find(|item| item.id == channel)?;
         if self.unavailable_rosters.contains(channel)
             || (!detail.space.demo && self.token.is_none())
+            || self.join_unavailable().is_some()
         {
             return None;
         }
@@ -1383,6 +1589,7 @@ impl CaperApp {
                     .all(|message| message.channel_id == requested_channel) =>
             {
                 self.has_more = history.has_more;
+                self.older_anchor = Some(self.history_height);
                 if let Err(error) = self.timeline.prepend(history.messages) {
                     self.older_error = Some(error);
                 }
@@ -1415,6 +1622,9 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.older_armed = false;
+        self.older_anchor = None;
+        self.load_error = None;
         self.pending = None;
         self.draft.clear();
         self.typers.clear();
@@ -1589,14 +1799,22 @@ impl CaperApp {
                 self.detail = None;
                 self.managed_members.clear();
                 self.presence.clear();
-                self.open_general();
+                // Web opens the first remaining space; General leads the list.
+                match self.spaces.first() {
+                    Some(space) if !space.demo => self.select_space(space.id.clone()),
+                    _ => self.open_general(),
+                }
             }
             AdminResult::ChannelCreated(channel) => {
                 if let Some(detail) = &mut self.detail {
                     detail.channels.push(channel.clone());
                 }
                 self.dialog = None;
-                self.select_channel(channel.id, false);
+                self.select_channel(channel.id.clone(), false);
+                // Web opens a new private channel's Overview to add members.
+                if channel.private {
+                    self.open_manage_channel(&channel.id, &channel.name, true);
+                }
             }
             AdminResult::ChannelUpdated(channel) => {
                 if let Some(detail) = &mut self.detail
@@ -1652,6 +1870,11 @@ impl CaperApp {
 
     fn periodic(&mut self, context: &egui::Context) {
         let now = Instant::now();
+        let live = self.live == "Live";
+        if live != self.was_live {
+            self.was_live = live;
+            self.live_changed = now;
+        }
         self.typers.retain(|_, typer| typer.expires > now);
         let active = !self.draft.trim().is_empty()
             && now.duration_since(self.typing_edited) < Duration::from_millis(600);
@@ -1715,22 +1938,143 @@ impl eframe::App for CaperApp {
             self.worker.send(Command::Activity);
         }
         self.receive();
+        self.refresh_media_status();
         self.periodic(context);
         if matches!(self.dialog, Some(Dialog::SignIn)) {
             self.login_page(context);
+        } else if self.onboarding() {
+            self.onboarding_page(context);
         } else {
             self.shell(context);
             self.dialogs(context);
         }
-        if !matches!(self.dialog, Some(Dialog::Audio))
-            && !matches!(self.voice.microphone, MicrophoneState::Idle)
-        {
-            self.voice.stop_mic_test();
+        if !matches!(self.dialog, Some(Dialog::Audio)) {
+            if !matches!(self.voice.microphone, MicrophoneState::Idle) {
+                self.voice.stop_mic_test();
+            }
+            if self.voice.speaker_testing {
+                self.voice.stop_speaker_test();
+            }
         }
     }
 }
 
 impl CaperApp {
+    /// A signed-in account without a profile finishes it on its own page, as on web.
+    fn onboarding(&self) -> bool {
+        matches!(self.dialog, Some(Dialog::Profile))
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.username.is_none() || account.display_name.is_none())
+    }
+
+    fn onboarding_page(&mut self, context: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BLACKOUT))
+            .show(context, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(440.0);
+                        ui.add_space(100.0);
+                        ui.horizontal(|ui| {
+                            ui.label(bold("caper").size(23.0));
+                            ui.label(bold(".").size(23.0).color(TERRACOTTA_BRIGHT));
+                        });
+                        ui.add_space(58.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.label(
+                                bold("ONE LAST THING")
+                                    .size(11.0)
+                                    .extra_letter_spacing(1.5)
+                                    .color(MUTED),
+                            );
+                            ui.add_space(24.0);
+                            ui.label(black("Choose how you show up.").size(40.0));
+                            ui.add_space(20.0);
+                            ui.label(
+                                RichText::new(
+                                    "Your username is unique. Your display name is what people see in conversations.",
+                                )
+                                .size(16.0)
+                                .color(MUTED),
+                            );
+                            ui.add_space(24.0);
+                            ui.label(bold("Username").size(14.0));
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.username)
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(32)
+                                    .min_size(egui::vec2(0.0, 52.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            self.username = normalize_username(&self.username);
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("3-32 lowercase letters, numbers, or underscores.")
+                                    .size(12.8)
+                                    .color(MUTED),
+                            );
+                            ui.add_space(20.0);
+                            ui.label(bold("Display name").size(14.0));
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.display_name)
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(64)
+                                    .min_size(egui::vec2(0.0, 52.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("Shown to other people. It does not need to be unique.")
+                                    .size(12.8)
+                                    .color(MUTED),
+                            );
+                            if let Some(error) = &self.error {
+                                ui.add_space(16.0);
+                                login_error_frame(ui, error);
+                            }
+                            ui.add_space(24.0);
+                            if login_action(
+                                ui,
+                                if self.loading { "Saving…" } else { "Finish account" },
+                                self.loading
+                                    || self.username.len() < 3
+                                    || self.display_name.trim().is_empty(),
+                            )
+                            .clicked()
+                            {
+                                self.loading = true;
+                                self.error = None;
+                                self.worker.send(Command::Profile {
+                                    generation: self.generation,
+                                    token: self.token.clone().unwrap_or_default(),
+                                    username: self.username.trim().to_ascii_lowercase(),
+                                    display_name: self.display_name.trim().into(),
+                                });
+                            }
+                            ui.add_space(16.0);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Log out").size(13.6).color(MUTED),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.logout();
+                                }
+                            });
+                        });
+                    });
+                });
+            });
+    }
+
     fn login_page(&mut self, context: &egui::Context) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BLACKOUT))
@@ -1759,9 +2103,13 @@ impl CaperApp {
                         ui.add_space(28.0);
                         ui.label(
                             RichText::new(if self.challenge.is_some() {
-                                "Enter the six-character code from your email. It expires in 10 minutes."
+                                format!(
+                                    "Enter the six-character code sent to {}. It expires in 10 minutes.",
+                                    self.email.trim()
+                                )
                             } else {
                                 "Use your email to create an account or return to one. No password needed."
+                                    .into()
                             })
                             .size(16.0)
                             .color(MUTED),
@@ -1770,22 +2118,52 @@ impl CaperApp {
                         if self.challenge.is_some() {
                             ui.label(bold("Sign-in code").size(14.0));
                             ui.add_space(4.0);
-                            let response = ui.add_sized(
-                                [440.0, 52.0],
+                            let exhausted = self.attempts_remaining == Some(0);
+                            let response = ui.add_enabled(
+                                !exhausted,
                                 egui::TextEdit::singleline(&mut self.code)
-                                    .vertical_align(egui::Align::Center).char_limit(6),
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(6)
+                                    .min_size(egui::vec2(440.0, 52.0))
+                                    .desired_width(440.0),
                             );
                             self.code.make_ascii_uppercase();
                             self.code.retain(|character| {
                                 "ABCDEFGHJKMNPQRSTWXYZ23456789".contains(character)
                             });
+                            if let Some(error) = &self.error {
+                                ui.add_space(12.0);
+                                login_error_frame(ui, error);
+                            }
+                            if self.attempts_remaining == Some(1) {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    bold("One attempt left. Check the code carefully.").size(14.0),
+                                );
+                            }
                             ui.add_space(20.0);
-                            let submit = login_action(
+                            if exhausted {
+                                if login_action(
+                                    ui,
+                                    if self.loading { "Sending…" } else { "Email me a new code" },
+                                    self.loading,
+                                )
+                                .clicked()
+                                {
+                                    self.loading = true;
+                                    self.error = None;
+                                    self.code.clear();
+                                    self.worker.send(Command::RequestCode {
+                                        generation: self.generation,
+                                        email: self.email.trim().to_owned(),
+                                    });
+                                }
+                            } else if login_action(
                                 ui,
                                 if self.loading { "Checking…" } else { "Continue" },
                                 self.loading || self.code.len() != 6,
-                            );
-                            if submit.clicked()
+                            )
+                            .clicked()
                                 || (response.lost_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                             {
@@ -1799,10 +2177,21 @@ impl CaperApp {
                                 });
                             }
                             ui.add_space(10.0);
-                            if ui.button("Use a different email").clicked() {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Use a different email")
+                                            .size(13.6)
+                                            .color(MUTED),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
                                 self.challenge = None;
                                 self.code.clear();
                                 self.error = None;
+                                self.attempts_remaining = None;
                             }
                         } else {
                             ui.label(bold("Email address").size(14.0));
@@ -1815,14 +2204,7 @@ impl CaperApp {
                             );
                             if let Some(error) = &self.error {
                                 ui.add_space(12.0);
-                                egui::Frame::new()
-                                    .stroke(Stroke::new(1.0, TERRACOTTA))
-                                    .corner_radius(6)
-                                    .inner_margin(egui::Margin::symmetric(12, 14))
-                                    .show(ui, |ui| {
-                                        ui.set_width(414.0);
-                                        ui.label(RichText::new(error).size(13.0).color(ERROR));
-                                    });
+                                login_error_frame(ui, error);
                             }
                             ui.add_space(20.0);
                             let submit = login_action(
@@ -1842,31 +2224,34 @@ impl CaperApp {
                                 });
                             }
                         }
-                        ui.add_space(12.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(
-                                    "We only send a code when you ask. Prefer to look around first?",
-                                )
-                                .size(14.0)
-                                .color(MUTED),
-                            );
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Join #general as a guest.")
-                                            .size(14.0)
-                                            .color(MUTED),
+                        // Web offers the guest room on the email step only.
+                        if self.challenge.is_none() {
+                            ui.add_space(12.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(
+                                        "We only send a code when you ask. Prefer to look around first?",
                                     )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                self.dialog = None;
-                                self.error = None;
-                                self.open_general();
-                            }
-                        });
+                                    .size(14.0)
+                                    .color(MUTED),
+                                );
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Join #general as a guest.")
+                                                .size(14.0)
+                                                .color(TEXT),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.dialog = None;
+                                    self.error = None;
+                                    self.open_general();
+                                }
+                            });
+                        }
                     });
                 });
             });
@@ -1923,7 +2308,7 @@ impl CaperApp {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
                             self.conversation(ui, true)
                         });
-                        if self.narrow_members_visible {
+                        if self.narrow_members_visible && !self.no_accessible_channels() {
                             let members_rect = egui::Rect::from_min_max(
                                 egui::pos2(
                                     (content.right() - 280.0).max(content.left()),
@@ -1955,8 +2340,8 @@ impl CaperApp {
                         content.max,
                     );
                     let wide_members = context.viewport_rect().width() >= 1100.0;
-                    let (conversation_rect, members_rect) = if self.members_visible && wide_members
-                    {
+                    let members_visible = self.members_visible && !self.no_accessible_channels();
+                    let (conversation_rect, members_rect) = if members_visible && wide_members {
                         let members = egui::Rect::from_min_max(
                             egui::pos2(stage_rect.right() - 220.0, stage_rect.top()),
                             stage_rect.max,
@@ -1968,7 +2353,7 @@ impl CaperApp {
                             ),
                             Some(members),
                         )
-                    } else if self.members_visible {
+                    } else if members_visible {
                         let members = egui::Rect::from_min_max(
                             egui::pos2(stage_rect.left(), stage_rect.bottom() - 220.0),
                             stage_rect.max,
@@ -2131,8 +2516,21 @@ impl CaperApp {
                     }
                     ui.add_space(10.0);
                 }
-                let (rect, add) =
-                    ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+                let tooltip = self.create_space_tooltip();
+                let add_enabled = self.account.is_none() || self.can_create_space();
+                let (rect, add) = ui.allocate_exact_size(
+                    egui::vec2(40.0, 40.0),
+                    if add_enabled {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                let plus = if add_enabled {
+                    TERRACOTTA_BRIGHT
+                } else {
+                    TERRACOTTA_BRIGHT.gamma_multiply(0.45)
+                };
                 ui.painter()
                     .rect_filled(rect, 12.0, if add.hovered() { RAISED } else { SURFACE });
                 let inset = rect.shrink(0.5);
@@ -2158,26 +2556,15 @@ impl CaperApp {
                     3.0,
                 ));
                 add.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
-                        ui.is_enabled(),
-                        "Create space",
-                    )
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, add_enabled, "Create space")
                 });
                 paint_icon(
                     ui.painter(),
                     egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
                     NavIcon::Plus,
-                    TERRACOTTA_BRIGHT,
+                    plus,
                 );
-                if add
-                    .on_hover_text(if self.account.is_some() {
-                        "Create space"
-                    } else {
-                        "Sign in to create a space"
-                    })
-                    .clicked()
-                {
+                if add.on_hover_text(tooltip).clicked() {
                     self.dialog = Some(if self.account.is_some() {
                         Dialog::CreateSpace
                     } else {
@@ -2267,7 +2654,7 @@ impl CaperApp {
                                     egui::Popup::menu(&actions).width(width).show(|ui| {
                                         if self.can_leave_space() {
                                             if ui
-                                                .button(RichText::new("Leave space").color(ERROR))
+                                                .button(RichText::new("Leave space…").color(ERROR))
                                                 .clicked()
                                             {
                                                 if let Some(detail) = &self.detail {
@@ -2306,6 +2693,8 @@ impl CaperApp {
                                                     detail.members.clone()
                                                 });
                                             self.managed_channel = None;
+                                            self.member_username.clear();
+                                            self.member_error = None;
                                             if let (Some(token), Some(space)) =
                                                 (self.token.clone(), self.selected_space.clone())
                                             {
@@ -2365,6 +2754,8 @@ impl CaperApp {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         ui.spacing_mut().item_spacing.x = 2.0;
+                                        let can_create = self.can_create_channel();
+                                        let channel_tooltip = self.create_channel_tooltip();
                                         if self.owner() {
                                             let options = drawn_icon_button(
                                                 ui,
@@ -2376,7 +2767,7 @@ impl CaperApp {
                                                 .width(190.0)
                                                 .show(|ui| {
                                                     if ui
-                                                        .add(egui::Button::image_and_text(
+                                                        .add_enabled(can_create, egui::Button::image_and_text(
                                                             egui::Image::new(egui::include_image!(
                                                                 "../resources/icons/plus.svg"
                                                             ))
@@ -2408,12 +2799,18 @@ impl CaperApp {
                                                 });
                                         }
                                         if self.owner()
-                                            && drawn_icon_button(
-                                                ui,
-                                                NavIcon::Plus,
-                                                "Create channel",
-                                            )
-                                            .clicked()
+                                            && ui
+                                                .add_enabled_ui(can_create, |ui| {
+                                                    drawn_icon_button_with_tooltip(
+                                                        ui,
+                                                        NavIcon::Plus,
+                                                        "Create channel",
+                                                        &channel_tooltip,
+                                                    )
+                                                    .on_disabled_hover_text(&channel_tooltip)
+                                                })
+                                                .inner
+                                                .clicked()
                                         {
                                             self.form_name.clear();
                                             self.form_private = false;
@@ -2453,23 +2850,7 @@ impl CaperApp {
                                 self.owner(),
                             );
                             if settings.is_some_and(|response| response.clicked()) {
-                                self.form_name = name.clone();
-                                self.form_private = private;
-                                self.managed_channel = Some(id.clone());
-                                if private
-                                    && let (Some(token), Some(space)) =
-                                        (self.token.clone(), self.selected_space.clone())
-                                {
-                                    self.worker.send(Command::Admin {
-                                        generation: self.generation,
-                                        token,
-                                        operation: AdminOperation::LoadMembers {
-                                            space,
-                                            channel: Some(id.clone()),
-                                        },
-                                    });
-                                }
-                                self.dialog = Some(Dialog::ManageChannel(id.clone()));
+                                self.open_manage_channel(&id, &name, private);
                             } else if response.clicked() {
                                 self.select_channel(id.clone(), false);
                             } else if response.hovered() || response.has_focus() {
@@ -2544,12 +2925,25 @@ impl CaperApp {
                 if stack.hovered() || stack.has_focus() {
                     ui.painter().rect_filled(rect, 8.0, RAISED);
                 }
+                let now = Instant::now();
                 for (index, person) in people.iter().take(3).enumerate() {
                     let center =
                         egui::pos2(rect.left() + 12.0 + index as f32 * 16.0, rect.center().y);
+                    let muted = if person.id == self.voice.self_id {
+                        self.voice.state.audio.muted
+                    } else {
+                        person.muted
+                    };
+                    let speaking = own && self.voice.speaking(&person.id, muted, now);
                     ui.painter().circle_filled(center, 11.0, SURFACE);
-                    ui.painter()
-                        .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
+                    if speaking {
+                        // Web: caper border plus a 1px caper ring.
+                        ui.painter()
+                            .circle_stroke(center, 11.0, Stroke::new(2.5, CAPER));
+                    } else {
+                        ui.painter()
+                            .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
+                    }
                     ui.painter().text(
                         center,
                         egui::Align2::CENTER_CENTER,
@@ -2598,11 +2992,21 @@ impl CaperApp {
             if !own {
                 ui.add_enabled_ui(self.voice_target(id).is_some(), |ui| {
                     let button = voice_join_button(ui, "Join");
-                    let label = format!("Join voice in #{name}");
+                    let switching =
+                        !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_));
+                    let label = if switching {
+                        format!("Switch voice to #{name}")
+                    } else {
+                        format!("Join voice in #{name}")
+                    };
                     button.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
                     });
-                    if button.on_hover_text(label).clicked() {
+                    let button = match self.join_unavailable() {
+                        Some(reason) => button.on_disabled_hover_text(reason),
+                        None => button.on_hover_text(label),
+                    };
+                    if button.clicked() {
                         self.join_voice_channel(id);
                     }
                 });
@@ -2614,6 +3018,7 @@ impl CaperApp {
     }
 
     fn voice_roster(&mut self, ui: &mut egui::Ui, people: Vec<model::VoiceOccupant>, own: bool) {
+        let now = Instant::now();
         for participant in people {
             let is_self = own && participant.id == self.voice.self_id;
             let muted = if is_self {
@@ -2629,134 +3034,173 @@ impl CaperApp {
             let mut playback = self.voice.playback(&participant.id);
             let local_muted = own && !is_self && playback.muted;
             ui.push_id(&participant.id, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 7.0;
-                    avatar(ui, &participant.name, 28.0, false);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(
-                            (ui.available_width()
-                                - if own && participant.id != self.voice.self_id {
-                                    80.0
-                                } else {
-                                    23.0
-                                }
-                                - if muted && deafened { 23.0 } else { 0.0 })
-                            .max(0.0),
-                            32.0,
-                        ),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.vertical(|ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 0.0;
-                                ui.add(
-                                    egui::Label::new(
-                                        bold(if is_self {
-                                            format!("{} (you)", participant.name)
-                                        } else {
-                                            participant.name.clone()
-                                        })
-                                        .size(12.0),
-                                    )
-                                    .truncate(),
-                                );
-                                if local_muted {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(10.0, 10.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        paint_icon(
-                                            ui.painter(),
-                                            rect,
-                                            NavIcon::VolumeX,
-                                            TERRACOTTA_BRIGHT,
-                                        );
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(format!(
-                                                    "You muted {}",
-                                                    participant.name
-                                                ))
-                                                .size(10.0)
-                                                .color(TERRACOTTA_BRIGHT),
-                                            )
-                                            .truncate(),
-                                        );
-                                    });
-                                }
-                            });
-                        },
-                    );
-                    if !muted && !deafened {
-                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                // Web opens the participant's audio menu on right-click too.
+                let menu_id = ui.id().with("audio-menu");
+                ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                    if own && !is_self && ui.response().secondary_clicked() {
+                        egui::Popup::open_id(ui.ctx(), menu_id);
                     }
-                    for (active, icon, label) in [
-                        (muted, NavIcon::MicOff, "Muted"),
-                        (deafened, NavIcon::VolumeX, "Deafened"),
-                    ] {
-                        if active {
-                            let (rect, response) = ui
-                                .allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                            paint_icon(ui.painter(), rect, icon, MUTED);
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Image,
-                                    ui.is_enabled(),
-                                    format!("{}: {label}", participant.name),
-                                )
-                            });
-                            response.on_hover_text(label);
-                        }
-                    }
-                    if own && participant.id != self.voice.self_id {
-                        let options = ui.add(
-                            egui::Button::new(RichText::new("Audio").size(10.0).color(MUTED))
-                                .frame(false)
-                                .min_size(egui::vec2(46.0, 28.0)),
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        avatar(
+                            ui,
+                            &participant.name,
+                            28.0,
+                            own && self.voice.speaking(&participant.id, muted, now),
                         );
-                        options.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                ui.is_enabled(),
-                                format!("Audio controls for {}", participant.name),
-                            )
-                        });
-                        if options.clicked() {
-                            self.effects.toggle(!egui::Popup::menu(&options).is_open());
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(
+                                (ui.available_width()
+                                    - if own && participant.id != self.voice.self_id {
+                                        80.0
+                                    } else {
+                                        23.0
+                                    }
+                                    - if muted && deafened { 23.0 } else { 0.0 })
+                                .max(0.0),
+                                32.0,
+                            ),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    let region =
+                                        participant.country_code.as_deref().and_then(|code| {
+                                            regions::name(code).map(|name| (code, name))
+                                        });
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        ui.scope(|ui| {
+                                            ui.set_max_width(
+                                                (ui.available_width()
+                                                    - if region.is_some() { 28.0 } else { 0.0 })
+                                                .max(0.0),
+                                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    bold(if is_self {
+                                                        format!("{} (you)", participant.name)
+                                                    } else {
+                                                        participant.name.clone()
+                                                    })
+                                                    .size(12.0),
+                                                )
+                                                .truncate(),
+                                            );
+                                        });
+                                        if let Some((code, name)) = region {
+                                            region_badge(ui, code, name);
+                                        }
+                                    });
+                                    if local_muted {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(10.0, 10.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            paint_icon(
+                                                ui.painter(),
+                                                rect,
+                                                NavIcon::VolumeX,
+                                                TERRACOTTA_BRIGHT,
+                                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(format!(
+                                                        "You muted {}",
+                                                        participant.name
+                                                    ))
+                                                    .size(10.0)
+                                                    .color(TERRACOTTA_BRIGHT),
+                                                )
+                                                .truncate(),
+                                            );
+                                        });
+                                    }
+                                });
+                            },
+                        );
+                        if !muted && !deafened {
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                         }
-                        egui::Popup::menu(&options).width(240.0).show(|ui| {
-                            let label = ui.horizontal(|ui| {
-                                let label = ui.label(bold("User volume"));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(format!("{}%", playback.gain_percent));
-                                    },
+                        for (active, icon, label) in [
+                            (muted, NavIcon::MicOff, "Muted"),
+                            (deafened, NavIcon::HeadphoneOff, "Deafened"),
+                        ] {
+                            if active {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 16.0),
+                                    egui::Sense::hover(),
                                 );
-                                label
-                            });
-                            let volume = ui
-                                .add(
-                                    egui::Slider::new(&mut playback.gain_percent, 0..=200)
-                                        .show_value(false),
+                                paint_icon(ui.painter(), rect, icon, MUTED);
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Image,
+                                        ui.is_enabled(),
+                                        format!("{}: {label}", participant.name),
+                                    )
+                                });
+                                response.on_hover_text(label);
+                            }
+                        }
+                        if own && participant.id != self.voice.self_id {
+                            let options = ui.add(
+                                egui::Button::new(RichText::new("Audio").size(10.0).color(MUTED))
+                                    .frame(false)
+                                    .min_size(egui::vec2(46.0, 28.0)),
+                            );
+                            options.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    format!("Audio controls for {}", participant.name),
                                 )
-                                .labelled_by(label.inner.id);
-                            let muted = ui.checkbox(&mut playback.muted, "Mute");
-                            if volume.changed() {
-                                self.effects
-                                    .slider(f32::from(playback.gain_percent) / 200.0);
+                            });
+                            if options.clicked() {
+                                self.effects.toggle(!egui::Popup::menu(&options).is_open());
                             }
-                            if muted.changed() {
-                                self.effects.toggle(!playback.muted);
-                            }
-                            if volume.changed() || muted.changed() {
-                                self.voice
-                                    .set_participant_playback(&participant.id, playback);
-                            }
-                        });
-                    }
+                            egui::Popup::menu(&options)
+                                .id(menu_id)
+                                .width(240.0)
+                                .show(|ui| {
+                                    let label = ui.horizontal(|ui| {
+                                        let label = ui.label(bold("User volume"));
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(format!("{}%", playback.gain_percent));
+                                            },
+                                        );
+                                        label
+                                    });
+                                    let volume = ui
+                                        .add(
+                                            egui::Slider::new(&mut playback.gain_percent, 0..=200)
+                                                .show_value(false),
+                                        )
+                                        .labelled_by(label.inner.id);
+                                    let muted = ui.checkbox(&mut playback.muted, "Mute");
+                                    if volume.changed() {
+                                        self.effects
+                                            .slider(f32::from(playback.gain_percent) / 200.0);
+                                    }
+                                    if muted.changed() {
+                                        self.effects.toggle(!playback.muted);
+                                    }
+                                    if volume.changed() || muted.changed() {
+                                        self.voice
+                                            .set_participant_playback(&participant.id, playback);
+                                    }
+                                    ui.label(
+                                        RichText::new("Only changes what you hear.")
+                                            .size(11.0)
+                                            .color(MUTED),
+                                    );
+                                });
+                        }
+                    });
                 });
             });
         }
@@ -2778,16 +3222,29 @@ impl CaperApp {
             };
             ui.add_space(8.0);
             ui.separator();
+            let joining = matches!(self.voice.state.phase, Phase::Joining(_));
             ui.horizontal(|ui| {
+                let (icon, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                // Web: green when connected, amber while connecting or reconnecting.
+                let tone = if connected {
+                    Color32::from_rgb(140, 178, 98)
+                } else {
+                    Color32::from_rgb(217, 171, 92)
+                };
+                paint_icon(ui.painter(), icon, NavIcon::AudioLines, tone);
                 let status = ui.vertical(|ui| {
                     ui.add(
                         egui::Label::new(
                             bold(if connected {
                                 "Voice connected"
+                            } else if joining {
+                                "Connecting…"
                             } else {
-                                "Connecting voice…"
+                                "Reconnecting…"
                             })
-                            .size(12.0),
+                            .size(12.0)
+                            .color(tone),
                         )
                         .selectable(false),
                     );
@@ -2803,11 +3260,39 @@ impl CaperApp {
                 if open.clicked() {
                     self.navigate(target);
                 }
-                if drawn_icon_button(ui, NavIcon::Close, "Disconnect voice").clicked() {
+                let hangup = ui
+                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        drawn_icon_button_with_tooltip(
+                            ui,
+                            NavIcon::PhoneOff,
+                            if connected {
+                                "Leave voice"
+                            } else {
+                                "Cancel joining voice"
+                            },
+                            if connected { "Disconnect" } else { "Cancel" },
+                        )
+                    })
+                    .inner;
+                if hangup.clicked() {
                     if connected {
-                        self.effects.play(Effect::Leave);
+                        self.effects.play(Effect::Disconnect);
                     }
                     self.voice.leave();
+                }
+            });
+            ui.add_space(8.0);
+        }
+        if let Some(error) = self.voice.error.clone() {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(error).size(11.0).color(ERROR))
+                        .wrap()
+                        .selectable(false),
+                );
+                if drawn_icon_button(ui, NavIcon::Close, "Dismiss voice error").clicked() {
+                    self.voice.error = None;
                 }
             });
             ui.add_space(8.0);
@@ -2878,12 +3363,14 @@ impl CaperApp {
                     },
                     muted,
                 )
+                .on_hover_text(if muted { "Unmute" } else { "Mute" })
                 .clicked()
                 {
                     self.voice.command(VoiceOperation::Mute(!muted));
                     self.effects.toggle(muted);
                 }
-                let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted);
+                let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted)
+                    .on_hover_text("Input Options");
                 if input.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&input).is_open());
                     self.voice.refresh_devices();
@@ -2909,13 +3396,15 @@ impl CaperApp {
                     },
                     deafened,
                 )
+                .on_hover_text(if deafened { "Undeafen" } else { "Deafen" })
                 .clicked()
                 {
                     self.voice.command(VoiceOperation::Deafen(!deafened));
                     self.effects.toggle(deafened);
                 }
                 let output =
-                    audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened);
+                    audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened)
+                        .on_hover_text("Output Options");
                 if output.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&output).is_open());
                     self.voice.refresh_devices();
@@ -2926,7 +3415,8 @@ impl CaperApp {
                     .show(|ui| self.device_options(ui, false));
                 ui.add_space(2.0);
                 let settings =
-                    audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false);
+                    audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false)
+                        .on_hover_text("User Settings");
                 if settings.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&settings).is_open());
                 }
@@ -2944,7 +3434,7 @@ impl CaperApp {
                                 self.effects.play(Effect::ToggleOn);
                             }
                         }
-                        if ui.button("Audio preferences").clicked() {
+                        if ui.button("Audio test").clicked() {
                             self.voice.refresh_devices();
                             self.dialog = Some(Dialog::Audio);
                             ui.close();
@@ -2952,6 +3442,7 @@ impl CaperApp {
                         if self.voice.diagnostics.is_some()
                             && ui.button("Connection details").clicked()
                         {
+                            self.connection_copy_status = "";
                             self.dialog = Some(Dialog::Connection);
                             ui.close();
                         }
@@ -2965,19 +3456,14 @@ impl CaperApp {
                             ui.close();
                         }
                         ui.separator();
-                        if ui
-                            .button(if self.account.is_some() {
-                                "Edit profile"
-                            } else {
-                                "Sign in"
-                            })
-                            .clicked()
-                        {
-                            self.dialog = Some(if self.account.is_some() {
-                                Dialog::Profile
-                            } else {
-                                Dialog::SignIn
-                            });
+                        // Web: Log out for accounts, Sign in for guests.
+                        if self.account.is_some() {
+                            if ui.button("Log out").clicked() {
+                                ui.close();
+                                self.logout();
+                            }
+                        } else if ui.button("Sign in").clicked() {
+                            self.dialog = Some(Dialog::SignIn);
                             ui.close();
                         }
                     });
@@ -3111,118 +3597,37 @@ impl CaperApp {
         }
     }
 
-    fn audio_preferences(&mut self, ui: &mut egui::Ui) {
-        self.input_processing(ui);
-        ui.add_space(12.0);
-        self.output_gain(ui);
-        ui.add_space(12.0);
-        for input in [true, false] {
-            let preferred = if input {
-                &self.voice.preferences.input
-            } else {
-                &self.voice.preferences.output
-            };
-            let devices = if input {
-                &self.voice.inputs
-            } else {
-                &self.voice.outputs
-            };
-            let label = preferred
-                .as_ref()
-                .map_or("System default", |id| {
-                    devices
-                        .iter()
-                        .find(|(guid, _)| guid == id)
-                        .map_or("Saved device (unavailable)", |(_, name)| name.as_str())
-                })
-                .to_owned();
-            ui.label(bold(if input { "Microphone" } else { "Output device" }).size(13.0));
-            let button = ui.add_sized(
-                [ui.available_width(), 36.0],
-                egui::Button::new(label)
-                    .fill(COMPOSER)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(8),
-            );
-            egui::Popup::menu(&button).width(300.0).show(|ui| {
-                ui.add_enabled_ui(
-                    matches!(self.voice.microphone, MicrophoneState::Idle),
-                    |ui| self.device_options(ui, input),
-                );
+    fn audio_test(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("Only you can hear these tests.")
+                .size(12.8)
+                .color(MUTED),
+        );
+        ui.add_space(20.0);
+        // Web stacks the pickers below a 540px viewport.
+        if ui.available_width() >= 500.0 {
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 24.0;
+            ui.columns(2, |columns| {
+                for (column, input) in columns.iter_mut().zip([true, false]) {
+                    column.spacing_mut().item_spacing.x = spacing;
+                    self.audio_test_device(column, input);
+                }
             });
-            ui.add_space(12.0);
+            ui.spacing_mut().item_spacing.x = spacing;
+        } else {
+            self.audio_test_device(ui, true);
+            ui.add_space(20.0);
+            self.audio_test_device(ui, false);
         }
         if let Some(error) = &self.voice.device_error {
+            ui.add_space(8.0);
             ui.label(RichText::new(error).color(ERROR));
         }
-        ui.add_space(16.0);
+        ui.add_space(24.0);
         ui.separator();
-        ui.add_space(12.0);
-        ui.label(bold("Microphone test").size(14.0));
-        ui.add_space(10.0);
-        if !self.persist_preferences {
-            ui.label(
-                RichText::new("TEST FIXTURE — no recording or playback.")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-        }
-        ui.add_enabled_ui(self.persist_preferences, |ui| {
-            match self.voice.microphone.clone() {
-                MicrophoneState::Idle => {
-                    if primary(ui, "Record microphone", false).clicked() {
-                        self.voice.start_mic_test();
-                    }
-                }
-                MicrophoneState::Preparing => {
-                    ui.label("Preparing local audio…");
-                    if ui.button("Cancel test").clicked() {
-                        self.voice.stop_mic_test();
-                    }
-                }
-                MicrophoneState::Recording(started) => {
-                    ui.label(format!(
-                        "Recording · {} / 30 seconds",
-                        started.elapsed().as_secs().min(30)
-                    ));
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
-                    ui.horizontal(|ui| {
-                        if ui.button("Finish recording").clicked() {
-                            self.voice.finish_mic_recording();
-                        }
-                        if ui.button("Cancel test").clicked() {
-                            self.voice.stop_mic_test();
-                        }
-                    });
-                }
-                MicrophoneState::Ready(seconds) => {
-                    ui.label(format!("Recorded {seconds:.1} seconds"));
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Play natural").clicked() {
-                            self.voice.play_mic_sample(false);
-                        }
-                        if ui.button("Play enhanced").clicked() {
-                            self.voice.play_mic_sample(true);
-                        }
-                    });
-                    if ui.button("Discard recording").clicked() {
-                        self.voice.stop_mic_test();
-                    }
-                }
-                MicrophoneState::Playing { seconds, enhanced } => {
-                    ui.label(format!(
-                        "Playing {} · {seconds:.1} seconds",
-                        if enhanced { "enhanced" } else { "natural" }
-                    ));
-                    if ui.button("Stop playback").clicked() {
-                        self.voice.stop_mic_playback();
-                    }
-                }
-            }
-        });
-        if let Some(error) = &self.voice.microphone_error {
-            ui.label(RichText::new(error).color(ERROR));
-        }
+        ui.add_space(24.0);
+        self.microphone_test(ui);
         if self
             .account
             .as_ref()
@@ -3230,6 +3635,301 @@ impl CaperApp {
         {
             ui.add_space(12.0);
             ui.collapsing("Audio diagnostics", |ui| self.audio_diagnostics(ui));
+        }
+    }
+
+    fn audio_test_device(&mut self, ui: &mut egui::Ui, input: bool) {
+        let (preferred, devices) = if input {
+            (&self.voice.preferences.input, &self.voice.inputs)
+        } else {
+            (&self.voice.preferences.output, &self.voice.outputs)
+        };
+        let selected = preferred
+            .as_ref()
+            .map_or("System default", |id| {
+                devices
+                    .iter()
+                    .find(|(guid, _)| guid == id)
+                    .map_or("Saved device (unavailable)", |(_, name)| name.as_str())
+            })
+            .to_owned();
+        let kind = if input { "Microphone" } else { "Speaker" };
+        let label = ui.label(bold(kind).size(11.5).color(MUTED));
+        ui.add_space(8.0);
+        let button = ui
+            .add_sized(
+                [ui.available_width(), 36.0],
+                egui::Button::new(RichText::new(selected).size(12.8))
+                    .fill(RAISED)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8),
+            )
+            .labelled_by(label.id);
+        egui::Popup::menu(&button).width(300.0).show(|ui| {
+            ui.add_enabled_ui(
+                matches!(self.voice.microphone, MicrophoneState::Idle),
+                |ui| self.device_options(ui, input),
+            );
+        });
+        ui.add_space(16.0);
+        if input {
+            let mut gain = self.voice.preferences.input_percent;
+            if volume_slider(ui, "Microphone volume", &mut gain) {
+                let strength = self.voice.preferences.processing_strength;
+                self.voice.set_input_processing(gain, strength);
+                self.effects.slider(f32::from(gain) / 200.0);
+            }
+            return;
+        }
+        let mut gain = self.voice.preferences.master_percent;
+        if volume_slider(ui, "Speaker volume", &mut gain) {
+            self.voice.set_master_gain(gain);
+            self.effects.slider(f32::from(gain) / 200.0);
+        }
+        ui.add_space(12.0);
+        let testing = self.voice.speaker_testing;
+        let speaker = ui
+            .add_enabled_ui(self.persist_preferences, |ui| {
+                outlined_button(
+                    ui,
+                    if testing {
+                        "Stop speaker test"
+                    } else {
+                        "Test speakers"
+                    },
+                    testing,
+                )
+            })
+            .inner;
+        if speaker.clicked() {
+            if testing {
+                self.voice.stop_speaker_test();
+            } else {
+                self.voice.start_speaker_test();
+            }
+        }
+        if self.voice.speaker_failed {
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.label(
+                    RichText::new("Couldn’t play audio. Check your output and try again.")
+                        .size(12.8)
+                        .color(ERROR),
+                )
+            });
+        }
+    }
+
+    fn microphone_test(&mut self, ui: &mut egui::Ui) {
+        let state = self.voice.microphone.clone();
+        let recording = match state {
+            MicrophoneState::Recording(started) => Some(started),
+            _ => None,
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                bold(if recording.is_some() {
+                    "Recording…"
+                } else {
+                    "Try your microphone"
+                })
+                .size(16.0),
+            );
+            if let Some(started) = recording {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        bold(format!("{:.1}s", started.elapsed().as_secs_f32().min(30.0)))
+                            .size(14.0),
+                    );
+                    let (dot, _) =
+                        ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                    ui.painter().circle_filled(
+                        dot.center(),
+                        10.0,
+                        TERRACOTTA_BRIGHT.gamma_multiply(0.14),
+                    );
+                    ui.painter()
+                        .circle_filled(dot.center(), 5.0, TERRACOTTA_BRIGHT);
+                });
+            }
+        });
+        ui.add_space(12.0);
+        ui.label(RichText::new("Less noise. Clearer voice.").color(MUTED));
+        if !self.persist_preferences {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("TEST FIXTURE — no recording or playback.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        }
+        ui.add_space(24.0);
+        egui::Frame::new()
+            .fill(BLACKOUT)
+            .stroke(Stroke::new(1.0, BORDER))
+            .corner_radius(8)
+            .inner_margin(16)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                let mut strength = self.voice.preferences.processing_strength;
+                let label = ui
+                    .horizontal(|ui| {
+                        let label = ui.label(bold("Voice enhancement").size(13.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(bold(format!("{strength}%")).color(TERRACOTTA_BRIGHT));
+                        });
+                        label
+                    })
+                    .inner;
+                let changed = ui
+                    .add_enabled_ui(recording.is_none(), |ui| {
+                        ui.spacing_mut().slider_width = ui.available_width();
+                        ui.add(
+                            egui::Slider::new(&mut strength, 0..=100)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        )
+                        .labelled_by(label.id)
+                        .changed()
+                    })
+                    .inner;
+                if changed {
+                    let gain = self.voice.preferences.input_percent;
+                    self.voice.set_input_processing(gain, strength);
+                    self.effects.slider(f32::from(strength) / 100.0);
+                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Natural").size(10.9).color(MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new("Enhanced").size(10.9).color(MUTED));
+                    });
+                });
+            });
+        ui.add_space(18.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let (text, busy) = match state {
+                MicrophoneState::Recording(_) => ("Stop recording", false),
+                MicrophoneState::Preparing | MicrophoneState::Processing(_) => ("Preparing…", true),
+                _ => ("Test microphone", false),
+            };
+            let button = ui.add_enabled(
+                self.persist_preferences && !busy,
+                egui::Button::new(bold(text).color(Color32::WHITE))
+                    .fill(TERRACOTTA)
+                    .stroke(Stroke::new(1.0, TERRACOTTA))
+                    .corner_radius(8)
+                    .min_size(egui::vec2(160.0, 48.0)),
+            );
+            if button.clicked() {
+                if recording.is_some() {
+                    self.voice.finish_mic_recording();
+                } else {
+                    self.voice.start_mic_test();
+                }
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 7.0;
+                ui.label(bold("Input level").size(11.2).color(MUTED));
+                self.voice.sample_input_meter(Instant::now());
+                input_meter(ui, &self.voice.input_meter, recording.is_some());
+            });
+        });
+        if recording.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(80));
+        }
+        if let Some(error) = &self.voice.microphone_error {
+            ui.add_space(8.0);
+            ui.label(RichText::new(error).color(ERROR));
+        }
+        let (recorded, playing, processing) = match state {
+            MicrophoneState::Ready(recorded) => (recorded, None, false),
+            MicrophoneState::Playing { recorded, enhanced } => (recorded, Some(enhanced), false),
+            MicrophoneState::Processing(recorded) => (recorded, None, true),
+            _ => return,
+        };
+        ui.add_space(16.0);
+        let mut action = None;
+        let mut sample = |ui: &mut egui::Ui, enhanced: bool| {
+            let latest = enhanced && !processing;
+            egui::Frame::new()
+                .fill(BLACKOUT)
+                .stroke(Stroke::new(
+                    1.0,
+                    if latest {
+                        Color32::from_rgb(83, 99, 63)
+                    } else {
+                        BORDER
+                    },
+                ))
+                .corner_radius(8)
+                .inner_margin(14)
+                .show(ui, |ui| {
+                    ui.set_min_size(egui::vec2(ui.available_width(), 74.0));
+                    let name = if enhanced { "Enhanced" } else { "Natural" };
+                    ui.label(bold(name).size(13.0));
+                    ui.add_space(10.0);
+                    if enhanced && processing {
+                        ui.label(RichText::new("Preparing…").size(12.0).color(MUTED));
+                        return;
+                    }
+                    ui.horizontal(|ui| {
+                        let this = playing == Some(enhanced);
+                        let play = ui.add_enabled(
+                            self.persist_preferences && !processing && (playing.is_none() || this),
+                            egui::Button::new(if this { "Stop" } else { "Play" })
+                                .min_size(egui::vec2(64.0, 30.0)),
+                        );
+                        play.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                play.enabled(),
+                                format!(
+                                    "{} {} audio sample",
+                                    if this { "Stop" } else { "Play" },
+                                    name
+                                ),
+                            )
+                        });
+                        if play.clicked() {
+                            action = Some((enhanced, this));
+                        }
+                        ui.label(RichText::new(format!("{:.1}s", recorded.seconds)).color(MUTED));
+                    });
+                    if recorded.silent {
+                        ui.add_space(8.0);
+                        // Column layouts justify wrapped labels; web does not.
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.label(
+                                RichText::new(
+                                    "No audible signal detected. Check your mic and try again.",
+                                )
+                                .size(12.0)
+                                .color(ERROR),
+                            )
+                        });
+                    }
+                });
+        };
+        if ui.available_width() >= 500.0 {
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 10.0;
+            ui.columns(2, |columns| {
+                for (column, enhanced) in columns.iter_mut().zip([false, true]) {
+                    column.spacing_mut().item_spacing.x = spacing;
+                    sample(column, enhanced);
+                }
+            });
+            ui.spacing_mut().item_spacing.x = spacing;
+        } else {
+            sample(ui, false);
+            ui.add_space(10.0);
+            sample(ui, true);
+        }
+        match action {
+            Some((_, true)) => self.voice.stop_mic_playback(),
+            Some((enhanced, false)) => self.voice.play_mic_sample(enhanced),
+            None => {}
         }
     }
 
@@ -3258,7 +3958,7 @@ impl CaperApp {
         ui.ctx().request_repaint_after(Duration::from_secs(1));
     }
 
-    fn connection_details(&self, ui: &mut egui::Ui) {
+    fn connection_details(&mut self, ui: &mut egui::Ui) {
         if !self.persist_preferences {
             ui.label(
                 RichText::new("TEST FIXTURE — synthetic statistics, no live connection.")
@@ -3266,7 +3966,7 @@ impl CaperApp {
             );
             ui.add_space(12.0);
         }
-        let Some((stats, sampled)) = &self.voice.diagnostics else {
+        let Some((stats, _)) = &self.voice.diagnostics else {
             ui.label(if matches!(self.voice.state.phase, Phase::Idle) {
                 "Not connected"
             } else {
@@ -3274,45 +3974,31 @@ impl CaperApp {
             });
             return;
         };
+        let report = ConnectionReport::new(self.voice.join_times.as_ref(), stats);
         egui::Grid::new("connection-statistics")
             .num_columns(2)
             .spacing([28.0, 12.0])
             .show(ui, |ui| {
-                for (label, value) in [
-                    ("Received", format!("{} bytes", stats.received_bytes)),
-                    (
-                        "Live receive",
-                        format!("{:.1} kbps", stats.receive_bitrate / 1000.0),
-                    ),
-                    ("Sent", format!("{} bytes", stats.sent_bytes)),
-                    (
-                        "Live send",
-                        format!("{:.1} kbps", stats.send_bitrate / 1000.0),
-                    ),
-                    ("Packets lost", stats.packets_lost.to_string()),
-                    ("Max jitter", format!("{:.0} ms", stats.max_jitter_ms)),
-                    ("RTT", format!("{:.0} ms", stats.round_trip_ms)),
-                    (
-                        "Route",
-                        match stats.route {
-                            "relay" => "TURN relay",
-                            "direct" => "Direct",
-                            _ => "Not observed yet",
-                        }
-                        .into(),
-                    ),
-                ] {
+                for (label, value) in report.rows() {
                     ui.label(RichText::new(label).color(MUTED));
                     ui.label(value);
                     ui.end_row();
                 }
             });
         ui.add_space(16.0);
-        ui.label(
-            RichText::new(format!("Sampled {}s ago", sampled.elapsed().as_secs()))
-                .size(11.0)
-                .color(MUTED),
-        );
+        ui.horizontal(|ui| {
+            if ui.button("Copy connection details").clicked() {
+                // Web copies its diagnostics object as indented JSON.
+                match serde_json::to_string_pretty(&report) {
+                    Ok(json) => {
+                        ui.ctx().copy_text(json);
+                        self.connection_copy_status = "Copied connection details";
+                    }
+                    Err(_) => self.connection_copy_status = "Copy failed; try again.",
+                }
+            }
+            ui.label(RichText::new(self.connection_copy_status).color(MUTED));
+        });
     }
 
     fn member_presence(&mut self, ui: &mut egui::Ui) {
@@ -3387,7 +4073,71 @@ impl CaperApp {
             });
     }
 
+    /// An account space whose channels are all hidden from this member.
+    fn no_accessible_channels(&self) -> bool {
+        self.detail
+            .as_ref()
+            .is_some_and(|detail| !detail.space.demo && detail.channels.is_empty())
+    }
+
+    /// Web's `.empty-channel` stage.
+    fn empty_channels(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            let owner = self.owner();
+            let height = if owner { 170.0 } else { 110.0 } + if narrow { 56.0 } else { 0.0 };
+            ui.vertical_centered(|ui| {
+                ui.add_space(((ui.available_height() - height) / 2.0).max(24.0));
+                if narrow && navigation_toggle(ui, NavIcon::Hash, "Browse spaces").clicked() {
+                    self.navigation_open = true;
+                }
+                if narrow {
+                    ui.add_space(20.0);
+                }
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                paint_icon(ui.painter(), rect, NavIcon::Hash, TERRACOTTA_BRIGHT);
+                ui.add_space(14.0);
+                ui.label(bold("No accessible channels").size(20.0));
+                ui.add_space(7.0);
+                ui.label(
+                    RichText::new(if owner {
+                        "Create a channel to start a conversation."
+                    } else {
+                        "The owner has not shared a channel with you yet."
+                    })
+                    .size(13.0)
+                    .color(MUTED),
+                );
+                if owner {
+                    ui.add_space(18.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                bold("Create channel").size(12.5).color(Color32::WHITE),
+                            )
+                            .fill(TERRACOTTA)
+                            .stroke(Stroke::new(1.0, TERRACOTTA))
+                            .corner_radius(8)
+                            .min_size(egui::vec2(0.0, 38.0)),
+                        )
+                        .clicked()
+                    {
+                        self.form_name.clear();
+                        self.form_private = false;
+                        self.error = None;
+                        self.dialog = Some(Dialog::CreateChannel);
+                    }
+                }
+            });
+        });
+    }
+
     fn conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        if self.no_accessible_channels() {
+            self.empty_channels(ui, narrow);
+            return;
+        }
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_width(320.0);
             ui.set_height(ui.available_height());
@@ -3406,9 +4156,7 @@ impl CaperApp {
                         egui::vec2(ui.available_width(), 38.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            if narrow
-                                && drawn_icon_button(ui, NavIcon::Menu, "Browse channels").clicked()
-                            {
+                            if narrow && navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
                                 self.navigation_open = true;
                             }
                             ui.label(
@@ -3440,11 +4188,18 @@ impl CaperApp {
                                     } else {
                                         "Join"
                                     };
+                                    let unavailable = (!already_here).then(|| self.join_unavailable()).flatten();
                                     if self.selected_channel.is_some()
-                                        && voice_join_button(ui, label).clicked()
+                                        && ui.add_enabled_ui(unavailable.is_none(), |ui| {
+                                            let button = voice_join_button(ui, label);
+                                            match unavailable {
+                                                Some(reason) => button.on_disabled_hover_text(reason),
+                                                None => button,
+                                            }
+                                        }).inner.clicked()
                                     {
                                         if already_here {
-                                            if matches!(self.voice.state.phase, Phase::Connected(_)) { self.effects.play(Effect::Leave); }
+                                            if matches!(self.voice.state.phase, Phase::Connected(_)) { self.effects.play(Effect::Disconnect); }
                                             self.voice.leave();
                                         } else {
                                             self.join_voice();
@@ -3481,12 +4236,6 @@ impl CaperApp {
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(6);
                     if let Some(error) = &self.error {
                         ui.colored_label(ERROR, error);
-                    }
-                    if let Some(error) = &self.voice.error {
-                        ui.colored_label(ERROR, error);
-                    }
-                    if self.live != "Live" {
-                        ui.label(RichText::new(&self.live).size(11.0).color(MUTED));
                     }
                     let before = self.draft.clone();
                     let channel_name = self.channel_name().to_owned();
@@ -3534,13 +4283,12 @@ impl CaperApp {
                     }
                     let count = self.draft.chars().count();
                     if count >= 3_000 {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("{count} / 4,000"))
-                                    .size(10.0)
-                                    .color(if count >= 3_900 { ERROR } else { MUTED }),
-                            );
-                        });
+                        ui.add_space(7.0);
+                        ui.label(
+                            RichText::new(format!("{} / 4,000", grouped(count)))
+                                .size(10.24)
+                                .color(counter_tone(count)),
+                        );
                     }
                 });
             ui.painter().hline(
@@ -3563,6 +4311,9 @@ impl CaperApp {
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
+                        ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        typing_dots(ui);
                         ui.label(
                             RichText::new(if names.len() > 2 {
                                 "Several people are typing…".into()
@@ -3576,48 +4327,50 @@ impl CaperApp {
                             .size(11.0)
                             .color(MUTED),
                         );
-                    }
-                });
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if self.has_more
-                        && ui
-                            .add_enabled(
-                                !self.loading_older,
-                                egui::Button::new(if self.loading_older {
-                                    "Loading…"
-                                } else if self.older_error.is_some() {
-                                    "Retry older messages"
-                                } else {
-                                    "Load older messages"
-                                }),
-                            )
-                            .clicked()
-                    {
-                        self.load_older();
-                    } else if !self.has_more {
-                        let (history, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 44.0),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().text(
-                            history.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "Beginning of conversation",
-                            egui::FontId::proportional(11.52),
-                            MUTED,
-                        );
-                    }
-                    if let Some(error) = &self.older_error {
-                        ui.colored_label(egui::Color32::LIGHT_RED, error);
-                    }
-                    if self.loading && self.timeline.messages().next().is_none() {
-                        ui.centered_and_justified(|ui| {
-                            ui.spinner();
                         });
                     }
+                });
+            // Web's End key on the message list jumps to the latest message.
+            let jump_latest = ui.memory(|memory| memory.focused().is_none())
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
+            let mut history = egui::ScrollArea::vertical()
+                .id_salt("history")
+                .stick_to_bottom(true)
+                .auto_shrink([false, false]);
+            if let Some(offset) = self.history_offset.take() {
+                history = history.vertical_scroll_offset(offset);
+            } else if jump_latest {
+                history = history.vertical_scroll_offset(f32::MAX);
+            }
+            let empty = self.timeline.messages().next().is_none() && self.pending.is_none();
+            let history = history.show(ui, |ui| {
+                    if self.loading && empty {
+                        chat_state(ui, 1, |ui| {
+                            ui.label(RichText::new("Loading messages…").color(MUTED));
+                        });
+                        return;
+                    }
+                    if let Some(error) = self.load_error.clone().filter(|_| empty) {
+                        chat_state(ui, 2, |ui| {
+                            ui.label(RichText::new(error).color(MUTED));
+                            ui.add_space(10.0);
+                            ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(bold("Try again").size(11.52))
+                                        .fill(RAISED)
+                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .corner_radius(8),
+                                )
+                                .clicked()
+                            {
+                                self.reload_channel();
+                            }
+                        });
+                        return;
+                    }
+                    // Web's history header: older-page status above the messages.
+                    self.history_header(ui);
                     let messages: Vec<_> = self.timeline.messages().cloned().collect();
                     for message in messages {
                         self.message(ui, &message);
@@ -3669,7 +4422,117 @@ impl CaperApp {
                         });
                     }
                 });
+            self.after_history(ui, &history, heading.response.rect);
         });
+    }
+
+    fn history_header(&mut self, ui: &mut egui::Ui) {
+        let font = egui::FontId::proportional(11.52);
+        let width = |ui: &egui::Ui, text: &str| {
+            ui.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(text.into(), font.clone(), MUTED)
+                    .size()
+                    .x
+            })
+        };
+        let button = |text: &str| {
+            egui::Button::new(bold(text).size(11.52).color(MUTED))
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::new(1.0, BORDER))
+                .corner_radius(8)
+        };
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 44.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_height(44.0);
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
+                if self.older_error.is_some() {
+                    let label = "Couldn’t load older messages.";
+                    let total = width(ui, label) + 8.0 + width(ui, "Retry") + 20.0;
+                    ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+                    ui.label(RichText::new(label).font(font.clone()).color(MUTED));
+                    if ui.add(button("Retry")).clicked() {
+                        self.load_older();
+                    }
+                } else if self.has_more {
+                    let label = if self.loading_older {
+                        "Loading…"
+                    } else {
+                        "Load older messages"
+                    };
+                    ui.add_space(((ui.available_width() - width(ui, label) - 20.0) / 2.0).max(0.0));
+                    if ui.add_enabled(!self.loading_older, button(label)).clicked() {
+                        self.load_older();
+                    }
+                } else {
+                    let label = "Beginning of conversation";
+                    ui.add_space(((ui.available_width() - width(ui, label)) / 2.0).max(0.0));
+                    ui.label(RichText::new(label).font(font.clone()).color(MUTED));
+                }
+            },
+        );
+    }
+
+    fn after_history(
+        &mut self,
+        ui: &mut egui::Ui,
+        history: &egui::scroll_area::ScrollAreaOutput<()>,
+        heading: egui::Rect,
+    ) {
+        let height = history.content_size.y;
+        let viewport = history.inner_rect.height();
+        let offset = history.state.offset.y;
+        if let Some(previous) = self.older_anchor.take() {
+            // Keep the reader's place after older messages arrive above.
+            self.history_offset = Some(offset + (height - previous).max(0.0));
+            ui.ctx().request_repaint();
+        }
+        self.history_height = height;
+        if self.timeline.messages().next().is_some()
+            && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
+        {
+            self.older_armed = true;
+        }
+        // Web loads the previous page when the list reaches its start.
+        if self.older_armed
+            && self.history_offset.is_none()
+            && offset <= 1.0
+            && self.has_more
+            && !self.loading_older
+            && self.older_error.is_none()
+        {
+            self.load_older();
+        }
+        // Web shows the connection state under the header after a second.
+        if self.live != "Live" && self.selected_channel.is_some() {
+            let waited = self.live_changed.elapsed();
+            if waited >= Duration::from_secs(1) {
+                let text = if self.load_error.is_some() || self.live == "Offline" {
+                    "Offline"
+                } else {
+                    "Connecting…"
+                };
+                let galley = ui.painter().layout_no_wrap(
+                    text.into(),
+                    egui::FontId::new(11.2, egui::FontFamily::Name("Satoshi Bold".into())),
+                    MUTED,
+                );
+                let anchor = egui::pos2(heading.right() - 18.0, heading.bottom() + 8.0);
+                let rect = egui::Rect::from_min_size(
+                    anchor - egui::vec2(galley.size().x + 12.0, 0.0),
+                    galley.size() + egui::vec2(12.0, 6.0),
+                );
+                ui.painter().rect_filled(rect, 4.0, CONVERSATION);
+                ui.painter()
+                    .galley(rect.min + egui::vec2(6.0, 3.0), galley, MUTED);
+            } else {
+                ui.ctx()
+                    .request_repaint_after(Duration::from_secs(1) - waited);
+            }
+        }
     }
 
     fn message(&self, ui: &mut egui::Ui, message: &model::Message) {
@@ -3697,6 +4560,53 @@ impl CaperApp {
             .map_or("general", |channel| channel.name.as_str())
     }
 
+    /// Web's `canCreateSpace`: needs the server's limits.
+    fn can_create_space(&self) -> bool {
+        let (Some(limits), Some(account)) = (&self.limits, &self.account) else {
+            return false;
+        };
+        let owned = self
+            .spaces
+            .iter()
+            .filter(|space| space.owner_id == account.id && !space.demo)
+            .count();
+        owned < limits.owned_spaces
+            && self.spaces.iter().filter(|space| !space.demo).count() < limits.total_spaces
+    }
+
+    fn can_create_channel(&self) -> bool {
+        self.limits
+            .as_ref()
+            .zip(self.detail.as_ref())
+            .is_some_and(|(limits, detail)| detail.channels.len() < limits.channels_per_space)
+    }
+
+    fn create_space_tooltip(&self) -> String {
+        if self.account.is_none() {
+            "Sign in to create a space".into()
+        } else if self.can_create_space() {
+            "Create space".into()
+        } else {
+            let (owned, total) = self.limits.as_ref().map_or((20, 100), |limits| {
+                (limits.owned_spaces, limits.total_spaces)
+            });
+            format!("Space limit reached ({owned} owned, {total} total)")
+        }
+    }
+
+    fn create_channel_tooltip(&self) -> String {
+        if self.can_create_channel() {
+            "Create channel".into()
+        } else {
+            format!(
+                "Channel limit reached ({})",
+                self.limits
+                    .as_ref()
+                    .map_or(100, |limits| limits.channels_per_space)
+            )
+        }
+    }
+
     fn owner(&self) -> bool {
         self.account
             .as_ref()
@@ -3722,7 +4632,8 @@ impl CaperApp {
         if matches!(dialog, Dialog::SignIn) {
             return;
         }
-        let title = match &dialog {
+        let mut leave_title = None;
+        let title: &str = match &dialog {
             Dialog::SignIn => {
                 if self.challenge.is_some() {
                     "Check your email"
@@ -3731,12 +4642,12 @@ impl CaperApp {
                 }
             }
             Dialog::Profile => "Edit profile",
-            Dialog::Audio => "Audio preferences",
+            Dialog::Audio => "Audio test",
             Dialog::Connection => "Connection details",
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
-            Dialog::LeaveSpace { .. } => "Leave space?",
+            Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::ConfirmDelete { channel, .. } => {
                 if channel.is_some() {
                     "Delete channel"
@@ -3754,7 +4665,13 @@ impl CaperApp {
             ))
             .rect_filled(context.viewport_rect(), 0.0, Color32::from_black_alpha(190));
         let wide = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
-        let width: f32 = if wide { 600.0 } else { 440.0 };
+        let width: f32 = if matches!(dialog, Dialog::Audio) {
+            720.0
+        } else if wide {
+            600.0
+        } else {
+            440.0
+        };
         let minimum: f32 = if matches!(dialog, Dialog::ManageSpace) {
             658.0
         } else if matches!(dialog, Dialog::ManageChannel(_)) {
@@ -3788,6 +4705,7 @@ impl CaperApp {
                     .show(ui, |ui| {
                         ui.set_width(width.min(available.x));
                         ui.set_min_height(minimum.min(available.y));
+                        let dialog_top = ui.min_rect().top();
                         egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(22, 18))
                             .show(ui, |ui| {
@@ -3820,8 +4738,12 @@ impl CaperApp {
                                 });
                             });
                         ui.separator();
+                        let save_bar = match &dialog {
+                            Dialog::ManageChannel(id) if self.channel_dirty(id) => Some(id.clone()),
+                            _ => None,
+                        };
                         egui::ScrollArea::vertical()
-                            .max_height((available.y - 92.0).max(120.0))
+                            .max_height((available.y - if save_bar.is_some() { 160.0 } else { 92.0 }).max(120.0))
                             .show(ui, |ui| {
                                 egui::Frame::new()
                                     .inner_margin(egui::Margin::symmetric(22, 20))
@@ -3830,7 +4752,7 @@ impl CaperApp {
                                         match dialog {
                                             Dialog::SignIn => unreachable!("sign-in is rendered as a full page"),
                                             Dialog::Profile => self.profile_dialog(ui),
-                                            Dialog::Audio => self.audio_preferences(ui),
+                                            Dialog::Audio => self.audio_test(ui),
                                             Dialog::Connection => self.connection_details(ui),
                                             Dialog::Diagnostics => self.audio_diagnostics(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
@@ -3848,8 +4770,8 @@ impl CaperApp {
                                                     }
                                                 });
                                             }
-                                            Dialog::LeaveSpace { id, name } => {
-                                                ui.label(format!("Leave {name}? You will lose access to its channels and conversations. An owner can add you again later."));
+                                            Dialog::LeaveSpace { id, .. } => {
+                                                ui.label("You will lose access to its channels and conversations. An owner can add you again later.");
                                                 ui.add_space(16.0);
                                                 ui.horizontal(|ui| {
                                                     if ui.add_enabled(!self.loading, egui::Button::new("Cancel")).clicked() {
@@ -3869,6 +4791,14 @@ impl CaperApp {
                                         notices(ui, &self.error, &self.warning);
                                     });
                             });
+                        if let Some(id) = save_bar {
+                            // Web's bar is sticky at the dialog's bottom edge.
+                            let filler = dialog_top + minimum.min(available.y) - 66.0 - ui.cursor().top();
+                            if filler > 0.0 {
+                                ui.add_space(filler);
+                            }
+                            self.channel_save_bar(ui, &id);
+                        }
                     });
             });
         if close && !(self.loading && return_to.is_some()) {
@@ -3935,53 +4865,48 @@ impl CaperApp {
     }
 
     fn space_dialog(&mut self, ui: &mut egui::Ui, manage: bool) {
-        ui.label("Space name");
-        ui.add_sized(
-            [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.form_name)
-                .vertical_align(egui::Align::Center)
-                .char_limit(80),
-        );
-        let disabled = self.loading || self.form_name.trim().is_empty();
-        let save = if manage {
-            let mut clicked = false;
+        name_field(ui, "Space name", &mut self.form_name, "Studio", None);
+        if manage {
+            let unchanged = self
+                .detail
+                .as_ref()
+                .is_some_and(|detail| self.form_name.trim() == detail.space.name);
+            let mut save = false;
+            ui.add_space(20.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    clicked = ui
-                        .add_enabled(
-                            !disabled,
-                            egui::Button::new(if self.loading {
-                                "Saving…"
-                            } else {
-                                "Save name"
-                            })
-                            .min_size(egui::vec2(88.0, 36.0)),
-                        )
-                        .clicked();
+                    save = secondary_button(
+                        ui,
+                        if self.loading {
+                            "Saving…"
+                        } else {
+                            "Save name"
+                        },
+                        !self.loading && !unchanged,
+                    )
+                    .clicked();
                 });
             });
-            clicked
+            if save && let Some(space) = self.selected_space.clone() {
+                self.admin(AdminOperation::UpdateSpace {
+                    space,
+                    name: self.form_name.clone(),
+                });
+            }
         } else {
-            primary(
+            let (cancel, submit) = dialog_actions(
                 ui,
                 if self.loading {
                     "Saving…"
                 } else {
                     "Create space"
                 },
-                disabled,
-            )
-            .clicked()
-        };
-        if save {
-            if manage {
-                if let Some(space) = self.selected_space.clone() {
-                    self.admin(AdminOperation::UpdateSpace {
-                        space,
-                        name: self.form_name.clone(),
-                    });
-                }
-            } else {
+                !self.loading && !self.form_name.trim().is_empty(),
+            );
+            if cancel {
+                self.dialog = None;
+                self.error = None;
+            } else if submit {
                 self.admin(AdminOperation::CreateSpace {
                     name: self.form_name.clone(),
                 });
@@ -4029,15 +4954,67 @@ impl CaperApp {
         }
     }
 
+    /// Web's channel Overview: private channels load their member grants.
+    fn open_manage_channel(&mut self, id: &str, name: &str, private: bool) {
+        self.form_name = name.into();
+        self.form_private = private;
+        self.managed_channel = Some(id.into());
+        self.managed_members.clear();
+        self.member_username.clear();
+        self.member_error = None;
+        self.error = None;
+        if private
+            && let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone())
+        {
+            self.worker.send(Command::Admin {
+                generation: self.generation,
+                token,
+                operation: AdminOperation::LoadMembers {
+                    space,
+                    channel: Some(id.into()),
+                },
+            });
+        }
+        self.dialog = Some(Dialog::ManageChannel(id.into()));
+    }
+
+    /// The managed channel's saved name and privacy, for web's dirty check.
+    fn saved_channel(&self, channel: &str) -> Option<(String, bool)> {
+        self.detail
+            .as_ref()?
+            .channels
+            .iter()
+            .find(|entry| entry.id == channel)
+            .map(|entry| (entry.name.clone(), entry.private))
+    }
+
+    fn channel_dirty(&self, channel: &str) -> bool {
+        self.saved_channel(channel)
+            .is_some_and(|(name, private)| self.form_name != name || self.form_private != private)
+    }
+
     fn channel_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
-        ui.label("Channel name");
-        ui.add_sized(
-            [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.form_name)
-                .vertical_align(egui::Align::Center)
-                .char_limit(80),
+        name_field(
+            ui,
+            "Channel name",
+            &mut self.form_name,
+            "project-updates",
+            channel.is_none().then_some(if self.form_private {
+                NavIcon::Lock
+            } else {
+                NavIcon::Hash
+            }),
         );
         self.form_name = normalize_channel(&self.form_name);
+        if channel.is_none() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.")
+                    .size(12.0)
+                    .color(MUTED),
+            );
+        }
+        ui.add_space(14.0);
         if ui
             .checkbox(&mut self.form_private, "Private channel")
             .changed()
@@ -4058,75 +5035,114 @@ impl CaperApp {
             .size(11.0)
             .color(MUTED),
         );
-        if primary(
-            ui,
-            if self.loading {
-                "Saving…"
-            } else if channel.is_some() {
-                "Save changes"
-            } else {
-                "Create channel"
-            },
-            self.loading || self.form_name.trim_end_matches('-').is_empty(),
-        )
-        .clicked()
-        {
-            let Some(space) = self.selected_space.clone() else {
-                return;
-            };
-            let name = self.form_name.trim_end_matches('-').to_owned();
-            if let Some(channel) = channel.clone() {
-                self.admin(AdminOperation::UpdateChannel {
-                    space,
-                    channel,
-                    name,
-                    private: self.form_private,
-                });
-            } else {
+        let Some(channel) = channel else {
+            let (cancel, submit) = dialog_actions(
+                ui,
+                if self.loading {
+                    "Saving…"
+                } else {
+                    "Create channel"
+                },
+                !self.loading && !self.form_name.trim_end_matches('-').is_empty(),
+            );
+            if cancel {
+                self.dialog = None;
+                self.error = None;
+            } else if submit && let Some(space) = self.selected_space.clone() {
                 self.admin(AdminOperation::CreateChannel {
                     space,
-                    name,
+                    name: self.form_name.trim_end_matches('-').to_owned(),
                     private: self.form_private,
                 });
             }
-        }
-        if let Some(channel) = channel {
-            if self.form_private {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Members").size(14.0));
-                    ui.label(
-                        RichText::new(self.managed_members.len().to_string())
-                            .size(11.0)
-                            .color(MUTED),
-                    );
-                });
-                self.members_dialog(ui, Some(channel.clone()));
-            }
+            return;
+        };
+        // Members follow the saved privacy, as on web.
+        if self
+            .saved_channel(&channel)
+            .is_some_and(|(_, private)| private)
+        {
             ui.separator();
-            ui.label(RichText::new("Delete channel").size(14.0));
-            ui.label(
-                RichText::new("Delete this channel for everyone in the space.")
-                    .size(12.0)
-                    .color(MUTED),
-            );
-            if destructive(ui, "Delete channel").clicked()
-                && let Some(space) = self.selected_space.clone()
-            {
-                self.effects.play(Effect::Warning);
-                let name = self
-                    .detail
-                    .as_ref()
-                    .and_then(|detail| detail.channels.iter().find(|entry| entry.id == channel))
-                    .map_or("this channel", |entry| entry.name.as_str())
-                    .to_owned();
-                self.dialog = Some(Dialog::ConfirmDelete {
-                    space,
-                    channel: Some(channel),
-                    name,
-                });
-            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Members").size(14.0));
+                ui.label(
+                    RichText::new(self.managed_members.len().to_string())
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            });
+            self.members_dialog(ui, Some(channel.clone()));
         }
+        ui.separator();
+        ui.label(RichText::new("Delete channel").size(14.0));
+        ui.label(
+            RichText::new("Delete this channel for everyone in the space.")
+                .size(12.0)
+                .color(MUTED),
+        );
+        if destructive(ui, "Delete channel").clicked()
+            && let Some(space) = self.selected_space.clone()
+        {
+            self.effects.play(Effect::Warning);
+            let name = self
+                .saved_channel(&channel)
+                .map_or_else(|| "this channel".to_owned(), |(name, _)| name);
+            self.dialog = Some(Dialog::ConfirmDelete {
+                space,
+                channel: Some(channel),
+                name,
+            });
+        }
+    }
+
+    /// Web's sticky footer while the channel overview has unsaved changes.
+    fn channel_save_bar(&mut self, ui: &mut egui::Ui, channel: &str) {
+        let bar = egui::Frame::new()
+            .fill(BLACKOUT)
+            .inner_margin(egui::Margin::symmetric(22, 14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 36.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(RichText::new("You have unsaved changes.").size(12.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let save = primary_button(
+                                ui,
+                                if self.loading {
+                                    "Saving…"
+                                } else {
+                                    "Save changes"
+                                },
+                                !self.loading,
+                            );
+                            let reset = secondary_button(ui, "Reset", !self.loading);
+                            if reset.clicked() {
+                                if let Some((name, private)) = self.saved_channel(channel) {
+                                    self.form_name = name;
+                                    self.form_private = private;
+                                }
+                                self.error = None;
+                            } else if save.clicked()
+                                && let Some(space) = self.selected_space.clone()
+                            {
+                                self.admin(AdminOperation::UpdateChannel {
+                                    space,
+                                    channel: channel.to_owned(),
+                                    name: self.form_name.trim_end_matches('-').to_owned(),
+                                    private: self.form_private,
+                                });
+                            }
+                        });
+                    },
+                );
+            });
+        ui.painter().hline(
+            bar.response.rect.x_range(),
+            bar.response.rect.top(),
+            Stroke::new(1.0, BORDER),
+        );
     }
 
     fn members_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
@@ -4135,21 +5151,30 @@ impl CaperApp {
                 [(ui.available_width() - 80.0).max(1.0), 38.0],
                 egui::TextEdit::singleline(&mut self.member_username)
                     .vertical_align(egui::Align::Center)
-                    .hint_text("Exact username"),
+                    .hint_text(RichText::new("Exact username").color(MUTED.gamma_multiply(0.65))),
             );
             if ui
-                .add(egui::Button::new(bold("Add").size(12.0)).min_size(egui::vec2(64.0, 38.0)))
+                .add_enabled(
+                    !self.loading,
+                    egui::Button::new(bold("Add").size(12.0)).min_size(egui::vec2(64.0, 38.0)),
+                )
                 .clicked()
-                && !self.member_username.trim().is_empty()
-                && let Some(space) = self.selected_space.clone()
             {
-                self.admin(AdminOperation::AddMember {
-                    space,
-                    channel: channel.clone(),
-                    username: self.member_username.trim().into(),
-                });
+                if self.member_username.trim().is_empty() {
+                    self.member_error = Some("Enter an exact username.");
+                } else if let Some(space) = self.selected_space.clone() {
+                    self.member_error = None;
+                    self.admin(AdminOperation::AddMember {
+                        space,
+                        channel: channel.clone(),
+                        username: self.member_username.trim().into(),
+                    });
+                }
             }
         });
+        if let Some(error) = self.member_error {
+            ui.label(RichText::new(error).size(12.0).color(ERROR));
+        }
         ui.separator();
         let members = self.managed_members.clone();
         egui::ScrollArea::vertical()
@@ -4198,6 +5223,123 @@ impl CaperApp {
     }
 }
 
+/// Web's connection diagnostics, limited to what desktop measures. Field names
+/// match web's copied JSON.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ice_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roster_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks: Option<String>,
+    received_bytes: u64,
+    sent_bytes: u64,
+    receive_bitrate: f64,
+    send_bitrate: f64,
+    packets_lost: i64,
+    max_jitter_ms: f64,
+    round_trip_ms: f64,
+    route: &'static str,
+}
+
+impl ConnectionReport {
+    fn new(times: Option<&voice::JoinTimes>, stats: &media::Diagnostics) -> Self {
+        Self {
+            join: times.map(|times| format!("Joined in {:.0} ms", times.joined_ms)),
+            session_ms: times.map(|times| times.session_ms),
+            transport_ms: times.map(|times| times.transport_ms),
+            ice_ms: times.and_then(|times| times.ice_ms),
+            roster_ms: times.map(|times| times.roster_ms),
+            checks: stats.checks.clone(),
+            received_bytes: stats.received_bytes,
+            sent_bytes: stats.sent_bytes,
+            receive_bitrate: stats.receive_bitrate,
+            send_bitrate: stats.send_bitrate,
+            packets_lost: stats.packets_lost,
+            max_jitter_ms: stats.max_jitter_ms,
+            round_trip_ms: stats.round_trip_ms,
+            route: match stats.route {
+                "relay" | "direct" => stats.route,
+                _ => "unknown",
+            },
+        }
+    }
+
+    fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = Vec::new();
+        if let (Some(join), Some(session), Some(transport), Some(roster)) = (
+            &self.join,
+            self.session_ms,
+            self.transport_ms,
+            self.roster_ms,
+        ) {
+            rows.push(("Joined", join.clone()));
+            rows.push(("Session + publish", format!("{session:.0} ms")));
+            rows.push((
+                "Transport + state",
+                match self.ice_ms {
+                    Some(ice) => format!("{transport:.0} ms (ICE {ice:.0} ms)"),
+                    None => format!("{transport:.0} ms"),
+                },
+            ));
+            rows.push((
+                "Connectivity checks",
+                self.checks
+                    .clone()
+                    .unwrap_or_else(|| "Not observed yet".into()),
+            ));
+            rows.push(("Roster", format!("{roster:.0} ms")));
+        }
+        rows.extend([
+            (
+                "Received",
+                format!("{:.2} MB", self.received_bytes as f64 / 1e6),
+            ),
+            (
+                "Live receive",
+                format!("{:.0} kbps", self.receive_bitrate / 1_000.0),
+            ),
+            ("Sent", format!("{:.2} MB", self.sent_bytes as f64 / 1e6)),
+            (
+                "Live send",
+                format!("{:.0} kbps", self.send_bitrate / 1_000.0),
+            ),
+            ("Packets lost", self.packets_lost.to_string()),
+            ("Max jitter", format!("{:.0} ms", self.max_jitter_ms)),
+            ("RTT", format!("{:.0} ms", self.round_trip_ms)),
+            (
+                "Route",
+                match self.route {
+                    "relay" => "TURN relay",
+                    "direct" => "Direct",
+                    _ => "Not observed yet",
+                }
+                .into(),
+            ),
+        ]);
+        rows
+    }
+}
+
+fn login_error_frame(ui: &mut egui::Ui, error: &str) {
+    egui::Frame::new()
+        .stroke(Stroke::new(1.0, TERRACOTTA))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(12, 14))
+        .show(ui, |ui| {
+            ui.set_width(414.0);
+            ui.label(RichText::new(error).size(13.0).color(ERROR));
+        });
+}
+
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     if response.hovered() || response.has_focus() {
@@ -4213,6 +5355,28 @@ fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Res
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response.on_hover_text(label)
+}
+
+fn drawn_icon_button_with_tooltip(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    label: &str,
+    tooltip: &str,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 6.0, RAISED);
+    }
+    paint_icon(
+        ui.painter(),
+        rect.shrink(5.0),
+        icon,
+        if response.hovered() { TEXT } else { MUTED },
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.on_hover_text(tooltip)
 }
 
 fn audio_icon_button(
@@ -4252,7 +5416,7 @@ fn audio_icon_button(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
-    response.on_hover_text(label)
+    response
 }
 
 fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
@@ -4324,6 +5488,9 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Headphones => egui::include_image!("../resources/icons/headphones.svg"),
         NavIcon::VolumeX => egui::include_image!("../resources/icons/volume-x.svg"),
         NavIcon::Menu => egui::include_image!("../resources/icons/menu.svg"),
+        NavIcon::PhoneOff => egui::include_image!("../resources/icons/phone-off.svg"),
+        NavIcon::HeadphoneOff => egui::include_image!("../resources/icons/headphone-off.svg"),
+        NavIcon::AudioLines => egui::include_image!("../resources/icons/audio-lines.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -4489,11 +5656,17 @@ fn message_row(
         });
 }
 
-fn avatar(ui: &mut egui::Ui, name: &str, size: f32, online: bool) {
+fn avatar(ui: &mut egui::Ui, name: &str, size: f32, speaking: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     ui.painter()
         .circle_filled(rect.center(), size / 2.0, RAISED);
-    if online {
+    if speaking {
+        // Web: caper border with a soft 3px caper halo.
+        ui.painter().circle_stroke(
+            rect.center(),
+            size / 2.0 + 1.5,
+            Stroke::new(3.0, CAPER.gamma_multiply(0.2)),
+        );
         ui.painter()
             .circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(2.0, CAPER));
     }
@@ -4699,6 +5872,88 @@ fn login_action(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response
     response
 }
 
+/// Web's labelled 0–200% volume control: name and value above the slider.
+fn volume_slider(ui: &mut egui::Ui, name: &str, value: &mut u16) -> bool {
+    let label = ui
+        .horizontal(|ui| {
+            let label = ui.label(bold(name).size(12.8).color(MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(bold(format!("{value}%")).size(12.8).color(MUTED));
+            });
+            label
+        })
+        .inner;
+    ui.add_space(5.0);
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = ui.available_width();
+        ui.add(
+            egui::Slider::new(value, 0..=200)
+                .show_value(false)
+                .trailing_fill(true),
+        )
+        .labelled_by(label.id)
+        .changed()
+    })
+    .inner
+}
+
+/// Web's `.voice-button`: terracotta outline on a faint terracotta fill.
+fn outlined_button(ui: &mut egui::Ui, text: &str, pressed: bool) -> egui::Response {
+    ui.spacing_mut().button_padding = egui::vec2(12.0, 7.0);
+    // Web's flex button fills its column with its label at the start.
+    let button = ui
+        .with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+            ui.add(
+                egui::Button::new(
+                    bold(text)
+                        .size(12.5)
+                        .color(Color32::from_rgb(227, 153, 133)),
+                )
+                .fill(Color32::from_rgba_unmultiplied(182, 77, 50, 36))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(137, 70, 53)))
+                .corner_radius(8)
+                .min_size(egui::vec2(0.0, 36.0)),
+            )
+        })
+        .inner;
+    button.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, button.enabled(), pressed, text)
+    });
+    button
+}
+
+/// Web's dotted 40-bar input meter, faded in from the left.
+fn input_meter(ui: &mut egui::Ui, levels: &std::collections::VecDeque<f32>, active: bool) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Other,
+            true,
+            if active {
+                "Received microphone level"
+            } else {
+                "Microphone level inactive"
+            },
+        )
+    });
+    let count = levels.len().max(1);
+    let step = rect.width() / count as f32;
+    let lit = Color32::from_rgb(145, 171, 120);
+    for (index, level) in levels.iter().enumerate() {
+        let x = rect.left() + step * (index as f32 + 0.5);
+        let fade = ((x - rect.left()) / (rect.width() * 0.65)).min(1.0);
+        let height = 3.0 + (level * 8.0).round() * 4.0;
+        let dots = (height / 4.0).ceil() as usize;
+        let color = if active { lit } else { BORDER }.gamma_multiply(fade);
+        for dot in 0..dots {
+            let offset = (dot as f32 - (dots as f32 - 1.0) / 2.0) * 4.0;
+            ui.painter()
+                .circle_filled(egui::pos2(x, rect.center().y + offset), 1.4, color);
+        }
+    }
+}
+
 fn primary(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response {
     ui.add_enabled(
         !disabled,
@@ -4707,6 +5962,212 @@ fn primary(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response {
             .min_size(egui::vec2(ui.available_width(), 44.0))
             .corner_radius(8),
     )
+}
+
+/// Web's `.space-field` input; channel creation shows its # or lock icon inside.
+fn name_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    placeholder: &str,
+    icon: Option<NavIcon>,
+) {
+    ui.label(label);
+    let response = ui.add_sized(
+        [ui.available_width(), 42.0],
+        egui::TextEdit::singleline(value)
+            .vertical_align(egui::Align::Center)
+            .char_limit(80)
+            .hint_text(RichText::new(placeholder).color(MUTED.gamma_multiply(0.65)))
+            .margin(egui::Margin {
+                left: if icon.is_some() { 37 } else { 8 },
+                right: 8,
+                top: 4,
+                bottom: 4,
+            }),
+    );
+    if let Some(icon) = icon {
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(response.rect.left() + 20.0, response.rect.center().y),
+                egui::vec2(18.0, 18.0),
+            ),
+            icon,
+            MUTED,
+        );
+    }
+}
+
+/// Web's `.secondary` dialog button.
+fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    ui.spacing_mut().button_padding.x = 12.0;
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(bold(text).size(12.0))
+            .fill(RAISED)
+            .stroke(Stroke::new(1.0, BORDER))
+            .corner_radius(7)
+            .min_size(egui::vec2(0.0, 36.0)),
+    )
+}
+
+/// Web's `.primary` dialog button.
+fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    ui.spacing_mut().button_padding.x = 12.0;
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(bold(text).size(12.0))
+            .fill(TERRACOTTA)
+            .stroke(Stroke::new(1.0, TERRACOTTA))
+            .corner_radius(7)
+            .min_size(egui::vec2(0.0, 36.0)),
+    )
+}
+
+/// Web's `SubmitRow`: Cancel, then the primary action, aligned to the end.
+/// Returns (cancel, submit).
+fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool) {
+    ui.add_space(20.0);
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let submit = primary_button(ui, label, enabled).clicked();
+            let cancel = secondary_button(ui, "Cancel", true).clicked();
+            (cancel, submit)
+        })
+        .inner
+    })
+    .inner
+}
+
+/// Web shows the participant's flag (alt "From {region}", title the region).
+/// egui's bundled fonts cannot draw emoji flags, so desktop shows the region
+/// code in a small flag-sized badge with the same name and label.
+fn region_badge(ui: &mut egui::Ui, code: &str, name: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        code.into(),
+        egui::FontId::new(8.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        MUTED,
+    );
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(galley.size().x.max(14.0) + 6.0, 12.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        2.0,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, MUTED);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("From {name}"))
+    });
+    response.on_hover_text(name)
+}
+
+/// Web's `.chat-state`: a 120 px block at the top of the list, content centered.
+fn chat_state(ui: &mut egui::Ui, lines: u8, content: impl FnOnce(&mut egui::Ui)) {
+    let height = if lines > 1 { 58.0 } else { 18.0 };
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 120.0),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(120.0);
+            ui.add_space((120.0 - height) / 2.0);
+            content(ui);
+        },
+    );
+}
+
+/// Web's composer counter tones.
+fn counter_tone(count: usize) -> Color32 {
+    match count {
+        3_900.. => Color32::from_rgb(0xff, 0x82, 0x7c),
+        3_750.. => Color32::from_rgb(0xed, 0xa3, 0x61),
+        3_500.. => Color32::from_rgb(0xe4, 0xc7, 0x6a),
+        _ => MUTED,
+    }
+}
+
+/// `toLocaleString()` for the counter: 3500 → "3,500".
+fn grouped(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// Web's three typing dots: 4 px, 3 px apart, bouncing 3 px every 1.2 s.
+fn typing_dots(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::hover());
+    let time = ui.input(|input| input.time);
+    for index in 0..3 {
+        let phase = ((time - index as f64 * 0.15).rem_euclid(1.2) / 1.2) as f32;
+        // Keyframes: rest at 0%/60%/100%, peak at 30%, eased in and out.
+        let lift = if phase < 0.6 {
+            let t = if phase < 0.3 {
+                phase / 0.3
+            } else {
+                (0.6 - phase) / 0.3
+            };
+            t * t * (3.0 - 2.0 * t)
+        } else {
+            0.0
+        };
+        let center = egui::pos2(
+            rect.left() + 2.0 + index as f32 * 7.0,
+            rect.center().y - 3.0 * lift,
+        );
+        ui.painter()
+            .circle_filled(center, 2.0, MUTED.gamma_multiply(0.45 + 0.55 * lift));
+    }
+    ui.ctx().request_repaint();
+}
+
+/// Web's narrow `.navigation-toggle`: a bordered icon + label button.
+fn navigation_toggle(ui: &mut egui::Ui, icon: NavIcon, text: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        text.into(),
+        egui::FontId::new(11.2, egui::FontFamily::Name("Satoshi Bold".into())),
+        MUTED,
+    );
+    let size = egui::vec2(9.0 + 15.0 + 6.0 + galley.size().x + 9.0, 34.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hover = response.hovered() || response.has_focus();
+    if hover {
+        ui.painter().rect_filled(rect, 6.0, RAISED);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let color = if hover { TEXT } else { MUTED };
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 16.5, rect.center().y),
+            egui::vec2(15.0, 15.0),
+        ),
+        icon,
+        color,
+    );
+    ui.painter().galley_with_override_text_color(
+        egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    response
 }
 
 fn destructive(ui: &mut egui::Ui, text: &str) -> egui::Response {
@@ -4804,8 +6265,8 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, Dialog, GatewayEvent, PendingSend, Phase, endpoint, member_page_ids,
-        normalize_channel, permanent_send_rejection,
+        CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingSend, Phase, endpoint, media,
+        member_page_ids, normalize_channel, permanent_send_rejection, voice,
     };
     use crate::model::{
         Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
@@ -5360,11 +6821,26 @@ mod tests {
         app.dialog = Some(Dialog::Audio);
         render(&mut app, &context, vec![]);
         let audio = render(&mut app, &context, vec![]);
-        assert!(contains(&audio, "Microphone test"));
+        for copy in [
+            "Only you can hear these tests.",
+            "Microphone volume",
+            "Speaker volume",
+            "Test speakers",
+            "Try your microphone",
+            "Less noise. Clearer voice.",
+            "Voice enhancement",
+            "Natural",
+            "Enhanced",
+            "Test microphone",
+            "Input level",
+        ] {
+            assert!(contains(&audio, copy), "Missing web copy: {copy}");
+        }
         for removed in [
             "contour",
             "noise suppression",
-            "Only you can hear",
+            "Mic test",
+            "Microphone test",
             "preferences are saved",
         ] {
             assert!(
@@ -5377,6 +6853,175 @@ mod tests {
             &render(&mut app, &context, vec![]),
             "Not connected"
         ));
+    }
+
+    #[test]
+    fn management_follows_web_limits_validation_and_private_channel_flow() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        assert!(app.can_create_space() && app.can_create_channel());
+        app.limits = Some(crate::model::SpaceLimits {
+            owned_spaces: 1,
+            total_spaces: 100,
+            channels_per_space: 3,
+        });
+        assert!(!app.can_create_space());
+        assert_eq!(
+            app.create_space_tooltip(),
+            "Space limit reached (1 owned, 100 total)"
+        );
+        assert!(!app.can_create_channel());
+        assert_eq!(app.create_channel_tooltip(), "Channel limit reached (3)");
+
+        app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
+        app.form_name = "planning".into();
+        app.form_private = true;
+        assert!(!app.channel_dirty("chan00000003"));
+        app.form_name = "planning-notes".into();
+        assert!(app.channel_dirty("chan00000003"));
+
+        app.admin_result(crate::worker::AdminResult::ChannelCreated(
+            crate::model::Channel {
+                id: "chan00000009".into(),
+                space_id: "space0000001".into(),
+                name: "secret".into(),
+                private: true,
+            },
+        ));
+        assert!(matches!(&app.dialog, Some(Dialog::ManageChannel(id)) if id == "chan00000009"));
+        assert_eq!(app.form_name, "secret");
+        assert!(app.form_private);
+    }
+
+    #[test]
+    fn chat_counter_and_history_follow_web() {
+        use super::{counter_tone, grouped};
+        assert_eq!(grouped(3_000), "3,000");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(counter_tone(3_499), super::MUTED);
+        assert_eq!(
+            counter_tone(3_500),
+            egui::Color32::from_rgb(0xe4, 0xc7, 0x6a)
+        );
+        assert_eq!(
+            counter_tone(3_750),
+            egui::Color32::from_rgb(0xed, 0xa3, 0x61)
+        );
+        assert_eq!(
+            counter_tone(3_900),
+            egui::Color32::from_rgb(0xff, 0x82, 0x7c)
+        );
+
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.has_more = true;
+        // The whole history fits, so its start is visible: web loads older.
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        assert!(app.loading_older);
+        // A failed older page waits for Retry instead of looping.
+        app.loading_older = false;
+        app.older_error = Some("History unavailable".into());
+        render(&mut app, &context, vec![]);
+        assert!(!app.loading_older);
+        let contains = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(label))
+            })
+        };
+        assert!(contains(
+            &render(&mut app, &context, vec![]),
+            "Couldn’t load older messages."
+        ));
+        app.timeline = crate::model::Timeline::default();
+        app.load_error = Some("Could not reach Caper.".into());
+        let output = render(&mut app, &context, vec![]);
+        assert!(contains(&output, "Could not reach Caper.") && contains(&output, "Try again"));
+    }
+
+    #[test]
+    fn join_waits_for_the_viewed_channels_voice_availability() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-checking"),
+        );
+        app.token = Some("fixture-token".into());
+        assert_eq!(app.join_unavailable(), Some("Checking voice availability…"));
+        assert!(app.voice_target("chan00000002").is_none());
+        app.media_availability.insert("chan00000001".into(), false);
+        assert_eq!(
+            app.join_unavailable(),
+            Some("Joining is not available at this time.")
+        );
+        assert!(app.voice_target("chan00000002").is_none());
+        app.media_availability.insert("chan00000001".into(), true);
+        assert!(app.join_unavailable().is_none());
+        assert!(app.voice_target("chan00000002").is_some());
+        // General's demo service has its own status.
+        app.detail.as_mut().unwrap().space.demo = true;
+        assert_eq!(app.media_root(), ("general".into(), None));
+    }
+
+    #[test]
+    fn connection_details_use_web_labels_formats_and_json_names() {
+        let stats = media::Diagnostics {
+            received_bytes: 1_234_567,
+            sent_bytes: 2_000_000,
+            receive_bitrate: 31_600.0,
+            send_bitrate: 40_400.0,
+            packets_lost: 3,
+            max_jitter_ms: 12.4,
+            round_trip_ms: 51.6,
+            route: "direct",
+            checks: None,
+        };
+        let without_join = ConnectionReport::new(None, &stats);
+        let rows = without_join.rows();
+        assert_eq!(rows[0], ("Received", "1.23 MB".into()));
+        assert!(rows.contains(&("Live receive", "32 kbps".into())));
+        assert!(rows.contains(&("Live send", "40 kbps".into())));
+        assert!(rows.contains(&("RTT", "52 ms".into())));
+        assert!(rows.contains(&("Route", "Direct".into())));
+        let times = voice::JoinTimes {
+            joined_ms: 900.4,
+            session_ms: 300.0,
+            transport_ms: 200.0,
+            ice_ms: None,
+            roster_ms: 50.0,
+        };
+        let report = ConnectionReport::new(Some(&times), &stats);
+        let rows = report.rows();
+        assert_eq!(rows[0], ("Joined", "Joined in 900 ms".into()));
+        assert!(rows.contains(&("Transport + state", "200 ms".into())));
+        assert!(rows.contains(&("Connectivity checks", "Not observed yet".into())));
+        let json = serde_json::to_value(&report).unwrap();
+        for field in [
+            "join",
+            "sessionMs",
+            "transportMs",
+            "rosterMs",
+            "receivedBytes",
+            "sentBytes",
+            "receiveBitrate",
+            "sendBitrate",
+            "packetsLost",
+            "maxJitterMs",
+            "roundTripMs",
+            "route",
+        ] {
+            assert!(json.get(field).is_some(), "missing {field}");
+        }
+        assert!(json.get("iceMs").is_none() && json.get("checks").is_none());
     }
 
     #[test]

@@ -154,6 +154,7 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
     unsigned _comparisonCapacityFrames;
     double _comparisonSampleRate;
     _Atomic unsigned _comparisonCallbacks;
+    _Atomic float _comparisonLevel;
     _Atomic bool _comparing;
     CaperDenoisePipeline *_denoiser;
     uint32_t _captureEpochs[kCaperMaxFrames];
@@ -179,6 +180,7 @@ static OSStatus CaperDefaultRouteChanged(AudioObjectID object, UInt32 count,
         atomic_init(&_inputRate, 0); atomic_init(&_outputRate, 0);
         atomic_init(&_comparisonFrames, 0); atomic_init(&_comparisonCallbacks, 0);
         atomic_init(&_comparing, false);
+        atomic_init(&_comparisonLevel, 0);
         atomic_init(&_syntheticLastPublishedPeak, 0);
     }
     return self;
@@ -340,7 +342,12 @@ static OSStatus CaperDeliverCapture(CaperMacAudioDevice *device, AudioUnitRender
     if (comparing) {
         offset = atomic_load_explicit(&device->_comparisonFrames, memory_order_relaxed);
         count = MIN(frames, device->_comparisonCapacityFrames - MIN(offset, device->_comparisonCapacityFrames));
-        if (count) { memcpy(device->_comparisonNatural + offset, device->_capture, count * sizeof(int16_t)); }
+        if (count) {
+            memcpy(device->_comparisonNatural + offset, device->_capture, count * sizeof(int16_t));
+            double sum = 0;
+            for (unsigned i = 0; i < count; i++) { double sample = device->_capture[i] / 32768.0; sum += sample * sample; }
+            atomic_store_explicit(&device->_comparisonLevel, (float)sqrt(sum / count), memory_order_relaxed);
+        }
     }
     if (processed && gain != 0) {
         if (device->_syntheticTest) {
@@ -530,6 +537,8 @@ static OSStatus CaperOutputCallback(void *context, AudioUnitRenderActionFlags *f
 - (BOOL)selectOutputUID:(NSString *)uid { return [self switchInput:NO uid:uid]; }
 
 - (BOOL)isComparing { return atomic_load(&_comparing); }
+- (float)comparisonLevel { return atomic_load_explicit(&_comparisonLevel, memory_order_relaxed); }
+
 - (BOOL)beginComparison {
     id<RTCAudioDeviceDelegate> delegate;
     uint64_t lifecycle;

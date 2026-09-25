@@ -18,8 +18,9 @@ archive_entries="$(mktemp)"
 trap 'rm -f "$archive_entries"' EXIT
 unzip -Z1 dist/Caper-android-debug.apk > "$archive_entries"
 grep -Fxq 'assets/NOTICE-webrtc-sdk.txt' "$archive_entries"
+grep -Fxq 'assets/NOTICE-Lucide.txt' "$archive_entries"
 grep -Fxq 'assets/NOTICE-Satoshi-Fontshare.txt' "$archive_entries"
-for asset in dpdfnet8_48khz_hr.onnx LICENSE-DPDFNet.txt LICENSE-ONNXRuntime.txt NOTICE-ONNXRuntime.txt LICENSE-RNNoise.txt; do
+for asset in effects/channel-join.wav effects/disconnect.wav dpdfnet8_48khz_hr.onnx LICENSE-DPDFNet.txt LICENSE-ONNXRuntime.txt NOTICE-ONNXRuntime.txt LICENSE-RNNoise.txt; do
   grep -Fxq "assets/$asset" "$archive_entries"
 done
 for abi in arm64-v8a armeabi-v7a x86 x86_64; do

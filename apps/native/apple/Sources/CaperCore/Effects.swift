@@ -1,15 +1,13 @@
 import Foundation
 import Observation
-#if os(macOS)
 import AVFoundation
-#endif
 
 /// Decorative UI feedback shares the web assets, gain, pitch and timing limits.
 /// It never participates in voice capture or changes the selected call route.
 @MainActor @Observable final class CaperEffects {
     enum Effect: String, CaseIterable {
         case toggleOff = "toggle-off", toggleOn = "toggle-on", slider = "slider-tick"
-        case leave = "channel-leave", warning, join = "channel-join", message = "new-message", delete
+        case leave = "channel-leave", warning, join = "channel-join", message = "new-message", delete, disconnect
     }
     static let shared = CaperEffects(enabled: ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] != "parity")
     private let enabled: Bool
@@ -17,16 +15,13 @@ import AVFoundation
     var soundsEnabled: Bool {
         didSet {
             defaults.set(soundsEnabled, forKey: "caper.soundEffects")
-            #if os(macOS)
             if !soundsEnabled {
                 for voice in voices { voice.player.stop() }
                 engine.pause()
             }
-            #endif
         }
     }
     private var lastSlider = -Double.infinity
-    #if os(macOS)
     private let engine = AVAudioEngine()
     private var buffers: [Effect: AVAudioPCMBuffer] = [:]
     private var voices: [(player: AVAudioPlayerNode, speed: AVAudioUnitVarispeed)] = []
@@ -39,6 +34,8 @@ import AVFoundation
               (try? file.read(into: buffer)) != nil else { return nil }
         return buffer
     }
+    #if os(iOS)
+    private var idlePause: Task<Void, Never>?
     #endif
 
     init(enabled: Bool, defaults: UserDefaults = .standard) {
@@ -48,10 +45,8 @@ import AVFoundation
     }
 
     func preload() {
-        #if os(macOS)
         guard enabled, soundsEnabled, buffers.isEmpty else { return }
         for effect in Effect.allCases { buffers[effect] = Self.decode(effect) }
-        #endif
     }
 
     func toggle(_ on: Bool) { play(on ? .toggleOn : .toggleOff) }
@@ -65,8 +60,15 @@ import AVFoundation
     }
 
     func play(_ effect: Effect, volume: Float = 0.45, rate: Float = 1) {
-        #if os(macOS)
         guard enabled, soundsEnabled else { return }
+        #if os(iOS)
+        // Web (audio/session.ts): UI sounds mix with other apps' audio, but a call
+        // or microphone test keeps its own session category untouched.
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playAndRecord && session.category != .record && session.category != .ambient {
+            try? session.setCategory(.ambient)
+        }
+        #endif
         let requested = ProcessInfo.processInfo.systemUptime
         preload()
         guard let buffer = buffers[effect] else { return }
@@ -85,10 +87,19 @@ import AVFoundation
         let voice = voices[nextVoice]
         nextVoice = (nextVoice + 1) % voices.count
         voice.player.stop()
-        voice.player.volume = volume
-        voice.speed.rate = rate
+        // Web: gain is the requested volume × 0.6.
+        voice.player.volume = max(0, min(1, volume)) * 0.6
+        voice.speed.rate = max(0.5, min(2, rate))
         voice.player.scheduleBuffer(buffer)
         voice.player.play()
+        #if os(iOS)
+        // Do not hold the phone's audio hardware between sounds.
+        idlePause?.cancel()
+        idlePause = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            if !self.voices.contains(where: { $0.player.isPlaying }) { self.engine.pause() }
+        }
         #endif
     }
 }

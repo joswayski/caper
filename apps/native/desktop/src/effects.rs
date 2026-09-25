@@ -1,3 +1,4 @@
+use rodio::source::UniformSourceIterator;
 use rodio::{Decoder, OutputStreamBuilder, Sink, Source, buffer::SamplesBuffer};
 use std::collections::VecDeque;
 use std::io::Cursor;
@@ -16,9 +17,10 @@ pub enum Effect {
     Join,
     Message,
     Delete,
+    Disconnect,
 }
 
-const WAVS: [&[u8]; 8] = [
+const WAVS: [&[u8]; 9] = [
     include_bytes!("../../../web/public/audio/effects/toggle-off.wav"),
     include_bytes!("../../../web/public/audio/effects/toggle-on.wav"),
     include_bytes!("../../../web/public/audio/effects/slider-tick.wav"),
@@ -27,6 +29,7 @@ const WAVS: [&[u8]; 8] = [
     include_bytes!("../../../web/public/audio/effects/channel-join.wav"),
     include_bytes!("../../../web/public/audio/effects/new-message.wav"),
     include_bytes!("../../../web/public/audio/effects/delete.wav"),
+    include_bytes!("../../../web/public/audio/effects/disconnect.wav"),
 ];
 
 struct Request {
@@ -159,9 +162,31 @@ fn decode(wav: &'static [u8]) -> Option<SamplesBuffer> {
     ))
 }
 
+/// Web's speaker test sound as 48 kHz mono PCM for the WebRTC output path.
+pub fn speaker_test_pcm() -> Option<Vec<i16>> {
+    let wav = WAVS[Effect::Join as usize];
+    let decoder = Decoder::try_from(Cursor::new(wav)).ok()?;
+    let stereo: Vec<f32> = UniformSourceIterator::new(decoder, 2, 48_000).collect();
+    Some(
+        stereo
+            .chunks_exact(2)
+            .map(|pair| ((pair[0] + pair[1]) / 2.0 * 32_767.0).clamp(-32_768.0, 32_767.0) as i16)
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speaker_test_is_the_web_join_sound_at_48_khz_mono() {
+        let pcm = speaker_test_pcm().expect("bundled channel-join.wav");
+        let source = decode(WAVS[Effect::Join as usize]).unwrap();
+        let seconds = source.total_duration().unwrap().as_secs_f64();
+        assert!((pcm.len() as f64 / 48_000.0 - seconds).abs() < 0.01);
+        assert!(pcm.iter().any(|value| value.unsigned_abs() > 300));
+    }
 
     #[test]
     fn canonical_web_effects_decode_to_nonzero_finite_pcm_without_opening_devices() {

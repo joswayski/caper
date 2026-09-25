@@ -123,7 +123,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("caper", in: app).count, 0, "The workspace must not have a web-style branding header")
         #if os(macOS)
         assertElement("selected-space-name", label: "Fixture Studio", in: app)
-        XCTAssertTrue(app.buttons["Hide members"].exists)
+        XCTAssertTrue(app.buttons["Hide member list"].exists)
         assertStaticText("Members", in: app, timeout: 2)
         #endif
         capture("populated", app: app)
@@ -133,7 +133,7 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertTrue(stack.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
@@ -183,7 +183,7 @@ final class CaperParityUITests: XCTestCase {
     func testCompactActiveRosterAudioMenuAndCollapsedCallContextFixture() {
         let app = launch(fixture: "voice-roster")
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
@@ -208,7 +208,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(stack.value as? String, "Collapsed")
         XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists)
         XCTAssertTrue(context.exists, "Call context and Disconnect remain outside the collapsed participant roster")
-        XCTAssertTrue(app.buttons["Disconnect voice"].exists)
+        XCTAssertTrue(app.buttons["Leave voice"].exists)
         capture("active-voice-collapsed-test-fixture", app: app)
         stack.tap()
         audio.tap()
@@ -285,10 +285,10 @@ final class CaperParityUITests: XCTestCase {
 
     func testMembersCanBeHiddenWithoutChangingConversation() {
         let app = launch()
-        let toggle = app.buttons["Hide members"]
+        let toggle = app.buttons["Hide member list"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         toggle.tap()
-        XCTAssertTrue(app.buttons["Show members"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Show member list"].waitForExistence(timeout: 2))
         assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 2)
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
@@ -298,7 +298,9 @@ final class CaperParityUITests: XCTestCase {
     func testCompletedLocalRecordingLayoutWithoutCapture() {
         let app = launch(fixture: "audio-recorded")
         app.descendants(matching: .any)["account-settings-menu"].tap()
-        app.descendants(matching: .any)["Audio preferences"].tap()
+        app.descendants(matching: .any)["Audio test"].tap()
+        assertStaticText("Only you can hear these tests.", in: app)
+        assertStaticText("Try your microphone", in: app)
         assertStaticText("TEST FIXTURE — completed local recording layout only; no microphone or playback.", in: app)
         XCTAssertTrue(app.buttons["local-mic-test"].exists)
         for title in ["Play natural", "Play enhanced", "Stop playback"] {
@@ -325,15 +327,13 @@ final class CaperParityUITests: XCTestCase {
     func testConnectionStatisticsLayoutWithoutVoiceConnection() {
         let app = launch(fixture: "audio-statistics")
         app.descendants(matching: .any)["account-settings-menu"].tap()
-        app.descendants(matching: .any)["Audio preferences"].tap()
+        app.descendants(matching: .any)["Connection details"].tap()
         assertStaticText("TEST FIXTURE — synthetic statistics layout; no voice connection.", in: app)
-        assertStaticText("Connection statistics", in: app)
-        assertStaticText("12800 / 24000 bps", in: app)
-        assertStaticText("3 / 17 ms", in: app)
-        assertStaticText("42 ms / TURN relay", in: app)
-        let controls = app.scrollViews["audio-preferences-controls"]
-        controls.scroll(byDeltaX: 0, deltaY: -600)
-        XCTAssertTrue(controls.frame.contains(staticTexts("42 ms / TURN relay", in: app).firstMatch.frame))
+        // Web's ConnectionDiagnostics formatting.
+        for value in ["0.07 MB", "13 kbps", "0.01 MB", "24 kbps", "17 ms", "42 ms", "TURN relay", "Counters reset on reconnect."] {
+            assertStaticText(value, in: app)
+        }
+        XCTAssertTrue(app.buttons["Copy connection details"].exists)
         capture("audio-statistics-test-fixture", app: app)
     }
     #endif
@@ -353,6 +353,21 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)
+        let code = app.textFields["Sign-in code"]
+        #if os(iOS)
+        // Separate bursts: the field rewrites itself between keystrokes, as it does for a person typing.
+        code.tap(); code.typeText("ZZZ"); code.typeText("o-")
+        let filtered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "ZZZ"), object: code)
+        XCTAssertEqual(XCTWaiter.wait(for: [filtered], timeout: 3), .completed, "Letters outside the code alphabet are dropped")
+        code.typeText("ZZ9")
+        XCTAssertEqual(code.value as? String, "ZZZZZ9", "Code input keeps web's six-character alphabet")
+        #else
+        // AppKit's field editor does not redisplay a binding rewritten mid-edit,
+        // so macOS checks the rejected-code path with a valid-alphabet code.
+        code.tap(); code.typeText("ZZZZZ9")
+        #endif
+        app.buttons["Continue"].tap()
+        assertStaticText("That code is incorrect or expired. Request a new one if needed.", in: app, timeout: 5)
     }
 
     func testDeleteSpaceRequiresConfirmationAndCanCancel() {
@@ -382,7 +397,10 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Cancel"].tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
-        XCTAssertTrue(app.buttons["Save changes"].exists)
+        XCTAssertTrue(app.buttons["Delete channel"].exists, "Cancelling keeps the overview open")
+        // Web shows its save bar only once something changed.
+        XCTAssertFalse(app.buttons["Save changes"].exists)
+        assertStaticText("Delete this channel for everyone in the space.", in: app)
     }
 
     func testAccountCanSendExactlyOneMessageAndComposerClears() {
@@ -426,7 +444,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(join.isEnabled, "Normal launches must expose voice without a test-only environment flag")
         capture("voice-ready", app: app)
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let microphone = app.buttons["microphone-toggle"]
         let headphones = app.buttons["deafen-toggle"]
@@ -446,7 +464,7 @@ final class CaperParityUITests: XCTestCase {
         #if os(macOS)
         app.buttons["Input Options"].tap()
         XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.sliders["Voice processing"].exists)
+        XCTAssertFalse(app.sliders["Voice processing"].exists, "Web's input menu has only the device and input volume")
         capture("input-options", app: app)
         app.typeKey(.escape, modifierFlags: [])
         app.buttons["Output Options"].tap()
@@ -468,23 +486,16 @@ final class CaperParityUITests: XCTestCase {
         #else
         settings.tap()
         #endif
-        let preferences = app.descendants(matching: .any)["Audio preferences"]
+        XCTAssertTrue(app.descendants(matching: .any)["sound-effects"].waitForExistence(timeout: 2), "Web keeps Caper sound effects in the settings menu")
+        let preferences = app.descendants(matching: .any)["Audio test"]
         XCTAssertTrue(preferences.waitForExistence(timeout: 2))
         preferences.tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["audio-preferences-sheet"].waitForExistence(timeout: 5))
-        assertStaticText("Audio preferences", in: app, timeout: 2)
-        #if os(macOS)
-        let sounds = app.checkBoxes["sound-effects"]
-        XCTAssertTrue(sounds.waitForExistence(timeout: 2))
-        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 1)
-        sounds.tap()
-        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 0)
-        capture("audio-effects-disabled", app: app)
-        sounds.tap()
-        XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 1)
-        #endif
-        let gain = app.sliders["Output volume"]
+        assertStaticText("Audio test", in: app, timeout: 2)
+        assertStaticText("Only you can hear these tests.", in: app, timeout: 2)
+        XCTAssertTrue(app.buttons["speaker-test"].exists)
+        let gain = app.sliders["Test speaker volume"]
         XCTAssertTrue(gain.waitForExistence(timeout: 2))
         XCTAssertEqual(outputGain(of: gain), 100)
         assertStaticText("100%", in: app, timeout: 2)
@@ -498,39 +509,45 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("\(displayedGain)%", in: app, timeout: 2)
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
-        XCTAssertTrue(app.sliders["Input volume"].exists)
+        XCTAssertTrue(app.sliders["Test microphone volume"].exists)
         XCTAssertTrue(app.sliders["Voice processing"].exists)
         XCTAssertTrue(app.buttons["local-mic-test"].exists)
         #else
         XCTAssertTrue(app.descendants(matching: .any)["audio-input-device"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["audio-output-device"].exists)
-        XCTAssertTrue(app.sliders["Input volume"].exists)
+        XCTAssertTrue(app.sliders["Test microphone volume"].exists)
         XCTAssertTrue(app.sliders["Voice processing"].exists)
         // XCTest's normalized drag stops inside the track, and typeKey does
         // not focus an NSSlider on runners with keyboard navigation disabled.
         // Grab the centered thumb and drag beyond the track to its real limit.
-        let inputGain = app.sliders["Input volume"]
+        let inputGain = app.sliders["Test microphone volume"]
         inputGain.adjust(toNormalizedSliderPosition: 0.5)
+        // A slow drag that holds past the track's end: fast drags on the Intel
+        // runner can release before AppKit tracks the final position.
         inputGain.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.1, thenDragTo: inputGain.coordinate(withNormalizedOffset: CGVector(dx: -0.1, dy: 0.5)))
-        XCTAssertEqual(outputGain(of: app.sliders["Input volume"]), 0)
+            .press(forDuration: 0.1, thenDragTo: inputGain.coordinate(withNormalizedOffset: CGVector(dx: -0.5, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertEqual(outputGain(of: app.sliders["Test microphone volume"]), 0)
         let strength = app.sliders["Voice processing"]
         strength.adjust(toNormalizedSliderPosition: 0.5)
         strength.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.1, dy: 0.5)))
+            .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.5, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertEqual(outputGain(of: app.sliders["Voice processing"]), 100)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
         #endif
         let controls = app.scrollViews["audio-preferences-controls"]
+        #if os(iOS)
+        controls.swipeUp()
+        #else
+        controls.scroll(byDeltaX: 0, deltaY: -600)
+        #endif
         XCTAssertTrue(controls.frame.contains(app.buttons["local-mic-test"].frame))
-        XCTAssertLessThanOrEqual(controls.frame.maxY - app.buttons["local-mic-test"].frame.maxY, 24,
-                                 "The sheet must not reserve space for removed explanations")
         for removed in [
             "The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.",
             "On-device noise suppression starts when you test or join.",
             "Caper routes this call to the selected devices without changing macOS system defaults.",
             "Choose an audio route",
-            "Only you can hear this test."
         ] {
             XCTAssertFalse(staticTexts(removed, in: app).firstMatch.exists, "Normal settings must not expose extra explanatory copy")
         }
@@ -541,7 +558,7 @@ final class CaperParityUITests: XCTestCase {
     func testProfileEditRetainsRejectedValuesAndRetries() async throws {
         let app = launch()
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let account = app.buttons["account-profile"]
         XCTAssertTrue(account.waitForExistence(timeout: 10))
@@ -564,7 +581,7 @@ final class CaperParityUITests: XCTestCase {
         let (_, response) = try await URLSession.shared.data(for: control)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         submit.tap()
-        assertStaticText("TEST FIXTURE: profile save temporarily unavailable.", in: app)
+        assertStaticText("Your profile could not be saved. Please try again.", in: app)
         XCTAssertEqual(username.value as? String, savedUsername)
         XCTAssertEqual(displayName.value as? String, editedName)
         XCTAssertTrue(submit.isEnabled)
@@ -623,15 +640,17 @@ final class CaperParityUITests: XCTestCase {
             ("audio-statistics", "TEST FIXTURE — synthetic statistics layout; no voice connection.", "ios-audio-statistics-fixture"),
         ] {
             let app = launch(fixture: fixture)
-            app.buttons["Open navigation"].tap()
+            app.buttons["Browse"].tap()
             let settings = app.descendants(matching: .any)["account-settings-menu"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             let frame = settings.frame, window = app.windows.firstMatch.frame
             app.coordinate(withNormalizedOffset: CGVector(dx: frame.midX / window.width, dy: frame.midY / window.height)).tap()
-            app.descendants(matching: .any)["Audio preferences"].tap()
-            let controls = app.scrollViews["audio-preferences-controls"]
-            XCTAssertTrue(controls.waitForExistence(timeout: 5))
-            controls.swipeUp()
+            app.descendants(matching: .any)[fixture == "audio-recorded" ? "Audio test" : "Connection details"].tap()
+            if fixture == "audio-recorded" {
+                let controls = app.scrollViews["audio-preferences-controls"]
+                XCTAssertTrue(controls.waitForExistence(timeout: 5))
+                controls.swipeUp()
+            }
             assertStaticText(label, in: app)
             if fixture == "audio-recorded" {
                 for title in ["Play natural", "Play enhanced", "Stop playback"] {
@@ -641,8 +660,8 @@ final class CaperParityUITests: XCTestCase {
                 }
                 XCTAssertTrue(app.sliders["Voice processing"].exists)
             } else {
-                assertStaticText("Connection statistics", in: app)
-                assertStaticText("42 ms / TURN relay", in: app)
+                assertStaticText("Counters reset on reconnect.", in: app)
+                assertStaticText("TURN relay", in: app)
             }
             capture(screenshot, app: app)
         }
@@ -692,7 +711,7 @@ final class CaperParityUITests: XCTestCase {
         email.tap()
         email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
-        assertStaticText("TEST FIXTURE: email service unavailable.", in: app, timeout: 5)
+        assertStaticText("Sign-in is temporarily unavailable. Please try again later.", in: app, timeout: 5)
         capture("login-error", app: app)
     }
 
@@ -713,25 +732,20 @@ final class CaperParityUITests: XCTestCase {
     #if os(iOS)
     func testNarrowConversationAndBrowse() {
         let app = launch()
-        let navigation = app.buttons["Open navigation"]
+        let navigation = app.buttons["Browse"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
-        XCTAssertFalse(app.staticTexts["Browse"].exists)
         assertStaticText("Fixture Owner", in: app)
-        let avatar = app.staticTexts["F"].firstMatch
-        let author = staticTexts("Fixture Owner", in: app).firstMatch
         let channel = app.descendants(matching: .any)["selected-channel-name"]
-        XCTAssertTrue(avatar.exists)
-        XCTAssertEqual(navigation.frame.midX, avatar.frame.midX, accuracy: 1, "Menu must center over the message avatars")
-        XCTAssertEqual(channel.frame.minX, author.frame.minX, accuracy: 1, "Channel title must align with message authors")
+        XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Web's labelled Browse toggle leads the channel title")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the menu touch target accessible")
-        let members = app.buttons["Show members"]
+        let members = app.buttons["Show member list"]
         XCTAssertTrue(members.exists)
         XCTAssertGreaterThan(members.frame.minX, app.frame.midX, "Members belongs on the right of the header")
         capture("narrow-conversation", app: app)
         members.tap()
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
-        let hideMembers = app.buttons["Hide members"]
+        let hideMembers = app.buttons["Hide member list"]
         XCTAssertTrue(hideMembers.isHittable, "The open member panel must leave its toggle accessible")
         hideMembers.tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)

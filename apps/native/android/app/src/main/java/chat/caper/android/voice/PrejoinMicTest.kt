@@ -60,6 +60,7 @@ internal class PrejoinMicTest private constructor(private val capture: AudioCapt
         runCatching { recorder.stop() }
     }
 
+    fun level(): Float = capture.inputLevel
     fun gain(value: Int) { capture.gain(value) }
     fun processingStrength(value: Int) { capture.processingStrength(value) }
 

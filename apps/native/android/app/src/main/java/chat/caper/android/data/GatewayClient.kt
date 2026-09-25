@@ -65,11 +65,19 @@ class GatewayClient(
     @Volatile private var lastActivityAt = System.currentTimeMillis()
     @Volatile private var cursor = initialCursor
     @Volatile private var serverOffsetMs = 0L
+    @Volatile private var idleTimeoutMs = 600_000L
     private val mutableStatus = MutableStateFlow(GatewayStatus.DISCONNECTED)
     val status: StateFlow<GatewayStatus> = mutableStatus
 
     fun start() { connect() }
     fun reportActivity() { lastActivityAt = System.currentTimeMillis() }
+
+    /** Web's `localPresence`: offline until subscribed, then idle after the server's idle timeout. */
+    fun localPresence(now: Long = System.currentTimeMillis()): String = when {
+        mutableStatus.value != GatewayStatus.LIVE -> "offline"
+        now - lastActivityAt >= idleTimeoutMs -> "idle"
+        else -> "online"
+    }
 
     @Synchronized fun watchPresence(spaceId: String, userIds: List<String>) {
         require(userIds.size in 1..100) { "Presence supports 1 to 100 members." }
@@ -135,6 +143,7 @@ class GatewayClient(
                 ready = true
                 attempts = 0
                 serverOffsetMs = frame["serverTime"]?.jsonPrimitive?.content?.toLongOrNull()?.minus(System.currentTimeMillis()) ?: 0L
+                frame["idleTimeoutSeconds"]?.jsonPrimitive?.content?.toLongOrNull()?.let { idleTimeoutMs = it * 1_000 }
                 webSocket.send("""{"type":"subscribe","id":"$subscriptionId","kind":"chat","channelId":"$channelId","after":"$cursor"}""")
                 if (presenceSubscriptionId != null) sendPresenceSubscription(webSocket)
                 mediaRevisions.clear()

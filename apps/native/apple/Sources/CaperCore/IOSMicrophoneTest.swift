@@ -10,6 +10,13 @@ final class IOSMicrophoneTest {
     private(set) var recording = false
     private(set) var hasRecording = false
     var error: String?
+    /// When the current recording started, for web's elapsed clock.
+    private(set) var startedAt: Date?
+    /// Web: "No audible signal detected" when no natural sample exceeds 0.001.
+    private(set) var silent = false
+    /// The sample being played back: false natural, true enhanced.
+    private(set) var playing: Bool?
+    private var advanceToEnhanced = false
     private var voice: VoiceClient?
     private var attempt: Int?
     private var timer: Task<Void, Never>?
@@ -44,6 +51,7 @@ final class IOSMicrophoneTest {
         }
         self.attempt = attempt
         recording = true
+        startedAt = Date()
         let center = NotificationCenter.default
         audioObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
@@ -65,9 +73,12 @@ final class IOSMicrophoneTest {
         }
     }
 
+    /// RMS of the latest natural chunk while recording.
+    var level: Float { recording ? (voice?.microphoneComparisonLevel() ?? 0) : 0 }
+
     func stopRecording() {
         guard recording else { return }
-        recording = false; timer?.cancel(); timer = nil
+        recording = false; startedAt = nil; timer?.cancel(); timer = nil
         playbackGain = voice?.outputGain ?? 100
         guard let voice, let attempt, let samples = voice.finishMicrophoneRecording(generation: attempt),
               samples.natural.count == samples.enhanced.count,
@@ -78,7 +89,9 @@ final class IOSMicrophoneTest {
         do {
             try Self.write(samples.natural, rate: samples.sampleRate, to: naturalURL)
             try Self.write(samples.enhanced, rate: samples.sampleRate, to: enhancedURL)
+            silent = !MicrophoneSignal.audible(samples.natural)
             hasRecording = true
+            playComparison()
         } catch {
             clearFiles(); self.error = "Could not save the local comparison."
         }
@@ -112,16 +125,26 @@ final class IOSMicrophoneTest {
             player.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self, weak player] _ in
                 Task { @MainActor in
                     guard let self, let player, self.playbackGeneration == playback, self.player === player else { return }
-                    self.stopPlayback()
+                    // Web plays the natural sample, then the enhanced one.
+                    if self.advanceToEnhanced && !enhanced { self.advanceToEnhanced = false; self.play(enhanced: true) }
+                    else { self.stopPlayback() }
                 }
             }
             try engine.start()
             self.engine = engine; self.player = player
             player.play()
+            playing = enhanced
         } catch { stopPlayback(); self.error = "Could not play the local recording." }
     }
 
+    func playComparison() {
+        guard hasRecording, !recording else { return }
+        play(enhanced: false)
+        advanceToEnhanced = playing == false
+    }
+
     func stopPlayback() {
+        playing = nil; advanceToEnhanced = false
         playbackGeneration += 1
         player?.stop(); engine?.stop()
         player = nil; engine = nil
@@ -132,7 +155,7 @@ final class IOSMicrophoneTest {
         let center = NotificationCenter.default
         audioObservers.forEach(center.removeObserver); audioObservers = []
         timer?.cancel(); timer = nil
-        recording = false; stopPlayback()
+        recording = false; startedAt = nil; silent = false; advanceToEnhanced = false; stopPlayback()
         if let voice, let attempt { voice.endMicrophoneComparison(generation: attempt) }
         voice?.releaseIdleAudioPreparation()
         voice = nil; attempt = nil; hasRecording = false

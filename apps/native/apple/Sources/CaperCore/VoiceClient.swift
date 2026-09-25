@@ -77,6 +77,9 @@ public final class VoiceClient {
         ? 100 : min(200, max(0, UserDefaults.standard.integer(forKey: "caper.voice.outputGain")))
     public var participantGains: [String: Int] = [:]
     public var locallyMutedParticipants: Set<String> = []
+    /// People currently speaking, from WebRTC audio levels (web's VoiceActivity).
+    public private(set) var speakingParticipants: Set<String> = []
+    @ObservationIgnored private var lastLoud: [String: Date] = [:]
     public var error: String?
     public var showAudioPreferences = false
     public var availableInputs: [AudioDevice] = []
@@ -701,6 +704,9 @@ public final class VoiceClient {
         #endif
     }
 
+    /// RMS of the latest natural microphone-comparison chunk (local input meter).
+    func microphoneComparisonLevel() -> Float { audioDevice.comparisonLevel }
+
     func prepareMicrophoneDenoise() async -> Bool {
         #if os(iOS)
         if phase == .idle || phase == .failed {
@@ -810,6 +816,46 @@ public final class VoiceClient {
         voiceProcessingStrength = min(100, max(0, value))
         audioDevice.processingStrength = voiceProcessingStrength
         UserDefaults.standard.set(voiceProcessingStrength, forKey: "caper.voice.processingStrength")
+    }
+
+    /// Web: RMS >= 0.004 counts as speech, released 180 ms after the last loud
+    /// sample, and a muted participant is never shown speaking.
+    nonisolated static let speakingThreshold = 0.004
+    nonisolated static let speakingRelease: TimeInterval = 0.18
+
+    nonisolated static func speaking(levels: [String: Double], muted: Set<String>, lastLoud: inout [String: Date], now: Date) -> Set<String> {
+        for (id, level) in levels where level >= speakingThreshold && !muted.contains(id) { lastLoud[id] = now }
+        lastLoud = lastLoud.filter { !muted.contains($0.key) && now.timeIntervalSince($0.value) < speakingRelease }
+        return Set(lastLoud.keys)
+    }
+
+    /// Samples inbound (per participant) and local microphone audio levels once.
+    public func sampleSpeaking() async {
+        guard phase == .connected, let peer else { clearSpeaking(); return }
+        let attempt = generation
+        let report: RTCStatisticsReport = await withCheckedContinuation { continuation in
+            peer.statistics { continuation.resume(returning: $0) }
+        }
+        guard generation == attempt, self.peer === peer, phase == .connected else { return }
+        var levels: [String: Double] = [:]
+        for stat in report.statistics.values {
+            guard (stat.values["kind"] as? String) == "audio",
+                  let level = (stat.values["audioLevel"] as? NSNumber)?.doubleValue, level.isFinite else { continue }
+            if stat.type == "inbound-rtp", let mid = stat.values["mid"] as? String, let id = participantByMID[mid] {
+                levels[id] = max(levels[id] ?? 0, level)
+            } else if stat.type == "media-source", let selfID {
+                levels[selfID] = max(levels[selfID] ?? 0, level)
+            }
+        }
+        var muted = Set(participants.filter(\.muted).map(\.id))
+        if let selfID { if self.muted { muted.insert(selfID) } else { muted.remove(selfID) } }
+        let next = Self.speaking(levels: levels, muted: muted, lastLoud: &lastLoud, now: Date())
+        if next != speakingParticipants { speakingParticipants = next }
+    }
+
+    public func clearSpeaking() {
+        lastLoud = [:]
+        if !speakingParticipants.isEmpty { speakingParticipants = [] }
     }
 
     public func refreshDiagnostics() async {

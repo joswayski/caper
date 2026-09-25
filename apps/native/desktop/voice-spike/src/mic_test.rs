@@ -17,7 +17,7 @@ use libwebrtc::peer_connection_factory::{
 };
 use libwebrtc::rtp_sender::RtpSender;
 use libwebrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -35,6 +35,8 @@ pub struct MicTestControl {
     live_enabled: Arc<AtomicBool>,
     finish_recording: Arc<AtomicBool>,
     playback_generation: Arc<AtomicU64>,
+    /// RMS of the latest recorded frame, as f32 bits.
+    input_level: Arc<AtomicU32>,
 }
 
 struct TestDevices {
@@ -83,7 +85,26 @@ impl MicTestControl {
             live_enabled: Arc::new(AtomicBool::new(false)),
             finish_recording: Arc::new(AtomicBool::new(false)),
             playback_generation: Arc::new(AtomicU64::new(0)),
+            input_level: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// RMS (0–1) of the most recent captured frame while recording, else 0.
+    pub fn input_level(&self) -> f32 {
+        f32::from_bits(self.input_level.load(Ordering::Acquire))
+    }
+
+    fn set_input_level(&self, pcm: &[i16]) {
+        let level = if pcm.is_empty() {
+            0.0
+        } else {
+            (pcm.iter()
+                .map(|value| (f32::from(*value) / 32_768.0).powi(2))
+                .sum::<f32>()
+                / pcm.len() as f32)
+                .sqrt()
+        };
+        self.input_level.store(level.to_bits(), Ordering::Release);
     }
 
     pub fn finish_recording(&self) {
@@ -433,7 +454,39 @@ pub struct MicTest {
     playback: NativeAudioSource,
     output_guid: Option<String>,
     sample: Option<MicSample>,
+    /// Kept in memory only while this test lives, so a changed gain or
+    /// strength can prepare a new comparison without recording again.
+    raw: Vec<i16>,
     cancel_on_drop: bool,
+}
+
+/// Mirrors web's silence check: no processed sample above 0.001 full scale.
+pub fn audible(pcm: &[i16]) -> bool {
+    pcm.iter().any(|value| value.unsigned_abs() > 32)
+}
+
+fn process_sample(
+    raw: &[i16],
+    gain_percent: u16,
+    strength: u8,
+) -> Result<(Vec<i16>, Vec<i16>), String> {
+    let mut processor = ProcessedVoice::new();
+    let mut clean = Vec::with_capacity(raw.len());
+    let mut enhanced = Vec::with_capacity(raw.len());
+    for chunk in raw.chunks(FRAME) {
+        let mut frame = [0; FRAME];
+        frame[..chunk.len()].copy_from_slice(chunk);
+        let (natural, shaped) = processor.process(
+            &frame,
+            InputProcessing {
+                gain_percent,
+                strength,
+            },
+        )?;
+        clean.extend_from_slice(&natural[..chunk.len()]);
+        enhanced.extend_from_slice(&shaped[..chunk.len()]);
+    }
+    Ok((clean, enhanced))
 }
 
 impl MicTest {
@@ -630,6 +683,7 @@ impl MicTest {
             playback,
             output_guid: output_guid.map(str::to_owned),
             sample: None,
+            raw: Vec::new(),
             cancel_on_drop: true,
         })
     }
@@ -640,7 +694,7 @@ impl MicTest {
     }
 
     /// Natural replay uses gain + denoise, and enhanced additionally applies
-    /// the live contour. Raw capture is not retained after this operation.
+    /// the live contour. Raw capture stays in memory only until the test ends.
     pub async fn record_with_processing(
         &mut self,
         gain_percent: u16,
@@ -649,7 +703,7 @@ impl MicTest {
         if gain_percent > 200 || strength > 100 {
             return Err("input gain must be 0–200 and processing strength 0–100".into());
         }
-        if self.sample.is_some() {
+        if self.sample.is_some() || !self.raw.is_empty() {
             return Err("recording already completed".into());
         }
         self.control.set_live_recording(true)?;
@@ -687,6 +741,7 @@ impl MicTest {
                         continue;
                     }
                     natural.extend_from_slice(frame.data.as_ref());
+                    self.control.set_input_level(frame.data.as_ref());
                     last_frame = Instant::now();
                 }
                 None => {
@@ -695,6 +750,7 @@ impl MicTest {
                 }
             }
         }
+        self.control.set_input_level(&[]);
         self.control.set_live_recording(false)?;
         {
             let devices = self
@@ -716,29 +772,38 @@ impl MicTest {
             self.control.cancel();
             return Err("no microphone audio was recorded".into());
         }
-        #[cfg(test)]
-        let raw_fixture = natural.clone();
-        let (natural, enhanced) = tokio::task::spawn_blocking(move || {
-            let mut processor = ProcessedVoice::new();
-            let mut clean = Vec::with_capacity(natural.len());
-            let mut enhanced = Vec::with_capacity(natural.len());
-            for chunk in natural.chunks(FRAME) {
-                let mut frame = [0; FRAME];
-                frame[..chunk.len()].copy_from_slice(chunk);
-                let (raw, shaped) = processor.process(
-                    &frame,
-                    InputProcessing {
-                        gain_percent,
-                        strength,
-                    },
-                )?;
-                clean.extend_from_slice(&raw[..chunk.len()]);
-                enhanced.extend_from_slice(&shaped[..chunk.len()]);
-            }
-            Ok::<_, String>((clean, enhanced))
+        self.raw = natural;
+        self.prepare(gain_percent, strength).await
+    }
+
+    /// Prepare the natural and enhanced comparison again from the same
+    /// recording, for a changed input gain or enhancement strength.
+    pub async fn reprocess(
+        &mut self,
+        gain_percent: u16,
+        strength: u8,
+    ) -> Result<&MicSample, String> {
+        if gain_percent > 200 || strength > 100 {
+            return Err("input gain must be 0–200 and processing strength 0–100".into());
+        }
+        if self.raw.is_empty() {
+            return Err("record a sample first".into());
+        }
+        self.prepare(gain_percent, strength).await
+    }
+
+    async fn prepare(&mut self, gain_percent: u16, strength: u8) -> Result<&MicSample, String> {
+        let raw = std::mem::take(&mut self.raw);
+        let (raw, processed) = tokio::task::spawn_blocking(move || {
+            let processed = process_sample(&raw, gain_percent, strength);
+            (raw, processed)
         })
         .await
-        .map_err(|_| "microphone processor stopped")??;
+        .map_err(|_| "microphone processor stopped")?;
+        #[cfg(test)]
+        let raw_fixture = raw.clone();
+        self.raw = raw;
+        let (natural, enhanced) = processed?;
         self.control.ensure_active()?;
         self.sample = Some(MicSample {
             natural,
@@ -861,9 +926,296 @@ impl Drop for MicTest {
     }
 }
 
+/// Stop handle and live volume for a looped local speaker test.
+#[derive(Clone)]
+pub struct SpeakerTestControl {
+    stopped: Arc<AtomicBool>,
+    volume_percent: Arc<AtomicU16>,
+}
+
+impl SpeakerTestControl {
+    pub fn new(volume_percent: u16) -> Self {
+        Self {
+            stopped: Arc::new(AtomicBool::new(false)),
+            volume_percent: Arc::new(AtomicU16::new(volume_percent.min(200))),
+        }
+    }
+
+    /// Applies to the next 10 ms frame, like web's live gain node.
+    pub fn set_volume(&self, percent: u16) {
+        self.volume_percent
+            .store(percent.min(200), Ordering::Release);
+    }
+
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+}
+
+/// Loop 48 kHz mono `pcm` on the chosen output through its own ADM until
+/// stopped. The sender and receiver are a private pair on this machine.
+pub async fn run_speaker_test(
+    control: SpeakerTestControl,
+    output_guid: Option<&str>,
+    pcm: &[i16],
+) -> Result<(), String> {
+    if pcm.is_empty() {
+        return Err("speaker test sound is unavailable".into());
+    }
+    let output = PeerConnectionFactory::default();
+    output.set_adm_recording_enabled(false);
+    output.set_adm_playout_enabled(false);
+    if !output.acquire_platform_adm() {
+        return Err("speaker is unavailable".into());
+    }
+    let result = speaker_loop(&control, &output, output_guid, pcm).await;
+    output.set_adm_playout_enabled(false);
+    output.release_platform_adm();
+    result
+}
+
+async fn speaker_loop(
+    control: &SpeakerTestControl,
+    output: &PeerConnectionFactory,
+    output_guid: Option<&str>,
+    pcm: &[i16],
+) -> Result<(), String> {
+    let routed = match output_guid {
+        Some(guid) => select_device(output, guid, false),
+        None => output.select_default_playout_device(),
+    };
+    if !routed {
+        return Err("selected speaker is unavailable".into());
+    }
+    let input = PeerConnectionFactory::default();
+    input.set_adm_recording_enabled(false);
+    input.set_adm_playout_enabled(false);
+    let mut config = RtcConfiguration::default();
+    config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+    let sender = input
+        .create_peer_connection(config.clone())
+        .map_err(|error| error.to_string())?;
+    let receiver = match output.create_peer_connection(config) {
+        Ok(receiver) => receiver,
+        Err(error) => {
+            sender.close();
+            return Err(error.to_string());
+        }
+    };
+    let result = speaker_stream(control, output, &input, &sender, &receiver, pcm).await;
+    sender.close();
+    receiver.close();
+    result
+}
+
+async fn speaker_stream(
+    control: &SpeakerTestControl,
+    output: &PeerConnectionFactory,
+    input: &PeerConnectionFactory,
+    sender: &PeerConnection,
+    receiver: &PeerConnection,
+    pcm: &[i16],
+) -> Result<(), String> {
+    let source = NativeAudioSource::new(AudioSourceOptions::default(), RATE, 1, 0);
+    let track = input.create_audio_track("caper-speaker-test", source.clone());
+    sender
+        .add_transceiver(
+            track.into(),
+            RtpTransceiverInit {
+                direction: RtpTransceiverDirection::SendOnly,
+                stream_ids: vec!["local-speaker-test".into()],
+                send_encodings: vec![],
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let (tracks_tx, mut tracks_rx) = mpsc::unbounded_channel();
+    receiver.on_track(Some(Box::new(move |event| {
+        let _ = tracks_tx.send(event.track);
+    })));
+    let (to_receiver, mut receiver_candidates) = mpsc::unbounded_channel();
+    let (to_sender, mut sender_candidates) = mpsc::unbounded_channel();
+    sender.on_ice_candidate(Some(Box::new(move |candidate| {
+        let _ = to_receiver.send(candidate);
+    })));
+    receiver.on_ice_candidate(Some(Box::new(move |candidate| {
+        let _ = to_sender.send(candidate);
+    })));
+    let offer = sender
+        .create_offer(OfferOptions::default())
+        .await
+        .map_err(|error| error.to_string())?;
+    sender
+        .set_local_description(offer.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    receiver
+        .set_remote_description(offer)
+        .await
+        .map_err(|error| error.to_string())?;
+    let answer = receiver
+        .create_answer(AnswerOptions::default())
+        .await
+        .map_err(|error| error.to_string())?;
+    receiver
+        .set_local_description(answer.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    sender
+        .set_remote_description(answer)
+        .await
+        .map_err(|error| error.to_string())?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if control.is_stopped() {
+                return Ok(());
+            }
+            if sender.connection_state() == PeerConnectionState::Connected
+                && receiver.connection_state() == PeerConnectionState::Connected
+            {
+                return Ok::<_, String>(());
+            }
+            tokio::select! {
+                Some(candidate) = sender_candidates.recv() => add_candidate(sender, candidate).await?,
+                Some(candidate) = receiver_candidates.recv() => add_candidate(receiver, candidate).await?,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+            }
+        }
+    })
+    .await
+    .map_err(|_| "local speaker test connection timed out".to_owned())??;
+    if control.is_stopped() {
+        return Ok(());
+    }
+    tokio::time::timeout(Duration::from_secs(2), tracks_rx.recv())
+        .await
+        .map_err(|_| "local speaker test track timed out".to_owned())?
+        .ok_or_else(|| "local speaker test track ended".to_owned())?;
+    output.set_adm_playout_enabled(true);
+    let mut tick = tokio::time::interval(Duration::from_millis(10));
+    for chunk in pcm.chunks(FRAME).cycle() {
+        tick.tick().await;
+        if control.is_stopped() {
+            source.clear_buffer();
+            return Ok(());
+        }
+        let volume = f32::from(control.volume_percent.load(Ordering::Acquire)) / 100.0;
+        let data: Vec<_> = chunk
+            .iter()
+            .map(|value| {
+                (f32::from(*value) * volume).clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+            })
+            .chain(std::iter::repeat(0))
+            .take(FRAME)
+            .collect();
+        source
+            .capture_frame(&AudioFrame {
+                data: data.into(),
+                sample_rate: RATE,
+                num_channels: 1,
+                samples_per_channel: FRAME as u32,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+async fn add_candidate(
+    peer: &PeerConnection,
+    candidate: libwebrtc::ice_candidate::IceCandidate,
+) -> Result<(), String> {
+    peer.add_ice_candidate(candidate)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn speaker_test_loops_its_sound_at_live_volume_until_stopped() {
+        // Synthetic ADMs: the decoded receiver track is what the chosen
+        // output's ADM would mix, observed here through a WebRTC sink.
+        let output = PeerConnectionFactory::default();
+        let input = PeerConnectionFactory::default();
+        let mut config = RtcConfiguration::default();
+        config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+        let sender = input.create_peer_connection(config.clone()).unwrap();
+        let receiver = output.create_peer_connection(config).unwrap();
+        let control = SpeakerTestControl::new(100);
+        let pcm: Vec<i16> = (0..FRAME * 5)
+            .map(|n| (1_000.0 * (std::f64::consts::TAU * n as f64 / 48.0).sin()) as i16)
+            .collect();
+        let task = {
+            let (control, output, input, sender, receiver) = (
+                control.clone(),
+                output.clone(),
+                input.clone(),
+                sender.clone(),
+                receiver.clone(),
+            );
+            tokio::spawn(async move {
+                speaker_stream(&control, &output, &input, &sender, &receiver, &pcm).await
+            })
+        };
+        let track = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(MediaStreamTrack::Audio(track)) = receiver
+                    .transceivers()
+                    .first()
+                    .and_then(|transceiver| transceiver.receiver().track())
+                {
+                    break track;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut decoded = NativeAudioStream::new(track, RATE as i32, 1);
+        let mut peak = async |frames: usize| {
+            let mut peak = 0;
+            for _ in 0..frames {
+                let frame = tokio::time::timeout(Duration::from_secs(2), decoded.next_frame())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                peak = frame
+                    .data
+                    .iter()
+                    .map(|value| value.unsigned_abs())
+                    .fold(peak, u16::max);
+            }
+            peak
+        };
+        // Skip startup and jitter-buffer warmup, then read beyond one loop.
+        peak(40).await;
+        let normal = peak(20).await;
+        assert!(
+            normal > 700,
+            "the looped sound must reach the output: {normal}"
+        );
+        control.set_volume(200);
+        peak(30).await;
+        let loud = peak(20).await;
+        assert!(loud > normal * 3 / 2, "speaker volume applies live: {loud}");
+        control.set_volume(0);
+        peak(30).await;
+        assert!(peak(20).await < 50, "0% is silent");
+        control.stop();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("stop ends the loop promptly")
+            .unwrap()
+            .unwrap();
+        sender.close();
+        receiver.close();
+    }
 
     #[test]
     fn late_processed_frame_cannot_cross_mute_reopen_or_cancel_epoch() {

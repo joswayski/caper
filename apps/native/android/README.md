@@ -76,3 +76,4 @@ Only port 3001 is needed by Android; it serves both API requests and `/api/chat/
 - Both HTTP and WebSocket clients reject redirects, preventing cross-origin credential forwarding.
 - Cleartext traffic is disabled in production-origin builds (enabled only by the explicit loopback fixture build); Android backup is disabled.
 - `third_party/NOTICE-webrtc-sdk.txt` records the WebRTC SDK's BSD 3-Clause notice.
+- `third_party/NOTICE-Lucide.txt` records the ISC notice for the Lucide icon vectors in `app/src/main/res/drawable/lucide_*.xml`.

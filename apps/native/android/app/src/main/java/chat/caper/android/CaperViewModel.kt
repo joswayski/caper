@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val api = CaperApi()
@@ -86,7 +87,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun verify(challenge: String, code: String) = launchAccountAction { request ->
-        val result = api.verifyCode(challenge, code)
+        val result = try { api.verifyCode(challenge, code) } catch (error: ApiException) {
+            val screen = mutable.value.screen
+            if (request == accountGeneration && error.status == 401 && screen is SessionScreen.Verify && screen.challengeId == challenge)
+                mutable.value = mutable.value.copy(screen = screen.copy(attemptsRemaining = error.attemptsRemaining))
+            throw error
+        }
         if (request != accountGeneration) return@launchAccountAction
         tokens.write(result.token)
         accountToken = result.token
@@ -98,12 +104,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveProfile(username: String, displayName: String) = launchAccountAction { request ->
-        val account = api.profile(requireAccountToken(), username, displayName)
+        val account = profileRequest { api.profile(requireAccountToken(), username, displayName) }
         if (request == accountGeneration) loadHome()
     }
 
     fun updateProfile(username: String, displayName: String, onSuccess: () -> Unit) = launchAction { request ->
-        val account = api.profile(requireAccountToken(), username, displayName)
+        val account = profileRequest { api.profile(requireAccountToken(), username, displayName) }
         if (request != accountGeneration) return@launchAction
         mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
         chatToken = null
@@ -170,16 +176,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(channel: Channel) {
         val request = ++generation
         closeChannel(clearPending = true)
-        mutable.value = mutable.value.copy(selectedChannel = channel, messages = emptyList(), busy = true, error = null)
+        mutable.value = mutable.value.copy(selectedChannel = channel, messages = emptyList(), busy = true, error = null, messagesLoading = true)
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
                 if (request != generation) return@launch
-                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false)
+                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false, messagesLoading = false)
                 openGateway(channel.id, history.cursor, request)
             } catch (error: Throwable) {
                 if (request != generation) return@launch
-                if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel() else fail(error)
+                if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                // Web shows a failed first load in the conversation with Try again.
+                else mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
             }
         }
     }
@@ -220,6 +228,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Web's Try again (failed first load) and Retry (failed refresh). */
+    fun retryMessages() {
+        val current = mutable.value
+        val channel = current.selectedChannel ?: return
+        if (current.messagesError != null) selectChannel(channel)
+        else if (current.refreshError != null) resyncChannel(channel.id)
+    }
+
     fun loadOlder() {
         val channel = mutable.value.selectedChannel ?: return
         val before = mutable.value.messages.firstOrNull()?.seq ?: return
@@ -249,7 +265,26 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         watchVisiblePresence()
     }
 
+    private var availabilityRequest: Job? = null
+
+    /** Web: fetch `${mediaRoot}/status` for the viewed channel; failure or timeout means unavailable. */
+    fun checkVoiceAvailability() {
+        val current = mutable.value
+        val channel = current.selectedChannel ?: return
+        val demo = current.selectedSpace?.space?.demo == true
+        val key = voiceRootKey(demo, channel.id)
+        val token = accountToken
+        availabilityRequest?.cancel()
+        availabilityRequest = viewModelScope.launch {
+            val enabled = withTimeoutOrNull(10_000) {
+                runCatching { api.mediaStatus(token, channel.id, demo).enabled }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; false }
+            } ?: false
+            mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (key to enabled))
+        }
+    }
+
     fun reportActivity() { gateway?.reportActivity() }
+    fun localPresence(): String = gateway?.localPresence() ?: "offline"
     fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
 
     internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
@@ -421,6 +456,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val messages = mutable.value.messages
         if (messages.none { it.id == message.id }) {
             mutable.value = mutable.value.copy(messages = (messages + message).sortedWith(compareBy { java.math.BigInteger(it.seq) }))
+            // Web chimes for someone else's new message in the open conversation.
+            if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
         confirmPending(message)
     }
@@ -435,8 +472,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun resyncChannel(channelId: String) {
         val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
         val request = ++generation
+        val previous = mutable.value
         closeChannel(clearPending = false)
-        mutable.value = mutable.value.copy(gateway = GatewayStatus.CONNECTING, busy = true, error = null)
+        // Keep the conversation readable while it reloads, as the web does.
+        mutable.value = mutable.value.copy(
+            selectedChannel = channel, messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
+            gateway = GatewayStatus.CONNECTING, busy = true, error = null,
+        )
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
@@ -446,7 +488,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 openGateway(channel.id, history.cursor, request)
             } catch (error: Throwable) {
                 if (generation == request) {
-                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel() else fail(error)
+                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                    else mutable.value = mutable.value.copy(busy = false, refreshError = message(error))
                 }
             }
         }
@@ -486,12 +529,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(spaces = remaining)
         done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
     }
-    fun createChannel(name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction { request ->
+    fun createChannel(name: String, privateChannel: Boolean, done: (Channel) -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
         val channel = api.createChannel(requireAccountToken(), detail.space.id, name, privateChannel)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        replaceDetail(detail.copy(channels = detail.channels + channel)); done(); selectChannel(channel)
+        replaceDetail(detail.copy(channels = detail.channels + channel)); selectChannel(channel); done(channel)
     }
     fun updateChannel(channel: Channel, name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -573,6 +616,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (clearPending) pendingSends.clear()
         mutable.value = mutable.value.copy(
             selectedChannel = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
         )
@@ -601,15 +645,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() { gateway?.close(); super.onCleared() }
 
-    private fun accountMessage(error: Throwable): String = when ((error as? ApiException)?.status) {
+    /** Web's profile save copy (`account/ProfileForm.tsx`). */
+    private suspend fun <T> profileRequest(block: suspend () -> T): T = try { block() } catch (error: ApiException) {
+        throw ProfileSaveException(when (error.status) {
+            409 -> "That username is already taken."
+            400 -> "Check the username and display name requirements."
+            else -> "Your profile could not be saved. Please try again."
+        })
+    }
+
+    private fun accountMessage(error: Throwable): String = if (error is ProfileSaveException) error.message else when ((error as? ApiException)?.status) {
         400 -> "Enter a valid email address."
-        401 -> "That code is incorrect or expired. Request a new one if needed."
+        401 -> if ((error as ApiException).attemptsRemaining == 0) "That code can no longer be used. Request a new one."
+            else "That code is incorrect or expired. Request a new one if needed."
         503 -> "Sign-in is temporarily unavailable. Please try again later."
         else -> "Something went wrong. Please try again."
     }
 
     private companion object { const val PRESENCE_PAGE_SIZE = 25 }
 }
+
+internal class ProfileSaveException(override val message: String) : Exception(message)
 
 internal data class AdminMutationContext(val accountGeneration: Long, val spaceId: String? = null, val channelId: String? = null) {
     fun isCurrent(currentAccountGeneration: Long, selected: SpaceDetail?): Boolean =

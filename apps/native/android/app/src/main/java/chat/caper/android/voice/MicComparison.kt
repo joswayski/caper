@@ -22,13 +22,26 @@ internal class MicComparison(private val limit: Int = 30 * 48000) {
     private val playbackLock = Any()
     var frames = 0
         private set
+    /** RMS of the latest natural buffer, 0–1; drives the Audio test's input meter. */
+    @Volatile var level = 0f
+        private set
+
+    /** Web's silence check: any natural sample above 0.001 full scale. */
+    fun hasSignal(): Boolean {
+        for (index in 0 until frames) if (kotlin.math.abs(natural[index].toInt()) > 32) return true
+        return false
+    }
 
     fun appendNatural(buffer: ByteBuffer, count: Int, gain: Int) {
         val pcm = buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         val available = count.coerceAtMost(limit - frames)
+        var energy = 0.0
         for (index in 0 until available) {
-            natural[frames + index] = (pcm.getShort(index * 2) * gain / 100).coerceIn(-32768, 32767).toShort()
+            val sample = (pcm.getShort(index * 2) * gain / 100).coerceIn(-32768, 32767).toShort()
+            natural[frames + index] = sample
+            energy += (sample / 32768.0) * (sample / 32768.0)
         }
+        if (available > 0) level = kotlin.math.sqrt(energy / available).toFloat()
     }
 
     fun appendEnhanced(buffer: ByteBuffer, count: Int, valid: Boolean) {

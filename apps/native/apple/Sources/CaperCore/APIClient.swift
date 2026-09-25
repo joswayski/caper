@@ -4,10 +4,11 @@ public struct APIError: LocalizedError, Equatable {
     public let status: Int
     public let message: String
     public let code: String?
+    public let attemptsRemaining: Int?
     public var errorDescription: String? { message }
 
-    public init(status: Int, message: String, code: String? = nil) {
-        self.status = status; self.message = message; self.code = code
+    public init(status: Int, message: String, code: String? = nil, attemptsRemaining: Int? = nil) {
+        self.status = status; self.message = message; self.code = code; self.attemptsRemaining = attemptsRemaining
     }
 
     var endsVoiceAccess: Bool {
@@ -181,6 +182,14 @@ public actor APIClient {
         return try await request("\(root)/\(operation)", method: "POST", body: body, extraHeaders: mediaToken.map { ["x-caper-media-token": $0] } ?? [:])
     }
 
+    /// Whether voice can be joined through this media root (web's `${mediaRoot}/status`).
+    public func mediaStatus(channelID: String?) async throws -> Bool {
+        struct Status: Decodable { let enabled: Bool }
+        let root = try channelID.map { "api/channels/\(try pathID($0))/media" } ?? "api/media"
+        let status: Status = try await request("\(root)/status")
+        return status.enabled
+    }
+
     public func media<B: Encodable>(channelID: String?, operation: String, token mediaToken: String? = nil, body: B) async throws {
         let _: Empty = try await media(channelID: channelID, operation: operation, token: mediaToken, body: body)
     }
@@ -210,7 +219,8 @@ public actor APIClient {
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else {
             let detail = try? decoder.decode(ErrorBody.self, from: data)
-            throw APIError(status: http.statusCode, message: detail?.error ?? "That request did not work.", code: detail?.code)
+            throw APIError(status: http.statusCode, message: detail?.error ?? "That request did not work.", code: detail?.code,
+                           attemptsRemaining: detail?.attemptsRemaining)
         }
         if T.self == Empty.self { return Empty() as! T }
         do { return try decoder.decode(T.self, from: data) }
