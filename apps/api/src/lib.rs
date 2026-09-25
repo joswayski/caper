@@ -1677,20 +1677,25 @@ async fn join(
     };
     // These independent provider requests run together. Session creation is intentionally
     // never retried: an ambiguous create could orphan a session.
-    let (turn_issued, session, ice) = if let Some(prepared) = prepared {
-        (
-            prepared.issued,
-            Ok(prepared.session),
-            Ok(prepared.ice_servers),
-        )
-    } else {
-        let issued = Timestamp::now();
-        let (session, ice) = tokio::join!(
-            s.provider.create_session(&s.config),
-            s.provider.turn(&s.config)
-        );
-        (issued, session, ice)
+    let provisioning = async {
+        if let Some(prepared) = prepared {
+            (
+                prepared.issued,
+                Ok(prepared.session),
+                Ok(prepared.ice_servers),
+            )
+        } else {
+            let issued = Timestamp::now();
+            let (session, ice) = tokio::join!(
+                s.provider.create_session(&s.config),
+                s.provider.turn(&s.config)
+            );
+            (issued, session, ice)
+        }
     };
+    // The access re-check is independent of provisioning; its result is still
+    // applied before the participant is committed or any capability returned.
+    let ((turn_issued, session, ice), access) = tokio::join!(provisioning, s.check_media_access());
     let session = match session {
         Ok(session) => session,
         Err(error) => {
@@ -1759,7 +1764,7 @@ async fn join(
         monitor,
         events: None,
     };
-    if let Err(error) = s.check_media_access().await {
+    if let Err(error) = access {
         s.update(|r| {
             r.reservations.remove(&reservation);
             cleanup_participant_locked(r, &p);

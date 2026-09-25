@@ -2148,3 +2148,45 @@ test("join preparation targets member channels only, at most every few seconds",
     ["media.prepare", "prepareBBBBB"],
   ]);
 });
+
+test("people who leave together are closed concurrently, keeping transient failures for retry", async (t) => {
+  const { client, install, events, states } = setup(t);
+  const original = fetch;
+  const people = [
+    { id: "a", name: "A", muted: false, deafened: false, tracks: [{ id: "track-a", kind: "microphone" }] },
+    { id: "b", name: "B", muted: false, deafened: false, tracks: [{ id: "track-b", kind: "microphone" }] },
+  ];
+  let roster = people;
+  let inFlight = 0, peak = 0;
+  const closed: string[] = [];
+  let failB = true;
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/snapshot")) return Response.json({ participants: roster });
+    if (url.endsWith("/close")) {
+      const { mid } = JSON.parse(init.body as string) as { mid: string };
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      inFlight--;
+      closed.push(mid);
+      if (mid === "2" && failB) { failB = false; return Response.json({ error: "busy" }, { status: 503 }); }
+      return new Response(null, { status: 204 });
+    }
+    return original(url, init);
+  });
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "connected");
+  roster = [];
+  events[0].enqueue(snapshotEvent(roster, 1));
+  await tick();
+  assert.equal(states.at(-1)?.remoteMedia.length, 0, "departed audio stops before cleanup completes");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await tick();
+  assert.equal(peak, 2, "both closes were in flight together");
+  assert.deepEqual([...closed].sort(), ["1", "2"]);
+  // The transiently failed MID is retried on the next reconciliation.
+  events[0].enqueue(snapshotEvent(roster, 2));
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await tick();
+  assert.deepEqual([...closed].sort(), ["1", "2", "2"]);
+  assert.equal(states.at(-1)?.phase, "connected");
+});

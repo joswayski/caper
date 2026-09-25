@@ -1523,7 +1523,12 @@ diagnostics from real sessions before claiming a specific speedup.
 credentials for a signed-in member moments before they join. Their join takes
 them instead of calling Cloudflare for both. The browser sends it when the
 pointer or keyboard focus reaches a Join button, at most every 4 seconds per
-channel. The public demo still creates on join, and `prepare` returns 404 there.
+channel, and also as a mouse or pen pointer comes within 120 px of a Join
+button (one document listener, at most one geometry check per animation frame,
+signed-in members only; touch relies on pointerdown). The public demo still
+creates on join, and `prepare` returns 404 there. Real Chromium with the UI
+fixture confirmed: no request from far away, one when approaching within 100 px
+without touching the button, and none again on the hover that follows.
 
 Live measurements (September 25, 2026, this sandbox, real Cloudflare) set the
 limits:
@@ -1546,6 +1551,17 @@ this sandbox's egress proxy) spent 616-657 ms there. Preparing also warms the
 API's connection before the join. Production cold-connection cost is expected to
 be lower than through that proxy; compare `Cloudflare operation succeeded`
 `elapsed_ms` for `create_session` and `publish` in production logs.
+
+Join also re-checks channel access concurrently with provider provisioning
+instead of after it; the result is still applied before the participant is
+committed or any capability returned.
+
+When several people leave at once, a listener now stops their audio locally and
+closes their MIDs with concurrent `close` requests (one round trip, not one per
+person). Each close is one atomic registry update with no SDP change, and the
+API already removed the listener's subscriptions server-side when the source
+left, so these calls only keep state consistent; a transient failure keeps that
+MID for the next reconciliation.
 
 Deploy API, then gateway (its allowlist gains `media.prepare`), then web. An
 older API or gateway rejects `prepare`; the browser ignores the failure and joins

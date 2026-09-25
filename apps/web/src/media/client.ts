@@ -959,23 +959,32 @@ export class PublicCallClient {
     }, generation);
   }
 
-  private unsubscribe(trackId: string) {
+  private unsubscribe(trackIds: string[]) {
     const generation = this.generation;
     return this.serialize(async () => {
-      const mid = this.subscriptions.get(trackId);
-      if (!mid) return;
+      const departed = trackIds.flatMap((trackId) => {
+        const mid = this.subscriptions.get(trackId);
+        return mid ? [{ trackId, mid }] : [];
+      });
+      if (!departed.length) return;
       // A departed source is no longer playable, regardless of cleanup latency.
-      this.remoteMedia.get(trackId)?.stream.getTracks().forEach((track) => track.stop());
-      this.remoteMedia.delete(trackId);
-      this.emit();
-      try { await this.closeMid(mid); } catch (error) {
-        if (generation !== this.generation) return;
-        // Force-close does not negotiate SDP. Keep healthy media and retry this
-        // MID on the next roster reconciliation/lease heartbeat, not a new join.
-        if (transientControlError(error)) return;
-        throw error;
+      for (const { trackId } of departed) {
+        this.remoteMedia.get(trackId)?.stream.getTracks().forEach((track) => track.stop());
+        this.remoteMedia.delete(trackId);
       }
-      if (generation === this.generation) this.subscriptions.delete(trackId);
+      this.emit();
+      // Force-close negotiates no SDP and each close is one atomic server update,
+      // so several departures cost one round trip rather than one each.
+      const results = await Promise.allSettled(departed.map(({ mid }) => this.closeMid(mid)));
+      if (generation !== this.generation) return;
+      let failure: unknown;
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") this.subscriptions.delete(departed[index].trackId);
+        // Keep healthy media and retry a transiently failed MID on the next
+        // roster reconciliation/lease heartbeat, not a new join.
+        else if (!transientControlError(result.reason)) failure ??= result.reason;
+      });
+      if (failure) throw failure;
     }, generation);
   }
 
@@ -1136,11 +1145,9 @@ export class PublicCallClient {
         // ontrack uses the roster to associate arriving media with its owner.
         this.participants = snapshot.participants;
         const available = new Set(snapshot.participants.flatMap((participant) => participant.tracks.map((track) => track.id)));
-        for (const id of this.subscriptions.keys()) {
-          if (generation !== this.generation) return;
-          if (pushedVersion !== this.pushedSnapshotVersion) break;
-          if (!available.has(id)) await this.unsubscribe(id);
-        }
+        const departed = [...this.subscriptions.keys()].filter((id) => !available.has(id));
+        if (departed.length) await this.unsubscribe(departed);
+        if (generation !== this.generation) return;
         let unavailable = false;
         const missing = snapshot.participants
           .filter((participant) => participant.id !== this.selfId)
