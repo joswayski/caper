@@ -14,7 +14,7 @@ final class VoicePresenceTests: XCTestCase {
     private func snapshot(_ revision: Int, name: String) -> [String: Any] {
         ["type": "snapshot", "revision": revision, "participants": [
             ["id": "guest", "name": name, "muted": true, "deafened": false,
-             "tracks": [["id": "private-track", "kind": "microphone"]]
+             "tracks": [["id": "private-track", "kind": "microphone"]]]
         ]]
     }
 
