@@ -90,6 +90,18 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    private func dismissAudioMenu(in app: XCUIApplication) {
+        #if os(macOS)
+        app.typeKey(.escape, modifierFlags: [])
+        #else
+        // The popover blocks its anchor; tap outside it as a person would.
+        let outside = app.otherElements["PopoverDismissRegion"]
+        XCTAssertTrue(outside.exists)
+        outside.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: outside)], timeout: 3)
+        #endif
+    }
+
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }
@@ -175,7 +187,14 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
+        // macOS folds a button's child text into the button label, so check the
+        // combined label everywhere and the visible line itself where exposed.
+        let contextLabel = app.buttons.matching(identifier: "active-voice-context")
+            .matching(NSPredicate(format: "label == %@", "Voice connected, general / Fixture Studio"))
+        XCTAssertTrue(contextLabel.firstMatch.exists, "Dock context reads channel / space")
+        #if os(iOS)
         assertStaticText("general / Fixture Studio", in: app)
+        #endif
         assertStaticText("TEST FIXTURE You (you)", in: app)
         assertStaticText("TEST FIXTURE Maya", in: app)
         XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
@@ -197,16 +216,16 @@ final class CaperParityUITests: XCTestCase {
         #if os(macOS)
         let mute = app.checkBoxes["Mute"]
         #else
-        let mute = app.switches["Mute"]
+        // The labelled row is a Switch; its centre is the label, so tap the inner control.
+        let mute = app.switches["Mute"].switches.firstMatch
         #endif
         XCTAssertTrue(mute.exists)
         capture("active-voice-audio-menu-test-fixture", app: app)
         mute.tap()
-        #if os(macOS)
-        app.typeKey(.escape, modifierFlags: [])
-        #else
-        audio.tap()
+        #if os(iOS)
+        XCTAssertEqual(mute.value as? String, "1")
         #endif
+        dismissAudioMenu(in: app)
         let localMute = app.descendants(matching: .any)["participant-local-muted-fixture-remote"]
         XCTAssertTrue(localMute.waitForExistence(timeout: 3))
         assertStaticText("You muted TEST FIXTURE Maya", in: app)
@@ -214,11 +233,10 @@ final class CaperParityUITests: XCTestCase {
         audio.tap()
         XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
         mute.tap()
-        #if os(macOS)
-        app.typeKey(.escape, modifierFlags: [])
-        #else
-        audio.tap()
+        #if os(iOS)
+        XCTAssertEqual(mute.value as? String, "0")
         #endif
+        dismissAudioMenu(in: app)
         XCTAssertFalse(localMute.waitForExistence(timeout: 1), "Local mute status disappears when remote playback is restored")
     }
 

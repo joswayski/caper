@@ -990,7 +990,7 @@ private struct ProfileView: View {
     @State private var displayName = ""
     var body: some View {
         ScrollView {
-            VStack(spacing: 22) {
+            VStack(alignment: .leading, spacing: 22) {
                 Wordmark(); Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
