@@ -24,6 +24,11 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use uuid::Uuid;
 
 const LEASE: Duration = Duration::from_secs(45);
+// Cloudflare disconnects an unused session after 10-15 s (live-measured
+// September 25, 2026), so a prepared session is only offered for this long.
+const PREPARED_TTL: Duration = Duration::from_secs(8);
+// Revoke an unused prepared TURN credential once it can no longer be taken.
+const PREPARED_REVOKE_AFTER: Duration = Duration::from_secs(12);
 // Cloudflare's maximum credential lifetime, not an application call-age limit.
 // Revoke on leave/lease expiry. The browser renews halfway through this lifetime
 // using ICE restart; setConfiguration alone does not renew allocations.
@@ -747,6 +752,24 @@ struct Registry {
     cleanup: VecDeque<CleanupJob>,
     reservations: HashMap<Uuid, JoinReservation>,
     revision: u64,
+    /// Provider sessions and TURN created shortly before a signed-in member joins.
+    #[serde(default)]
+    prepared: Vec<PreparedJoin>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct PreparedJoin {
+    /// The account session hash that may take it, in this room only.
+    account: Vec<u8>,
+    session: String,
+    ice_servers: Vec<IceServer>,
+    issued: Timestamp,
+}
+impl PreparedJoin {
+    fn usernames(&self) -> impl Iterator<Item = &String> {
+        self.ice_servers
+            .iter()
+            .filter_map(|server| server.username.as_ref())
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct JoinReservation {
@@ -1008,6 +1031,7 @@ fn media_routes() -> Router<AppState> {
         .route("/api/media/presence", get(presence))
         .route("/api/media/presence/events", get(presence_events))
         .route("/api/media/join", post(join))
+        .route("/api/media/prepare", post(prepare))
         .route("/api/media/turn", post(turn))
         .route("/api/media/restart-ice", post(restart_ice))
         .route("/api/media/restart-ice-ack", post(restart_ice_ack))
@@ -1647,13 +1671,26 @@ async fn join(
             Ok(monitor)
         })
         .await?;
+    let prepared = match (&s.media_session, monitor) {
+        (Some(account), None) => s.update(|r| Ok(take_prepared_locked(r, account))).await?,
+        _ => None,
+    };
     // These independent provider requests run together. Session creation is intentionally
     // never retried: an ambiguous create could orphan a session.
-    let turn_issued = Timestamp::now();
-    let (session, ice) = tokio::join!(
-        s.provider.create_session(&s.config),
-        s.provider.turn(&s.config)
-    );
+    let (turn_issued, session, ice) = if let Some(prepared) = prepared {
+        (
+            prepared.issued,
+            Ok(prepared.session),
+            Ok(prepared.ice_servers),
+        )
+    } else {
+        let issued = Timestamp::now();
+        let (session, ice) = tokio::join!(
+            s.provider.create_session(&s.config),
+            s.provider.turn(&s.config)
+        );
+        (issued, session, ice)
+    };
     let session = match session {
         Ok(session) => session,
         Err(error) => {
@@ -1766,6 +1803,83 @@ async fn join(
         }
     }
     Ok(Json(response))
+}
+
+/// Removes and returns this account's prepared join while it is still usable,
+/// cancelling the scheduled revocation of its TURN credentials.
+fn take_prepared_locked(r: &mut Registry, account: &[u8]) -> Option<PreparedJoin> {
+    r.prepared.retain(|p| p.issued.elapsed() < PREPARED_TTL);
+    let index = r.prepared.iter().position(|p| p.account == account)?;
+    let prepared = r.prepared.swap_remove(index);
+    let usernames: Vec<_> = prepared.usernames().cloned().collect();
+    r.cleanup.retain(|job| {
+        !matches!(&job.action, CleanupAction::Revoke { username } if usernames.contains(username))
+    });
+    Some(prepared)
+}
+
+/// Creates a provider session and TURN credentials moments before a signed-in
+/// member joins this channel, so their join skips both provider calls. An
+/// unused session is disconnected by Cloudflare within 10-15 s and needs no
+/// cleanup; its TURN credentials are revoked on a schedule set here.
+async fn prepare(State(s): State<AppState>, Json(_): Json<Empty>) -> Result<StatusCode, ApiError> {
+    ensure_enabled(&s)?;
+    // Signed-in account channels only (the channel route sets this after its
+    // membership check); the public demo stays create-on-join.
+    let Some(account) = s.media_session.clone() else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not available"));
+    };
+    let wanted = s
+        .update(|r| {
+            r.prepared.retain(|p| p.issued.elapsed() < PREPARED_TTL);
+            // A fresh one is still worth taking; this also bounds provider calls.
+            let fresh = r
+                .prepared
+                .iter()
+                .any(|p| p.account == account && p.issued.elapsed() < PREPARED_TTL / 2);
+            Ok(!fresh && r.prepared.len() < MAX_PARTICIPANTS)
+        })
+        .await?;
+    if !wanted {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let issued = Timestamp::now();
+    let (session, ice) = tokio::join!(
+        s.provider.create_session(&s.config),
+        s.provider.turn(&s.config)
+    );
+    // Preparation is best effort; join creates whatever is missing as usual.
+    let Ok(ice_servers) = ice else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let usernames: Vec<_> = ice_servers
+        .iter()
+        .filter_map(|server| server.username.clone())
+        .collect();
+    s.update(|r| {
+        // Even when session creation failed, these credentials exist until revoked.
+        for username in &usernames {
+            enqueue_action_at_locked(
+                r,
+                CleanupAction::Revoke {
+                    username: username.clone(),
+                },
+                issued + PREPARED_REVOKE_AFTER,
+            );
+        }
+        if let Ok(session) = &session {
+            r.prepared.retain(|p| p.account != account);
+            r.prepared.push(PreparedJoin {
+                account: account.clone(),
+                session: session.clone(),
+                ice_servers: ice_servers.clone(),
+                issued,
+            });
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn turn_metadata(cache: &TurnCache) -> Value {
@@ -3066,6 +3180,9 @@ fn cleanup_participant_locked(r: &mut Registry, p: &Participant) {
     }
 }
 fn enqueue_action_locked(r: &mut Registry, action: CleanupAction) {
+    enqueue_action_at_locked(r, action, Timestamp::now());
+}
+fn enqueue_action_at_locked(r: &mut Registry, action: CleanupAction, not_before: Timestamp) {
     if r.cleanup.iter().any(|job| job.action == action) {
         return;
     }
@@ -3079,7 +3196,7 @@ fn enqueue_action_locked(r: &mut Registry, action: CleanupAction) {
     r.cleanup.push_back(CleanupJob {
         action,
         attempts: 0,
-        not_before: Timestamp::now(),
+        not_before,
         claim: None,
     });
 }

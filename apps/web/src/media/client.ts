@@ -66,9 +66,28 @@ function transientControlError(error: unknown) {
 }
 
 const MEDIA_OPERATIONS = new Set([
-  "join", "state", "leave", "snapshot", "publish", "subscribe", "negotiate", "close",
+  "join", "prepare", "state", "leave", "snapshot", "publish", "subscribe", "negotiate", "close",
   "turn", "restart-ice", "restart-ice-ack", "status",
 ]);
+
+const PREPARE_INTERVAL_MS = 4_000;
+const prepared = new Map<string, number>();
+
+/**
+ * Asks the API to create a signed-in member's provider session and TURN
+ * credentials moments before they join a channel, so Join skips both provider
+ * calls. Call it on intent (pointer over or focus on Join). Cloudflare drops an
+ * unused session within 10-15 s, so the API keeps it for 8 s; this reissues at
+ * most every 4 s per channel. Best effort: failures only mean an ordinary join.
+ */
+export function prepareVoiceJoin(apiRoot: string) {
+  const channelId = channelFromRoot(apiRoot);
+  if (!channelId || typeof window === "undefined") return; // The public demo creates on join.
+  const now = Date.now();
+  if (now - (prepared.get(apiRoot) ?? -Infinity) < PREPARE_INTERVAL_MS) return;
+  prepared.set(apiRoot, now);
+  void appGateway().command({ method: "media.prepare", channelId, body: {}, timeoutMs: 5_000 }).catch(() => undefined);
+}
 
 function channelFromRoot(apiRoot: string) {
   const match = /^\/api\/channels\/([^/]+)\/media$/.exec(apiRoot);

@@ -1022,6 +1022,161 @@ async fn join_can_publish_the_first_microphone_in_one_request() {
 }
 
 #[tokio::test]
+async fn prepared_joins_skip_provider_setup_for_signed_in_members_only() {
+    let (public, _) = state();
+    assert_eq!(
+        call(app(public), "POST", "/api/media/prepare", None, json!({}))
+            .await
+            .0,
+        StatusCode::NOT_FOUND,
+        "the public demo creates sessions only on join"
+    );
+
+    let (mut s, mock) = state();
+    s.media_session = Some(b"member".to_vec());
+    let sessions = mock.next.load(Ordering::SeqCst);
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/prepare",
+            None,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions + 1);
+    let (prepared, username) = {
+        let r = s.registry.lock().await;
+        assert_eq!(r.prepared.len(), 1);
+        let username = r.prepared[0].usernames().next().unwrap().clone();
+        let job = r
+            .cleanup
+            .iter()
+            .find(|job| {
+                job.action
+                    == CleanupAction::Revoke {
+                        username: username.clone(),
+                    }
+            })
+            .expect("unused credentials are revoked on a schedule");
+        assert!(
+            job.not_before > Timestamp::now() + PREPARED_TTL,
+            "never before the prepared join expires"
+        );
+        (r.prepared[0].session.clone(), username)
+    };
+    // A fresh preparation is reused rather than replaced.
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/prepare",
+            None,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions + 1);
+
+    // Another account cannot take it; it provisions normally.
+    let mut other = s.clone();
+    other.media_session = Some(b"someone else".to_vec());
+    let stranger = call(
+        app(other),
+        "POST",
+        "/api/media/join",
+        None,
+        json!({"name":"stranger"}),
+    )
+    .await
+    .1;
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions + 2);
+    let stranger_id: Uuid = stranger["id"].as_str().unwrap().parse().unwrap();
+    assert_ne!(
+        s.registry.lock().await.participants[&stranger_id].session,
+        prepared
+    );
+
+    // The member's join takes the prepared session and keeps its credentials.
+    let (status, joined) = call(app(s.clone()), "POST", "/api/media/join", None,
+        json!({"name":"member","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}})).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        sessions + 2,
+        "no provider session created"
+    );
+    assert_eq!(joined["iceServers"][0]["username"], username.as_str());
+    {
+        let r = s.registry.lock().await;
+        let id: Uuid = joined["id"].as_str().unwrap().parse().unwrap();
+        assert_eq!(r.participants[&id].session, prepared);
+        assert!(r.prepared.is_empty());
+        assert!(
+            !r.cleanup.iter().any(|job| job.action
+                == CleanupAction::Revoke {
+                    username: username.clone()
+                }),
+            "a taken credential is no longer scheduled for revocation"
+        );
+    }
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/leave",
+        joined["token"].as_str(),
+        json!({}),
+    )
+    .await;
+
+    // An expired preparation is ignored; its credentials stay scheduled for revocation.
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/prepare",
+            None,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let stale = {
+        let mut r = s.registry.lock().await;
+        r.prepared[0].issued = Timestamp::now() - PREPARED_TTL - Duration::from_secs(1);
+        r.prepared[0].usernames().next().unwrap().clone()
+    };
+    let before = mock.next.load(Ordering::SeqCst);
+    let late = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        json!({"name":"member"}),
+    )
+    .await
+    .1;
+    assert!(late["token"].is_string());
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        before + 1,
+        "a new session, not a disconnected one"
+    );
+    let r = s.registry.lock().await;
+    assert!(r.prepared.is_empty());
+    assert!(r.cleanup.iter().any(|job| job.action
+        == CleanupAction::Revoke {
+            username: stale.clone()
+        }));
+}
+
+#[tokio::test]
 async fn private_monitor_mutations_do_not_emit_public_events() {
     let (s, _) = state();
     let parent = joined(&s, "parent").await;

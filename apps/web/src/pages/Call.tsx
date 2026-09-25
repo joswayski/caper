@@ -11,7 +11,7 @@ import PresenceDot from "../components/PresenceDot";
 import Tooltip from "../components/Tooltip";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
-import { PublicCallClient } from "../media/client";
+import { PublicCallClient, prepareVoiceJoin } from "../media/client";
 import { watchPresence } from "../media/presence";
 import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
@@ -478,6 +478,12 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     setVoiceChannel(target);
     void clientRef.current!.join(identityName.trim(), deviceId);
   };
+  /** Signed-in members: create the provider session as the pointer or focus reaches Join. */
+  const prepareChannel = (channelId?: string) => {
+    const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
+    if (!signedIn || channel?.demo || joinBlocked || (!idle && clientRoot.current === root)) return;
+    prepareVoiceJoin(root);
+  };
   const openMicTest = () => {
     setVoiceError(undefined);
     setAudioPanel("mic");
@@ -585,7 +591,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     // voice when you hover or focus their line (hidden on touch screens).
     const viewed = channelId === channel?.id;
     const join = !inVoiceHere(channelId) && (viewed || people.length > 0) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
-      <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
+      <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
     return {

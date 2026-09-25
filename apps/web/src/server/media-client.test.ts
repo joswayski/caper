@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
-import { PublicCallClient, waitFor } from "../media/client.ts";
+import { PublicCallClient, prepareVoiceJoin, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
 import type { CallViewState } from "../media/types.ts";
@@ -2127,4 +2127,24 @@ test("a listed source that cannot be pulled yet is retried shortly", async (t) =
   assert.equal(refusals, 3, "and the next about 250 ms later");
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "fresh");
+});
+
+test("join preparation targets member channels only, at most every few seconds", (t) => {
+  const commands: Array<{ method: string; channelId?: string }> = [];
+  const restoreWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", { value: globalThis, configurable: true });
+  setAppGatewayForTests({ command: async (request: { method: string; channelId?: string }) => { commands.push(request); } } as unknown as AppGateway);
+  t.after(() => {
+    setAppGatewayForTests(undefined);
+    if (restoreWindow) Object.defineProperty(globalThis, "window", restoreWindow); else Reflect.deleteProperty(globalThis, "window");
+  });
+  prepareVoiceJoin("/api/media");
+  assert.equal(commands.length, 0, "the public demo creates sessions on join");
+  prepareVoiceJoin("/api/channels/prepareAAAAA/media");
+  prepareVoiceJoin("/api/channels/prepareAAAAA/media");
+  prepareVoiceJoin("/api/channels/prepareBBBBB/media");
+  assert.deepEqual(commands.map(({ method, channelId }) => [method, channelId]), [
+    ["media.prepare", "prepareAAAAA"],
+    ["media.prepare", "prepareBBBBB"],
+  ]);
 });
