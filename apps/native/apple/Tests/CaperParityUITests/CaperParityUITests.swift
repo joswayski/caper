@@ -522,13 +522,17 @@ final class CaperParityUITests: XCTestCase {
         // Grab the centered thumb and drag beyond the track to its real limit.
         let inputGain = app.sliders["Test microphone volume"]
         inputGain.adjust(toNormalizedSliderPosition: 0.5)
+        // A slow drag that holds past the track's end: fast drags on the Intel
+        // runner can release before AppKit tracks the final position.
         inputGain.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.1, thenDragTo: inputGain.coordinate(withNormalizedOffset: CGVector(dx: -0.1, dy: 0.5)))
+            .press(forDuration: 0.1, thenDragTo: inputGain.coordinate(withNormalizedOffset: CGVector(dx: -0.5, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertEqual(outputGain(of: app.sliders["Test microphone volume"]), 0)
         let strength = app.sliders["Voice processing"]
         strength.adjust(toNormalizedSliderPosition: 0.5)
         strength.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.1, dy: 0.5)))
+            .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.5, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertEqual(outputGain(of: app.sliders["Voice processing"]), 100)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
         #endif
