@@ -194,6 +194,7 @@ struct CaperApp {
     form_name: String,
     form_private: bool,
     member_username: String,
+    member_error: Option<&'static str>,
     managed_members: Vec<Member>,
     managed_channel: Option<String>,
     persist_preferences: bool,
@@ -266,6 +267,7 @@ impl CaperApp {
             form_name: String::new(),
             form_private: false,
             member_username: String::new(),
+            member_error: None,
             managed_members: Vec::new(),
             managed_channel: None,
             persist_preferences: fixture.is_none(),
@@ -296,6 +298,21 @@ impl CaperApp {
                         .detail
                         .as_ref()
                         .map_or_else(Vec::new, |detail| detail.members[..2].to_vec());
+                    app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
+                } else if matches!(name, "parity-no-channels" | "parity-no-channels-member") {
+                    app.detail.as_mut().unwrap().channels.clear();
+                    app.selected_channel = None;
+                    if name.ends_with("-member") {
+                        app.account.as_mut().unwrap().id = "fixture-maya".into();
+                    }
+                } else if name == "parity-create-channel" {
+                    app.dialog = Some(Dialog::CreateChannel);
+                } else if name == "parity-create-space" {
+                    app.dialog = Some(Dialog::CreateSpace);
+                } else if name == "parity-channel-dirty" {
+                    app.form_name = "planning-notes".into();
+                    app.form_private = true;
+                    app.managed_channel = Some("chan00000003".into());
                     app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
                 } else if name == "parity-voice-checking" {
                     app.media_availability.clear();
@@ -481,6 +498,11 @@ impl CaperApp {
             },
         ];
         self.spaces = vec![demo, space.clone()];
+        self.limits = Some(model::SpaceLimits {
+            owned_spaces: 20,
+            total_spaces: 100,
+            channels_per_space: 100,
+        });
         self.selected_space = Some(space.id.clone());
         self.selected_channel = Some(channel.id.clone());
         self.detail = Some(SpaceDetail {
@@ -1720,14 +1742,22 @@ impl CaperApp {
                 self.detail = None;
                 self.managed_members.clear();
                 self.presence.clear();
-                self.open_general();
+                // Web opens the first remaining space; General leads the list.
+                match self.spaces.first() {
+                    Some(space) if !space.demo => self.select_space(space.id.clone()),
+                    _ => self.open_general(),
+                }
             }
             AdminResult::ChannelCreated(channel) => {
                 if let Some(detail) = &mut self.detail {
                     detail.channels.push(channel.clone());
                 }
                 self.dialog = None;
-                self.select_channel(channel.id, false);
+                self.select_channel(channel.id.clone(), false);
+                // Web opens a new private channel's Overview to add members.
+                if channel.private {
+                    self.open_manage_channel(&channel.id, &channel.name, true);
+                }
             }
             AdminResult::ChannelUpdated(channel) => {
                 if let Some(detail) = &mut self.detail
@@ -2216,7 +2246,7 @@ impl CaperApp {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
                             self.conversation(ui, true)
                         });
-                        if self.narrow_members_visible {
+                        if self.narrow_members_visible && !self.no_accessible_channels() {
                             let members_rect = egui::Rect::from_min_max(
                                 egui::pos2(
                                     (content.right() - 280.0).max(content.left()),
@@ -2248,8 +2278,8 @@ impl CaperApp {
                         content.max,
                     );
                     let wide_members = context.viewport_rect().width() >= 1100.0;
-                    let (conversation_rect, members_rect) = if self.members_visible && wide_members
-                    {
+                    let members_visible = self.members_visible && !self.no_accessible_channels();
+                    let (conversation_rect, members_rect) = if members_visible && wide_members {
                         let members = egui::Rect::from_min_max(
                             egui::pos2(stage_rect.right() - 220.0, stage_rect.top()),
                             stage_rect.max,
@@ -2261,7 +2291,7 @@ impl CaperApp {
                             ),
                             Some(members),
                         )
-                    } else if self.members_visible {
+                    } else if members_visible {
                         let members = egui::Rect::from_min_max(
                             egui::pos2(stage_rect.left(), stage_rect.bottom() - 220.0),
                             stage_rect.max,
@@ -2424,8 +2454,21 @@ impl CaperApp {
                     }
                     ui.add_space(10.0);
                 }
-                let (rect, add) =
-                    ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+                let tooltip = self.create_space_tooltip();
+                let add_enabled = self.account.is_none() || self.can_create_space();
+                let (rect, add) = ui.allocate_exact_size(
+                    egui::vec2(40.0, 40.0),
+                    if add_enabled {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                );
+                let plus = if add_enabled {
+                    TERRACOTTA_BRIGHT
+                } else {
+                    TERRACOTTA_BRIGHT.gamma_multiply(0.45)
+                };
                 ui.painter()
                     .rect_filled(rect, 12.0, if add.hovered() { RAISED } else { SURFACE });
                 let inset = rect.shrink(0.5);
@@ -2451,26 +2494,15 @@ impl CaperApp {
                     3.0,
                 ));
                 add.widget_info(|| {
-                    egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
-                        ui.is_enabled(),
-                        "Create space",
-                    )
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, add_enabled, "Create space")
                 });
                 paint_icon(
                     ui.painter(),
                     egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
                     NavIcon::Plus,
-                    TERRACOTTA_BRIGHT,
+                    plus,
                 );
-                if add
-                    .on_hover_text(if self.account.is_some() {
-                        "Create space"
-                    } else {
-                        "Sign in to create a space"
-                    })
-                    .clicked()
-                {
+                if add.on_hover_text(tooltip).clicked() {
                     self.dialog = Some(if self.account.is_some() {
                         Dialog::CreateSpace
                     } else {
@@ -2599,6 +2631,8 @@ impl CaperApp {
                                                     detail.members.clone()
                                                 });
                                             self.managed_channel = None;
+                                            self.member_username.clear();
+                                            self.member_error = None;
                                             if let (Some(token), Some(space)) =
                                                 (self.token.clone(), self.selected_space.clone())
                                             {
@@ -2658,6 +2692,8 @@ impl CaperApp {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         ui.spacing_mut().item_spacing.x = 2.0;
+                                        let can_create = self.can_create_channel();
+                                        let channel_tooltip = self.create_channel_tooltip();
                                         if self.owner() {
                                             let options = drawn_icon_button(
                                                 ui,
@@ -2669,7 +2705,7 @@ impl CaperApp {
                                                 .width(190.0)
                                                 .show(|ui| {
                                                     if ui
-                                                        .add(egui::Button::image_and_text(
+                                                        .add_enabled(can_create, egui::Button::image_and_text(
                                                             egui::Image::new(egui::include_image!(
                                                                 "../resources/icons/plus.svg"
                                                             ))
@@ -2701,12 +2737,18 @@ impl CaperApp {
                                                 });
                                         }
                                         if self.owner()
-                                            && drawn_icon_button(
-                                                ui,
-                                                NavIcon::Plus,
-                                                "Create channel",
-                                            )
-                                            .clicked()
+                                            && ui
+                                                .add_enabled_ui(can_create, |ui| {
+                                                    drawn_icon_button_with_tooltip(
+                                                        ui,
+                                                        NavIcon::Plus,
+                                                        "Create channel",
+                                                        &channel_tooltip,
+                                                    )
+                                                    .on_disabled_hover_text(&channel_tooltip)
+                                                })
+                                                .inner
+                                                .clicked()
                                         {
                                             self.form_name.clear();
                                             self.form_private = false;
@@ -2746,23 +2788,7 @@ impl CaperApp {
                                 self.owner(),
                             );
                             if settings.is_some_and(|response| response.clicked()) {
-                                self.form_name = name.clone();
-                                self.form_private = private;
-                                self.managed_channel = Some(id.clone());
-                                if private
-                                    && let (Some(token), Some(space)) =
-                                        (self.token.clone(), self.selected_space.clone())
-                                {
-                                    self.worker.send(Command::Admin {
-                                        generation: self.generation,
-                                        token,
-                                        operation: AdminOperation::LoadMembers {
-                                            space,
-                                            channel: Some(id.clone()),
-                                        },
-                                    });
-                                }
-                                self.dialog = Some(Dialog::ManageChannel(id.clone()));
+                                self.open_manage_channel(&id, &name, private);
                             } else if response.clicked() {
                                 self.select_channel(id.clone(), false);
                             } else if response.hovered() || response.has_focus() {
@@ -3968,7 +3994,85 @@ impl CaperApp {
             });
     }
 
+    /// An account space whose channels are all hidden from this member.
+    fn no_accessible_channels(&self) -> bool {
+        self.detail
+            .as_ref()
+            .is_some_and(|detail| !detail.space.demo && detail.channels.is_empty())
+    }
+
+    /// Web's `.empty-channel` stage.
+    fn empty_channels(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            let owner = self.owner();
+            let height = if owner { 170.0 } else { 110.0 } + if narrow { 56.0 } else { 0.0 };
+            ui.vertical_centered(|ui| {
+                ui.add_space(((ui.available_height() - height) / 2.0).max(24.0));
+                if narrow
+                    && ui
+                        .add(
+                            egui::Button::image_and_text(
+                                egui::Image::new(egui::include_image!(
+                                    "../resources/icons/hash.svg"
+                                ))
+                                .tint(MUTED)
+                                .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                bold("Browse spaces").size(12.5),
+                            )
+                            .min_size(egui::vec2(0.0, 36.0)),
+                        )
+                        .clicked()
+                {
+                    self.navigation_open = true;
+                }
+                if narrow {
+                    ui.add_space(20.0);
+                }
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                paint_icon(ui.painter(), rect, NavIcon::Hash, TERRACOTTA_BRIGHT);
+                ui.add_space(14.0);
+                ui.label(bold("No accessible channels").size(20.0));
+                ui.add_space(7.0);
+                ui.label(
+                    RichText::new(if owner {
+                        "Create a channel to start a conversation."
+                    } else {
+                        "The owner has not shared a channel with you yet."
+                    })
+                    .size(13.0)
+                    .color(MUTED),
+                );
+                if owner {
+                    ui.add_space(18.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                bold("Create channel").size(12.5).color(Color32::WHITE),
+                            )
+                            .fill(TERRACOTTA)
+                            .stroke(Stroke::new(1.0, TERRACOTTA))
+                            .corner_radius(8)
+                            .min_size(egui::vec2(0.0, 38.0)),
+                        )
+                        .clicked()
+                    {
+                        self.form_name.clear();
+                        self.form_private = false;
+                        self.error = None;
+                        self.dialog = Some(Dialog::CreateChannel);
+                    }
+                }
+            });
+        });
+    }
+
     fn conversation(&mut self, ui: &mut egui::Ui, narrow: bool) {
+        if self.no_accessible_channels() {
+            self.empty_channels(ui, narrow);
+            return;
+        }
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_width(320.0);
             ui.set_height(ui.available_height());
@@ -4282,6 +4386,53 @@ impl CaperApp {
             .map_or("general", |channel| channel.name.as_str())
     }
 
+    /// Web's `canCreateSpace`: needs the server's limits.
+    fn can_create_space(&self) -> bool {
+        let (Some(limits), Some(account)) = (&self.limits, &self.account) else {
+            return false;
+        };
+        let owned = self
+            .spaces
+            .iter()
+            .filter(|space| space.owner_id == account.id && !space.demo)
+            .count();
+        owned < limits.owned_spaces
+            && self.spaces.iter().filter(|space| !space.demo).count() < limits.total_spaces
+    }
+
+    fn can_create_channel(&self) -> bool {
+        self.limits
+            .as_ref()
+            .zip(self.detail.as_ref())
+            .is_some_and(|(limits, detail)| detail.channels.len() < limits.channels_per_space)
+    }
+
+    fn create_space_tooltip(&self) -> String {
+        if self.account.is_none() {
+            "Sign in to create a space".into()
+        } else if self.can_create_space() {
+            "Create space".into()
+        } else {
+            let (owned, total) = self.limits.as_ref().map_or((20, 100), |limits| {
+                (limits.owned_spaces, limits.total_spaces)
+            });
+            format!("Space limit reached ({owned} owned, {total} total)")
+        }
+    }
+
+    fn create_channel_tooltip(&self) -> String {
+        if self.can_create_channel() {
+            "Create channel".into()
+        } else {
+            format!(
+                "Channel limit reached ({})",
+                self.limits
+                    .as_ref()
+                    .map_or(100, |limits| limits.channels_per_space)
+            )
+        }
+    }
+
     fn owner(&self) -> bool {
         self.account
             .as_ref()
@@ -4380,6 +4531,7 @@ impl CaperApp {
                     .show(ui, |ui| {
                         ui.set_width(width.min(available.x));
                         ui.set_min_height(minimum.min(available.y));
+                        let dialog_top = ui.min_rect().top();
                         egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(22, 18))
                             .show(ui, |ui| {
@@ -4412,8 +4564,12 @@ impl CaperApp {
                                 });
                             });
                         ui.separator();
+                        let save_bar = match &dialog {
+                            Dialog::ManageChannel(id) if self.channel_dirty(id) => Some(id.clone()),
+                            _ => None,
+                        };
                         egui::ScrollArea::vertical()
-                            .max_height((available.y - 92.0).max(120.0))
+                            .max_height((available.y - if save_bar.is_some() { 160.0 } else { 92.0 }).max(120.0))
                             .show(ui, |ui| {
                                 egui::Frame::new()
                                     .inner_margin(egui::Margin::symmetric(22, 20))
@@ -4461,6 +4617,14 @@ impl CaperApp {
                                         notices(ui, &self.error, &self.warning);
                                     });
                             });
+                        if let Some(id) = save_bar {
+                            // Web's bar is sticky at the dialog's bottom edge.
+                            let filler = dialog_top + minimum.min(available.y) - 66.0 - ui.cursor().top();
+                            if filler > 0.0 {
+                                ui.add_space(filler);
+                            }
+                            self.channel_save_bar(ui, &id);
+                        }
                     });
             });
         if close && !(self.loading && return_to.is_some()) {
@@ -4527,53 +4691,48 @@ impl CaperApp {
     }
 
     fn space_dialog(&mut self, ui: &mut egui::Ui, manage: bool) {
-        ui.label("Space name");
-        ui.add_sized(
-            [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.form_name)
-                .vertical_align(egui::Align::Center)
-                .char_limit(80),
-        );
-        let disabled = self.loading || self.form_name.trim().is_empty();
-        let save = if manage {
-            let mut clicked = false;
+        name_field(ui, "Space name", &mut self.form_name, "Studio", None);
+        if manage {
+            let unchanged = self
+                .detail
+                .as_ref()
+                .is_some_and(|detail| self.form_name.trim() == detail.space.name);
+            let mut save = false;
+            ui.add_space(20.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    clicked = ui
-                        .add_enabled(
-                            !disabled,
-                            egui::Button::new(if self.loading {
-                                "Saving…"
-                            } else {
-                                "Save name"
-                            })
-                            .min_size(egui::vec2(88.0, 36.0)),
-                        )
-                        .clicked();
+                    save = secondary_button(
+                        ui,
+                        if self.loading {
+                            "Saving…"
+                        } else {
+                            "Save name"
+                        },
+                        !self.loading && !unchanged,
+                    )
+                    .clicked();
                 });
             });
-            clicked
+            if save && let Some(space) = self.selected_space.clone() {
+                self.admin(AdminOperation::UpdateSpace {
+                    space,
+                    name: self.form_name.clone(),
+                });
+            }
         } else {
-            primary(
+            let (cancel, submit) = dialog_actions(
                 ui,
                 if self.loading {
                     "Saving…"
                 } else {
                     "Create space"
                 },
-                disabled,
-            )
-            .clicked()
-        };
-        if save {
-            if manage {
-                if let Some(space) = self.selected_space.clone() {
-                    self.admin(AdminOperation::UpdateSpace {
-                        space,
-                        name: self.form_name.clone(),
-                    });
-                }
-            } else {
+                !self.loading && !self.form_name.trim().is_empty(),
+            );
+            if cancel {
+                self.dialog = None;
+                self.error = None;
+            } else if submit {
                 self.admin(AdminOperation::CreateSpace {
                     name: self.form_name.clone(),
                 });
@@ -4621,15 +4780,67 @@ impl CaperApp {
         }
     }
 
+    /// Web's channel Overview: private channels load their member grants.
+    fn open_manage_channel(&mut self, id: &str, name: &str, private: bool) {
+        self.form_name = name.into();
+        self.form_private = private;
+        self.managed_channel = Some(id.into());
+        self.managed_members.clear();
+        self.member_username.clear();
+        self.member_error = None;
+        self.error = None;
+        if private
+            && let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone())
+        {
+            self.worker.send(Command::Admin {
+                generation: self.generation,
+                token,
+                operation: AdminOperation::LoadMembers {
+                    space,
+                    channel: Some(id.into()),
+                },
+            });
+        }
+        self.dialog = Some(Dialog::ManageChannel(id.into()));
+    }
+
+    /// The managed channel's saved name and privacy, for web's dirty check.
+    fn saved_channel(&self, channel: &str) -> Option<(String, bool)> {
+        self.detail
+            .as_ref()?
+            .channels
+            .iter()
+            .find(|entry| entry.id == channel)
+            .map(|entry| (entry.name.clone(), entry.private))
+    }
+
+    fn channel_dirty(&self, channel: &str) -> bool {
+        self.saved_channel(channel)
+            .is_some_and(|(name, private)| self.form_name != name || self.form_private != private)
+    }
+
     fn channel_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
-        ui.label("Channel name");
-        ui.add_sized(
-            [ui.available_width(), 42.0],
-            egui::TextEdit::singleline(&mut self.form_name)
-                .vertical_align(egui::Align::Center)
-                .char_limit(80),
+        name_field(
+            ui,
+            "Channel name",
+            &mut self.form_name,
+            "project-updates",
+            channel.is_none().then_some(if self.form_private {
+                NavIcon::Lock
+            } else {
+                NavIcon::Hash
+            }),
         );
         self.form_name = normalize_channel(&self.form_name);
+        if channel.is_none() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.")
+                    .size(12.0)
+                    .color(MUTED),
+            );
+        }
+        ui.add_space(14.0);
         if ui
             .checkbox(&mut self.form_private, "Private channel")
             .changed()
@@ -4650,75 +4861,114 @@ impl CaperApp {
             .size(11.0)
             .color(MUTED),
         );
-        if primary(
-            ui,
-            if self.loading {
-                "Saving…"
-            } else if channel.is_some() {
-                "Save changes"
-            } else {
-                "Create channel"
-            },
-            self.loading || self.form_name.trim_end_matches('-').is_empty(),
-        )
-        .clicked()
-        {
-            let Some(space) = self.selected_space.clone() else {
-                return;
-            };
-            let name = self.form_name.trim_end_matches('-').to_owned();
-            if let Some(channel) = channel.clone() {
-                self.admin(AdminOperation::UpdateChannel {
-                    space,
-                    channel,
-                    name,
-                    private: self.form_private,
-                });
-            } else {
+        let Some(channel) = channel else {
+            let (cancel, submit) = dialog_actions(
+                ui,
+                if self.loading {
+                    "Saving…"
+                } else {
+                    "Create channel"
+                },
+                !self.loading && !self.form_name.trim_end_matches('-').is_empty(),
+            );
+            if cancel {
+                self.dialog = None;
+                self.error = None;
+            } else if submit && let Some(space) = self.selected_space.clone() {
                 self.admin(AdminOperation::CreateChannel {
                     space,
-                    name,
+                    name: self.form_name.trim_end_matches('-').to_owned(),
                     private: self.form_private,
                 });
             }
-        }
-        if let Some(channel) = channel {
-            if self.form_private {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Members").size(14.0));
-                    ui.label(
-                        RichText::new(self.managed_members.len().to_string())
-                            .size(11.0)
-                            .color(MUTED),
-                    );
-                });
-                self.members_dialog(ui, Some(channel.clone()));
-            }
+            return;
+        };
+        // Members follow the saved privacy, as on web.
+        if self
+            .saved_channel(&channel)
+            .is_some_and(|(_, private)| private)
+        {
             ui.separator();
-            ui.label(RichText::new("Delete channel").size(14.0));
-            ui.label(
-                RichText::new("Delete this channel for everyone in the space.")
-                    .size(12.0)
-                    .color(MUTED),
-            );
-            if destructive(ui, "Delete channel").clicked()
-                && let Some(space) = self.selected_space.clone()
-            {
-                self.effects.play(Effect::Warning);
-                let name = self
-                    .detail
-                    .as_ref()
-                    .and_then(|detail| detail.channels.iter().find(|entry| entry.id == channel))
-                    .map_or("this channel", |entry| entry.name.as_str())
-                    .to_owned();
-                self.dialog = Some(Dialog::ConfirmDelete {
-                    space,
-                    channel: Some(channel),
-                    name,
-                });
-            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Members").size(14.0));
+                ui.label(
+                    RichText::new(self.managed_members.len().to_string())
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            });
+            self.members_dialog(ui, Some(channel.clone()));
         }
+        ui.separator();
+        ui.label(RichText::new("Delete channel").size(14.0));
+        ui.label(
+            RichText::new("Delete this channel for everyone in the space.")
+                .size(12.0)
+                .color(MUTED),
+        );
+        if destructive(ui, "Delete channel").clicked()
+            && let Some(space) = self.selected_space.clone()
+        {
+            self.effects.play(Effect::Warning);
+            let name = self
+                .saved_channel(&channel)
+                .map_or_else(|| "this channel".to_owned(), |(name, _)| name);
+            self.dialog = Some(Dialog::ConfirmDelete {
+                space,
+                channel: Some(channel),
+                name,
+            });
+        }
+    }
+
+    /// Web's sticky footer while the channel overview has unsaved changes.
+    fn channel_save_bar(&mut self, ui: &mut egui::Ui, channel: &str) {
+        let bar = egui::Frame::new()
+            .fill(BLACKOUT)
+            .inner_margin(egui::Margin::symmetric(22, 14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 36.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(RichText::new("You have unsaved changes.").size(12.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let save = primary_button(
+                                ui,
+                                if self.loading {
+                                    "Saving…"
+                                } else {
+                                    "Save changes"
+                                },
+                                !self.loading,
+                            );
+                            let reset = secondary_button(ui, "Reset", !self.loading);
+                            if reset.clicked() {
+                                if let Some((name, private)) = self.saved_channel(channel) {
+                                    self.form_name = name;
+                                    self.form_private = private;
+                                }
+                                self.error = None;
+                            } else if save.clicked()
+                                && let Some(space) = self.selected_space.clone()
+                            {
+                                self.admin(AdminOperation::UpdateChannel {
+                                    space,
+                                    channel: channel.to_owned(),
+                                    name: self.form_name.trim_end_matches('-').to_owned(),
+                                    private: self.form_private,
+                                });
+                            }
+                        });
+                    },
+                );
+            });
+        ui.painter().hline(
+            bar.response.rect.x_range(),
+            bar.response.rect.top(),
+            Stroke::new(1.0, BORDER),
+        );
     }
 
     fn members_dialog(&mut self, ui: &mut egui::Ui, channel: Option<String>) {
@@ -4727,21 +4977,30 @@ impl CaperApp {
                 [(ui.available_width() - 80.0).max(1.0), 38.0],
                 egui::TextEdit::singleline(&mut self.member_username)
                     .vertical_align(egui::Align::Center)
-                    .hint_text("Exact username"),
+                    .hint_text(RichText::new("Exact username").color(MUTED.gamma_multiply(0.65))),
             );
             if ui
-                .add(egui::Button::new(bold("Add").size(12.0)).min_size(egui::vec2(64.0, 38.0)))
+                .add_enabled(
+                    !self.loading,
+                    egui::Button::new(bold("Add").size(12.0)).min_size(egui::vec2(64.0, 38.0)),
+                )
                 .clicked()
-                && !self.member_username.trim().is_empty()
-                && let Some(space) = self.selected_space.clone()
             {
-                self.admin(AdminOperation::AddMember {
-                    space,
-                    channel: channel.clone(),
-                    username: self.member_username.trim().into(),
-                });
+                if self.member_username.trim().is_empty() {
+                    self.member_error = Some("Enter an exact username.");
+                } else if let Some(space) = self.selected_space.clone() {
+                    self.member_error = None;
+                    self.admin(AdminOperation::AddMember {
+                        space,
+                        channel: channel.clone(),
+                        username: self.member_username.trim().into(),
+                    });
+                }
             }
         });
+        if let Some(error) = self.member_error {
+            ui.label(RichText::new(error).size(12.0).color(ERROR));
+        }
         ui.separator();
         let members = self.managed_members.clone();
         egui::ScrollArea::vertical()
@@ -5531,6 +5790,82 @@ fn primary(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response {
     )
 }
 
+/// Web's `.space-field` input; channel creation shows its # or lock icon inside.
+fn name_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    placeholder: &str,
+    icon: Option<NavIcon>,
+) {
+    ui.label(label);
+    let response = ui.add_sized(
+        [ui.available_width(), 42.0],
+        egui::TextEdit::singleline(value)
+            .vertical_align(egui::Align::Center)
+            .char_limit(80)
+            .hint_text(RichText::new(placeholder).color(MUTED.gamma_multiply(0.65)))
+            .margin(egui::Margin {
+                left: if icon.is_some() { 37 } else { 8 },
+                right: 8,
+                top: 4,
+                bottom: 4,
+            }),
+    );
+    if let Some(icon) = icon {
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(response.rect.left() + 20.0, response.rect.center().y),
+                egui::vec2(18.0, 18.0),
+            ),
+            icon,
+            MUTED,
+        );
+    }
+}
+
+/// Web's `.secondary` dialog button.
+fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    ui.spacing_mut().button_padding.x = 12.0;
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(bold(text).size(12.0))
+            .fill(RAISED)
+            .stroke(Stroke::new(1.0, BORDER))
+            .corner_radius(7)
+            .min_size(egui::vec2(0.0, 36.0)),
+    )
+}
+
+/// Web's `.primary` dialog button.
+fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    ui.spacing_mut().button_padding.x = 12.0;
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(bold(text).size(12.0))
+            .fill(TERRACOTTA)
+            .stroke(Stroke::new(1.0, TERRACOTTA))
+            .corner_radius(7)
+            .min_size(egui::vec2(0.0, 36.0)),
+    )
+}
+
+/// Web's `SubmitRow`: Cancel, then the primary action, aligned to the end.
+/// Returns (cancel, submit).
+fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool) {
+    ui.add_space(20.0);
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let submit = primary_button(ui, label, enabled).clicked();
+            let cancel = secondary_button(ui, "Cancel", true).clicked();
+            (cancel, submit)
+        })
+        .inner
+    })
+    .inner
+}
+
 fn destructive(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(text).color(Color32::from_rgb(255, 128, 149)))
@@ -6214,6 +6549,48 @@ mod tests {
             &render(&mut app, &context, vec![]),
             "Not connected"
         ));
+    }
+
+    #[test]
+    fn management_follows_web_limits_validation_and_private_channel_flow() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        assert!(app.can_create_space() && app.can_create_channel());
+        app.limits = Some(crate::model::SpaceLimits {
+            owned_spaces: 1,
+            total_spaces: 100,
+            channels_per_space: 3,
+        });
+        assert!(!app.can_create_space());
+        assert_eq!(
+            app.create_space_tooltip(),
+            "Space limit reached (1 owned, 100 total)"
+        );
+        assert!(!app.can_create_channel());
+        assert_eq!(app.create_channel_tooltip(), "Channel limit reached (3)");
+
+        app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
+        app.form_name = "planning".into();
+        app.form_private = true;
+        assert!(!app.channel_dirty("chan00000003"));
+        app.form_name = "planning-notes".into();
+        assert!(app.channel_dirty("chan00000003"));
+
+        app.admin_result(crate::worker::AdminResult::ChannelCreated(
+            crate::model::Channel {
+                id: "chan00000009".into(),
+                space_id: "space0000001".into(),
+                name: "secret".into(),
+                private: true,
+            },
+        ));
+        assert!(matches!(&app.dialog, Some(Dialog::ManageChannel(id)) if id == "chan00000009"));
+        assert_eq!(app.form_name, "secret");
+        assert!(app.form_private);
     }
 
     #[test]
