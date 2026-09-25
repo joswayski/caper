@@ -175,6 +175,7 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
+        assertStaticText("general / Fixture Studio", in: app)
         assertStaticText("TEST FIXTURE You (you)", in: app)
         assertStaticText("TEST FIXTURE Maya", in: app)
         XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
@@ -193,8 +194,28 @@ final class CaperParityUITests: XCTestCase {
         stack.tap()
         audio.tap()
         XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.descendants(matching: .any)["Mute"].exists)
+        let mute = app.descendants(matching: .any)["Mute"]
+        XCTAssertTrue(mute.exists)
         capture("active-voice-audio-menu-test-fixture", app: app)
+        mute.tap()
+        #if os(macOS)
+        app.typeKey(.escape, modifierFlags: [])
+        #else
+        audio.tap()
+        #endif
+        let localMute = app.descendants(matching: .any)["participant-local-muted-fixture-remote"]
+        XCTAssertTrue(localMute.waitForExistence(timeout: 3))
+        assertStaticText("You muted TEST FIXTURE Maya", in: app)
+        capture("active-voice-locally-muted-test-fixture", app: app)
+        audio.tap()
+        XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
+        app.descendants(matching: .any)["Mute"].tap()
+        #if os(macOS)
+        app.typeKey(.escape, modifierFlags: [])
+        #else
+        audio.tap()
+        #endif
+        XCTAssertFalse(localMute.waitForExistence(timeout: 1), "Local mute status disappears when remote playback is restored")
     }
 
     #if os(macOS)

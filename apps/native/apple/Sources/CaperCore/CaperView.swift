@@ -554,8 +554,17 @@ private struct VoiceRoster: View {
             ForEach(voice.participants) { participant in
                 HStack(spacing: 8) {
                     Avatar(name: participant.name, size: 20)
-                    Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
-                        .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
+                            .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                        if !voice.isSelf(participantID: participant.id), voice.locallyMutedParticipants.contains(participant.id) {
+                            HStack(spacing: 4) {
+                                CaperIcon(name: "volume-x", size: 10)
+                                Text("You muted \(participant.name)")
+                                    .accessibilityIdentifier("participant-local-muted-\(participant.id)")
+                            }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.terracottaBright)
+                        }
+                    }
                     Spacer(minLength: 0)
                     if (voice.isSelf(participantID: participant.id) ? voice.muted : participant.muted) {
                         CaperIcon(name: "mic-off", size: 14).accessibilityHidden(false).accessibilityLabel("Muted")
@@ -632,7 +641,7 @@ private struct AccountBar: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(voice.phase == .connected ? "Voice connected" : "Connecting voice…")
                                 .font(CaperTheme.font(11, weight: .bold))
-                            Text("\(context.spaceName) / \(context.channelName)")
+                            Text("\(context.channelName) / \(context.spaceName)")
                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)

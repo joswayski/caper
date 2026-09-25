@@ -367,7 +367,16 @@ internal data class VoiceJoinIntent(
             Row(Modifier.fillMaxWidth().heightIn(min = 38.dp).padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(participant.name, 24.dp)
                 Spacer(Modifier.width(8.dp))
-                Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f)) {
+                    Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (participant.id != voice.selfId && participant.id in voice.locallyMutedParticipants) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.VolumeOff, null, Modifier.size(10.dp), tint = TerracottaBright)
+                            Spacer(Modifier.width(3.dp))
+                            Text("You muted ${participant.name}", color = TerracottaBright, fontSize = 10.sp)
+                        }
+                    }
+                }
                 if (if (participant.id == voice.selfId) voice.muted else participant.muted) Icon(Icons.Default.MicOff, "Muted", Modifier.size(15.dp), tint = TextMuted)
                 if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(Icons.Default.VolumeOff, "Deafened", Modifier.size(15.dp), tint = TextMuted)
                 if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) Box {
@@ -398,7 +407,7 @@ internal data class VoiceJoinIntent(
             Column(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable(role = Role.Button, onClick = openChannel)
                 .semantics { contentDescription = "Open voice channel" }) {
                 Text(if (voice.phase == VoiceState.Phase.CONNECTED) "Voice connected" else "Connecting voice…", color = CaperGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Text(listOfNotNull(voice.spaceName, voice.channelName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
+                Text(listOfNotNull(voice.channelName, voice.spaceName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
             }
             IconButton(leave, Modifier.size(40.dp)) {
                 Icon(Icons.Default.CallEnd, if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
