@@ -1567,21 +1567,46 @@ Deploy API, then gateway (its allowlist gains `media.prepare`), then web. An
 older API or gateway rejects `prepare`; the browser ignores the failure and joins
 the ordinary way.
 
-### Receive-only pull session: evaluated, not adopted
+### Join-time pulls on a receive-only connection
 
-Pulling into a second, receive-only session was prototyped so subscriptions could
-overlap the microphone connection's ICE. Live checks: a pull into a session with
-no negotiated PeerConnection is answered at once (placeholder inactive offer when
-refused), but one into a negotiated, unconnected session is held about 11 s and
-answered 425. The prototype worked end to end in live signaling, but it is not
-faster: the second session must be created (about 130-300 ms), pulled, answered,
-and then complete its own ICE/DTLS before audio can flow, while the existing path
-pulls on the already-connected transport. With comparable ICE times on both
-connections it finishes later than pulling after connect, so it was dropped.
-A single offer that publishes the microphone and pulls current participants in
-one `tracks/new` (recvonly transceivers bound by MID) would avoid both the second
-ICE and the post-connect round trips, but Cloudflare's success path for it cannot
-be tested without a connected source.
+A browser that publishes inside `media.join` also sends `receive: true`. When
+others are publishing, the API creates a second, receive-only provider session
+alongside the main session and TURN (or takes one from a prepared join), then
+publishes the microphone and pulls everyone present concurrently, and returns
+`receive: { tracks, gone, sessionDescription, requiresImmediateRenegotiation }`
+with the publication answer. The browser answers that offer on a second
+`RTCPeerConnection`, so both connections come up together. Subscriptions, their
+answers (`negotiate`) and closes then use the receive session; `close` takes
+`subscription: true` because MIDs may repeat across the two sessions, and cleanup
+closes each MID in its own session. The join completes only when both
+connections are connected; received audio stays withheld until then.
+
+Why a second session: Cloudflare answers a pull into a session with no
+negotiated PeerConnection at once (its documented receive pattern, also used
+live by this app's microphone monitor), but holds a pull into a negotiated,
+unconnected session for about 11 s and then answers 425. A single session cannot
+mix local and remote tracks in one `tracks/new`. An earlier prototype created the
+receive session on the browser's first pull after joining; that added a session
+creation and a late second handshake and was slower, so it was dropped. Pulling
+inside the join removes the post-connect pull instead.
+
+Live signaling check (September 25, 2026, this branch's API, real Cloudflare,
+Chromium SDP): a join into an occupied room returned the publication answer and a
+receive offer; Chromium answered it on a second connection and `negotiate`
+returned 200. Join latency into an occupied room was unchanged (median of 8:
+370 ms with the join-time pull, 375 ms without), because the pull runs in
+parallel with publication. The source could not connect from the sandbox, so the
+pull itself was a refusal answered with Cloudflare's inactive placeholder offer;
+that shape is covered through the real HTTP adapter in tests.
+
+Rules: without an offer or with an uncertain pull result, the API cleans up and
+the browser pulls after connecting as before; the join still succeeds. Media that
+arrives before the roster lists its owner is held and assigned when it does.
+Older APIs reject `receive` with 422 and the browser retries without it (then
+without publication). Monitors, native clients and empty rooms get no receive
+session. On relay-only networks the receive connection keeps its initial TURN
+credentials (valid 48 hours); only the microphone connection renews them, so a
+call longer than that on such a network rejoins once.
 
 ### Join benchmark: before and after the join speedups
 
@@ -1612,7 +1637,13 @@ gateway round trips, so absolute numbers are lower than real joins):
 | --- | ---: | ---: | ---: |
 | Baseline | 793 ms | 1,214 ms | 1,994 ms |
 | PR #162 | 781 ms | 1,202 ms | 1,216 ms |
-| Prepared join (signed in) | about 635 ms | about 1,055 ms | about 1,070 ms |
+| Join-time pulls | 781 ms | about 960 ms | about 975 ms |
+| Join-time pulls + prepared join (signed in) | about 635 ms | about 815 ms | about 830 ms |
+
+With join-time pulls, audio from people already present needs the receive
+answer (180 ms) and the receive connection's own handshake (modelled as the same
+345 ms), in parallel with the microphone connection, instead of a pull (241 ms,
+255 ms for three) and answer after it.
 
 This is a model, not an end-to-end measurement: WebRTC transport cannot connect
 from the sandbox. Confirm with the connection diagnostics panel in real browsers.
