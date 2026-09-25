@@ -1157,7 +1157,7 @@ private struct LoginSheet: View {
                     Button("Email me a code") { Task { await model.requestCode(email: email) } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || email.isEmpty)
                 } else {
                     CaperField(title: "Verification code", text: $code)
-                    Button("Verify") { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || code.isEmpty)
+                    Button("Verify") { Task { await model.verify(code: code); if model.account != nil && model.phase != .onboarding { close() } } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || code.isEmpty)
                     Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
                 }
                 if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
@@ -1211,7 +1211,7 @@ private struct LoginPage: View {
                             HStack { Text(model.busy ? "Sending…" : "Email me a new code"); Spacer(); Image(systemName: "arrow.right") }
                         }.buttonStyle(LoginActionButton()).disabled(model.busy).padding(.top, 28)
                     } else {
-                        Button { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } } label: {
+                        Button { Task { await model.verify(code: code); if model.account != nil && model.phase != .onboarding { close() } } } label: {
                             HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
                         }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 28)
                     }
