@@ -194,6 +194,7 @@ struct CaperApp {
     managed_members: Vec<Member>,
     managed_channel: Option<String>,
     persist_preferences: bool,
+    connection_copy_status: &'static str,
 }
 
 impl CaperApp {
@@ -263,6 +264,7 @@ impl CaperApp {
             managed_members: Vec::new(),
             managed_channel: None,
             persist_preferences: fixture.is_none(),
+            connection_copy_status: "",
         };
         match fixture {
             Some("error" | "login-error") => {
@@ -347,7 +349,10 @@ impl CaperApp {
                     }
                 } else if matches!(
                     name,
-                    "parity-voice-joining" | "parity-voice-connected" | "parity-voice-speaking"
+                    "parity-voice-joining"
+                        | "parity-voice-connected"
+                        | "parity-voice-speaking"
+                        | "parity-connection"
                 ) {
                     // Explicit visual fixtures only: no media transport is started.
                     let call = CallContext {
@@ -386,9 +391,20 @@ impl CaperApp {
                                 max_jitter_ms: 17.0,
                                 round_trip_ms: 42.0,
                                 route: "relay",
+                                checks: Some("3 sent · 3 answered".into()),
                             },
                             Instant::now(),
                         ));
+                        app.voice.join_times = Some(voice::JoinTimes {
+                            joined_ms: 812.0,
+                            session_ms: 356.0,
+                            transport_ms: 204.0,
+                            ice_ms: Some(188.0),
+                            roster_ms: 41.0,
+                        });
+                        if name == "parity-connection" {
+                            app.dialog = Some(Dialog::Connection);
+                        }
                         if name == "parity-voice-speaking" {
                             // Fixture levels: you and Maya lit, Alex quiet.
                             let lit = Instant::now() + Duration::from_secs(3_600);
@@ -3264,6 +3280,7 @@ impl CaperApp {
                         if self.voice.diagnostics.is_some()
                             && ui.button("Connection details").clicked()
                         {
+                            self.connection_copy_status = "";
                             self.dialog = Some(Dialog::Connection);
                             ui.close();
                         }
@@ -3779,7 +3796,7 @@ impl CaperApp {
         ui.ctx().request_repaint_after(Duration::from_secs(1));
     }
 
-    fn connection_details(&self, ui: &mut egui::Ui) {
+    fn connection_details(&mut self, ui: &mut egui::Ui) {
         if !self.persist_preferences {
             ui.label(
                 RichText::new("TEST FIXTURE — synthetic statistics, no live connection.")
@@ -3787,7 +3804,7 @@ impl CaperApp {
             );
             ui.add_space(12.0);
         }
-        let Some((stats, sampled)) = &self.voice.diagnostics else {
+        let Some((stats, _)) = &self.voice.diagnostics else {
             ui.label(if matches!(self.voice.state.phase, Phase::Idle) {
                 "Not connected"
             } else {
@@ -3795,45 +3812,31 @@ impl CaperApp {
             });
             return;
         };
+        let report = ConnectionReport::new(self.voice.join_times.as_ref(), stats);
         egui::Grid::new("connection-statistics")
             .num_columns(2)
             .spacing([28.0, 12.0])
             .show(ui, |ui| {
-                for (label, value) in [
-                    ("Received", format!("{} bytes", stats.received_bytes)),
-                    (
-                        "Live receive",
-                        format!("{:.1} kbps", stats.receive_bitrate / 1000.0),
-                    ),
-                    ("Sent", format!("{} bytes", stats.sent_bytes)),
-                    (
-                        "Live send",
-                        format!("{:.1} kbps", stats.send_bitrate / 1000.0),
-                    ),
-                    ("Packets lost", stats.packets_lost.to_string()),
-                    ("Max jitter", format!("{:.0} ms", stats.max_jitter_ms)),
-                    ("RTT", format!("{:.0} ms", stats.round_trip_ms)),
-                    (
-                        "Route",
-                        match stats.route {
-                            "relay" => "TURN relay",
-                            "direct" => "Direct",
-                            _ => "Not observed yet",
-                        }
-                        .into(),
-                    ),
-                ] {
+                for (label, value) in report.rows() {
                     ui.label(RichText::new(label).color(MUTED));
                     ui.label(value);
                     ui.end_row();
                 }
             });
         ui.add_space(16.0);
-        ui.label(
-            RichText::new(format!("Sampled {}s ago", sampled.elapsed().as_secs()))
-                .size(11.0)
-                .color(MUTED),
-        );
+        ui.horizontal(|ui| {
+            if ui.button("Copy connection details").clicked() {
+                // Web copies its diagnostics object as indented JSON.
+                match serde_json::to_string_pretty(&report) {
+                    Ok(json) => {
+                        ui.ctx().copy_text(json);
+                        self.connection_copy_status = "Copied connection details";
+                    }
+                    Err(_) => self.connection_copy_status = "Copy failed; try again.",
+                }
+            }
+            ui.label(RichText::new(self.connection_copy_status).color(MUTED));
+        });
     }
 
     fn member_presence(&mut self, ui: &mut egui::Ui) {
@@ -4723,6 +4726,112 @@ impl CaperApp {
     }
 }
 
+/// Web's connection diagnostics, limited to what desktop measures. Field names
+/// match web's copied JSON.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ice_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roster_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks: Option<String>,
+    received_bytes: u64,
+    sent_bytes: u64,
+    receive_bitrate: f64,
+    send_bitrate: f64,
+    packets_lost: i64,
+    max_jitter_ms: f64,
+    round_trip_ms: f64,
+    route: &'static str,
+}
+
+impl ConnectionReport {
+    fn new(times: Option<&voice::JoinTimes>, stats: &media::Diagnostics) -> Self {
+        Self {
+            join: times.map(|times| format!("Joined in {:.0} ms", times.joined_ms)),
+            session_ms: times.map(|times| times.session_ms),
+            transport_ms: times.map(|times| times.transport_ms),
+            ice_ms: times.and_then(|times| times.ice_ms),
+            roster_ms: times.map(|times| times.roster_ms),
+            checks: stats.checks.clone(),
+            received_bytes: stats.received_bytes,
+            sent_bytes: stats.sent_bytes,
+            receive_bitrate: stats.receive_bitrate,
+            send_bitrate: stats.send_bitrate,
+            packets_lost: stats.packets_lost,
+            max_jitter_ms: stats.max_jitter_ms,
+            round_trip_ms: stats.round_trip_ms,
+            route: match stats.route {
+                "relay" | "direct" => stats.route,
+                _ => "unknown",
+            },
+        }
+    }
+
+    fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = Vec::new();
+        if let (Some(join), Some(session), Some(transport), Some(roster)) = (
+            &self.join,
+            self.session_ms,
+            self.transport_ms,
+            self.roster_ms,
+        ) {
+            rows.push(("Joined", join.clone()));
+            rows.push(("Session + publish", format!("{session:.0} ms")));
+            rows.push((
+                "Transport + state",
+                match self.ice_ms {
+                    Some(ice) => format!("{transport:.0} ms (ICE {ice:.0} ms)"),
+                    None => format!("{transport:.0} ms"),
+                },
+            ));
+            rows.push((
+                "Connectivity checks",
+                self.checks
+                    .clone()
+                    .unwrap_or_else(|| "Not observed yet".into()),
+            ));
+            rows.push(("Roster", format!("{roster:.0} ms")));
+        }
+        rows.extend([
+            (
+                "Received",
+                format!("{:.2} MB", self.received_bytes as f64 / 1e6),
+            ),
+            (
+                "Live receive",
+                format!("{:.0} kbps", self.receive_bitrate / 1_000.0),
+            ),
+            ("Sent", format!("{:.2} MB", self.sent_bytes as f64 / 1e6)),
+            (
+                "Live send",
+                format!("{:.0} kbps", self.send_bitrate / 1_000.0),
+            ),
+            ("Packets lost", self.packets_lost.to_string()),
+            ("Max jitter", format!("{:.0} ms", self.max_jitter_ms)),
+            ("RTT", format!("{:.0} ms", self.round_trip_ms)),
+            (
+                "Route",
+                match self.route {
+                    "relay" => "TURN relay",
+                    "direct" => "Direct",
+                    _ => "Not observed yet",
+                }
+                .into(),
+            ),
+        ]);
+        rows
+    }
+}
+
 fn login_error_frame(ui: &mut egui::Ui, error: &str) {
     egui::Frame::new()
         .stroke(Stroke::new(1.0, TERRACOTTA))
@@ -5453,8 +5562,8 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, Dialog, GatewayEvent, PendingSend, Phase, endpoint, member_page_ids,
-        normalize_channel, permanent_send_rejection,
+        CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingSend, Phase, endpoint, media,
+        member_page_ids, normalize_channel, permanent_send_rejection, voice,
     };
     use crate::model::{
         Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
@@ -6041,6 +6150,58 @@ mod tests {
             &render(&mut app, &context, vec![]),
             "Not connected"
         ));
+    }
+
+    #[test]
+    fn connection_details_use_web_labels_formats_and_json_names() {
+        let stats = media::Diagnostics {
+            received_bytes: 1_234_567,
+            sent_bytes: 2_000_000,
+            receive_bitrate: 31_600.0,
+            send_bitrate: 40_400.0,
+            packets_lost: 3,
+            max_jitter_ms: 12.4,
+            round_trip_ms: 51.6,
+            route: "direct",
+            checks: None,
+        };
+        let without_join = ConnectionReport::new(None, &stats);
+        let rows = without_join.rows();
+        assert_eq!(rows[0], ("Received", "1.23 MB".into()));
+        assert!(rows.contains(&("Live receive", "32 kbps".into())));
+        assert!(rows.contains(&("Live send", "40 kbps".into())));
+        assert!(rows.contains(&("RTT", "52 ms".into())));
+        assert!(rows.contains(&("Route", "Direct".into())));
+        let times = voice::JoinTimes {
+            joined_ms: 900.4,
+            session_ms: 300.0,
+            transport_ms: 200.0,
+            ice_ms: None,
+            roster_ms: 50.0,
+        };
+        let report = ConnectionReport::new(Some(&times), &stats);
+        let rows = report.rows();
+        assert_eq!(rows[0], ("Joined", "Joined in 900 ms".into()));
+        assert!(rows.contains(&("Transport + state", "200 ms".into())));
+        assert!(rows.contains(&("Connectivity checks", "Not observed yet".into())));
+        let json = serde_json::to_value(&report).unwrap();
+        for field in [
+            "join",
+            "sessionMs",
+            "transportMs",
+            "rosterMs",
+            "receivedBytes",
+            "sentBytes",
+            "receiveBitrate",
+            "sendBitrate",
+            "packetsLost",
+            "maxJitterMs",
+            "roundTripMs",
+            "route",
+        ] {
+            assert!(json.get(field).is_some(), "missing {field}");
+        }
+        assert!(json.get("iceMs").is_none() && json.get("checks").is_none());
     }
 
     #[test]

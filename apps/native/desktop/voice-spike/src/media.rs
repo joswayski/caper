@@ -24,7 +24,7 @@ use libwebrtc::audio_frame::AudioFrame;
 use libwebrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
 use libwebrtc::media_stream_track::MediaStreamTrack;
 use libwebrtc::peer_connection::{
-    AnswerOptions, OfferOptions, PeerConnection, PeerConnectionState,
+    AnswerOptions, IceConnectionState, OfferOptions, PeerConnection, PeerConnectionState,
 };
 use libwebrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
 use libwebrtc::peer_connection_factory::{
@@ -33,7 +33,7 @@ use libwebrtc::peer_connection_factory::{
 use libwebrtc::rtp_sender::RtpSender;
 use libwebrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
 use libwebrtc::session_description::{SdpType, SessionDescription};
-use libwebrtc::stats::{IceCandidateType, RtcStats};
+use libwebrtc::stats::{IceCandidatePairState, IceCandidateType, RtcStats};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::redirect::Policy;
 use reqwest::{Client, Response};
@@ -155,6 +155,19 @@ pub struct Diagnostics {
     pub max_jitter_ms: f64,
     pub round_trip_ms: f64,
     pub route: &'static str,
+    /// Connectivity checks on the selected pair, first sampled after joining.
+    pub checks: Option<String>,
+}
+
+/// When each measured step of a join finished, for connection details.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JoinTiming {
+    /// The publication answer was applied.
+    pub published: Instant,
+    /// The peer connection reached `connected`.
+    pub connected: Instant,
+    /// ICE reached `connected`/`completed`, when observed while waiting.
+    pub ice_connected: Option<Instant>,
 }
 
 /// The web client's speaking cutoff: RMS of float PCM in [-1, 1].
@@ -525,6 +538,8 @@ pub struct NativeSession {
     restart_sequence: u64,
     pending_restart: Option<PendingRestart>,
     previous_stats: Option<(Instant, u64, u64)>,
+    join_timing: Option<JoinTiming>,
+    checks: Option<String>,
 }
 
 struct PendingRestart {
@@ -1590,7 +1605,13 @@ impl NativeSession {
         peer.set_remote_description(answer.parse(SdpType::Answer)?)
             .await
             .map_err(|error| error.to_string())?;
-        wait_for_connection(&peer).await?;
+        let published = Instant::now();
+        let ice_connected = wait_for_connection(&peer).await?;
+        let join_timing = Some(JoinTiming {
+            published,
+            connected: Instant::now(),
+            ice_connected,
+        });
         guard.armed = false;
         Ok(Self {
             api,
@@ -1609,6 +1630,8 @@ impl NativeSession {
             restart_sequence: 1,
             pending_restart: None,
             previous_stats: None,
+            join_timing,
+            checks: None,
         })
     }
 
@@ -1668,6 +1691,10 @@ impl NativeSession {
 
     pub fn self_id(&self) -> &str {
         &self.self_id
+    }
+
+    pub fn join_timing(&self) -> Option<JoinTiming> {
+        self.join_timing
     }
 
     pub fn transport_failed(&self) -> bool {
@@ -1982,6 +2009,16 @@ impl NativeSession {
                     diagnostics.sent_bytes += stat.sent.bytes_sent;
                 }
                 RtcStats::CandidatePair(stat) if stat.candidate_pair.nominated => {
+                    // Unanswered checks before connecting show retransmission delay in setup.
+                    if self.checks.is_none()
+                        && stat.candidate_pair.state == Some(IceCandidatePairState::Succeeded)
+                    {
+                        self.checks = Some(format!(
+                            "{} sent · {} answered",
+                            stat.candidate_pair.requests_sent,
+                            stat.candidate_pair.responses_received
+                        ));
+                    }
                     selected_local = Some(stat.candidate_pair.local_candidate_id);
                     diagnostics.round_trip_ms = diagnostics
                         .round_trip_ms
@@ -2014,6 +2051,7 @@ impl NativeSession {
             }
         }
         self.previous_stats = Some((now, diagnostics.received_bytes, diagnostics.sent_bytes));
+        diagnostics.checks = self.checks.clone();
         Ok(diagnostics)
     }
 
@@ -2082,11 +2120,21 @@ async fn wait_for_ice(peer: &PeerConnection) -> Result<(), String> {
     Ok(())
 }
 
-async fn wait_for_connection(peer: &PeerConnection) -> Result<(), String> {
+/// Returns when ICE itself connected, if a poll observed it before the transport.
+async fn wait_for_connection(peer: &PeerConnection) -> Result<Option<Instant>, String> {
     let deadline = Instant::now() + ICE_TIMEOUT;
+    let mut ice_connected = None;
     loop {
+        if ice_connected.is_none()
+            && matches!(
+                peer.ice_connection_state(),
+                IceConnectionState::Connected | IceConnectionState::Completed
+            )
+        {
+            ice_connected = Some(Instant::now());
+        }
         match peer.connection_state() {
-            PeerConnectionState::Connected => return Ok(()),
+            PeerConnectionState::Connected => return Ok(ice_connected),
             PeerConnectionState::Failed | PeerConnectionState::Closed => {
                 return Err("native WebRTC transport failed".into());
             }
@@ -3542,6 +3590,8 @@ mod tests {
             restart_sequence: 1,
             pending_restart: None,
             previous_stats: None,
+            join_timing: None,
+            checks: None,
         };
         session.local_control.set_local_audio(true, false).unwrap();
         session.set_muted(true).await.unwrap();
@@ -3622,6 +3672,8 @@ mod tests {
             restart_sequence: 1,
             pending_restart: None,
             previous_stats: None,
+            join_timing: None,
+            checks: None,
         };
         session.subscribe("not-ready").await.unwrap();
         assert_eq!(session.token, "media-token");
@@ -3700,6 +3752,8 @@ mod tests {
             restart_sequence: 1,
             pending_restart: None,
             previous_stats: None,
+            join_timing: None,
+            checks: None,
         };
         let error = session.snapshot_owned(&[]).await.unwrap_err();
         assert!(

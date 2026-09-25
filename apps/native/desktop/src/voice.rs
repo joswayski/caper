@@ -20,6 +20,18 @@ pub fn speaking_at(last_loud: Option<Instant>, muted: bool, now: Instant) -> boo
     !muted && last_loud.is_some_and(|loud| now.saturating_duration_since(loud) < SPEAKING_RELEASE)
 }
 
+/// Measured steps of the current join, from the Join click (web `joinTiming`).
+/// Desktop publishes inside its session setup and has no separate microphone
+/// or live-update step to time, so only these are reported.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JoinTimes {
+    pub joined_ms: f64,
+    pub session_ms: f64,
+    pub transport_ms: f64,
+    pub ice_ms: Option<f64>,
+    pub roster_ms: f64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Preferences {
@@ -90,6 +102,7 @@ pub struct Voice {
     pub self_id: String,
     pub error: Option<String>,
     pub diagnostics: Option<(media::Diagnostics, Instant)>,
+    pub join_times: Option<JoinTimes>,
     pub activity: VoiceActivity,
     pub inputs: Vec<(String, String)>,
     pub outputs: Vec<(String, String)>,
@@ -134,6 +147,7 @@ enum Report {
     Failed(u64, VoiceError),
     Changed(u64, Result<(), VoiceError>),
     Diagnostics(u64, media::Diagnostics),
+    Timing(u64, JoinTimes),
     Activity(u64, VoiceActivity),
     Devices(u64, Result<media::AudioDevices, String>),
     Microphone(u64, Result<MicrophoneState, String>),
@@ -165,6 +179,7 @@ impl Voice {
             self_id: String::new(),
             error: None,
             diagnostics: None,
+            join_times: None,
             activity: VoiceActivity::default(),
             inputs: vec![],
             outputs: vec![],
@@ -205,6 +220,7 @@ impl Voice {
         token: Option<String>,
         name: String,
     ) {
+        let started = Instant::now();
         self.leave();
         let token = space.as_ref().and(token);
         let api = match MediaApi::new(
@@ -303,6 +319,8 @@ impl Voice {
             let mut ready = false;
             let mut gateway_ready = false;
             let mut roster_ready = false;
+            let timing = session.join_timing();
+            let mut roster_at = None;
             let mut next_snapshot = Instant::now();
             let mut next_diagnostics = Instant::now();
             let mut activity = VoiceActivity::default();
@@ -370,6 +388,7 @@ impl Voice {
                     match runtime.block_on(session.snapshot()) {
                         Ok(snapshot) => {
                             roster_ready = true;
+                            roster_at.get_or_insert_with(Instant::now);
                             report(&events, &repaint, Report::Roster(generation, snapshot))
                         }
                         Err(error) => {
@@ -397,6 +416,21 @@ impl Voice {
                     match control.activate() {
                         Ok(()) => {
                             ready = true;
+                            if let (Some(timing), Some(roster_at)) = (timing, roster_at) {
+                                let ms = |from: Instant, to: Instant| {
+                                    to.saturating_duration_since(from).as_secs_f64() * 1_000.0
+                                };
+                                let times = JoinTimes {
+                                    joined_ms: ms(started, Instant::now()),
+                                    session_ms: ms(started, timing.published),
+                                    transport_ms: ms(timing.published, timing.connected),
+                                    ice_ms: timing
+                                        .ice_connected
+                                        .map(|ice| ms(timing.published, ice)),
+                                    roster_ms: ms(timing.connected, roster_at),
+                                };
+                                report(&events, &repaint, Report::Timing(generation, times));
+                            }
                             report(
                                 &events,
                                 &repaint,
@@ -449,6 +483,7 @@ impl Voice {
         self.participants.clear();
         self.self_id.clear();
         self.diagnostics = None;
+        self.join_times = None;
         self.activity = VoiceActivity::default();
         self.participant_playback.clear();
         self.state.leave_now();
@@ -915,6 +950,9 @@ impl Voice {
                         self.leave();
                     }
                     self.error = Some(error.to_string());
+                }
+                Report::Timing(g, times) if g == self.state.generation => {
+                    self.join_times = Some(times);
                 }
                 Report::Diagnostics(g, stats) if g == self.state.generation => {
                     self.diagnostics = Some((stats, Instant::now()));
