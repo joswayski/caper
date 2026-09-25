@@ -695,10 +695,13 @@ private struct AccountBar: View {
                 HStack(spacing: 8) {
                     Button { Task { await model.openVoiceContext() } } label: {
                         HStack(spacing: 8) {
-                        CaperIcon(name: "audio-lines", size: 16).foregroundStyle(CaperTheme.green)
+                        // Web: green when connected, amber while connecting or reconnecting.
+                        let tone = voice.phase == .connected ? Color(red: 140/255, green: 178/255, blue: 98/255)
+                            : Color(red: 217/255, green: 171/255, blue: 92/255)
+                        CaperIcon(name: "audio-lines", size: 16).foregroundStyle(tone)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(voice.phase == .connected ? "Voice connected" : voice.phase == .joining ? "Connecting…" : "Reconnecting…")
-                                .font(CaperTheme.font(11, weight: .bold))
+                                .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(tone)
                             Text("\(context.channelName) / \(context.spaceName)")
                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                         }
