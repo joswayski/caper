@@ -56,6 +56,7 @@ class GatewayClient(
     private val mediaSubscriptions = mutableMapOf<String, String>() // subscription ID -> channel ID (empty for demo)
     private val mediaRevisions = mutableMapOf<String, Long>()
     private var socket: WebSocket? = null
+    private var ready = false
     private var heartbeat: Job? = null
     private var reconnect: Job? = null
     private var watchdog: Job? = null
@@ -72,18 +73,18 @@ class GatewayClient(
 
     @Synchronized fun watchPresence(spaceId: String, userIds: List<String>) {
         require(userIds.size in 1..100) { "Presence supports 1 to 100 members." }
-        presenceSubscriptionId?.let { id -> socket?.send("""{"type":"unsubscribe","id":"$id"}""") }
+        if (ready) presenceSubscriptionId?.let { id -> socket?.send("""{"type":"unsubscribe","id":"$id"}""") }
         presenceSpaceId = spaceId
         presenceUserIds = userIds.distinct()
         presenceSubscriptionId = UUID.randomUUID().toString()
-        socket?.let(::sendPresenceSubscription)
+        if (ready) socket?.let(::sendPresenceSubscription)
     }
 
     @Synchronized fun watchMedia(channelIds: List<String>, demo: Boolean) {
         require(channelIds.size <= 24)
         val desired = if (demo) listOf("") else channelIds.distinct().take(24)
         mediaSubscriptions.filterValues { it !in desired }.keys.toList().forEach { id ->
-            socket?.send("""{"type":"unsubscribe","id":"$id"}""")
+            if (ready) socket?.send("""{"type":"unsubscribe","id":"$id"}""")
             val channel = mediaSubscriptions.remove(id)!!
             mediaRevisions.remove(id)
             onMedia(channel, emptyList())
@@ -91,7 +92,7 @@ class GatewayClient(
         desired.filter { it !in mediaSubscriptions.values }.forEach { channel ->
             val id = UUID.randomUUID().toString()
             mediaSubscriptions[id] = channel
-            socket?.let { sendMediaSubscription(it, id, channel) }
+            if (ready) socket?.let { sendMediaSubscription(it, id, channel) }
         }
     }
 
@@ -103,8 +104,9 @@ class GatewayClient(
         webSocket.send(frame.toString())
     }
 
-    private fun connect() {
+    @Synchronized private fun connect() {
         if (closed || socket != null) return
+        ready = false
         mutableStatus.value = GatewayStatus.CONNECTING
         val url = baseUrl.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") + "/api/chat/events"
         val request = Request.Builder().url(url).apply { token?.let { header("Authorization", "Bearer $it") } }.build()
@@ -130,6 +132,7 @@ class GatewayClient(
         if (socket !== webSocket) return
         when (frame["type"]?.jsonPrimitive?.content) {
             "hello" -> {
+                ready = true
                 attempts = 0
                 serverOffsetMs = frame["serverTime"]?.jsonPrimitive?.content?.toLongOrNull()?.minus(System.currentTimeMillis()) ?: 0L
                 webSocket.send("""{"type":"subscribe","id":"$subscriptionId","kind":"chat","channelId":"$channelId","after":"$cursor"}""")
@@ -250,6 +253,7 @@ class GatewayClient(
     @Synchronized private fun fail(webSocket: WebSocket, terminal: Boolean) {
         if (socket !== webSocket) return
         socket = null
+        ready = false
         mediaRevisions.clear()
         onMediaDisconnected()
         heartbeat?.cancel()
@@ -272,6 +276,7 @@ class GatewayClient(
         reconnect?.cancel()
         socket?.close(1000, "channel closed")
         socket = null
+        ready = false
         mediaRevisions.clear()
         onMediaDisconnected()
         scope.coroutineContext[Job]?.cancel()

@@ -15,6 +15,34 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GatewayClientTest {
+    @Test fun `watch registered on open socket waits for hello and subscribes only once`() {
+        val server = MockWebServer()
+        val incoming = ArrayBlockingQueue<String>(8)
+        val opened = ArrayBlockingQueue<WebSocket>(1)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { opened.add(webSocket) }
+            override fun onMessage(webSocket: WebSocket, text: String) { incoming.add(text) }
+        }))
+        val gateway = GatewayClient(server.url("/").toString().trimEnd('/'), "account-secret", "chat00000001", "0", {},
+            onAccessDenied = {}, onResync = {})
+        var socket: WebSocket? = null
+        try {
+            gateway.start()
+            socket = opened.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("socket did not open")
+            gateway.watchMedia(listOf("voice000001"), false)
+            assertNull("no media subscription before hello", incoming.poll(300, TimeUnit.MILLISECONDS))
+            socket.send("""{"type":"hello","serverTime":1}""")
+            val first = Json.parseToJsonElement(incoming.poll(2, TimeUnit.SECONDS)!!).jsonObject
+            val second = Json.parseToJsonElement(incoming.poll(2, TimeUnit.SECONDS)!!).jsonObject
+            assertEquals(setOf("chat", "media"), listOf(first, second).map { it["kind"]?.jsonPrimitive?.content }.toSet())
+            assertNull("hello must not duplicate the media subscription", incoming.poll(300, TimeUnit.MILLISECONDS))
+        } finally {
+            socket?.close(1000, "done")
+            gateway.close()
+            server.close()
+        }
+    }
+
     @Test fun `spectator watch is bounded and demo subscription omits channel`() {
         val server = MockWebServer()
         val incoming = ArrayBlockingQueue<String>(4)

@@ -229,7 +229,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (detail.space.id != intent.spaceId) emptySet() else detail.channels.mapTo(mutableSetOf()) { it.id }
                 }
                 if (request != voiceAuthorizationRequest || spaceRequest != spaceAccessGeneration ||
-                    !intent.isCurrent(mutable.value, accountGeneration)) return@launch
+                    !intent.isCurrent(mutable.value, accountGeneration) ||
+                    !VoiceCallService.joinAuthorizationCurrent(intent.controlEpoch)) return@launch
                 if (intent.isCurrent(mutable.value, accountGeneration, accessible)) onAuthorized()
                 else {
                     mutable.value = mutable.value.copy(
@@ -240,7 +241,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (error: Throwable) {
                 if (request == voiceAuthorizationRequest && spaceRequest == spaceAccessGeneration &&
-                    intent.isCurrent(mutable.value, accountGeneration)) {
+                    intent.isCurrent(mutable.value, accountGeneration) &&
+                    VoiceCallService.joinAuthorizationCurrent(intent.controlEpoch)) {
                     onFailure(message(error))
                 }
             }

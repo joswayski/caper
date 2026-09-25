@@ -7,7 +7,12 @@ import chat.caper.android.model.SessionScreen
 import chat.caper.android.model.Space
 import chat.caper.android.model.SpaceDetail
 import chat.caper.android.data.CaperApi
+import chat.caper.android.voice.VoiceCallService
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
@@ -21,7 +26,7 @@ class VoiceJoinIntentTest {
     private val channel = Channel("channel0001", space.id, "general", false)
     private val intent = VoiceJoinIntent(
         channel.id, space.id, channel.name, space.name, account.displayName!!,
-        account.id, accountEpoch = 7, demo = false,
+        account.id, accountEpoch = 7, demo = false, controlEpoch = 1,
     )
 
     @Test fun `permission result requires unchanged account epoch and context`() {
@@ -54,6 +59,36 @@ class VoiceJoinIntentTest {
                 join.isCurrent(current, 7, fresh.channels.mapTo(mutableSetOf()) { it.id }))
             assertFalse(join.isCurrent(current, 8, setOf(currentTarget.id)))
         } finally { server.close() }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun `delayed permission or access response after stop cannot start voice`() = runTest {
+        val permission = CompletableDeferred<Unit>()
+        val first = VoiceCallService.beginJoinAuthorization()
+        var starts = 0
+        val waitingForPermission = launch {
+            permission.await()
+            if (VoiceCallService.joinAuthorizationCurrent(first)) starts++
+        }
+        runCurrent()
+        VoiceCallService.invalidateJoinAuthorization() // notification Stop uses the same service gate
+        permission.complete(Unit)
+        waitingForPermission.join()
+        assertEquals(0, starts)
+
+        val access = CompletableDeferred<Set<String>>()
+        val second = VoiceCallService.beginJoinAuthorization()
+        val waitingForAccess = launch {
+            val fresh = access.await()
+            if (VoiceCallService.joinAuthorizationCurrent(second) &&
+                intent.isCurrent(home(), 7, fresh)) starts++
+        }
+        runCurrent()
+        VoiceCallService.invalidateJoinAuthorization()
+        access.complete(setOf(channel.id))
+        waitingForAccess.join()
+        assertEquals(0, starts)
+        assertTrue(VoiceCallService.joinAuthorizationCurrent(VoiceCallService.beginJoinAuthorization()))
     }
 
     private fun home() = AppUiState(

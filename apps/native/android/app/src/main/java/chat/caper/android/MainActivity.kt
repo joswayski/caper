@@ -90,6 +90,7 @@ internal data class VoiceJoinIntent(
     val accountId: String?,
     val accountEpoch: Long,
     val demo: Boolean,
+    val controlEpoch: Long,
 ) {
     fun isCurrent(state: AppUiState, currentAccountEpoch: Long, freshChannelIds: Set<String>? = null): Boolean =
         state.screen == SessionScreen.Home &&
@@ -167,12 +168,13 @@ internal data class VoiceJoinIntent(
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         val requested = pendingVoiceJoin
         pendingVoiceJoin = null
-        if (requested?.isCurrent(latestState, viewModel.accountEpoch) == true) {
+        if (requested?.isCurrent(latestState, viewModel.accountEpoch) == true &&
+            VoiceCallService.joinAuthorizationCurrent(requested.controlEpoch)) {
             if (grants[Manifest.permission.RECORD_AUDIO] == true) {
                 voicePermissionError = null
                 viewModel.authorizeVoiceJoin(requested, {
                     VoiceCallService.start(context, requested.channelId, requested.spaceId, requested.channelName,
-                        requested.spaceName, requested.displayName, requested.demo)
+                        requested.spaceName, requested.displayName, requested.demo, requested.controlEpoch)
                 }, { voicePermissionError = it })
             } else voicePermissionError = "Microphone permission is required to join voice. Allow microphone access in Android app settings or try Join again."
         }
@@ -183,7 +185,8 @@ internal data class VoiceJoinIntent(
             state.selectedSpace.channels.any { it.id == channel.id } && channel.id !in state.deniedVoiceChannels) {
             voicePermissionError = null
             pendingVoiceJoin = VoiceJoinIntent(channel.id, space.id, channel.name, space.name,
-                state.account?.displayName ?: "Guest", state.account?.id, viewModel.accountEpoch, space.demo)
+                state.account?.displayName ?: "Guest", state.account?.id, viewModel.accountEpoch, space.demo,
+                VoiceCallService.beginJoinAuthorization())
             permission.launch(buildList {
                 add(Manifest.permission.RECORD_AUDIO)
                 if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
