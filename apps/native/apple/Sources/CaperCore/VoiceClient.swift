@@ -358,6 +358,15 @@ public final class VoiceClient {
 
     public func isSelf(participantID: String) -> Bool { participantID == selfID }
 
+    // Loopback UI fixture only: displays controls without opening capture,
+    // constructing a peer, or sending media to the fixture's 503-only endpoint.
+    func displayRosterPreview(context: VoiceContext, selfID: String, participants: [VoiceParticipant]) {
+        self.context = context
+        self.selfID = selfID
+        self.participants = participants
+        phase = .connected
+    }
+
     public func leave() async { leaveImmediately() }
 
     /// Stops capture, playback and transport synchronously. Remote cleanup is

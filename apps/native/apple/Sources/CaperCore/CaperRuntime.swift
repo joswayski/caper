@@ -19,6 +19,25 @@ import Foundation
         return true
     }
 
+    static func showVoiceRosterPreview(_ model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
+        guard environment["CAPER_TEST_MODE"] == "parity", environment["CAPER_UI_FIXTURE"] == "voice-roster",
+              let rawURL = environment["CAPER_API_BASE_URL"], let baseURL = URL(string: rawURL),
+              ["localhost", "127.0.0.1", "::1"].contains(baseURL.host?.lowercased() ?? ""),
+              model.voice.context == nil,
+              let detail = model.detail,
+              let channel = detail.channels.first(where: { $0.id == model.selectedChannelID }) else { return }
+        let data = Data("""
+        [{"id":"fixture-self","name":"TEST FIXTURE You","muted":false,"deafened":false,"tracks":[]},
+         {"id":"fixture-remote","name":"TEST FIXTURE Maya","muted":true,"deafened":false,"tracks":[]}]
+        """.utf8)
+        guard let participants = try? JSONDecoder().decode([VoiceParticipant].self, from: data) else { return }
+        model.voice.displayRosterPreview(
+            context: VoiceContext(channelID: channel.id, channelName: channel.name,
+                                  spaceID: detail.space.id, spaceName: detail.space.name),
+            selfID: "fixture-self", participants: participants
+        )
+    }
+
     static func makeModel(environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
         guard environment["CAPER_TEST_MODE"] == "parity",
               let rawURL = environment["CAPER_API_BASE_URL"],

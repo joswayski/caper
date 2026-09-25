@@ -424,6 +424,9 @@ def main() -> None:
     assert find(roster, text="Fixture Voice 4") is not None
     assert find(roster, text="+1") is not None, "Avatar stack must cap at three faces"
     assert find(roster, text="4 in voice in design") is None, "Voice count belongs in accessibility, not visible copy"
+    assert find(roster, description="Audio controls for Fixture Voice 1") is None, "Spectators must not get local audio controls"
+    assert find(roster, text="User volume") is None
+    assert find(roster, text="Mute") is None
     assert find(roster, contains="Message #general") is None  # conversation is behind narrow navigation
     tap(description="4 in voice in design. Hide who is in voice")
     collapsed = capture("caper-android-voice-roster-collapsed", "4 in voice in design. Show who is in voice")

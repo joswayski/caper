@@ -356,32 +356,33 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun VoiceRoster(voice: VoiceState) {
+@Composable internal fun VoiceRoster(voice: VoiceState) {
     if (voice.participants.isEmpty()) return
     val context = LocalContext.current
-    var audioParticipant by remember { mutableStateOf<String?>(null) }
-    Text("IN VOICE · ${voice.participants.size}", Modifier.padding(start = 9.dp, top = 24.dp), color = TextMuted, fontSize = 11.sp)
     voice.participants.forEach { participant ->
-        Column(Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(participant.name, 34.dp)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(participant.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                    if (participant.deafened || participant.muted) Text(if (participant.deafened) "Deafened" else "Muted", color = TextMuted, fontSize = 10.sp)
-                }
-                if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) TextButton({ audioParticipant = participant.id.takeUnless { it == audioParticipant } }) { Text("Audio", fontSize = 10.sp) }
-                else if (participant.deafened) Icon(Icons.Default.VolumeOff, null, Modifier.size(15.dp), tint = TextMuted)
-                else if (participant.muted) Icon(Icons.Default.MicOff, null, Modifier.size(15.dp), tint = TextMuted)
-            }
-            if (audioParticipant == participant.id) Surface(Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 4.dp), color = Blackout, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                Column(Modifier.padding(10.dp)) {
-                    val volume = voice.participantVolumes[participant.id] ?: 100
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("User volume", fontSize = 11.sp, fontWeight = FontWeight.Bold); Text("$volume%", color = TextMuted, fontSize = 10.sp) }
-                    Slider(volume.toFloat(), { VoiceCallService.setParticipantVolume(context, participant.id, it.toInt()) }, valueRange = 0f..200f)
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Mute locally", Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Switch(participant.id in voice.locallyMutedParticipants, { VoiceCallService.toggleParticipantMute(context, participant.id) })
+        key(participant.id) {
+            var audioOpen by remember(voice.channelId) { mutableStateOf(false) }
+            Row(Modifier.fillMaxWidth().heightIn(min = 38.dp).padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Avatar(participant.name, 24.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (if (participant.id == voice.selfId) voice.muted else participant.muted) Icon(Icons.Default.MicOff, "Muted", Modifier.size(15.dp), tint = TextMuted)
+                if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(Icons.Default.VolumeOff, "Deafened", Modifier.size(15.dp), tint = TextMuted)
+                if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) Box {
+                    TextButton({ audioOpen = !audioOpen }, modifier = Modifier.semantics { contentDescription = "Audio controls for ${participant.name}" }) { Text("Audio", fontSize = 10.sp) }
+                    DropdownMenu(audioOpen, { audioOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                        Column(Modifier.width(220.dp).padding(12.dp).semantics { contentDescription = "${participant.name} local audio settings" }) {
+                            val volume = voice.participantVolumes[participant.id] ?: 100
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("User volume", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("$volume%", fontSize = 11.sp, color = TextMuted)
+                            }
+                            Slider(volume.toFloat(), { VoiceCallService.setParticipantVolume(context, participant.id, it.toInt()) }, Modifier.semantics { contentDescription = "${participant.name} volume" }, valueRange = 0f..200f)
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Mute", Modifier.weight(1f), fontSize = 12.sp)
+                                Switch(participant.id in voice.locallyMutedParticipants, { VoiceCallService.toggleParticipantMute(context, participant.id) }, modifier = Modifier.semantics { contentDescription = "Mute ${participant.name} for me" })
+                            }
+                        }
                     }
                 }
             }
@@ -390,10 +391,16 @@ internal data class VoiceJoinIntent(
 }
 
 @Composable private fun ConnectedVoiceContext(voice: VoiceState) {
+    val context = LocalContext.current
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-            Text(if (voice.phase == VoiceState.Phase.CONNECTED) "Voice connected" else "Connecting voice…", color = CaperGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            Text(listOfNotNull(voice.spaceName, voice.channelName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
+        Row(Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(if (voice.phase == VoiceState.Phase.CONNECTED) "Voice connected" else "Connecting voice…", color = CaperGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(listOfNotNull(voice.spaceName, voice.channelName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
+            }
+            IconButton({ VoiceCallService.stop(context) }, Modifier.size(40.dp)) {
+                Icon(Icons.Default.CallEnd, if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
+            }
         }
     }
 }
