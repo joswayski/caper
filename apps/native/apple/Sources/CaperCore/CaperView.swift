@@ -742,6 +742,11 @@ private struct AccountBar: View {
     @State private var audioDiagnostics = false
     #endif
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
+    /// Your own status in the space's presence, else the live chat connection (web's localPresence).
+    private var ownPresence: PresenceStatus? {
+        if let id = model.account?.id, let status = model.presence.statuses[id], status != .unknown { return status }
+        return model.chat.liveState == .connected ? .online : nil
+    }
     var body: some View {
         VStack(spacing: 0) {
             if let context = voice.context, voice.phase != .idle && voice.phase != .failed {
@@ -779,6 +784,7 @@ private struct AccountBar: View {
             Button { sheet = model.account == nil ? .login : .profile } label: {
                 HStack(spacing: 7) {
                     Avatar(name: model.account?.displayName ?? "Guest", size: 30)
+                        .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
                     Text(model.account?.displayName ?? "Sign in").font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
                     Spacer()
                 }.contentShape(Rectangle())
@@ -842,6 +848,21 @@ private struct AccountBar: View {
 }
 
 /// Web's Input Options / Output Options menus.
+/// Web's PresenceDot: colored by status, labelled "Online", "Idle (last known;
+/// reconnecting)" or "Status unavailable".
+private struct PresenceDot: View {
+    let status: PresenceStatus?
+    var live = true
+    var body: some View {
+        let label = status.map { "\($0.rawValue.prefix(1).uppercased())\($0.rawValue.dropFirst())\(live ? "" : " (last known; reconnecting)")" } ?? "Status unavailable"
+        Circle().fill(color).frame(width: 10, height: 10).overlay(Circle().stroke(CaperTheme.raised, lineWidth: 2))
+            .help(label).accessibilityElement().accessibilityLabel(label)
+    }
+    private var color: Color {
+        switch status { case .online?: CaperTheme.green; case .idle?: Color(red: 0.72, green: 0.60, blue: 0.35); default: CaperTheme.border }
+    }
+}
+
 private struct AccountAudioMenu: View {
     @Bindable var voice: VoiceClient
     let input: Bool
