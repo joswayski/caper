@@ -586,7 +586,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
                     <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   </span>
                   <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}
-                    {!self && mutedParticipants.has(participant.id) && <span className="participant-local-muted"><VolumeX aria-hidden="true" />Muted for you</span>}
+                    {!self && mutedParticipants.has(participant.id) && <span className="participant-local-muted"><VolumeX aria-hidden="true" />You muted {participant.name}</span>}
                   </span>
                   {own && <VoiceActivity
                     stream={stream}
