@@ -552,26 +552,45 @@ private struct MemberPresenceView: View {
 }
 
 #if os(macOS)
-/// Web opens a participant's audio menu on right-click. This catcher only claims
-/// right-button events, so left clicks still reach the row's controls.
-private struct RightClickCatcher: NSViewRepresentable {
+/// Web opens a participant's audio menu on right-click. A local event monitor
+/// checks the row's frame, so nothing is layered over the row's own controls.
+private final class RightClickBox {
+    var frame: CGRect = .zero
+    var monitor: Any?
+}
+
+private struct RightClickModifier: ViewModifier {
+    let enabled: Bool
     let action: () -> Void
-    func makeNSView(context: Context) -> CatcherView { let view = CatcherView(); view.action = action; return view }
-    func updateNSView(_ view: CatcherView, context: Context) { view.action = action }
-    final class CatcherView: NSView {
-        var action: (() -> Void)?
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            guard let event = NSApp.currentEvent, event.type == .rightMouseDown || event.type == .rightMouseUp else { return nil }
-            return super.hitTest(point)
-        }
-        override func rightMouseDown(with event: NSEvent) { action?() }
-        override func isAccessibilityElement() -> Bool { false }
+    @State private var box = RightClickBox()
+    func body(content: Content) -> some View {
+        content
+            .background(GeometryReader { proxy in
+                Color.clear
+                    .onAppear { box.frame = proxy.frame(in: .global) }
+                    .onChange(of: proxy.frame(in: .global)) { _, frame in box.frame = frame }
+            })
+            .onAppear {
+                guard enabled, box.monitor == nil else { return }
+                let box = box
+                box.monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { event in
+                    guard let height = event.window?.contentView?.bounds.height else { return event }
+                    let point = CGPoint(x: event.locationInWindow.x, y: height - event.locationInWindow.y)
+                    guard box.frame.contains(point) else { return event }
+                    action()
+                    return nil
+                }
+            }
+            .onDisappear {
+                if let monitor = box.monitor { NSEvent.removeMonitor(monitor) }
+                box.monitor = nil
+            }
     }
 }
 
 private extension View {
-    @ViewBuilder func onRightClick(enabled: Bool, perform action: @escaping () -> Void) -> some View {
-        if enabled { overlay { RightClickCatcher(action: action) } } else { self }
+    func onRightClick(enabled: Bool, perform action: @escaping () -> Void) -> some View {
+        modifier(RightClickModifier(enabled: enabled, action: action))
     }
 }
 #endif

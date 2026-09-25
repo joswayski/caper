@@ -354,7 +354,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)
         let code = app.textFields["Sign-in code"]
-        code.tap(); code.typeText("zz-zz9o")
+        // Separate bursts: the field rewrites itself between keystrokes, as it does for a person typing.
+        code.tap(); code.typeText("ZZZ"); code.typeText("o-"); code.typeText("ZZ9")
         XCTAssertEqual(code.value as? String, "ZZZZZ9", "Code input keeps web's six-character alphabet")
         app.buttons["Continue"].tap()
         assertStaticText("That code is incorrect or expired. Request a new one if needed.", in: app, timeout: 5)
