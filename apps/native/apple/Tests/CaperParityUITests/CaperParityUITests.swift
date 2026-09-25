@@ -133,7 +133,7 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertTrue(stack.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
@@ -183,7 +183,7 @@ final class CaperParityUITests: XCTestCase {
     func testCompactActiveRosterAudioMenuAndCollapsedCallContextFixture() {
         let app = launch(fixture: "voice-roster")
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
@@ -438,7 +438,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(join.isEnabled, "Normal launches must expose voice without a test-only environment flag")
         capture("voice-ready", app: app)
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let microphone = app.buttons["microphone-toggle"]
         let headphones = app.buttons["deafen-toggle"]
@@ -544,7 +544,7 @@ final class CaperParityUITests: XCTestCase {
     func testProfileEditRetainsRejectedValuesAndRetries() async throws {
         let app = launch()
         #if os(iOS)
-        app.buttons["Open navigation"].tap()
+        app.buttons["Browse"].tap()
         #endif
         let account = app.buttons["account-profile"]
         XCTAssertTrue(account.waitForExistence(timeout: 10))
@@ -626,7 +626,7 @@ final class CaperParityUITests: XCTestCase {
             ("audio-statistics", "TEST FIXTURE — synthetic statistics layout; no voice connection.", "ios-audio-statistics-fixture"),
         ] {
             let app = launch(fixture: fixture)
-            app.buttons["Open navigation"].tap()
+            app.buttons["Browse"].tap()
             let settings = app.descendants(matching: .any)["account-settings-menu"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5))
             let frame = settings.frame, window = app.windows.firstMatch.frame
@@ -718,7 +718,7 @@ final class CaperParityUITests: XCTestCase {
     #if os(iOS)
     func testNarrowConversationAndBrowse() {
         let app = launch()
-        let navigation = app.buttons["Open navigation"]
+        let navigation = app.buttons["Browse"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Browse"].exists)
         assertStaticText("Fixture Owner", in: app)

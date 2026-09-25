@@ -917,6 +917,8 @@ private struct ChatView: View {
     let browse: () -> Void
     let membersVisible: Bool
     let toggleMembers: () -> Void
+    /// Web shows Connecting…/Offline only after a second without the gateway.
+    @State private var showConnectionStatus = false
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
         self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
@@ -926,17 +928,23 @@ private struct ChatView: View {
             // Match the 34pt message-avatar column without shrinking the 44pt menu target.
             HStack(spacing: narrow ? 5 : 10) {
                 if narrow {
+                    // Web's narrow toggle: the menu icon with a visible "Browse" label.
                     Button(action: browse) {
-                        CaperIcon(name: "menu", size: 18)
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("Open navigation")
+                        HStack(spacing: 6) {
+                            CaperIcon(name: "menu", size: 18)
+                            Text("Browse").font(CaperTheme.font(13, weight: .bold))
+                        }.frame(height: 44).padding(.horizontal, 4).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Browse")
                 }
                 Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
                     .accessibilityLabel("# \(chat.channelName.lowercased())")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
                 VoiceHeaderButton(model: model, voice: voice)
-                if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
+                if chat.liveState != .connected && showConnectionStatus {
+                    Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("chat-connection-status")
+                }
                 Button { CaperEffects.shared.toggle(!membersVisible); toggleMembers() } label: { CaperIcon(name: "users", size: 20) }
                     .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
                     .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
@@ -946,17 +954,21 @@ private struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        HStack {
-                            if chat.hasMore {
-                                Button(chat.loadingOlder ? "Loading…" : chat.olderError == nil ? "Load older messages" : "Retry older messages") {
+                        HStack(spacing: 6) {
+                            if chat.olderError != nil {
+                                Text("Couldn’t load older messages.")
+                                Button("Retry") { Task { await chat.loadOlder() } }.disabled(chat.loadingOlder)
+                                    .accessibilityIdentifier("load-older-messages")
+                            } else if chat.hasMore {
+                                Button(chat.loadingOlder ? "Loading…" : "Load older messages") {
                                     Task { await chat.loadOlder() }
                                 }.disabled(chat.loadingOlder)
                                     .accessibilityIdentifier("load-older-messages")
                             }
                             else { Text("Beginning of conversation") }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44)
-                        if let error = chat.olderError {
-                            Text(error).font(CaperTheme.font(11)).foregroundStyle(.red).padding(.horizontal, 18).padding(.bottom, 8)
+                        if chat.loading && chat.messages.isEmpty {
+                            Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                         }
                         ForEach(chat.messages) { message in MessageRow(message: message).id(message.id) }
                         if let pending = chat.pendingMessage {
@@ -984,7 +996,7 @@ private struct ChatView: View {
 
             HStack(spacing: 7) {
                 if !chat.typingNames.isEmpty {
-                    ProgressView().controlSize(.mini)
+                    TypingDots()
                     Text(typingLabel).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                 }
                 Spacer()
@@ -1012,14 +1024,49 @@ private struct ChatView: View {
                 .accessibilityIdentifier("send-message-button")
             }.padding(.horizontal, 18).padding(.vertical, 12)
             if chat.draft.unicodeScalars.count >= 3000 {
-                Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).padding(.bottom, 6)
+                Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
+            .task(id: chat.liveState) {
+                showConnectionStatus = false
+                guard chat.liveState != .connected else { return }
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                showConnectionStatus = true
+            }
+    }
+    /// Web's counter tones at 3500 / 3750 / 3900 characters.
+    private var counterTone: Color {
+        let count = chat.draft.unicodeScalars.count
+        if count >= 3900 { return Color(red: 1, green: 130/255, blue: 124/255) }
+        if count >= 3750 { return Color(red: 237/255, green: 163/255, blue: 97/255) }
+        if count >= 3500 { return Color(red: 228/255, green: 199/255, blue: 106/255) }
+        return CaperTheme.muted
     }
     private var typingLabel: String {
         if chat.typingNames.count > 2 { return "Several people are typing…" }
         let names = chat.typingNames.joined(separator: " and ")
         return "\(names) \(chat.typingNames.count == 1 ? "is" : "are") typing…"
+    }
+}
+
+/// Web's three bouncing typing dots (chat.css typing-bounce).
+private struct TypingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(paused: reduceMotion)) { timeline in
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { index in
+                    let phase = reduceMotion ? 0 : Self.bounce(timeline.date.timeIntervalSinceReferenceDate - Double(index) * 0.15)
+                    Circle().frame(width: 4, height: 4).opacity(0.45 + 0.55 * phase).offset(y: -3 * phase)
+                }
+            }.foregroundStyle(CaperTheme.muted).accessibilityHidden(true)
+        }
+    }
+    /// 0→1→0 over the first 60% of a 1.2 s cycle, like the web keyframes.
+    static func bounce(_ time: Double) -> Double {
+        let t = (time.truncatingRemainder(dividingBy: 1.2) + 1.2).truncatingRemainder(dividingBy: 1.2) / 1.2
+        guard t < 0.6 else { return 0 }
+        return t < 0.3 ? t / 0.3 : (0.6 - t) / 0.3
     }
 }
 
