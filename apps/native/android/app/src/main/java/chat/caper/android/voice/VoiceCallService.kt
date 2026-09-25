@@ -195,6 +195,7 @@ class VoiceCallService : Service() {
                     onTerminal = { error -> scope.launch { failCall(current, error) } },
                 ).also { it.start() }
                 commitCallResult(current, attempt) { it.copy(phase = VoiceState.Phase.CONNECTED, selfId = current.selfParticipantId()) }
+                launch { sampleDiagnostics(current, attempt) }
                 speaking = launch {
                     val lastLoud = mutableMapOf<String, Long>()
                     while (isActive) {
@@ -212,10 +213,7 @@ class VoiceCallService : Service() {
                             delay(15_000)
                             if (state.value.phase != VoiceState.Phase.RECONNECTING) {
                                 heartbeatWithRecovery(current, attempt)
-                                runCatching { withTimeout(3_000) { current.diagnostics() } }
-                                    .onSuccess { diagnostics -> commitCallResult(current, attempt) {
-                                        it.copy(diagnostics = diagnostics, processing = current.processingReport().toList())
-                                    } }
+                                sampleDiagnostics(current, attempt)
                             }
                         }
                     } catch (error: Throwable) {
@@ -256,6 +254,13 @@ class VoiceCallService : Service() {
                 delay(3_000)
             }
         }
+    }
+
+    private suspend fun sampleDiagnostics(current: VoiceEngine, attempt: Long) {
+        runCatching { withTimeout(3_000) { current.diagnostics() } }
+            .onSuccess { diagnostics -> commitCallResult(current, attempt) {
+                it.copy(diagnostics = diagnostics, processing = current.processingReport().toList())
+            } }
     }
 
     private fun transportState(current: VoiceEngine, attempt: Long, transport: org.webrtc.PeerConnection.PeerConnectionState) {
@@ -494,6 +499,14 @@ class VoiceCallService : Service() {
         fun stopIfChannel(context: Context, channelId: String) { if (state.value.belongsToChannel(channelId)) stop(context) }
         fun stopIfSpace(context: Context, spaceId: String) { if (state.value.belongsToSpace(spaceId)) stop(context) }
         fun clearError() { update { it.copy(error = null) } }
+        /** Connection details sample while open, like web's 1 s stats timer. */
+        fun refreshDiagnostics() {
+            val service = active ?: return
+            service.scope.launch {
+                val (current, attempt) = service.currentCall() ?: return@launch
+                if (state.value.phase == VoiceState.Phase.CONNECTED) service.sampleDiagnostics(current, attempt)
+            }
+        }
         fun toggleMute(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_MUTE)) }
         fun toggleDeafen(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_DEAFEN)) }
         fun selectRoute(context: Context, id: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_ROUTE).putExtra(EXTRA_ROUTE_ID, id)) }
@@ -572,6 +585,8 @@ data class VoiceDiagnostics(
     val maxJitterMs: Long,
     val roundTripMs: Long,
     val route: String,
+    val timing: JoinTiming? = null,
+    val checks: String? = null,
 )
 
 internal fun transientVoiceControlError(error: Throwable): Boolean = when (error) {

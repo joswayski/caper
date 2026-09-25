@@ -31,6 +31,16 @@ import chat.caper.android.voice.MicComparisonBinding
 import chat.caper.android.voice.PrejoinMicTest
 import chat.caper.android.voice.SpeakerTest
 import chat.caper.android.voice.VoiceCallService
+import chat.caper.android.voice.VoiceDiagnostics
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.text.AnnotatedString
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import chat.caper.android.voice.VoiceState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -348,21 +358,70 @@ private const val MAX_RECORDING_SECONDS = 30
     }
 }
 
+/** Web's ConnectionDiagnostics, limited to the join phases Android measures. */
 @Composable internal fun ConnectionDetailsDialog(voice: VoiceState, close: () -> Unit) = CaperDialog("Connection details", close) {
-    voice.diagnostics?.let { diagnostics ->
-        DiagnosticRow("Received", formatBytes(diagnostics.receivedBytes))
-        DiagnosticRow("Live receive", formatBitrate(diagnostics.receiveBitrate))
-        DiagnosticRow("Sent", formatBytes(diagnostics.sentBytes))
-        DiagnosticRow("Live send", formatBitrate(diagnostics.sendBitrate))
-        DiagnosticRow("Packets lost", diagnostics.packetsLost.toString())
-        DiagnosticRow("Max jitter", "${diagnostics.maxJitterMs} ms")
-        DiagnosticRow("RTT", "${diagnostics.roundTripMs} ms")
-        DiagnosticRow("Route", when (diagnostics.route) { "relay" -> "TURN relay"; "direct" -> "Direct"; else -> "Not observed yet" })
-    } ?: Text("Join voice to see connection details.", color = TextMuted, fontSize = 12.sp)
+    // Web samples stats every second; sample while this dialog is open.
+    LaunchedEffect(Unit) { while (isActive) { VoiceCallService.refreshDiagnostics(); delay(2_000) } }
+    val clipboard = LocalClipboardManager.current
+    var copyStatus by remember { mutableStateOf("") }
+    val diagnostics = voice.diagnostics.takeIf { voice.phase == VoiceState.Phase.CONNECTED || voice.phase == VoiceState.Phase.RECONNECTING }
+    if (diagnostics == null) Text("Join voice to see connection details.", color = TextMuted, fontSize = 12.sp)
+    else {
+        Column(Modifier.semantics { contentDescription = "Connection statistics" }) {
+            connectionDetailRows(diagnostics).forEach { (label, value) -> DiagnosticRow(label, value) }
+        }
+        OutlinedButton({
+            copyStatus = try { clipboard.setText(AnnotatedString(connectionDetailsJson(diagnostics))); "Copied connection details" }
+            catch (_: Throwable) { "Copy failed; try again." }
+        }, shape = MaterialTheme.shapes.small) { Text("Copy connection details") }
+        if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
+    }
 }
+
+internal fun connectionDetailRows(diagnostics: VoiceDiagnostics): List<Pair<String, String>> = buildList {
+    diagnostics.timing?.let { timing ->
+        add("Joined" to "Joined in ${timing.joinedMs} ms")
+        add("Session + publish" to "${timing.sessionMs} ms")
+        add("Transport + state" to "${timing.transportMs} ms" + (timing.iceMs?.let { " (ICE $it ms)" } ?: ""))
+        add("Connectivity checks" to (diagnostics.checks ?: "Not observed yet"))
+        add("Roster" to "${timing.rosterMs} ms")
+    }
+    add("Received" to formatMegabytes(diagnostics.receivedBytes))
+    add("Live receive" to formatKbps(diagnostics.receiveBitrate))
+    add("Sent" to formatMegabytes(diagnostics.sentBytes))
+    add("Live send" to formatKbps(diagnostics.sendBitrate))
+    add("Packets lost" to diagnostics.packetsLost.toString())
+    add("Max jitter" to "${diagnostics.maxJitterMs} ms")
+    add("RTT" to "${diagnostics.roundTripMs} ms")
+    add("Route" to when (diagnostics.route) { "relay" -> "TURN relay"; "direct" -> "Direct"; else -> "Not observed yet" })
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+private val detailsJson = Json { prettyPrint = true; prettyPrintIndent = "  " }
+
+/** Web's copied shape, with only the fields Android measured. */
+internal fun connectionDetailsJson(diagnostics: VoiceDiagnostics): String = detailsJson.encodeToString(JsonObject.serializer(), buildJsonObject {
+    diagnostics.timing?.let { timing ->
+        put("join", "Joined in ${timing.joinedMs} ms")
+        put("sessionMs", timing.sessionMs)
+        put("transportMs", timing.transportMs)
+        timing.iceMs?.let { put("iceMs", it) }
+        put("rosterMs", timing.rosterMs)
+        diagnostics.checks?.let { put("checks", it) }
+    }
+    put("receivedBytes", diagnostics.receivedBytes)
+    put("sentBytes", diagnostics.sentBytes)
+    put("receiveBitrate", diagnostics.receiveBitrate)
+    put("sendBitrate", diagnostics.sendBitrate)
+    put("packetsLost", diagnostics.packetsLost)
+    put("maxJitterMs", diagnostics.maxJitterMs)
+    put("roundTripMs", diagnostics.roundTripMs)
+    put("route", diagnostics.route)
+})
+
+internal fun formatMegabytes(bytes: Long) = String.format(java.util.Locale.US, "%.2f MB", bytes / 1e6)
+internal fun formatKbps(bitsPerSecond: Long) = "${Math.round(bitsPerSecond / 1_000.0)} kbps"
 
 @Composable private fun DiagnosticRow(label: String, value: String) = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
     Text(label, color = TextMuted, fontSize = 11.sp); Text(value, fontSize = 11.sp)
 }
-private fun formatBytes(value: Long) = when { value >= 1_000_000 -> "%.1f MB".format(value / 1_000_000.0); value >= 1_000 -> "%.1f KB".format(value / 1_000.0); else -> "$value B" }
-private fun formatBitrate(value: Long) = "${value / 1_000} kbps"

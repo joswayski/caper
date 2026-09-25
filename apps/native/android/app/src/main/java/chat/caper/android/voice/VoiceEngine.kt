@@ -66,6 +66,10 @@ class VoiceEngine(
         applyRemoteAudioPreferences()
     }
     private var previousStats: Triple<Long, Long, Long>? = null
+    /** Measured once per join; see [JoinTiming]. */
+    @Volatile private var joinTiming: JoinTiming? = null
+    @Volatile private var checks: String? = null
+    @Volatile private var iceConnectedAt: Long? = null
     private val connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     private var turn: TurnGeneration? = null
     private var stateSequence = 0L
@@ -97,6 +101,7 @@ class VoiceEngine(
     } }
 
     suspend fun connect(onParticipants: (List<Participant>) -> Unit) = withContext(Dispatchers.IO) {
+        val started = monotonicMs()
         try {
             // Model copy/warmup can take seconds and must not hold the resource
             // gate needed by synchronous stop on Main.
@@ -123,6 +128,7 @@ class VoiceEngine(
             // A canceled HTTP join can have committed at the server without
             // delivering its token. Wait for the bounded call to finish, then
             // either publish the token or leave it after a local stop.
+            val sessionStarted = monotonicMs()
             val joined: JoinResponse? = withContext(NonCancellable) {
                 val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", muted); put("deafened", deafened) })
                 if (resources.acceptToken(result.token) { mediaToken = it; selfId = result.id; turn = result.turn }) result
@@ -163,12 +169,15 @@ class VoiceEngine(
             )
             val answer = published.sessionDescription ?: error("Media service did not answer publication.")
             current.setRemoteDescriptionAwait(RtcSessionDescription(RtcSessionDescription.Type.ANSWER, answer.sdp), resources)
+            val signaled = monotonicMs()
             withTimeout(20_000) {
                 connectionState.first { it == PeerConnection.PeerConnectionState.CONNECTED || it == PeerConnection.PeerConnectionState.FAILED }
             }
             check(connectionState.value == PeerConnection.PeerConnectionState.CONNECTED) { "Voice transport failed to connect." }
+            val transportConnected = monotonicMs()
             // The SFU session must be connected before requesting remote tracks.
             reconcile(onParticipants)
+            val rostered = monotonicMs()
             lock.withLock {
                 localMute.withCurrent { currentMute ->
                     resources.use {
@@ -179,6 +188,13 @@ class VoiceEngine(
                 }
                 syncStateLocked()
             }
+            joinTiming = JoinTiming(
+                joinedMs = monotonicMs() - started,
+                sessionMs = signaled - sessionStarted,
+                transportMs = transportConnected - signaled,
+                iceMs = iceConnectedAt?.let { (it - signaled).coerceIn(0, transportConnected - signaled) },
+                rosterMs = rostered - transportConnected,
+            )
         } catch (error: Throwable) {
             withContext(NonCancellable) {
                 if (withTimeoutOrNull(3_000) { disconnect() } == null) closeLocal()
@@ -342,6 +358,11 @@ class VoiceEngine(
             val jitter = stats.filter { it.type == "inbound-rtp" }.mapNotNull { (it.members["jitter"] as? Number)?.toDouble() }.maxOrNull()?.times(1_000)?.toLong() ?: 0
             val rtt = stats.flatMap { stat -> listOf("roundTripTime", "currentRoundTripTime").mapNotNull { (stat.members[it] as? Number)?.toDouble() } }.maxOrNull()?.times(1_000)?.toLong() ?: 0
             val selected = stats.firstOrNull { it.type == "candidate-pair" && (it.members["selected"] == true || it.members["nominated"] == true) }
+            // Web: checks on the selected pair, first sampled after joining.
+            val sentChecks = selected?.members?.get("requestsSent") as? Number
+            if (joinTiming != null && checks == null && selected != null && sentChecks != null) {
+                checks = "${sentChecks.toLong()} sent · ${(selected.members["responsesReceived"] as? Number)?.toLong() ?: 0} answered"
+            }
             val localId = selected?.members?.get("localCandidateId") as? String
             val route = when (stats.firstOrNull { it.id == localId }?.members?.get("candidateType")) { "relay" -> "relay"; null -> "unknown"; else -> "direct" }
             val now = (report.timestampUs / 1_000).toLong()
@@ -350,7 +371,7 @@ class VoiceEngine(
             previousStats = Triple(now, received, sent)
             val receiveRate = if (previous == null || elapsed == null) 0 else ((received - previous.second).coerceAtLeast(0) * 8_000 / elapsed)
             val sendRate = if (previous == null || elapsed == null) 0 else ((sent - previous.third).coerceAtLeast(0) * 8_000 / elapsed)
-            if (continuation.isActive) continuation.resume(VoiceDiagnostics(received, receiveRate, sent, sendRate, lost, jitter, rtt, route))
+            if (continuation.isActive) continuation.resume(VoiceDiagnostics(received, receiveRate, sent, sendRate, lost, jitter, rtt, route, joinTiming, checks))
             }
         }
     }
@@ -483,7 +504,9 @@ class VoiceEngine(
     private val observer = object : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState?) = Unit
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) = Unit
-        override fun onStandardizedIceConnectionChange(newState: PeerConnection.IceConnectionState?) = Unit
+        override fun onStandardizedIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
+            if (iceConnectedAt == null && (newState == PeerConnection.IceConnectionState.CONNECTED || newState == PeerConnection.IceConnectionState.COMPLETED)) iceConnectedAt = monotonicMs()
+        }
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
             if (newState != null) {
                 if (resources.isOpen) {
@@ -553,6 +576,21 @@ class VoiceEngine(
         }
     }
 }
+
+private fun monotonicMs() = System.nanoTime() / 1_000_000
+
+/** Join phases this engine runs in sequence, measured from its own connect(). */
+data class JoinTiming(
+    /** Audio processing setup through a connected, rostered call. */
+    val joinedMs: Long,
+    /** The join request through the applied publish answer. */
+    val sessionMs: Long,
+    /** Publish answer until the transport connected. */
+    val transportMs: Long,
+    val iceMs: Long?,
+    /** The first snapshot and subscriptions after transport connected. */
+    val rosterMs: Long,
+)
 
 /** Keep the MID after a transient close failure so the next roster pass retries it. */
 internal suspend fun closeDepartedSubscription(
