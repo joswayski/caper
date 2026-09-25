@@ -132,7 +132,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(selected.value as? String, "Selected")
         #else
         let selected = app.descendants(matching: .any)["selected-channel-name"]
-        XCTAssertTrue(selected.label.contains("general"))
+        XCTAssertEqual(selected.value as? String, "# general")
         #endif
         XCTAssertTrue(app.buttons["join-voice-chan00000002"].exists)
         stack.tap()
@@ -140,7 +140,7 @@ final class CaperParityUITests: XCTestCase {
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected", "Collapsing voice occupants must not navigate text chat")
         #else
-        XCTAssertTrue(selected.label.contains("general"), "Collapsing voice occupants must not navigate text chat")
+        XCTAssertEqual(selected.value as? String, "# general", "Collapsing voice occupants must not navigate text chat")
         #endif
         stack.tap()
         XCTAssertEqual(stack.value as? String, "Expanded")
@@ -159,7 +159,7 @@ final class CaperParityUITests: XCTestCase {
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected")
         #else
-        XCTAssertTrue(selected.label.contains("general"))
+        XCTAssertEqual(selected.value as? String, "# general")
         #endif
         // The fixture clears this denial for subsequent tests; it does not
         // restore an evicted watcher in this already-running app.

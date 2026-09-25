@@ -418,7 +418,7 @@ def main() -> None:
         {"id": f"spectator00{index}", "name": f"Fixture Voice {index}", "muted": False, "deafened": False}
         for index in range(1, 5)
     ]}})
-    tap(description="Open navigation")
+    wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
     roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
     assert find(roster, text="Fixture Voice 1") is not None
     assert find(roster, text="Fixture Voice 4") is not None
