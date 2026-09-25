@@ -5,5 +5,6 @@ internal class CallAttemptGate {
     private var generation = 0L
     @Synchronized fun begin(): Long = ++generation
     @Synchronized fun end() { generation++ }
+    @Synchronized fun snapshot(): Long = generation
     @Synchronized fun isCurrent(value: Long) = value == generation
 }

@@ -437,6 +437,7 @@ class VoiceCallService : Service() {
         private fun update(block: (VoiceState) -> VoiceState) { mutableState.update(block) }
         internal fun beginJoinAuthorization(): Long = controlEpoch.begin()
         internal fun joinAuthorizationCurrent(epoch: Long): Boolean = controlEpoch.isCurrent(epoch)
+        internal fun navigationEpoch(): Long = controlEpoch.snapshot()
         internal fun invalidateJoinAuthorization() = controlEpoch.end()
 
         fun start(context: Context, channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean = false, expectedControlEpoch: Long) {

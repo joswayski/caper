@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import chat.caper.android.data.*
 import chat.caper.android.model.*
 import chat.caper.android.voice.VoiceCallService
+import chat.caper.android.voice.VoiceState
 import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.Job
@@ -179,6 +180,42 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (request != generation) return@launch
                 if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel() else fail(error)
+            }
+        }
+    }
+
+    fun openVoiceChannel(voice: VoiceState, onOpened: () -> Unit = {}) {
+        val spaceId = voice.spaceId ?: return
+        val channelId = voice.channelId ?: return
+        val context = VoiceNavigationContext(generation, accountGeneration, VoiceCallService.navigationEpoch(), spaceId, channelId)
+        if (!context.isCurrent(generation, accountGeneration, VoiceCallService.navigationEpoch(), VoiceCallService.state.value)) return
+        if (mutable.value.selectedSpace?.space?.id == spaceId && mutable.value.selectedChannel?.id == channelId) {
+            onOpened()
+            return
+        }
+        val token = accountToken
+        val spaces = mutable.value.spaces
+        viewModelScope.launch {
+            try {
+                val destination = readVoiceDestination(api, token, spaces, spaceId, channelId) ?: return@launch
+                if (!context.isCurrent(generation, accountGeneration, VoiceCallService.navigationEpoch(), VoiceCallService.state.value)) return@launch
+                val previousSpace = mutable.value.selectedSpace?.space?.id
+                val request = ++generation
+                if (previousSpace != spaceId) ++spaceAccessGeneration
+                closeChannel(clearPending = true)
+                mutable.value = mutable.value.copy(
+                    selectedSpace = destination.detail, selectedChannel = destination.channel,
+                    messages = destination.history.messages, hasMoreMessages = destination.history.hasMore,
+                    presencePage = if (previousSpace == spaceId) mutable.value.presencePage else 0,
+                    deniedVoiceChannels = if (previousSpace == spaceId) mutable.value.deniedVoiceChannels else emptySet(),
+                    busy = false, error = null,
+                )
+                openGateway(channelId, destination.history.cursor, request)
+                onOpened()
+            } catch (error: Throwable) {
+                // A denied or failed destination must not revoke the channel being read.
+                if (context.isCurrent(generation, accountGeneration, VoiceCallService.navigationEpoch(), VoiceCallService.state.value) &&
+                    error !is ApiException) fail(error)
             }
         }
     }
@@ -579,4 +616,28 @@ internal data class AdminMutationContext(val accountGeneration: Long, val spaceI
         accountGeneration == currentAccountGeneration &&
             (spaceId == null || selected?.space?.id == spaceId) &&
             (channelId == null || selected?.channels?.any { it.id == channelId } == true)
+}
+
+internal data class VoiceNavigationContext(val generation: Long, val accountEpoch: Long, val callEpoch: Long, val spaceId: String, val channelId: String) {
+    fun isCurrent(currentGeneration: Long, currentAccountEpoch: Long, currentCallEpoch: Long, voice: VoiceState): Boolean =
+        generation == currentGeneration && accountEpoch == currentAccountEpoch && callEpoch == currentCallEpoch &&
+            voice.spaceId == spaceId && voice.channelId == channelId &&
+            voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
+}
+
+internal data class VoiceDestination(val detail: SpaceDetail, val channel: Channel, val history: ChatHistory)
+
+internal suspend fun readVoiceDestination(api: CaperApi, token: String?, spaces: List<Space>, spaceId: String, channelId: String): VoiceDestination? {
+    val space = spaces.firstOrNull { it.id == spaceId } ?: return null
+    if (space.demo) {
+        val history = api.general()
+        if (history.space?.id != spaceId || history.channel?.id != channelId) return null
+        val channel = Channel(channelId, spaceId, history.channel.name, false)
+        return VoiceDestination(SpaceDetail(space, listOf(channel), emptyList()), channel, history)
+    }
+    val detail = api.space(checkNotNull(token), spaceId)
+    if (detail.space.id != spaceId) return null
+    val channel = detail.channels.firstOrNull { it.id == channelId } ?: return null
+    val history = api.history(token, channelId)
+    return VoiceDestination(detail, channel, history)
 }
