@@ -126,8 +126,11 @@ internal data class VoiceJoinIntent(
     when (val shown = overlay) {
         Overlay.CreateSpace -> CreateSpaceDialog(state.busy, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
-        Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private -> viewModel.createChannel(name, private) { overlay = null } } }
-        is Overlay.ManageChannel -> ManageChannelDialog(state, shown.channel, viewModel) { overlay = null }
+        Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private ->
+            // Web opens a new private channel's Overview so people can be added.
+            viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
+        } }
+        is Overlay.ManageChannel -> ManageChannelDialog(state, state.selectedSpace?.channels?.find { it.id == shown.channel.id } ?: shown.channel, viewModel) { overlay = null }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
         Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin)
@@ -242,10 +245,18 @@ internal data class VoiceJoinIntent(
                 ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
             }
         }
+        val limits = state.limits
+        val canCreateSpace = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
+            state.spaces.count { !it.demo } < limits.totalSpaces
+        val spaceEnabled = state.account == null || canCreateSpace
         Surface(
-            Modifier.size(40.dp).clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics { contentDescription = "Create space" },
+            Modifier.size(40.dp).clickable(enabled = spaceEnabled) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
+                contentDescription = "Create space"
+                // Web's tooltip; Android has no hover, so it is the state description.
+                if (!spaceEnabled) stateDescription = "Space limit reached (${limits?.ownedSpaces ?: 20} owned, ${limits?.totalSpaces ?: 100} total)"
+            },
             color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
-        ) { Box(contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_plus), null, tint = TerracottaBright) } }
+        ) { Box(contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_plus), null, tint = if (spaceEnabled) TerracottaBright else TerracottaBright.copy(alpha = 0.4f)) } }
     }
 }
 
@@ -291,7 +302,9 @@ internal data class VoiceJoinIntent(
                     Text(channelCount.toString(), color = TextMuted, fontSize = 10.sp)
                 }
                 if (owner) {
-                    IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel) { Icon(painterResource(R.drawable.lucide_plus), "Create channel", tint = if (canCreateChannel) TextMuted else TextMuted.copy(alpha = 0.4f)) }
+                    IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel, modifier = Modifier.semantics {
+                        if (!canCreateChannel) stateDescription = "Channel limit reached (${state.limits?.channelsPerSpace ?: 100})"
+                    }) { Icon(painterResource(R.drawable.lucide_plus), "Create channel", tint = if (canCreateChannel) TextMuted else TextMuted.copy(alpha = 0.4f)) }
                     Box {
                         IconButton({ channelMenuOpen = true }) { Icon(painterResource(R.drawable.lucide_ellipsis), "Channel options", tint = TextMuted) }
                         DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
@@ -561,9 +574,7 @@ internal data class VoiceJoinIntent(
     openNavigation: () -> Unit,
 ) {
     val channel = state.selectedChannel
-    if (channel == null) return Box(modifier.fillMaxSize().background(SurfaceConversation), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(painterResource(R.drawable.lucide_hash), null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold) }
-    }
+    if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
     val context = LocalContext.current
     var draft by remember(channel.id) { mutableStateOf("") }
     val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
@@ -625,6 +636,33 @@ internal data class VoiceJoinIntent(
                 ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
             }
             if (draft.codePointCount(0, draft.length) >= 3000) Text("${draft.codePointCount(0, draft.length)} / 4,000", Modifier.align(Alignment.End), color = if (draft.codePointCount(0, draft.length) >= 3900) ErrorText else TextMuted, fontSize = 10.sp)
+        }
+    }
+}
+
+/** Web's empty-channel stage: owners can create the first channel; narrow screens keep Browse spaces. */
+@Composable private fun EmptyChannel(state: AppUiState, narrow: Boolean, show: (Overlay) -> Unit, openNavigation: () -> Unit, modifier: Modifier) {
+    val detail = state.selectedSpace
+    // A space with channels is still opening one; do not flash the empty state.
+    if (state.busy && detail?.channels?.isNotEmpty() == true) return Box(modifier.fillMaxSize().background(SurfaceConversation))
+    val owner = state.account != null && state.account.id == detail?.space?.ownerId
+    Box(modifier.fillMaxSize().background(SurfaceConversation)) {
+        if (narrow) BrowseButton("Browse spaces", R.drawable.lucide_hash, openNavigation, Modifier.align(Alignment.TopStart).padding(start = 11.dp, top = 8.dp))
+        Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(painterResource(R.drawable.lucide_hash), null, tint = TerracottaBright)
+            Text("No accessible channels", fontWeight = FontWeight.Bold)
+            Text(if (owner) "Create a channel to start a conversation." else "The owner has not shared a channel with you yet.", color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            if (owner) OutlinedButton({ show(Overlay.CreateChannel) }, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Create channel") }
+        }
+    }
+}
+
+/** Web's `.navigation-toggle`: a bordered icon-and-label button shown on narrow screens. */
+@Composable private fun BrowseButton(label: String, icon: Int, open: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(open, modifier.heightIn(min = 34.dp), shape = MaterialTheme.shapes.small, color = Color.Transparent, contentColor = TextMuted, border = BorderStroke(1.dp, Border)) {
+        Row(Modifier.padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(painterResource(icon), null, Modifier.size(15.dp))
+            Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -764,7 +802,7 @@ internal data class VoiceJoinIntent(
 @Composable private fun CreateSpaceDialog(busy: Boolean, close: () -> Unit, create: (String) -> Unit) {
     var name by remember { mutableStateOf("") }
     CaperDialog("Create a space", close) {
-        OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         DialogActions(close, "Create space", busy || name.isBlank()) { create(name.trim()) }
     }
 }
@@ -772,7 +810,9 @@ internal data class VoiceJoinIntent(
 @Composable private fun CreateChannelDialog(detail: SpaceDetail, busy: Boolean, close: () -> Unit, create: (String, Boolean) -> Unit) {
     var name by remember { mutableStateOf("") }; var private by remember { mutableStateOf(false) }
     CaperDialog("Create a channel", close) {
-        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(painterResource(R.drawable.lucide_hash), null) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, placeholder = { Text("project-updates") },
+            leadingIcon = { Icon(painterResource(if (private) R.drawable.lucide_lock_keyhole else R.drawable.lucide_hash), null, Modifier.size(18.dp)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Text("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.", color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp)
         PrivacyToggle(private, detail.space.name) { private = it }
         DialogActions(close, "Create channel", busy || channelInvalid(name)) { create(name.removeSuffix("-"), private) }
     }
@@ -780,58 +820,74 @@ internal data class VoiceJoinIntent(
 
 @Composable private fun ManageSpaceDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
     var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
-    var username by remember { mutableStateOf("") }
     var confirmingDelete by remember { mutableStateOf(false) }
-    CaperDialog("Manage space", close, wide = true) {
-        OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth())
+    CaperDialog("Manage space", close, wide = true, description = "Only the owner can change this space and its membership.") {
+        OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth())
         Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small) { Text("Save name") }
         HorizontalDivider(color = Border)
-        Text("Members · ${detail.members.size}", fontWeight = FontWeight.Bold)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
-            Spacer(Modifier.width(8.dp)); Button({ viewModel.addSpaceMember(username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Add") }
-        }
-        detail.members.forEach { member -> MemberManagerRow(member, member.owner, { viewModel.removeSpaceMember(member) }) }
+        MemberManager(detail.members, state.busy, viewModel::addSpaceMember, viewModel::removeSpaceMember)
         HorizontalDivider(color = Border)
-        Text("Delete space", fontWeight = FontWeight.Bold); Text("Delete this space and all its channels for every member.", color = TextMuted, fontSize = 11.sp)
-        OutlinedButton({ confirmingDelete = true }, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Delete space") }
+        DangerZone("Delete space", "Delete this space and all its channels for every member.", state.busy) { confirmingDelete = true }
     }
     if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }, warn = true) { viewModel.deleteCurrentSpace { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
 }
 
 @Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {
     var name by remember(channel.id) { mutableStateOf(channel.name) }; var private by remember(channel.id) { mutableStateOf(channel.private) }
-    var username by remember { mutableStateOf("") }; var confirmingDelete by remember { mutableStateOf(false) }
+    var confirmingDelete by remember { mutableStateOf(false) }
     LaunchedEffect(channel.id, channel.private) { viewModel.loadChannelGrants(channel) }
-    CaperDialog("Overview", close, wide = true) {
-        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, modifier = Modifier.fillMaxWidth())
-        PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
-        val dirty = name.removeSuffix("-") != channel.name || private != channel.private
-        if (channel.private) {
-            HorizontalDivider(color = Border); Text("Members · ${state.channelGrants.size}", fontWeight = FontWeight.Bold)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
-                Spacer(Modifier.width(8.dp)); Button({ viewModel.addChannelGrant(channel, username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Add") }
-            }
-            state.channelGrants.forEach { member -> MemberManagerRow(member, member.owner) { viewModel.removeChannelGrant(channel, member) } }
-        }
-        HorizontalDivider(color = Border); Text("Delete channel", fontWeight = FontWeight.Bold)
-        Text("Delete this channel for everyone in the space.", color = TextMuted, fontSize = 11.sp)
-        OutlinedButton({ confirmingDelete = true }, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Delete channel") }
-        if (dirty) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton({ name = channel.name; private = channel.private }) { Text("Reset") }
+    val dirty = name.removeSuffix("-") != channel.name || private != channel.private
+    // Web: a sticky save bar appears only while the overview has unsaved changes.
+    CaperDialog("Overview", close, wide = true, footer = if (!dirty) null else { {
+        Row(Modifier.fillMaxWidth().background(Blackout).padding(horizontal = 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("You have unsaved changes.", Modifier.weight(1f), fontSize = 12.sp)
+            OutlinedButton({ name = channel.name; private = channel.private }, enabled = !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Reset") }
             Spacer(Modifier.width(8.dp))
-            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { Text("Save changes") }
+            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { Text(if (state.busy) "Saving…" else "Save changes") }
         }
+    } }) {
+        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, placeholder = { Text("project-updates") }, modifier = Modifier.fillMaxWidth())
+        PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
+        if (channel.private) {
+            HorizontalDivider(color = Border)
+            MemberManager(state.channelGrants, state.busy, { viewModel.addChannelGrant(channel, it) }) { viewModel.removeChannelGrant(channel, it) }
+        }
+        HorizontalDivider(color = Border)
+        DangerZone("Delete channel", "Delete this channel for everyone in the space.", state.busy) { confirmingDelete = true }
     }
     if (confirmingDelete) ConfirmDialog("Delete channel", "Delete #${channel.name} for everyone? This channel and its messages will disappear from the space. This cannot be undone.", "Delete channel", state.busy, { confirmingDelete = false }, warn = true) { viewModel.deleteChannel(channel) { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
 }
 
-@Composable private fun MemberManagerRow(member: Member, protected: Boolean, remove: () -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
-        Avatar(member.displayName, 30.dp); Spacer(Modifier.width(9.dp)); Column(Modifier.weight(1f)) { Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold); Text("@${member.username}", color = TextMuted, fontSize = 10.sp) }
-        if (protected) Text("Owner", color = TextMuted, fontSize = 10.sp) else TextButton(remove) { Text("Remove", color = ErrorText) }
+/** Web's MemberManager: exact-username add, then "@username · Owner" rows. */
+@Composable private fun MemberManager(members: List<Member>, busy: Boolean, add: (String) -> Unit, remove: (Member) -> Unit) {
+    var username by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Members", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
+        Spacer(Modifier.width(8.dp))
+        Button({ if (username.isEmpty()) error = "Enter an exact username." else { error = null; add(username); username = "" } }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Add") }
+    }
+    error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+    members.forEach { member ->
+        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(member.displayName, 30.dp); Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("@${member.username}${if (member.owner) " · Owner" else ""}", color = TextMuted, fontSize = 10.sp)
+            }
+            if (!member.owner) TextButton({ remove(member) }, enabled = !busy) { Text("Remove", color = ErrorText) }
+        }
+    }
+}
+
+@Composable private fun DangerZone(title: String, body: String, busy: Boolean, delete: () -> Unit) {
+    Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Text(body, color = TextMuted, fontSize = 11.sp)
+    OutlinedButton(delete, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text(title) }
 }
 
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
@@ -847,11 +903,27 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     Text(body, color = TextMuted); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(close) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(confirm, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger)) { Text(action) } }
 }
 
-@Composable internal fun CaperDialog(title: String, close: () -> Unit, wide: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
+@Composable internal fun CaperDialog(
+    title: String,
+    close: () -> Unit,
+    wide: Boolean = false,
+    description: String? = null,
+    footer: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Dialog(close) { Surface(Modifier.widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth().heightIn(max = 760.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Bold); IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) } }
-            HorizontalDivider(color = Border); content()
+        Column {
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                        description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
+                    }
+                    IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) }
+                }
+                HorizontalDivider(color = Border); content()
+            }
+            if (footer != null) { HorizontalDivider(color = Border); footer() }
         }
     } }
 }

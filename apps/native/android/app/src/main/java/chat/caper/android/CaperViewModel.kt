@@ -512,12 +512,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(spaces = remaining)
         done(); remaining.firstOrNull()?.let { selectSpace(it.id) }
     }
-    fun createChannel(name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction { request ->
+    fun createChannel(name: String, privateChannel: Boolean, done: (Channel) -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
         val channel = api.createChannel(requireAccountToken(), detail.space.id, name, privateChannel)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        replaceDetail(detail.copy(channels = detail.channels + channel)); done(); selectChannel(channel)
+        replaceDetail(detail.copy(channels = detail.channels + channel)); selectChannel(channel); done(channel)
     }
     fun updateChannel(channel: Channel, name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
