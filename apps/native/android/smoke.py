@@ -323,8 +323,8 @@ def main() -> None:
 
     # Inspect prejoin audio controls without starting capture or playback.
     tap(description="Audio and account settings")
-    audio = capture("caper-android-audio-prejoin", "Processing strength")
-    for label in ("Input gain", "Processing strength", "Output volume"):
+    audio = capture("caper-android-audio-prejoin", "Voice processing")
+    for label in ("Input volume", "Voice processing", "Output volume"):
         assert find(audio, description=label) is not None, f"Missing labeled slider: {label}"
     for removed in ("DPDFNet", "RNNoise", "voice EQ", "Android system settings", "communication routes", "Join voice", "Signed in as"):
         assert find(audio, contains=removed) is None, f"Unexpected explanatory copy: {removed}"
@@ -342,7 +342,7 @@ def main() -> None:
     tap(description="Close")
     tap(description="Audio and account settings")
     zero = capture("caper-android-audio-prejoin-zero-output", "0%")
-    assert find(zero, text="Test microphone") is not None
+    assert find(zero, text="Mic Test") is not None
     tap(description="Close")
 
     tap(description="Edit profile")
@@ -408,8 +408,8 @@ def main() -> None:
     tap(description="Expand channels")
     wait_for(text="planning")
     tap(description="Audio and account settings")
-    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Processing strength")
-    assert find(audio_narrow, description="Input gain") is not None
+    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Voice processing")
+    assert find(audio_narrow, description="Input volume") is not None
     tap(description="Close")
 
     # Spectator snapshots are fixture-only; the media join endpoint remains 503.

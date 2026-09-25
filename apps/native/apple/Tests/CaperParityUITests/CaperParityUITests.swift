@@ -263,7 +263,7 @@ final class CaperParityUITests: XCTestCase {
             XCTAssertTrue(button.exists, "Missing \(title) in the completed recording layout")
             XCTAssertFalse(button.isEnabled, "A visual fixture must not play synthetic audio")
         }
-        XCTAssertTrue(app.sliders["Live voice processing"].exists)
+        XCTAssertTrue(app.sliders["Voice processing"].exists)
         assertStaticText("25%", in: app)
         capture("audio-recorded-test-fixture", app: app)
         let controls = app.scrollViews["audio-preferences-controls"]
@@ -431,7 +431,7 @@ final class CaperParityUITests: XCTestCase {
         sounds.tap()
         XCTAssertEqual((sounds.value as? NSNumber)?.intValue, 1)
         #endif
-        let gain = app.sliders["Output gain"]
+        let gain = app.sliders["Output volume"]
         XCTAssertTrue(gain.waitForExistence(timeout: 2))
         XCTAssertEqual(outputGain(of: gain), 100)
         assertStaticText("100%", in: app, timeout: 2)
@@ -445,27 +445,27 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("\(displayedGain)%", in: app, timeout: 2)
         #if os(iOS)
         XCTAssertTrue(app.descendants(matching: .any)["system-audio-route-picker"].exists)
-        XCTAssertTrue(app.sliders["Input gain"].exists)
-        XCTAssertTrue(app.sliders["Live voice processing"].exists)
+        XCTAssertTrue(app.sliders["Input volume"].exists)
+        XCTAssertTrue(app.sliders["Voice processing"].exists)
         XCTAssertTrue(app.buttons["local-mic-test"].exists)
         #else
         XCTAssertTrue(app.descendants(matching: .any)["audio-input-device"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["audio-output-device"].exists)
-        XCTAssertTrue(app.sliders["Input gain"].exists)
-        XCTAssertTrue(app.sliders["Live voice processing"].exists)
+        XCTAssertTrue(app.sliders["Input volume"].exists)
+        XCTAssertTrue(app.sliders["Voice processing"].exists)
         // XCTest's normalized drag stops inside the track, and typeKey does
         // not focus an NSSlider on runners with keyboard navigation disabled.
         // Grab the centered thumb and drag beyond the track to its real limit.
-        let inputGain = app.sliders["Input gain"]
+        let inputGain = app.sliders["Input volume"]
         inputGain.adjust(toNormalizedSliderPosition: 0.5)
         inputGain.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.1, thenDragTo: inputGain.coordinate(withNormalizedOffset: CGVector(dx: -0.1, dy: 0.5)))
-        XCTAssertEqual(outputGain(of: app.sliders["Input gain"]), 0)
-        let strength = app.sliders["Live voice processing"]
+        XCTAssertEqual(outputGain(of: app.sliders["Input volume"]), 0)
+        let strength = app.sliders["Voice processing"]
         strength.adjust(toNormalizedSliderPosition: 0.5)
         strength.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.1, dy: 0.5)))
-        XCTAssertEqual(outputGain(of: app.sliders["Live voice processing"]), 100)
+        XCTAssertEqual(outputGain(of: app.sliders["Voice processing"]), 100)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
         #endif
         let controls = app.scrollViews["audio-preferences-controls"]
@@ -584,7 +584,7 @@ final class CaperParityUITests: XCTestCase {
                     XCTAssertTrue(button.exists)
                     XCTAssertFalse(button.isEnabled, "Fixture must not play synthetic audio")
                 }
-                XCTAssertTrue(app.sliders["Live voice processing"].exists)
+                XCTAssertTrue(app.sliders["Voice processing"].exists)
             } else {
                 assertStaticText("Connection statistics", in: app)
                 assertStaticText("42 ms / TURN relay", in: app)

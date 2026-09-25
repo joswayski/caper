@@ -7,8 +7,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.isPopup
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -48,7 +54,7 @@ class VoiceRosterUiTest {
         compose.setContent {
             CaperTheme {
                 Scaffold(containerColor = Blackout) { padding ->
-                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar)) { VoiceRoster(voice) }
+                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar).testTag("voice-roster")) { VoiceRoster(voice) }
                 }
             }
         }
@@ -62,7 +68,7 @@ class VoiceRosterUiTest {
         compose.onNodeWithText("Deafened").assertDoesNotExist()
         compose.onAllNodesWithContentDescription("Muted").assertCountEquals(1)
         compose.onAllNodesWithContentDescription("Deafened").assertCountEquals(1)
-        capture("voice-roster-connected-closed.png")
+        capture("voice-roster-connected-closed.png", compose.onNodeWithTag("voice-roster"))
 
         compose.onNodeWithContentDescription("Audio controls for Remote Voice").performClick()
         compose.onNodeWithText("User volume").assertExists()
@@ -77,7 +83,7 @@ class VoiceRosterUiTest {
                 assertEquals(TextColor, layouts.single().layoutInput.style.color)
             }
         }
-        capture("voice-roster-connected-open.png")
+        capture("voice-roster-connected-open.png", compose.onNode(isPopup()))
     }
 
     @Test fun connectingCallDoesNotExposeRemoteAudioControls() {
@@ -96,12 +102,11 @@ class VoiceRosterUiTest {
         compose.onNodeWithContentDescription("Audio controls for Remote Voice").assertDoesNotExist()
     }
 
-    private fun capture(name: String) {
-        compose.waitForIdle()
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private fun capture(name: String, node: SemanticsNodeInteraction) {
         val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
         check(directory.mkdirs() || directory.isDirectory)
-        val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+        // Compose waits for the target window's draw commit, including Popup windows.
+        val screenshot = node.captureToImage().asAndroidBitmap()
         try {
             File(directory, name).outputStream().use { output ->
                 check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, output))

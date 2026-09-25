@@ -1337,33 +1337,33 @@ private struct AudioPreferencesView: View {
             }
             #endif
             VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Input gain"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
+                HStack { Text("Input volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
                 Slider(value: inputGain, in: 0...200, step: 1)
-                    .accessibilityLabel("Input gain")
+                    .accessibilityLabel("Input volume")
                     .accessibilityValue("\(voice.inputGain)%")
             }
             VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Live voice processing"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12))
+                HStack { Text("Voice processing"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12))
                 Slider(value: liveStrength, in: 0...100, step: 1)
-                    .accessibilityLabel("Live voice processing")
+                    .accessibilityLabel("Voice processing")
                     .accessibilityValue("\(voice.voiceProcessingStrength)%")
             }
             VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Output gain").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
+                HStack { Text("Output volume").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                 Slider(value: outputGain, in: 0...200, step: 1)
-                    .accessibilityLabel("Output gain")
+                    .accessibilityLabel("Output volume")
                     .accessibilityValue("\(voice.outputGain)%")
             }
             Divider().overlay(CaperTheme.border)
-            Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
+            Text("Microphone test").font(CaperTheme.font(14, weight: .bold))
             HStack {
-                Button(micTest.recording ? "Stop testing" : "Mic Test") {
+                Button(micTest.recording ? "Stop Testing" : "Mic Test") {
                     if micTest.recording { micTest.stopRecording() }
                     else { Task { await micTest.start(voice: voice) } }
                 }
                 .accessibilityIdentifier("local-mic-test")
                 .disabled(recordedPreview || (voice.phase != .idle && voice.phase != .failed && voice.phase != .connected && !micTest.recording))
-                if micTest.recording { Text("Recording locally…").font(CaperTheme.font(11)) }
+                if micTest.recording { Text("Recording your voice").font(CaperTheme.font(11)) }
             }
             if recordedPreview { Text("TEST FIXTURE — completed local recording layout only; no microphone or playback.")
                 .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
