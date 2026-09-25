@@ -262,7 +262,7 @@ def main() -> None:
     wait_for(text="general")
     tap(text="Guest")
     login = capture("caper-android-login", "Come on in.")
-    for required in ("WELCOME TO CAPER", "Email address", "Email me a code", "Join general as a guest."):
+    for required in ("WELCOME TO CAPER", "Email address", "Email me a code", "Join #general as a guest."):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
 
     fixture({"failure": {"path": "/api/auth/email/request", "method": "POST", "status": 503}})

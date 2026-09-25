@@ -990,7 +990,7 @@ private struct ProfileView: View {
     @State private var displayName = ""
     var body: some View {
         VStack(spacing: 22) {
-            Wordmark(); Text("Finish your profile").font(CaperTheme.font(28, weight: .bold))
+            Wordmark(); Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
             CaperField(title: "Username", text: $username)
             Text("3-32 lowercase letters, numbers, or underscores.")
                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -998,7 +998,7 @@ private struct ProfileView: View {
             Text("Shown to other people. It does not need to be unique.")
                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
-            Button(model.busy ? "Saving…" : "Continue") { Task { await model.saveProfile(username: username, displayName: displayName) } }
+            Button(model.busy ? "Saving…" : "Finish account") { Task { await model.saveProfile(username: username, displayName: displayName) } }
                 .buttonStyle(CaperPrimaryButton())
                 .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
                 .accessibilityIdentifier("profile-continue")
@@ -1071,7 +1071,7 @@ private struct LoginPage: View {
                 Text("WELCOME TO CAPER").font(CaperTheme.font(12, weight: .bold)).tracking(2).foregroundStyle(CaperTheme.muted).padding(.bottom, 24)
                 Text(model.challengeID == nil ? "Come on in." : "Check your email.")
                     .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 18)
-                Text(model.challengeID == nil ? "Use your email to create an account or return to one. No password needed." : "Enter the six-character code we sent you.")
+                Text(model.challengeID == nil ? "Use your email to create an account or return to one. No password needed." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 30)
                 if model.challengeID == nil {
                     CaperField(title: "Email address", text: $email)
@@ -1082,17 +1082,17 @@ private struct LoginPage: View {
                     Button(action: close) {
                         (Text("We only send a code when you ask. Prefer to look around first? ")
                             .foregroundStyle(CaperTheme.muted)
-                         + Text("Join general as a guest.").fontWeight(.bold).foregroundStyle(CaperTheme.text))
+                         + Text("Join #general as a guest.").fontWeight(.bold).foregroundStyle(CaperTheme.text))
                             .font(CaperTheme.font(14)).multilineTextAlignment(.leading)
                     }.buttonStyle(.plain).padding(.top, 22)
                         .accessibilityIdentifier("guest-general-button")
                 } else {
-                    CaperField(title: "Verification code", text: $code)
+                    CaperField(title: "Sign-in code", text: $code)
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     Button { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } } label: {
-                        HStack { Text(model.busy ? "Verifying…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
+                        HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
                     }.buttonStyle(LoginActionButton()).disabled(model.busy || code.isEmpty).padding(.top, 28)
-                    Button("Use another email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18)
+                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18)
                 }
             }
             .frame(width: 440)
@@ -1203,11 +1203,11 @@ private struct ChannelEditor: View {
     @State private var loadingMembers = false
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: channel == nil ? "Create a channel" : "Channel Overview", close: close)
+            SheetHeader(title: channel == nil ? "Create a channel" : "Overview", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     CaperField(title: "Channel name", text: Binding(get: { name }, set: { name = WorkspaceValidation.normalizeChannelName($0) }))
-                    Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in this space can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) } }.toggleStyle(.switch)
+                    Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in \(model.detail?.space.name ?? "this space") can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) } }.toggleStyle(.switch)
                     Button(channel == nil ? "Create channel" : "Save changes") { run { if let existing = channel { channel = try await model.updateChannel(existing, name: name, privateChannel: privateChannel) } else { try await model.createChannel(name: name, privateChannel: privateChannel); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
                     if let channel, channel.private {
                         Divider().overlay(CaperTheme.border); Text("Members  \(members.count)").font(CaperTheme.font(14, weight: .bold))

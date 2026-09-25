@@ -319,8 +319,15 @@ final class CaperParityUITests: XCTestCase {
     func testLogin() {
         let app = launch(fixture: "login", signedIn: false)
         assertStaticText("Come on in.", in: app)
-        XCTAssertTrue(app.buttons["guest-general-button"].exists)
+        XCTAssertTrue(app.buttons["guest-general-button"].label.contains("Join #general as a guest."))
         capture("login", app: app)
+        let email = app.textFields["Email address"]
+        email.tap(); email.typeText("owner@example.test")
+        app.buttons["Email me a code"].tap()
+        XCTAssertTrue(app.textFields["Sign-in code"].waitForExistence(timeout: 5))
+        assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
+        XCTAssertTrue(app.buttons["Use a different email"].exists)
+        capture("login-code", app: app)
     }
 
     func testDeleteSpaceRequiresConfirmationAndCanCancel() {
@@ -556,6 +563,8 @@ final class CaperParityUITests: XCTestCase {
         let displayName = app.textFields["Display name"]
         let submit = app.buttons["profile-continue"]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
+        assertStaticText("Choose how you show up.", in: app)
+        XCTAssertEqual(submit.label, "Finish account")
         XCTAssertFalse(submit.isEnabled)
         username.tap(); username.typeText("ab")
         displayName.tap(); displayName.typeText("Fixture Name")
@@ -671,7 +680,7 @@ final class CaperParityUITests: XCTestCase {
 
     func testPrivateChannelOverview() {
         let app = launch(fixture: "manage-channel")
-        assertStaticText("Channel Overview", in: app)
+        assertStaticText("Overview", in: app)
         assertStaticText("Private channel", in: app, timeout: 2)
         capture("private-channel-overview", app: app)
     }

@@ -1854,7 +1854,7 @@ impl CaperApp {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("Join general as a guest.")
+                                        RichText::new("Join #general as a guest.")
                                             .size(14.0)
                                             .color(MUTED),
                                     )
@@ -4135,7 +4135,7 @@ impl CaperApp {
                 [(ui.available_width() - 80.0).max(1.0), 38.0],
                 egui::TextEdit::singleline(&mut self.member_username)
                     .vertical_align(egui::Align::Center)
-                    .hint_text("username"),
+                    .hint_text("Exact username"),
             );
             if ui
                 .add(egui::Button::new(bold("Add").size(12.0)).min_size(egui::vec2(64.0, 38.0)))
