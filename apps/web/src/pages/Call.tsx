@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
@@ -78,13 +78,53 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
 
 function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: { label: string; settings?: boolean; open: boolean; onOpenChange: (open: boolean) => void; menuRef?: RefObject<HTMLDivElement | null>; children: ReactNode }) {
   const panelId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const anchor = panel?.closest(".call-account");
+    if (!open || !panel || !anchor) return;
+    panel.showPopover();
+    const position = () => {
+      const viewport = window.visualViewport;
+      const x = viewport?.offsetLeft ?? 0;
+      const y = viewport?.offsetTop ?? 0;
+      const width = viewport?.width ?? window.innerWidth;
+      const height = viewport?.height ?? window.innerHeight;
+      const bounds = anchor.getBoundingClientRect();
+      const edge = 8;
+      const panelWidth = Math.min(settings ? bounds.width : 280, width - edge * 2);
+      panel.style.width = `${panelWidth}px`;
+      const above = Math.max(0, bounds.top - y - edge * 2);
+      const below = Math.max(0, y + height - bounds.bottom - edge * 2);
+      const down = panel.scrollHeight + 2 > above && below > above;
+      panel.style.maxHeight = `${Math.min(height - edge * 2, down ? below : above)}px`;
+      const panelHeight = panel.getBoundingClientRect().height;
+      panel.style.left = `${Math.max(x + edge, Math.min(settings ? bounds.left : bounds.right - panelWidth, x + width - panelWidth - edge))}px`;
+      panel.style.top = `${Math.max(y + edge, Math.min(down ? bounds.bottom + edge : bounds.top - panelHeight - edge, y + height - panelHeight - edge))}px`;
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(panel);
+    observer.observe(anchor);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    window.visualViewport?.addEventListener("resize", position);
+    window.visualViewport?.addEventListener("scroll", position);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+      window.visualViewport?.removeEventListener("resize", position);
+      window.visualViewport?.removeEventListener("scroll", position);
+    };
+  }, [open, settings]);
   return <div ref={menuRef} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
     // Let native device pickers handle Escape without also removing their panel.
     if (event.target instanceof HTMLSelectElement) return;
     if (event.key === "Escape" && open && !event.defaultPrevented) { onOpenChange(false); event.currentTarget.querySelector<HTMLButtonElement>(".call-settings-trigger")?.focus(); }
   }}>
     <button type="button" className="call-settings-trigger" title={label} aria-label={label} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => onOpenChange(!open)}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
-    {open && <div id={panelId} className="call-settings-panel" role="group" aria-label={`${label} panel`} tabIndex={-1}>{children}</div>}
+    {open && <div ref={panelRef} id={panelId} className="call-settings-panel" popover="manual" role="group" aria-label={`${label} panel`} tabIndex={-1}>{children}</div>}
   </div>;
 }
 

@@ -33,11 +33,11 @@
 .call-settings-trigger { width: 28px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .call-settings-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) { background: var(--surface-composer); color: #fff; }
 .call-settings-trigger svg { width: 19px; height: 19px; }
-.call-settings-panel { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 0; width: 100%; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
+.call-settings-panel { position: fixed; inset: auto; margin: 0; box-sizing: border-box; overflow-y: auto; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); box-shadow: 0 12px 30px rgb(0 0 0 / .35); }
 .device-menu .call-settings-trigger { width: 16px; border-radius: 0 4px 4px 0; }
 .device-menu .call-settings-trigger svg { width: 12px; height: 12px; }
 .device-menu .call-settings-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
-.device-menu .call-settings-panel { left: auto; right: 0; width: min(280px, 100%); border-radius: 8px; }
+.device-menu .call-settings-panel { border-radius: 8px; }
 .call-settings-panel > div { display: grid; gap: 12px; }
 .call-settings-panel a { overflow-wrap: anywhere; }
 .call-settings-panel strong { color: var(--text-muted); font-size: .72rem; }
