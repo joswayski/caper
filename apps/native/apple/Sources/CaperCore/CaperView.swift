@@ -724,6 +724,8 @@ private struct AccountBar: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     @Binding var sheet: WorkspaceSheet?
+    @State private var connectionDetails = false
+    @Bindable private var effects = CaperEffects.shared
     #if os(macOS)
     @State private var inputOptions = false
     @State private var outputOptions = false
@@ -797,7 +799,16 @@ private struct AccountBar: View {
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             #endif
             Menu {
-                Button("Audio preferences") { voice.showAudioPreferences = true }
+                // Web's User Settings menu.
+                Section("Audio settings") {
+                    Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
+                        .accessibilityIdentifier("sound-effects")
+                }
+                Button("Audio test") { voice.showAudioPreferences = true }
+                    .disabled(voice.phase == .leaving)
+                if voice.phase == .connected || CaperRuntime.isAudioPreview("audio-statistics") {
+                    Button("Connection details") { connectionDetails = true }
+                }
                 #if os(macOS)
                 if model.account?.debugEnabled == true {
                     Button("Audio diagnostics") { audioDiagnostics = true }
@@ -812,6 +823,7 @@ private struct AccountBar: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
         .padding(12)
         .sheet(isPresented: $voice.showAudioPreferences) { AudioPreferencesView(voice: voice, debugEnabled: model.account?.debugEnabled == true).presentationBackground(CaperTheme.surface) }
+        .sheet(isPresented: $connectionDetails) { ConnectionDetailsView(voice: voice) { connectionDetails = false }.presentationBackground(CaperTheme.surface) }
         #if os(macOS)
         .sheet(isPresented: $audioDiagnostics) {
             VStack(alignment: .leading, spacing: 18) {
@@ -827,7 +839,6 @@ private struct AccountBar: View {
 private struct AccountAudioMenu: View {
     @Bindable var voice: VoiceClient
     let input: Bool
-    @Environment(\.dismiss) private var dismiss
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -846,15 +857,11 @@ private struct AccountAudioMenu: View {
                 Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
                 Slider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
                     .accessibilityLabel("Input volume")
-                Text("Voice processing · \(voice.voiceProcessingStrength)%").font(CaperTheme.font(12))
-                Slider(value: Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)); CaperEffects.shared.slider($0 / 100) }), in: 0...100, step: 1)
-                    .accessibilityLabel("Voice processing")
             } else {
                 Text("Output volume · \(voice.outputGain)%").font(CaperTheme.font(12))
                 Slider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
                     .accessibilityLabel("Output volume")
             }
-            Button("Audio preferences") { dismiss(); voice.showAudioPreferences = true }
         }.padding(16).frame(width: 260).background(CaperTheme.surface)
             .task { await voice.refreshAudioDevices() }
     }
@@ -1431,11 +1438,13 @@ private struct CaperPrimaryButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { configuration.label.font(CaperTheme.font(13, weight: .bold)).foregroundStyle(.white).frame(maxWidth: .infinity).frame(height: 42).background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta).clipShape(RoundedRectangle(cornerRadius: 8)).opacity(isEnabled ? 1 : 0.45) }
 }
 
+/// Web's "Audio test" (Call.tsx audio dialog + MicPlayback.tsx).
 private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     var debugEnabled = false
     @State private var controlsHeight: CGFloat = 500
-    @Bindable private var effects = CaperEffects.shared
+    @State private var speakerTest = SpeakerTest()
+    @State private var meter = Array(repeating: Float(0), count: 40)
     #if os(macOS)
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
@@ -1445,14 +1454,14 @@ private struct AudioPreferencesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text("Audio preferences").font(CaperTheme.font(20, weight: .bold))
+                Text("Audio test").font(CaperTheme.font(20, weight: .bold))
                     .accessibilityIdentifier("audio-preferences-sheet")
                 Spacer()
                 Button { voice.showAudioPreferences = false } label: {
                     CaperIcon(name: "x").frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close audio preferences")
+                .accessibilityLabel("Close audio settings")
                 .accessibilityIdentifier("close-audio-preferences")
                 .keyboardShortcut(.cancelAction)
             }
@@ -1462,111 +1471,158 @@ private struct AudioPreferencesView: View {
             }
             .accessibilityIdentifier("audio-preferences-controls")
             #if os(macOS)
-            .frame(width: 426, height: min(controlsHeight, 500))
+            .frame(width: 520, height: min(controlsHeight, 560))
             #else
-            .frame(height: min(controlsHeight, 580))
+            .frame(height: min(controlsHeight, 620))
             #endif
         }.padding(22)
             .frame(minWidth: 360)
             .background(CaperTheme.surface)
             #if os(iOS)
-            .presentationDetents([.height(min(controlsHeight, 580) + 90)])
+            .presentationDetents([.height(min(controlsHeight, 620) + 90)])
             #endif
             .task { await voice.refreshAudioDevices() }
             .onChange(of: voice.phase) { _, phase in
                 if phase != .idle && phase != .failed { micTest.close() }
             }
-            .onDisappear { micTest.close() }
-            .task(id: voice.phase) {
-                while !Task.isCancelled && voice.phase == .connected {
-                    await voice.refreshDiagnostics()
-                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            .onChange(of: voice.outputGain) { _, gain in speakerTest.setGain(gain) }
+            .onDisappear { micTest.close(); speakerTest.stop() }
+            .task(id: micTest.recording) {
+                // Web's input meter: 40 segments, a new level every 80 ms.
+                guard micTest.recording else { meter = Array(repeating: 0, count: 40); return }
+                while !Task.isCancelled && micTest.recording {
+                    meter = Array(meter.dropFirst()) + [min(1, sqrt(micTest.level) * 2.5)]
+                    do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
                 }
             }
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
-                #if os(macOS)
-                .toggleStyle(.checkbox)
-                #endif
-                .accessibilityIdentifier("sound-effects")
+            Text("Only you can hear these tests.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             #if os(macOS)
-            Picker("Input", selection: inputRoute) {
+            HStack(alignment: .top, spacing: 18) { microphoneColumn; speakerColumn }
+            #else
+            microphoneColumn
+            speakerColumn
+            #endif
+            microphoneTestCard
+            if debugEnabled {
+                DisclosureGroup("Audio diagnostics") { AudioDiagnosticsView(voice: voice) }
+            }
+        }
+    }
+
+    private var microphoneColumn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            Picker("Microphone", selection: inputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableInputs) { route in Text(route.name).tag(route.id) }
-            }.accessibilityIdentifier("audio-input-device")
-            Picker("Output", selection: outputRoute) {
+            }.accessibilityIdentifier("audio-input-device").disabled(micTest.recording)
+            if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
+            #else
+            AudioRouteRow(title: "Microphone", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
+            #endif
+            HStack { Text("Microphone volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
+            Slider(value: inputGain, in: 0...200, step: 1)
+                .accessibilityLabel("Test microphone volume")
+                .accessibilityValue("\(voice.inputGain)%")
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var speakerColumn: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            Picker("Speaker", selection: outputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableOutputs) { route in Text(route.name).tag(route.id) }
             }.accessibilityIdentifier("audio-output-device")
-            if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
             #else
-            AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
             HStack {
-                AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+                AudioRouteRow(title: "Speaker", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
                 SystemAudioRoutePicker().frame(width: 44, height: 36)
                     .accessibilityLabel("Choose system audio route")
                     .accessibilityIdentifier("system-audio-route-picker")
             }
             #endif
-            VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Input volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
-                Slider(value: inputGain, in: 0...200, step: 1)
-                    .accessibilityLabel("Input volume")
-                    .accessibilityValue("\(voice.inputGain)%")
+            HStack { Text("Speaker volume"); Spacer(); Text("\(voice.outputGain)%") }.font(CaperTheme.font(12))
+            Slider(value: outputGain, in: 0...200, step: 1)
+                .accessibilityLabel("Test speaker volume")
+                .accessibilityValue("\(voice.outputGain)%")
+            Button(speakerTest.playing ? "Stop speaker test" : "Test speakers") { speakerTest.toggle(voice: voice) }
+                .buttonStyle(VoiceJoinButton())
+                .accessibilityIdentifier("speaker-test")
+                .accessibilityValue(speakerTest.playing ? "Playing" : "")
+            if let error = speakerTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var microphoneTestCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(micTest.recording ? "Recording…" : "Try your microphone").font(CaperTheme.font(14, weight: .bold))
+                Spacer()
+                if let started = micTest.startedAt {
+                    TimelineView(.periodic(from: started, by: 0.1)) { timeline in
+                        Text(String(format: "%.1fs", min(30, timeline.date.timeIntervalSince(started))))
+                            .font(CaperTheme.font(11, weight: .bold)).monospacedDigit().foregroundStyle(CaperTheme.terracottaBright)
+                    }
+                }
             }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Voice processing"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12))
+            Text("Less noise. Clearer voice.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack { Text("Voice enhancement"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12))
                 Slider(value: liveStrength, in: 0...100, step: 1)
                     .accessibilityLabel("Voice processing")
                     .accessibilityValue("\(voice.voiceProcessingStrength)%")
+                    .disabled(micTest.recording)
+                HStack { Text("Natural"); Spacer(); Text("Enhanced") }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
             }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack { Text("Output volume").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
-                Slider(value: outputGain, in: 0...200, step: 1)
-                    .accessibilityLabel("Output volume")
-                    .accessibilityValue("\(voice.outputGain)%")
-            }
-            Divider().overlay(CaperTheme.border)
-            Text("Microphone test").font(CaperTheme.font(14, weight: .bold))
-            HStack {
-                Button(micTest.recording ? "Stop Testing" : "Mic Test") {
+            HStack(spacing: 14) {
+                Button(micTest.recording ? "Stop recording" : "Test microphone") {
                     if micTest.recording { micTest.stopRecording() }
                     else { Task { await micTest.start(voice: voice) } }
                 }
+                .buttonStyle(VoiceJoinButton())
                 .accessibilityIdentifier("local-mic-test")
                 .disabled(recordedPreview || (voice.phase != .idle && voice.phase != .failed && voice.phase != .connected && !micTest.recording))
-                if micTest.recording { Text("Recording your voice").font(CaperTheme.font(11)) }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Input level").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                    HStack(alignment: .center, spacing: 2) {
+                        ForEach(meter.indices, id: \.self) { index in
+                            Capsule().fill(micTest.recording ? CaperTheme.green : CaperTheme.border)
+                                .frame(width: 3, height: 3 + CGFloat((meter[index] * 8).rounded()) * 4)
+                        }
+                    }.frame(height: 36)
+                        .accessibilityElement().accessibilityLabel(micTest.recording ? "Received microphone level" : "Microphone level inactive")
+                }
             }
             if recordedPreview { Text("TEST FIXTURE — completed local recording layout only; no microphone or playback.")
                 .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
-            if micTest.hasRecording || recordedPreview {
-                HStack {
-                    Button("Play natural") { micTest.play(enhanced: false) }.disabled(recordedPreview)
-                    Button("Play enhanced") { micTest.play(enhanced: true) }.disabled(recordedPreview)
-                    Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview)
-                }
-            }
             if let error = micTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
-            if debugEnabled {
-                DisclosureGroup("Audio diagnostics") { AudioDiagnosticsView(voice: voice) }
+            if micTest.hasRecording || recordedPreview {
+                HStack(alignment: .top, spacing: 12) {
+                    sampleCard(title: "Natural", enhanced: false)
+                    sampleCard(title: "Enhanced", enhanced: true)
+                }.accessibilityElement(children: .contain).accessibilityLabel("Recorded samples")
+                Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview || micTest.playing == nil)
             }
-            if voice.phase == .connected || statisticsPreview {
-                Divider().overlay(CaperTheme.border)
-                Text("Connection statistics").font(CaperTheme.font(14, weight: .bold))
-                if statisticsPreview { Text("TEST FIXTURE — synthetic statistics layout; no voice connection.")
-                    .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
-                if let stats = statisticsPreview ? previewStatistics : voice.diagnostics {
-                    AudioRouteRow(title: "Receive / send", value: "\(stats.receiveBitrate.map { String($0) } ?? "—") / \(stats.sendBitrate.map { String($0) } ?? "—") bps")
-                    AudioRouteRow(title: "Packets lost / max jitter", value: "\(stats.packetsLost) / \(stats.maxJitterMs.map { String($0) } ?? "—") ms")
-                    AudioRouteRow(title: "RTT / route", value: "\(stats.roundTripMs.map { String($0) } ?? "—") ms / \(stats.route == "relay" ? "TURN relay" : stats.route == "direct" ? "Direct" : "Not observed yet")")
-                } else {
-                    Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                }
+        }.padding(14).overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+    }
+
+    private func sampleCard(title: String, enhanced: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(CaperTheme.font(12, weight: .bold))
+            Button(micTest.playing == enhanced ? "Playing…" : "Play \(title.lowercased())") { micTest.play(enhanced: enhanced) }
+                .disabled(recordedPreview)
+                .accessibilityLabel("Play \(title.lowercased())")
+            if micTest.silent {
+                Text("No audible signal detected. Check your mic and try again.").font(CaperTheme.font(11)).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
+            .background(enhanced ? CaperTheme.raised : .clear).clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private var outputGain: Binding<Double> {
@@ -1580,6 +1636,7 @@ private struct AudioPreferencesView: View {
     }
     private var outputRoute: Binding<String> {
         Binding(get: { voice.selectedOutputID ?? "" }, set: { uid in
+            speakerTest.stop()
             routeError = voice.selectOutput(uid) ? nil : "Could not switch output. The previous route is still selected."
         })
     }
@@ -1591,6 +1648,81 @@ private struct AudioPreferencesView: View {
         Binding(get: { Double(voice.voiceProcessingStrength) }, set: { voice.setVoiceProcessingStrength(Int($0)); CaperEffects.shared.slider($0 / 100) })
     }
     private var recordedPreview: Bool { CaperRuntime.isAudioPreview("audio-recorded") }
+}
+
+/// Web's "Connection details" (Call.tsx ConnectionDiagnostics): only counters
+/// this client measures; web's join timing rows need join instrumentation.
+private struct ConnectionDetailsView: View {
+    @Bindable var voice: VoiceClient
+    let close: () -> Void
+    @State private var copyStatus = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Connection details").font(CaperTheme.font(20, weight: .bold))
+                Spacer()
+                Button(action: close) { CaperIcon(name: "x").frame(width: 28, height: 28) }
+                    .buttonStyle(.plain).accessibilityLabel("Close audio settings").keyboardShortcut(.cancelAction)
+            }
+            if statisticsPreview { Text("TEST FIXTURE — synthetic statistics layout; no voice connection.")
+                .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
+            if let stats = statisticsPreview ? previewStatistics : voice.diagnostics {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Self.rows(stats), id: \.0) { row in AudioRouteRow(title: row.0, value: row.1) }
+                }.accessibilityElement(children: .contain).accessibilityLabel("Connection statistics")
+                Text("Counters reset on reconnect.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                HStack {
+                    Button("Copy connection details") { copy(stats) }.buttonStyle(VoiceJoinButton())
+                    Text(copyStatus).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
+            } else if voice.phase == .connected {
+                Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            } else {
+                Text("Join voice to see connection details.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            }
+        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
+            .task(id: voice.phase) {
+                while !Task.isCancelled && voice.phase == .connected {
+                    await voice.refreshDiagnostics()
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                }
+            }
+    }
+
+    static func rows(_ stats: VoiceDiagnostics) -> [(String, String)] {
+        func megabytes(_ bytes: Int64) -> String { String(format: "%.2f MB", Double(bytes) / 1e6) }
+        func kbps(_ bits: Int?) -> String { bits.map { "\(Int((Double($0) / 1_000).rounded())) kbps" } ?? "Not observed yet" }
+        func ms(_ value: Int?) -> String { value.map { "\($0) ms" } ?? "Not observed yet" }
+        return [
+            ("Received", megabytes(stats.receivedBytes)),
+            ("Live receive", kbps(stats.receiveBitrate)),
+            ("Sent", megabytes(stats.sentBytes)),
+            ("Live send", kbps(stats.sendBitrate)),
+            ("Packets lost", String(stats.packetsLost)),
+            ("Max jitter", ms(stats.maxJitterMs)),
+            ("RTT", ms(stats.roundTripMs)),
+            ("Route", stats.route == "relay" ? "TURN relay" : stats.route == "direct" ? "Direct" : "Not observed yet"),
+        ]
+    }
+
+    private func copy(_ stats: VoiceDiagnostics) {
+        let object: [String: Any] = [
+            "receivedBytes": stats.receivedBytes, "sentBytes": stats.sentBytes,
+            "receiveBitrate": stats.receiveBitrate ?? 0, "sendBitrate": stats.sendBitrate ?? 0,
+            "packetsLost": stats.packetsLost, "maxJitterMs": stats.maxJitterMs ?? 0,
+            "roundTripMs": stats.roundTripMs ?? 0, "route": stats.route,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { copyStatus = "Copy failed; try again."; return }
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        copyStatus = NSPasteboard.general.setString(text, forType: .string) ? "Copied connection details" : "Copy failed; try again."
+        #else
+        UIPasteboard.general.string = text
+        copyStatus = "Copied connection details"
+        #endif
+    }
+
     private var statisticsPreview: Bool { CaperRuntime.isAudioPreview("audio-statistics") }
     private var previewStatistics: VoiceDiagnostics {
         VoiceDiagnostics(receivedBytes: 65_432, sentBytes: 12_345,

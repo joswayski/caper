@@ -11,6 +11,13 @@ final class MacMicrophoneTest {
     private(set) var recording = false
     private(set) var hasRecording = false
     var error: String?
+    /// When the current recording started, for web's elapsed clock.
+    private(set) var startedAt: Date?
+    /// Web: "No audible signal detected" when no natural sample exceeds 0.001.
+    private(set) var silent = false
+    /// The sample being played back: false natural, true enhanced.
+    private(set) var playing: Bool?
+    private var advanceToEnhanced = false
 
     private var voice: VoiceClient?
     private var voiceAttempt: Int?
@@ -68,6 +75,7 @@ final class MacMicrophoneTest {
             }
         }
         recording = true
+        startedAt = Date()
         timer = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
             self?.stopRecording()
@@ -79,8 +87,12 @@ final class MacMicrophoneTest {
         finishRecording()
     }
 
+    /// RMS of the latest natural chunk while recording.
+    var level: Float { recording ? (voice?.microphoneComparisonLevel() ?? device.comparisonLevel) : 0 }
+
     func finishRecording() {
         recording = false
+        startedAt = nil
         timer?.cancel(); timer = nil
         playbackOutputID = voice?.comparisonOutputDeviceID() ?? device.resolvedOutputDeviceID
         playbackGain = voice?.outputGain ?? 100
@@ -101,7 +113,9 @@ final class MacMicrophoneTest {
         do {
             try Self.write(samples.natural, rate: samples.sampleRate, to: fileURL)
             try Self.write(samples.enhanced, rate: samples.sampleRate, to: enhancedURL)
+            silent = !MicrophoneSignal.audible(samples.natural)
             hasRecording = true
+            playComparison()
         } catch {
             clearFiles()
             self.error = "Could not save the local comparison."
@@ -151,12 +165,15 @@ final class MacMicrophoneTest {
             player.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self, weak player] _ in
                 Task { @MainActor in
                     guard let self, let player, self.playbackGeneration == playback, self.player === player else { return }
-                    self.stopPlayback()
+                    // Web plays the natural sample, then the enhanced one.
+                    if self.advanceToEnhanced && !enhanced { self.advanceToEnhanced = false; self.play(enhanced: true) }
+                    else { self.stopPlayback() }
                 }
             }
             try engine.start()
             self.engine = engine; self.player = player
             player.play()
+            playing = enhanced
         } catch {
             stopPlayback()
             self.error = "Could not play the local recording."
@@ -169,7 +186,14 @@ final class MacMicrophoneTest {
 
     static func playerVolume(for gain: Int) -> Float { gain == 0 ? 0 : 1 }
 
+    func playComparison() {
+        guard hasRecording, !recording else { return }
+        play(enhanced: false)
+        advanceToEnhanced = playing == false
+    }
+
     func stopPlayback() {
+        playing = nil; advanceToEnhanced = false
         playbackGeneration += 1
         player?.stop(); engine?.stop()
         player = nil; engine = nil
@@ -178,7 +202,7 @@ final class MacMicrophoneTest {
     func close() {
         generation += 1
         timer?.cancel(); timer = nil
-        recording = false
+        recording = false; startedAt = nil; silent = false; advanceToEnhanced = false
         stopPlayback()
         if let voice, let voiceAttempt { voice.endMicrophoneComparison(generation: voiceAttempt) }
         else { _ = device.endComparison() }

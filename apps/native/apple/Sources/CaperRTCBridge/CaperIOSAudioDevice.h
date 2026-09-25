@@ -27,6 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly, nullable) CaperIOSAudioProcessingReport *audioProcessingReport;
 - (BOOL)prepareDenoise;
 - (BOOL)beginComparison;
+/// RMS (0...1) of the latest natural comparison chunk, for the local input meter.
+@property(nonatomic, readonly) float comparisonLevel;
 - (nullable CaperIOSAudioComparison *)endComparison;
 - (void)audioRouteInterrupted;
 /// No hardware. Uses the same capture/ADM gate and worker with supplied PCM.

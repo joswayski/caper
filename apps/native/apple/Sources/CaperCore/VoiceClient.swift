@@ -704,6 +704,9 @@ public final class VoiceClient {
         #endif
     }
 
+    /// RMS of the latest natural microphone-comparison chunk (local input meter).
+    func microphoneComparisonLevel() -> Float { audioDevice.comparisonLevel }
+
     func prepareMicrophoneDenoise() async -> Bool {
         #if os(iOS)
         if phase == .idle || phase == .failed {
