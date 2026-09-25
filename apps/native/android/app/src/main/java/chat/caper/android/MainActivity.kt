@@ -22,8 +22,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -34,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
@@ -246,7 +245,7 @@ internal data class VoiceJoinIntent(
         Surface(
             Modifier.size(40.dp).clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics { contentDescription = "Create space" },
             color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
-        ) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Add, null, tint = TerracottaBright) } }
+        ) { Box(contentAlignment = Alignment.Center) { Icon(painterResource(R.drawable.lucide_plus), null, tint = TerracottaBright) } }
     }
 }
 
@@ -272,8 +271,8 @@ internal data class VoiceJoinIntent(
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(detail?.space?.name ?: "Caper", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (closeNavigation != null) IconButton(closeNavigation) { Icon(Icons.Default.Close, "Close navigation", tint = TextMuted) }
-                if (detail != null && !detail.space.demo) IconButton({ show(if (owner) Overlay.ManageSpace else Overlay.LeaveSpace) }) { Icon(if (owner) Icons.Default.Settings else Icons.Default.Logout, "Space actions", tint = TextMuted) }
+                if (closeNavigation != null) IconButton(closeNavigation) { Icon(painterResource(R.drawable.lucide_x), "Close navigation", tint = TextMuted) }
+                if (detail != null && !detail.space.demo) IconButton({ show(if (owner) Overlay.ManageSpace else Overlay.LeaveSpace) }) { Icon(if (owner) painterResource(R.drawable.lucide_settings) else painterResource(R.drawable.lucide_log_out), "Space actions", tint = TextMuted) }
             }
             HorizontalDivider(color = Border)
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -287,18 +286,18 @@ internal data class VoiceJoinIntent(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Icon(if (channelsExpanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null, Modifier.size(18.dp), tint = TextMuted)
+                    Icon(if (channelsExpanded) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(18.dp), tint = TextMuted)
                     Text("Channels", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Text(channelCount.toString(), color = TextMuted, fontSize = 10.sp)
                 }
                 if (owner) {
-                    IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel) { Icon(Icons.Default.Add, "Create channel", tint = if (canCreateChannel) TextMuted else TextMuted.copy(alpha = 0.4f)) }
+                    IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel) { Icon(painterResource(R.drawable.lucide_plus), "Create channel", tint = if (canCreateChannel) TextMuted else TextMuted.copy(alpha = 0.4f)) }
                     Box {
-                        IconButton({ channelMenuOpen = true }) { Icon(Icons.Default.MoreHoriz, "Channel options", tint = TextMuted) }
+                        IconButton({ channelMenuOpen = true }) { Icon(painterResource(R.drawable.lucide_ellipsis), "Channel options", tint = TextMuted) }
                         DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                             DropdownMenuItem(
                                 text = { Text("Create channel", fontSize = 13.sp) },
-                                leadingIcon = { Icon(Icons.Default.Add, null) },
+                                leadingIcon = { Icon(painterResource(R.drawable.lucide_plus), null) },
                                 enabled = canCreateChannel,
                                 onClick = { channelMenuOpen = false; show(Overlay.CreateChannel) },
                             )
@@ -321,9 +320,9 @@ internal data class VoiceJoinIntent(
                         .padding(horizontal = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(if (channel.private) Icons.Default.Lock else Icons.Default.Tag, null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
+                    Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                     Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(28.dp)) { Icon(Icons.Default.Settings, "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
+                    if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(28.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
                 }
                 if (BuildConfig.ENABLE_NATIVE_VOICE && (selected || people.isNotEmpty() || activeChannel == channel.id)) {
                     Row(Modifier.fillMaxWidth().padding(start = 34.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -336,13 +335,13 @@ internal data class VoiceJoinIntent(
                                 }
                             }
                             if (people.size > 3) Text("+${people.size - 3}", fontSize = 10.sp)
-                            Icon(if (rosterOpen) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null, Modifier.size(15.dp))
+                            Icon(if (rosterOpen) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(15.dp))
                         } else Spacer(Modifier.weight(1f))
                         if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, modifier = Modifier.semantics {
                             contentDescription = voiceJoinUnavailableLabel(state.voiceAvailable)
                                 ?: if (activeChannel != null) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
                         }) {
-                            Text("Join", fontSize = 11.sp)
+                            Icon(painterResource(R.drawable.lucide_speech), null, Modifier.size(14.dp)); Spacer(Modifier.width(5.dp)); Text("Join", fontSize = 11.sp)
                         }
                     }
                     if (rosterOpen) {
@@ -352,7 +351,11 @@ internal data class VoiceJoinIntent(
                                 Avatar(participant.name, 28.dp)
                                 Spacer(Modifier.width(8.dp))
                                 Text(participant.name, fontSize = 12.sp)
-                                if (participant.deafened || participant.muted) Icon(if (participant.deafened) Icons.Default.VolumeOff else Icons.Default.MicOff, null, Modifier.size(15.dp), tint = TextMuted)
+                                // Web: MicOff and/or HeadphoneOff, announced as one status.
+                                if (participant.deafened || participant.muted) Row(Modifier.padding(start = 4.dp).semantics { contentDescription = if (participant.deafened) "Deafened" else "Muted" }) {
+                                    if (participant.muted) Icon(painterResource(R.drawable.lucide_mic_off), null, Modifier.size(15.dp), tint = TextMuted)
+                                    if (participant.deafened) Icon(painterResource(R.drawable.lucide_headphone_off), null, Modifier.size(15.dp), tint = TextMuted)
+                                }
                             }
                         }
                     }
@@ -370,7 +373,7 @@ internal data class VoiceJoinIntent(
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
                 Row(Modifier.padding(start = 10.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f).padding(vertical = 8.dp), color = ErrorText, fontSize = 11.sp)
-                    IconButton({ VoiceCallService.clearError() }, Modifier.size(36.dp)) { Icon(Icons.Default.Close, "Dismiss voice error", Modifier.size(16.dp), tint = TextMuted) }
+                    IconButton({ VoiceCallService.clearError() }, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_x), "Dismiss voice error", Modifier.size(16.dp), tint = TextMuted) }
                 }
             }
         }
@@ -398,14 +401,14 @@ internal data class VoiceJoinIntent(
                     }
                     if (participant.id != voice.selfId && participant.id in voice.locallyMutedParticipants) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.VolumeOff, null, Modifier.size(10.dp), tint = TerracottaBright)
+                            Icon(painterResource(R.drawable.lucide_volume_x), null, Modifier.size(10.dp), tint = TerracottaBright)
                             Spacer(Modifier.width(3.dp))
                             Text("You muted ${participant.name}", color = TerracottaBright, fontSize = 10.sp)
                         }
                     }
                 }
-                if (if (participant.id == voice.selfId) voice.muted else participant.muted) Icon(Icons.Default.MicOff, "Muted", Modifier.size(15.dp), tint = TextMuted)
-                if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(Icons.Default.HeadsetOff, "Deafened", Modifier.size(15.dp), tint = TextMuted)
+                if (if (participant.id == voice.selfId) voice.muted else participant.muted) Icon(painterResource(R.drawable.lucide_mic_off), "Muted", Modifier.size(15.dp), tint = TextMuted)
+                if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(painterResource(R.drawable.lucide_headphone_off), "Deafened", Modifier.size(15.dp), tint = TextMuted)
                 if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) Box {
                     TextButton({ audioOpen = !audioOpen }, modifier = Modifier.semantics { contentDescription = "Audio controls for ${participant.name}" }) { Text("Audio", fontSize = 10.sp) }
                     DropdownMenu(audioOpen, { audioOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
@@ -461,15 +464,20 @@ internal data class VoiceJoinIntent(
 @Composable internal fun ConnectedVoiceContext(voice: VoiceState, openChannel: () -> Unit, leave: () -> Unit) {
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
         Row(Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable(role = Role.Button, onClick = openChannel)
-                .semantics { contentDescription = "Open voice channel" }) {
-                // Web: green when connected, amber while connecting or reconnecting.
-                Text(when (voice.phase) { VoiceState.Phase.CONNECTED -> "Voice connected"; VoiceState.Phase.CONNECTING -> "Connecting…"; else -> "Reconnecting…" },
-                    color = if (voice.phase == VoiceState.Phase.CONNECTED) Color(0xFF8CB262) else Color(0xFFD9AB5C), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Text(listOfNotNull(voice.channelName, voice.spaceName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
+            // Web: AudioLines and the status are green when connected, amber while connecting or reconnecting.
+            val tone = if (voice.phase == VoiceState.Phase.CONNECTED) Color(0xFF8CB262) else Color(0xFFD9AB5C)
+            Row(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable(role = Role.Button, onClick = openChannel)
+                .semantics { contentDescription = "Open voice channel" }, verticalAlignment = Alignment.CenterVertically) {
+                Icon(painterResource(R.drawable.lucide_audio_lines), null, Modifier.size(18.dp), tint = tone)
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text(when (voice.phase) { VoiceState.Phase.CONNECTED -> "Voice connected"; VoiceState.Phase.CONNECTING -> "Connecting…"; else -> "Reconnecting…" },
+                        color = tone, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(listOfNotNull(voice.channelName, voice.spaceName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
+                }
             }
             IconButton(leave, Modifier.size(40.dp)) {
-                Icon(Icons.Default.CallEnd, if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
+                Icon(painterResource(R.drawable.lucide_phone_off), if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
             }
         }
     }
@@ -531,10 +539,10 @@ internal data class VoiceJoinIntent(
             if (voice.phase == VoiceState.Phase.CONNECTED) {
                 // Web: mute and deafen wait while the Audio test holds the microphone.
                 val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
-                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(30.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) Icons.Default.MicOff else Icons.Default.Mic, if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
-                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) Icons.Default.VolumeOff else Icons.Default.Headphones, if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(30.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
             }
-            IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(Icons.Default.Settings, "Audio and account settings", Modifier.size(18.dp), tint = TextMuted) }
+            IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Audio and account settings", Modifier.size(18.dp), tint = TextMuted) }
         }
     }
 }
@@ -554,7 +562,7 @@ internal data class VoiceJoinIntent(
 ) {
     val channel = state.selectedChannel
     if (channel == null) return Box(modifier.fillMaxSize().background(SurfaceConversation), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.Tag, null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold) }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(painterResource(R.drawable.lucide_hash), null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold) }
     }
     val context = LocalContext.current
     var draft by remember(channel.id) { mutableStateOf("") }
@@ -563,7 +571,7 @@ internal data class VoiceJoinIntent(
         // Match the 34dp message-avatar column without shrinking the 48dp menu target.
         Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 11.dp else 18.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
-                Icon(Icons.Default.Menu, "Open navigation", Modifier.size(24.dp))
+                Icon(painterResource(R.drawable.lucide_menu), "Open navigation", Modifier.size(24.dp))
             }
             Text("# ${channel.name}", Modifier.weight(1f).padding(start = if (narrow) 3.dp else 0.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (state.gateway != GatewayStatus.LIVE) Text(if (state.gateway == GatewayStatus.ERROR) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp)
@@ -573,9 +581,9 @@ internal data class VoiceJoinIntent(
             }, enabled = inCall || (channel.id !in state.deniedVoiceChannels && state.voiceAvailable == true),
                 modifier = Modifier.semantics { if (!inCall) voiceJoinUnavailableLabel(state.voiceAvailable)?.let { contentDescription = it } },
                 shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = TerracottaWash, contentColor = TerracottaBright), border = BorderStroke(1.dp, TerracottaBorder), contentPadding = PaddingValues(horizontal = 12.dp)) {
-                Icon(if (inCall) Icons.Default.CallEnd else Icons.Default.RecordVoiceOver, null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text(if (inCall) "Leave" else "Join")
+                Icon(if (inCall) painterResource(R.drawable.lucide_phone_off) else painterResource(R.drawable.lucide_speech), null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text(if (inCall) "Leave" else "Join")
             }
-            IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(Icons.Default.People, if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
+            IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
         voicePermissionError?.let { error ->
@@ -614,7 +622,7 @@ internal data class VoiceJoinIntent(
                         containerColor = Terracotta, contentColor = Color.White,
                         disabledContainerColor = Terracotta.copy(alpha = 0.55f), disabledContentColor = Color.White.copy(alpha = 0.6f),
                     ),
-                ) { Icon(Icons.Default.ArrowUpward, null) }
+                ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
             }
             if (draft.codePointCount(0, draft.length) >= 3000) Text("${draft.codePointCount(0, draft.length)} / 4,000", Modifier.align(Alignment.End), color = if (draft.codePointCount(0, draft.length) >= 3900) ErrorText else TextMuted, fontSize = 10.sp)
         }
@@ -709,7 +717,7 @@ internal data class VoiceJoinIntent(
         }
         Button({ submit(email) }, enabled = email.contains('@') && !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
             Text(if (busy) "Sending…" else "Email me a code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
-            if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
+            if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
         }
         Text("We only send a code when you ask. Prefer to look around first?", Modifier.padding(top = 10.dp), color = TextMuted, fontSize = 13.sp, lineHeight = 20.sp)
         TextButton(back, contentPadding = PaddingValues(0.dp)) { Text("Join #general as a guest.", color = Text) }
@@ -729,10 +737,10 @@ internal data class VoiceJoinIntent(
         if (screen.attemptsRemaining == 1) Text("One attempt left. Check the code carefully.", Modifier.padding(top = 12.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
         if (exhausted) Button(resend, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
             Text(if (busy) "Sending…" else "Email me a new code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
-            if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
+            if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
         } else Button({ submit(screen.challengeId, code) }, enabled = code.length == 6 && !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
             Text(if (busy) "Checking…" else "Continue", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
-            if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
+            if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
         }
         TextButton(back, contentPadding = PaddingValues(vertical = 16.dp)) { Text("Use a different email", color = TextMuted) }
     }
@@ -764,7 +772,7 @@ internal data class VoiceJoinIntent(
 @Composable private fun CreateChannelDialog(detail: SpaceDetail, busy: Boolean, close: () -> Unit, create: (String, Boolean) -> Unit) {
     var name by remember { mutableStateOf("") }; var private by remember { mutableStateOf(false) }
     CaperDialog("Create a channel", close) {
-        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(Icons.Default.Tag, null) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(painterResource(R.drawable.lucide_hash), null) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         PrivacyToggle(private, detail.space.name) { private = it }
         DialogActions(close, "Create channel", busy || channelInvalid(name)) { create(name.removeSuffix("-"), private) }
     }
@@ -796,7 +804,7 @@ internal data class VoiceJoinIntent(
     var username by remember { mutableStateOf("") }; var confirmingDelete by remember { mutableStateOf(false) }
     LaunchedEffect(channel.id, channel.private) { viewModel.loadChannelGrants(channel) }
     CaperDialog("Overview", close, wide = true) {
-        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(Icons.Default.Tag, null) }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, modifier = Modifier.fillMaxWidth())
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
         val dirty = name.removeSuffix("-") != channel.name || private != channel.private
         if (channel.private) {
@@ -830,7 +838,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     draft.isBlank() || draft == rejectedText
 
 @Composable private fun PrivacyToggle(value: Boolean, spaceName: String, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = Alignment.CenterVertically) {
-    Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) })
+    Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) })
 }
 
 @Composable private fun ConfirmDialog(title: String, body: String, action: String, busy: Boolean, close: () -> Unit, warn: Boolean = false, confirm: () -> Unit) = CaperDialog(title, close) {
@@ -842,7 +850,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
 @Composable internal fun CaperDialog(title: String, close: () -> Unit, wide: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     Dialog(close) { Surface(Modifier.widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth().heightIn(max = 760.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Bold); IconButton(close) { Icon(Icons.Default.Close, "Close", tint = TextMuted) } }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Bold); IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) } }
             HorizontalDivider(color = Border); content()
         }
     } }

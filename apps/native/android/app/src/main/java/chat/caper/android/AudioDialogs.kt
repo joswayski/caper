@@ -9,15 +9,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -334,7 +332,7 @@ private const val MAX_RECORDING_SECONDS = 30
                                 Text(label, Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 IconButton({ if (playing) stopPlayback() else playClip(clip, enhanced) }, enabled = clip.frames > 0,
                                     modifier = Modifier.semantics { contentDescription = "$label audio sample"; stateDescription = if (playing) "Playing" else "Paused" }) {
-                                    Icon(if (playing) Icons.Default.Stop else Icons.Default.PlayArrow, null, tint = TextMuted)
+                                    Icon(if (playing) painterResource(R.drawable.media_stop) else painterResource(R.drawable.media_play), null, tint = TextMuted)
                                 }
                             }
                             if (silent) Text("No audible signal detected. Check your mic and try again.", color = ErrorText, fontSize = 11.sp)
