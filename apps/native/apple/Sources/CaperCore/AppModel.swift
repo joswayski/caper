@@ -12,7 +12,9 @@ public final class AppModel {
     public var selectedChannelID: String?
     public var error: String?
     public var busy = false
-    public var challengeID: String?
+    public var challengeID: String? { didSet { if challengeID != oldValue { loginAttemptsRemaining = nil } } }
+    /// Remaining code attempts reported by the last rejected verification, as on web.
+    public var loginAttemptsRemaining: Int?
     public var limits: SpaceLimits?
     public var navigationOpen = false
     public var openingSpaceID: String?
@@ -85,9 +87,12 @@ public final class AppModel {
     public func requestCode(email: String) async {
         let attempt = generation
         await work(generation: attempt) {
-            let challengeID = try await self.api.requestCode(email: email)
+            let challengeID: String
+            do { challengeID = try await self.api.requestCode(email: email) }
+            catch { throw Self.loginFailure(error) }
             guard self.generation == attempt else { return }
             self.challengeID = challengeID
+            self.loginAttemptsRemaining = nil
         }
     }
 
@@ -99,7 +104,14 @@ public final class AppModel {
         clearNavigationCache()
         let attempt = generation
         await work(generation: attempt) {
-            let account = try await self.api.verify(challengeId: challengeID, code: code)
+            let account: Account
+            do { account = try await self.api.verify(challengeId: challengeID, code: code) }
+            catch {
+                if self.generation == attempt, let api = error as? APIError, api.status == 401 {
+                    self.loginAttemptsRemaining = api.attemptsRemaining
+                }
+                throw Self.loginFailure(error)
+            }
             guard self.generation == attempt else { return }
             self.account = account
             self.phase = self.needsProfile ? .onboarding : .ready
@@ -120,7 +132,14 @@ public final class AppModel {
         }
         let attempt = generation
         await work(generation: attempt) {
-            let account = try await self.api.updateProfile(username: username, displayName: displayName)
+            let account: Account
+            do { account = try await self.api.updateProfile(username: username, displayName: displayName) }
+            catch {
+                let status = (error as? APIError)?.status
+                throw UserFacingError(message: status == 409 ? "That username is already taken."
+                    : status == 400 ? "Check the username and display name requirements."
+                    : "Your profile could not be saved. Please try again.")
+            }
             guard self.generation == attempt else { return }
             self.account = account
             self.phase = .ready
@@ -591,6 +610,18 @@ public final class AppModel {
         }
     }
 
+    /// Web's sign-in copy; raw server messages are not shown.
+    nonisolated static func loginFailure(_ error: Error) -> UserFacingError {
+        guard let api = error as? APIError else { return UserFacingError(message: "Something went wrong. Please try again.") }
+        switch api.status {
+        case 401 where api.attemptsRemaining == 0: return UserFacingError(message: "That code can no longer be used. Request a new one.")
+        case 401: return UserFacingError(message: "That code is incorrect or expired. Request a new one if needed.")
+        case 400: return UserFacingError(message: "Enter a valid email address.")
+        case 503: return UserFacingError(message: "Sign-in is temporarily unavailable. Please try again later.")
+        default: return UserFacingError(message: "Something went wrong. Please try again.")
+        }
+    }
+
     private var needsProfile: Bool { account?.username == nil || account?.displayName == nil }
     private func work(generation expectedGeneration: Int? = nil, _ operation: () async throws -> Void) async {
         busy = true; error = nil
@@ -601,6 +632,11 @@ public final class AppModel {
         }
         if expectedGeneration == nil || generation == expectedGeneration { busy = false }
     }
+}
+
+struct UserFacingError: LocalizedError, Equatable {
+    let message: String
+    var errorDescription: String? { message }
 }
 
 @MainActor @Observable

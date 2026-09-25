@@ -4,10 +4,11 @@ public struct APIError: LocalizedError, Equatable {
     public let status: Int
     public let message: String
     public let code: String?
+    public let attemptsRemaining: Int?
     public var errorDescription: String? { message }
 
-    public init(status: Int, message: String, code: String? = nil) {
-        self.status = status; self.message = message; self.code = code
+    public init(status: Int, message: String, code: String? = nil, attemptsRemaining: Int? = nil) {
+        self.status = status; self.message = message; self.code = code; self.attemptsRemaining = attemptsRemaining
     }
 
     var endsVoiceAccess: Bool {
@@ -210,7 +211,8 @@ public actor APIClient {
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else {
             let detail = try? decoder.decode(ErrorBody.self, from: data)
-            throw APIError(status: http.statusCode, message: detail?.error ?? "That request did not work.", code: detail?.code)
+            throw APIError(status: http.statusCode, message: detail?.error ?? "That request did not work.", code: detail?.code,
+                           attemptsRemaining: detail?.attemptsRemaining)
         }
         if T.self == Empty.self { return Empty() as! T }
         do { return try decoder.decode(T.self, from: data) }

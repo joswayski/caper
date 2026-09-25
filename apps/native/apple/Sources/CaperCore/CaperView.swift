@@ -395,7 +395,12 @@ private struct ChannelSidebar: View {
                     }
                     if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
                        (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })) {
-                        VoiceRoster(model: model)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("In voice · \(model.voice.participants.count) · \(model.voice.context?.channelName ?? "general")")
+                                .font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                                .accessibilityIdentifier("voice-elsewhere-label")
+                            VoiceRoster(model: model)
+                        }.padding(.top, 8)
                     }
                 }.padding(.horizontal, 16)
             }
@@ -486,7 +491,8 @@ private struct ChannelVoiceSlot: View {
                             Avatar(name: person.name, size: 23)
                             Text(person.name).lineLimit(1)
                             if person.muted { CaperIcon(name: "mic-off", size: 13) }
-                            if person.deafened { CaperIcon(name: "volume-x", size: 13) }
+                            ParticipantCountry(code: person.countryCode)
+                            if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
                         }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                             .accessibilityElement(children: .combine)
                     }
@@ -545,6 +551,48 @@ private struct MemberPresenceView: View {
     }
 }
 
+#if os(macOS)
+/// Web opens a participant's audio menu on right-click. This catcher only claims
+/// right-button events, so left clicks still reach the row's controls.
+private struct RightClickCatcher: NSViewRepresentable {
+    let action: () -> Void
+    func makeNSView(context: Context) -> CatcherView { let view = CatcherView(); view.action = action; return view }
+    func updateNSView(_ view: CatcherView, context: Context) { view.action = action }
+    final class CatcherView: NSView {
+        var action: (() -> Void)?
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard let event = NSApp.currentEvent, event.type == .rightMouseDown || event.type == .rightMouseUp else { return nil }
+            return super.hitTest(point)
+        }
+        override func rightMouseDown(with event: NSEvent) { action?() }
+        override func isAccessibilityElement() -> Bool { false }
+    }
+}
+
+private extension View {
+    @ViewBuilder func onRightClick(enabled: Bool, perform action: @escaping () -> Void) -> some View {
+        if enabled { overlay { RightClickCatcher(action: action) } } else { self }
+    }
+}
+#endif
+
+/// Web shows the participant's flag with "From {region}"; an emoji flag is the native equivalent.
+struct ParticipantCountry: View {
+    let code: String?
+    var body: some View {
+        if let code, code.count == 2, code.allSatisfy({ $0.isASCII && $0.isUppercase }) {
+            let name = Locale(identifier: "en_US").localizedString(forRegionCode: code) ?? code
+            Text(Self.flag(code))
+                .font(.system(size: 11)).help(name).accessibilityLabel("From \(name)")
+        }
+    }
+    static func flag(_ code: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in code.unicodeScalars { if let indicator = Unicode.Scalar(127_397 + scalar.value) { scalars.append(indicator) } }
+        return String(scalars)
+    }
+}
+
 private struct VoiceRoster: View {
     @Bindable var voice: VoiceClient
     @State private var audioParticipantID: String? = nil
@@ -555,8 +603,11 @@ private struct VoiceRoster: View {
                 HStack(spacing: 8) {
                     Avatar(name: participant.name, size: 20)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
-                            .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
+                                .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                            ParticipantCountry(code: participant.countryCode)
+                        }
                         if !voice.isSelf(participantID: participant.id), voice.locallyMutedParticipants.contains(participant.id) {
                             HStack(spacing: 4) {
                                 CaperIcon(name: "volume-x", size: 10)
@@ -570,7 +621,7 @@ private struct VoiceRoster: View {
                         CaperIcon(name: "mic-off", size: 14).accessibilityHidden(false).accessibilityLabel("Muted")
                     }
                     if (voice.isSelf(participantID: participant.id) ? voice.deafened : participant.deafened) {
-                        CaperIcon(name: "volume-x", size: 14).accessibilityHidden(false).accessibilityLabel("Deafened")
+                        CaperIcon(name: "headphone-off", size: 14).accessibilityHidden(false).accessibilityLabel("Deafened")
                     }
                     if !voice.isSelf(participantID: participant.id) {
                         Button { audioParticipantID = audioParticipantID == participant.id ? nil : participant.id } label: {
@@ -589,6 +640,7 @@ private struct VoiceRoster: View {
                                         .accessibilityLabel("\(participant.name) volume")
                                     Toggle("Mute", isOn: participantMute(participant.id))
                                         .font(CaperTheme.font(12, weight: .medium))
+                                    Text("Only changes what you hear.").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                                 }.padding(16).frame(width: 220).background(CaperTheme.surface)
                                 #if os(iOS)
                                 .presentationCompactAdaptation(.popover)
@@ -596,6 +648,10 @@ private struct VoiceRoster: View {
                             }
                     }
                 }.foregroundStyle(CaperTheme.muted).padding(.vertical, 4)
+                #if os(macOS)
+                .contentShape(Rectangle())
+                .onRightClick(enabled: !voice.isSelf(participantID: participant.id)) { audioParticipantID = participant.id }
+                #endif
             }
         }
     }
@@ -638,17 +694,30 @@ private struct AccountBar: View {
             if let context = voice.context, voice.phase != .idle && voice.phase != .failed {
                 HStack(spacing: 8) {
                     Button { Task { await model.openVoiceContext() } } label: {
+                        HStack(spacing: 8) {
+                        CaperIcon(name: "audio-lines", size: 16).foregroundStyle(CaperTheme.green)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(voice.phase == .connected ? "Voice connected" : "Connecting voice…")
+                            Text(voice.phase == .connected ? "Voice connected" : voice.phase == .joining ? "Connecting…" : "Reconnecting…")
                                 .font(CaperTheme.font(11, weight: .bold))
                             Text("\(context.channelName) / \(context.spaceName)")
                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
-                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "x") }
-                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
+                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "phone-off") }
+                        .buttonStyle(SidebarIconButton()).help(voice.phase == .connected ? "Disconnect" : "Cancel")
+                        .accessibilityLabel(voice.phase == .connected ? "Leave voice" : "Cancel joining voice")
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityIdentifier("active-voice-context")
+            }
+            if let error = voice.error {
+                HStack(alignment: .top, spacing: 8) {
+                    Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                        .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                    Button { voice.error = nil } label: { CaperIcon(name: "x", size: 14) }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Dismiss voice error")
+                }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("voice-error")
             }
             HStack(spacing: 5) {
             Button { sheet = model.account == nil ? .login : .profile } label: {
@@ -662,7 +731,8 @@ private struct AccountBar: View {
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.terracottaBright : CaperTheme.muted)
-            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Microphone")
+            }.buttonStyle(SidebarIconButton()).help(voice.muted ? "Unmute" : "Mute")
+                .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
                 .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
             #if os(macOS)
             Button { inputOptions.toggle(); CaperEffects.shared.toggle(inputOptions) } label: {
@@ -673,7 +743,8 @@ private struct AccountBar: View {
             Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
                 CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
                     .foregroundStyle(voice.deafened ? CaperTheme.terracottaBright : CaperTheme.muted)
-            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Headphones")
+            }.buttonStyle(SidebarIconButton()).help(voice.deafened ? "Undeafen" : "Deafen")
+                .accessibilityLabel(voice.deafened ? "Undeafen audio" : "Deafen audio")
                 .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
             #if os(macOS)
             Button { outputOptions.toggle(); CaperEffects.shared.toggle(outputOptions) } label: {
@@ -689,6 +760,7 @@ private struct AccountBar: View {
                 }
                 #endif
                 if model.account != nil { Button("Log out", role: .destructive) { Task { await model.logout() } } }
+                else { Button("Sign in") { sheet = .login } }
             } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).frame(width: 28)
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
             }.padding(4).frame(height: 42).background(CaperTheme.raised)
@@ -801,14 +873,11 @@ private struct ChatView: View {
                 VoiceHeaderButton(model: model, voice: voice)
                 if chat.liveState != .connected { Text(chat.liveState == .reconnecting ? "Reconnecting…" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted) }
                 Button { CaperEffects.shared.toggle(!membersVisible); toggleMembers() } label: { CaperIcon(name: "users", size: 20) }
-                    .buttonStyle(SidebarIconButton()).accessibilityLabel(membersVisible ? "Hide members" : "Show members")
+                    .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
+                    .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
-            if let error = voice.error {
-                Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 8)
-            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -991,8 +1060,13 @@ private struct ProfileView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                Wordmark(); Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
+                Wordmark()
+                Text("ONE LAST THING").font(CaperTheme.font(12, weight: .bold)).tracking(2).foregroundStyle(CaperTheme.muted)
+                    .padding(.top, 20)
+                Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
+                Text("Your username is unique. Your display name is what people see in conversations.")
+                    .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
                 Text("3-32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -1007,6 +1081,11 @@ private struct ProfileView: View {
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
                     .accessibilityIdentifier("profile-continue")
+                HStack {
+                    Spacer()
+                    Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
+                        .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                }
             }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
         }.background(CaperTheme.blackout)
     }
@@ -1025,7 +1104,7 @@ private struct WorkspaceSheetView: View {
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
-            case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
+            case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
             }
         }.frame(minWidth: 320, idealWidth: item.id.contains("manage") ? 600 : 460)
     }
@@ -1057,7 +1136,7 @@ private struct LoginSheet: View {
                 } else {
                     CaperField(title: "Verification code", text: $code)
                     Button("Verify") { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || code.isEmpty)
-                    Button("Use another email") { model.challengeID = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
+                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
                 }
                 if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
             }.padding(22)
@@ -1094,10 +1173,26 @@ private struct LoginPage: View {
                         .accessibilityIdentifier("guest-general-button")
                 } else {
                     CaperField(title: "Sign-in code", text: $code)
+                        .disabled(model.loginAttemptsRemaining == 0)
+                        .onChange(of: code) { _, value in
+                            // Web accepts the unambiguous code alphabet only, uppercased, six characters.
+                            let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
+                            let filtered = String(value.uppercased().filter { allowed.contains($0) }.prefix(6))
+                            if filtered != value { code = filtered }
+                        }
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
-                    Button { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } } label: {
-                        HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
-                    }.buttonStyle(LoginActionButton()).disabled(model.busy || code.isEmpty).padding(.top, 28)
+                    if model.loginAttemptsRemaining == 1 {
+                        Text("One attempt left. Check the code carefully.").font(CaperTheme.font(14, weight: .bold)).padding(.top, 12)
+                    }
+                    if model.loginAttemptsRemaining == 0 {
+                        Button { code = ""; Task { await model.requestCode(email: email) } } label: {
+                            HStack { Text(model.busy ? "Sending…" : "Email me a new code"); Spacer(); Image(systemName: "arrow.right") }
+                        }.buttonStyle(LoginActionButton()).disabled(model.busy).padding(.top, 28)
+                    } else {
+                        Button { Task { await model.verify(code: code); if model.phase != .onboarding { close() } } } label: {
+                            HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
+                        }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 28)
+                    }
                     Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18)
                 }
             }

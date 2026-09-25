@@ -123,7 +123,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("caper", in: app).count, 0, "The workspace must not have a web-style branding header")
         #if os(macOS)
         assertElement("selected-space-name", label: "Fixture Studio", in: app)
-        XCTAssertTrue(app.buttons["Hide members"].exists)
+        XCTAssertTrue(app.buttons["Hide member list"].exists)
         assertStaticText("Members", in: app, timeout: 2)
         #endif
         capture("populated", app: app)
@@ -208,7 +208,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(stack.value as? String, "Collapsed")
         XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists)
         XCTAssertTrue(context.exists, "Call context and Disconnect remain outside the collapsed participant roster")
-        XCTAssertTrue(app.buttons["Disconnect voice"].exists)
+        XCTAssertTrue(app.buttons["Leave voice"].exists)
         capture("active-voice-collapsed-test-fixture", app: app)
         stack.tap()
         audio.tap()
@@ -285,10 +285,10 @@ final class CaperParityUITests: XCTestCase {
 
     func testMembersCanBeHiddenWithoutChangingConversation() {
         let app = launch()
-        let toggle = app.buttons["Hide members"]
+        let toggle = app.buttons["Hide member list"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         toggle.tap()
-        XCTAssertTrue(app.buttons["Show members"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["Show member list"].waitForExistence(timeout: 2))
         assertElement("selected-channel-name", label: "# general", in: app, timeout: 2)
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 2)
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
@@ -353,6 +353,11 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)
+        let code = app.textFields["Sign-in code"]
+        code.tap(); code.typeText("zz-zz9o")
+        XCTAssertEqual(code.value as? String, "ZZZZZ9", "Code input keeps web's six-character alphabet")
+        app.buttons["Continue"].tap()
+        assertStaticText("That code is incorrect or expired. Request a new one if needed.", in: app, timeout: 5)
     }
 
     func testDeleteSpaceRequiresConfirmationAndCanCancel() {
@@ -564,7 +569,7 @@ final class CaperParityUITests: XCTestCase {
         let (_, response) = try await URLSession.shared.data(for: control)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         submit.tap()
-        assertStaticText("TEST FIXTURE: profile save temporarily unavailable.", in: app)
+        assertStaticText("Your profile could not be saved. Please try again.", in: app)
         XCTAssertEqual(username.value as? String, savedUsername)
         XCTAssertEqual(displayName.value as? String, editedName)
         XCTAssertTrue(submit.isEnabled)
@@ -692,7 +697,7 @@ final class CaperParityUITests: XCTestCase {
         email.tap()
         email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
-        assertStaticText("TEST FIXTURE: email service unavailable.", in: app, timeout: 5)
+        assertStaticText("Sign-in is temporarily unavailable. Please try again later.", in: app, timeout: 5)
         capture("login-error", app: app)
     }
 
@@ -724,14 +729,14 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(navigation.frame.midX, avatar.frame.midX, accuracy: 1, "Menu must center over the message avatars")
         XCTAssertEqual(channel.frame.minX, author.frame.minX, accuracy: 1, "Channel title must align with message authors")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the menu touch target accessible")
-        let members = app.buttons["Show members"]
+        let members = app.buttons["Show member list"]
         XCTAssertTrue(members.exists)
         XCTAssertGreaterThan(members.frame.minX, app.frame.midX, "Members belongs on the right of the header")
         capture("narrow-conversation", app: app)
         members.tap()
         assertStaticText("Members", in: app, timeout: 2)
         capture("narrow-members", app: app)
-        let hideMembers = app.buttons["Hide members"]
+        let hideMembers = app.buttons["Hide member list"]
         XCTAssertTrue(hideMembers.isHittable, "The open member panel must leave its toggle accessible")
         hideMembers.tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
