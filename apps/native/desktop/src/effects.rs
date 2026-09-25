@@ -16,9 +16,10 @@ pub enum Effect {
     Join,
     Message,
     Delete,
+    Disconnect,
 }
 
-const WAVS: [&[u8]; 8] = [
+const WAVS: [&[u8]; 9] = [
     include_bytes!("../../../web/public/audio/effects/toggle-off.wav"),
     include_bytes!("../../../web/public/audio/effects/toggle-on.wav"),
     include_bytes!("../../../web/public/audio/effects/slider-tick.wav"),
@@ -27,6 +28,7 @@ const WAVS: [&[u8]; 8] = [
     include_bytes!("../../../web/public/audio/effects/channel-join.wav"),
     include_bytes!("../../../web/public/audio/effects/new-message.wav"),
     include_bytes!("../../../web/public/audio/effects/delete.wav"),
+    include_bytes!("../../../web/public/audio/effects/disconnect.wav"),
 ];
 
 struct Request {

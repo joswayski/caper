@@ -138,6 +138,8 @@ struct CaperApp {
     effects: Effects,
     sound_effects: bool,
     announced_voice: Option<u64>,
+    /// Who else was in the call last frame, for web's join/leave chimes.
+    voice_roster: Option<(u64, String, BTreeSet<String>)>,
     generation: u64,
     loading: bool,
     loading_older: bool,
@@ -206,6 +208,7 @@ impl CaperApp {
             effects: Effects::new(fixture.is_none()),
             sound_effects: true,
             announced_voice: None,
+            voice_roster: None,
             generation: 1,
             loading: fixture.is_none(),
             loading_older: false,
@@ -520,6 +523,35 @@ impl CaperApp {
         self.live = "Live".into();
     }
 
+    /// Web plays channel-leave when someone else leaves and channel-join when
+    /// someone else arrives, comparing rosters within one call only.
+    fn chime_roster_changes(&mut self) {
+        if !matches!(self.voice.state.phase, Phase::Connected(_)) || self.voice.self_id.is_empty() {
+            self.voice_roster = None;
+            return;
+        }
+        let generation = self.voice.state.generation;
+        let self_id = self.voice.self_id.clone();
+        let others: BTreeSet<String> = self
+            .voice
+            .participants
+            .iter()
+            .map(|participant| participant.id.clone())
+            .filter(|id| *id != self_id)
+            .collect();
+        if let Some((previous_generation, previous_self, previous)) = &self.voice_roster
+            && *previous_generation == generation
+            && *previous_self == self_id
+        {
+            if previous.iter().any(|id| !others.contains(id)) {
+                self.effects.play(Effect::Leave);
+            } else if others.iter().any(|id| !previous.contains(id)) {
+                self.effects.play(Effect::Join);
+            }
+        }
+        self.voice_roster = Some((generation, self_id, others));
+    }
+
     fn receive(&mut self) {
         self.voice.receive();
         if matches!(self.voice.state.phase, Phase::Connected(_))
@@ -528,6 +560,7 @@ impl CaperApp {
             self.announced_voice = Some(self.voice.state.generation);
             self.effects.play(Effect::Join);
         }
+        self.chime_roster_changes();
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
@@ -3029,7 +3062,7 @@ impl CaperApp {
                     .inner;
                 if hangup.clicked() {
                     if connected {
-                        self.effects.play(Effect::Leave);
+                        self.effects.play(Effect::Disconnect);
                     }
                     self.voice.leave();
                 }
@@ -3682,7 +3715,7 @@ impl CaperApp {
                                         && voice_join_button(ui, label).clicked()
                                     {
                                         if already_here {
-                                            if matches!(self.voice.state.phase, Phase::Connected(_)) { self.effects.play(Effect::Leave); }
+                                            if matches!(self.voice.state.phase, Phase::Connected(_)) { self.effects.play(Effect::Disconnect); }
                                             self.voice.leave();
                                         } else {
                                             self.join_voice();
