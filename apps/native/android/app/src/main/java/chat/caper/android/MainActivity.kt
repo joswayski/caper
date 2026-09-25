@@ -623,7 +623,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        voicePermissionError?.let { error ->
+        // The dock (and its voice error row) is hidden behind Browse on phones.
+        (voicePermissionError ?: voice.error?.takeIf { narrow })?.let { error ->
             Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
         }
         MessageTimeline(state, viewModel, Modifier.weight(1f))
