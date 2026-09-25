@@ -355,7 +355,10 @@ final class CaperParityUITests: XCTestCase {
         capture("login-code", app: app)
         let code = app.textFields["Sign-in code"]
         // Separate bursts: the field rewrites itself between keystrokes, as it does for a person typing.
-        code.tap(); code.typeText("ZZZ"); code.typeText("o-"); code.typeText("ZZ9")
+        code.tap(); code.typeText("ZZZ"); code.typeText("o-")
+        let filtered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "ZZZ"), object: code)
+        XCTAssertEqual(XCTWaiter.wait(for: [filtered], timeout: 3), .completed, "Letters outside the code alphabet are dropped")
+        code.typeText("ZZ9")
         XCTAssertEqual(code.value as? String, "ZZZZZ9", "Code input keeps web's six-character alphabet")
         app.buttons["Continue"].tap()
         assertStaticText("That code is incorrect or expired. Request a new one if needed.", in: app, timeout: 5)
