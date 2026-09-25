@@ -68,6 +68,8 @@ export interface ConnectionDiagnostics {
   join: string;
   /** Microphone capture and the join request run concurrently; both are measured from Join. */
   microphoneMs: number;
+  /** Hardware open vs. audio processing, e.g. "device 150 ms · processing 30 ms". */
+  microphoneDetail?: string;
   sessionMs: number;
   signalingMs: number;
   transportMs: number;

@@ -16,6 +16,8 @@ export interface Microphone {
   track: MediaStreamTrack;
   naturalTrack: MediaStreamTrack;
   status: string;
+  /** Startup split: hardware open vs. audio processing ready (ms). */
+  startup: { deviceMs: number; processingMs: number; interim: boolean };
   diagnostics(): object;
   setInputVolume(volume: number): void;
   setVoiceProcessingStrength(strength: number): void;
@@ -37,13 +39,19 @@ export async function captureMicrophone(
   voiceProcessingStrength = DEFAULT_VOICE_PROCESSING_STRENGTH,
 ): Promise<Microphone> {
   signal.throwIfAborted();
+  // DPDFNet's model compiles in a worker prepared before Join. If it is not
+  // ready yet, start with the browser's suppression (never raw audio) and swap
+  // DPDFNet in when it is, instead of holding the join for the compile.
+  const interim = mode === "dpdfnet8" && !dpdfnet.isReady();
+  const started = performance.now();
   const stream = await navigator.mediaDevices.getUserMedia({ audio: {
     deviceId: deviceId ? { exact: deviceId } : undefined,
     channelCount: 1,
     echoCancellation: audioSetup === "speakers",
-    noiseSuppression: mode === "browser",
+    noiseSuppression: mode === "browser" || interim,
     autoGainControl: audioSetup === "speakers",
   } });
+  const deviceMs = performance.now() - started;
   if (!stream) throw new Error("Microphone access was not granted.");
   const raw = stream.getAudioTracks()[0];
   let context: AudioContext | undefined;
@@ -84,6 +92,7 @@ export async function captureMicrophone(
     track: raw,
     naturalTrack: raw,
     status: "Noise suppression off",
+    startup: { deviceMs, processingMs: 0, interim: false },
     diagnostics() {
       const { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl } = raw.getSettings();
       return {
@@ -134,6 +143,7 @@ export async function captureMicrophone(
     signal.throwIfAborted();
     throw new Error("No microphone track was available.");
   }
+  const ready = () => { microphone.startup.processingMs = performance.now() - started - deviceMs; };
   if (mode === "off") return microphone;
   if (mode === "browser") {
     microphone.status = raw.getSettings().noiseSuppression
@@ -313,6 +323,44 @@ export async function captureMicrophone(
     if (engine === "dpdfnet8") {
       prepared = dpdfnet.take();
     }
+    // Only when the browser confirms its suppression is on: otherwise this would
+    // publish raw audio, so wait for DPDFNet as before.
+    if (interim && prepared && raw.getSettings().noiseSuppression === true) {
+      if (context.state !== "running") throw new Error("Audio context did not start");
+      const loading = prepared;
+      const loadingNode = node;
+      // Browser suppression was requested with the capture; route it through
+      // the same processed track that DPDFNet will feed.
+      source.connect(gain);
+      gain.connect(naturalDestination);
+      gain.connect(voiceInput);
+      connectVoicePath(voiceProcessingStrength);
+      microphone.status = `${engineName} loading · browser suppression active`;
+      microphone.startup.interim = true;
+      loadingNode.onprocessorerror = () => { if (node === loadingNode) bypass(true); };
+      const timer = setTimeout(() => { if (!stopped && node === loadingNode && prepared === loading) bypass(true); }, 60_000);
+      void loading.ready.then(async () => {
+        clearTimeout(timer);
+        if (stopped || node !== loadingNode || prepared !== loading || bypassing) return;
+        // Complete the constraint change before connecting the model, as a fallback swap does.
+        await raw.applyConstraints({ noiseSuppression: false }).catch(() => undefined);
+        if (stopped || node !== loadingNode || prepared !== loading || bypassing) return;
+        gain!.disconnect();
+        bridgeWorker(loadingNode, loading.worker);
+        gain!.connect(loadingNode);
+        loadingNode.connect(naturalDestination!);
+        loadingNode.connect(voiceInput!);
+        microphone.status = `${engineName} active · on-device`;
+        loadingNode.onprocessorerror = () => bypass(true);
+        loadingNode.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") bypass(true); };
+        changed();
+      }, () => {
+        clearTimeout(timer);
+        if (!stopped && node === loadingNode && prepared === loading) bypass(true);
+      });
+      ready();
+      return microphone;
+    }
     await new Promise<void>((resolve, reject) => {
       // ORT's first model compile is substantially slower than the small WASM engines.
       const timer = setTimeout(() => finish(new Error("Noise suppression timed out")), engine === "dpdfnet8" ? 60_000 : 15_000);
@@ -343,6 +391,7 @@ export async function captureMicrophone(
     microphone.status = engine === "rnnoise" ? "RNNoise active · on-device" : engine === "dpdfnet8" ? `${engineName} active · on-device` : `DeepFilterNet active · ${presetName} · on-device`;
     node.onprocessorerror = engine === "dpdfnet8" ? () => bypass(true) : fail;
     node.port.onmessage = ({ data }) => { if (data === "bypassed") bypass(); else if (data === "failed") { if (engine === "dpdfnet8") bypass(true); else fail(); } };
+    ready();
     return microphone;
   } catch {
     if (engine === "dpdfnet8" && !stopped && context?.state === "running" && gain && naturalDestination && voiceInput) {
@@ -353,6 +402,7 @@ export async function captureMicrophone(
       if (await useFallback(8)) {
         source!.connect(gain);
         connectVoicePath(voiceProcessingStrength);
+        ready();
         return microphone;
       }
     }

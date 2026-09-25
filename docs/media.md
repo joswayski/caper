@@ -1335,9 +1335,26 @@ not persist initialized workers across page loads.
 
 Join still opens the microphone and initializes a dedicated worklet, but takes
 exclusive ownership of the prepared worker rather than starting another model
-instance. It waits for any unfinished initialization, SSE readiness, transport,
-and initial roster/state synchronization before enabling outgoing audio. A cold
-join does not temporarily publish raw audio. Each engine gets one fresh-instance retry
+instance. If that worker is still compiling (right after page load or a leave),
+Join no longer waits for it: the microphone is requested with the browser's
+noise suppression on, routed through the same processed track, and DPDFNet is
+swapped in when ready (browser suppression is released first, as in a fallback
+swap). This applies only when the browser confirms its suppression is active;
+otherwise Join waits for DPDFNet as before. A model that fails while loading
+takes the existing fallback path. Join waits for SSE readiness, transport, and
+initial roster/state synchronization before enabling outgoing audio. A cold
+join never publishes raw audio.
+
+A September 25, 2026 production join showed Microphone 1,766 ms against
+Session + publish 509 ms and Transport 139 ms (ICE 117 ms): the join was held by
+microphone startup. In real Chromium with the real assets (fake device), opening
+the device took 56-108 ms and a capture with a ready model 28-35 ms, while a
+capture during compilation waited for the rest of the compile (about 42 s on
+that slow sandbox CPU). With this change a capture during compilation returned in
+79 ms with browser suppression carrying audio (published peak 1.01, as in
+browser-only mode), then swapped to DPDFNet on the same track. The connection
+panel now splits Microphone into device and processing time, or notes that the
+noise model was still loading. Each engine gets one fresh-instance retry
 for initialization errors or crashes before advancing from DPDFNet-8 to DPDFNet-2 HR,
 then RNNoise; Join fails if none can initialize. A transient DPDFNet underrun outputs silence while
 refilling the three-hop reserve, then resumes processed audio. Sustained overload

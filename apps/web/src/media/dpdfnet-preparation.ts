@@ -1,6 +1,8 @@
 interface PreparedWorker {
   worker: Worker;
   ready: Promise<void>;
+  /** True once the model has finished initializing. */
+  settled: boolean;
   stop(): void;
 }
 
@@ -13,6 +15,11 @@ export class DpdfnetPreparation {
 
   async prepare() {
     await this.get().ready;
+  }
+
+  /** Whether a worker is already initialized, without starting one. */
+  isReady() {
+    return this.prepared?.settled === true;
   }
 
   take() {
@@ -37,7 +44,7 @@ export class DpdfnetPreparation {
     const ready = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     let stopped = false;
     const prepared: PreparedWorker = {
-      worker, ready,
+      worker, ready, settled: false,
       stop() {
         if (stopped) return;
         stopped = true;
@@ -55,7 +62,7 @@ export class DpdfnetPreparation {
     };
     const timer = setTimeout(() => fail(new Error("Noise suppression timed out")), 60_000);
     worker.onmessage = ({ data }) => {
-      if (data?.type === "ready") { clearTimeout(timer); resolve(); }
+      if (data?.type === "ready") { clearTimeout(timer); prepared.settled = true; resolve(); }
       else fail(new Error("Noise suppression failed"));
     };
     worker.onerror = () => fail(new Error("Noise suppression failed"));
