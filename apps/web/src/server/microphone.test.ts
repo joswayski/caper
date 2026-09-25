@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { captureMicrophone } from "../media/microphone.ts";
+import { appleMobileWebKit, captureMicrophone, type NoiseSuppression } from "../media/microphone.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
+import { mixWithOtherAudio, resetCapturesForTests } from "../audio/session.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
 
 class Track {
@@ -86,7 +87,7 @@ class CompressorNode extends SourceNode {
 
 class Context {
   static latest: Context | undefined;
-  readonly sampleRate = 48_000;
+  readonly sampleRate: number = 48_000;
   state: AudioContextState = "running";
   readonly source = new SourceNode();
   readonly gain = new GainNode(this);
@@ -121,7 +122,7 @@ class Context {
 
 function setup(t: TestContext, options: {
   fetch?: typeof fetch;
-  getUserMedia?: () => Promise<Stream>;
+  getUserMedia?: (constraints?: { audio: MediaTrackConstraints }) => Promise<Stream>;
   context?: unknown;
   worklet?: unknown;
   compile?: (bytes: BufferSource) => Promise<WebAssembly.Module>;
@@ -520,6 +521,143 @@ test("browser baseline skips WASM and honestly reports unsupported suppression",
   assert.equal(Context.latest, undefined);
   assert.match(microphone.status, /unavailable/);
   microphone.stop();
+});
+
+const IPHONE_BRAVE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
+
+test("iPhone and iPad are detected in every WebKit browser, including iPadOS desktop mode", () => {
+  assert.equal(appleMobileWebKit({ userAgent: IPHONE_BRAVE, platform: "iPhone", maxTouchPoints: 5 }), true);
+  assert.equal(appleMobileWebKit({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", platform: "MacIntel", maxTouchPoints: 5 }), true);
+  assert.equal(appleMobileWebKit({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", platform: "MacIntel", maxTouchPoints: 0 }), false);
+  assert.equal(appleMobileWebKit({ userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36", platform: "Linux armv8l", maxTouchPoints: 5 }), false);
+  assert.equal(appleMobileWebKit(undefined), false);
+});
+
+const report = (microphone: { diagnostics(): object }) => microphone.diagnostics() as { requested?: string; routeSampleRate?: number };
+
+/** An iPhone whose default context (its audio route) runs at routeRate. */
+function iphone(t: TestContext, routeRate: number, userAgent = IPHONE_BRAVE) {
+  const requested: MediaTrackConstraints[] = [];
+  const raw = new Track();
+  const env = setup(t, { getUserMedia: async (constraints?: { audio: MediaTrackConstraints }) => {
+    requested.push(constraints!.audio);
+    raw.settings.noiseSuppression = !!constraints!.audio.noiseSuppression;
+    return new Stream([raw]);
+  } });
+  const getUserMedia = (globalThis.navigator as Navigator).mediaDevices.getUserMedia;
+  env.install("navigator", { userAgent, platform: userAgent === IPHONE_BRAVE ? "iPhone" : "MacIntel", maxTouchPoints: 5, mediaDevices: { getUserMedia } });
+  const contexts: RoutedContext[] = [];
+  class RoutedContext extends Context {
+    readonly sampleRate: number;
+    readonly requestedRate?: number;
+    readonly modules: string[] = [];
+    constructor(options?: AudioContextOptions) {
+      super();
+      this.requestedRate = options?.sampleRate;
+      this.sampleRate = options?.sampleRate ?? routeRate;
+      this.audioWorklet = { addModule: async (url: string) => { this.modules.push(url); } };
+      contexts.push(this);
+    }
+  }
+  env.install("AudioContext", RoutedContext);
+  let workers = 0;
+  env.install("Worker", class {
+    onmessage?: (event: { data: unknown }) => void;
+    constructor() { workers++; queueMicrotask(() => this.onmessage?.({ data: { type: "ready" } })); }
+    terminate() {}
+  });
+  return { ...env, raw, requested, contexts, workers: () => workers };
+}
+
+for (const mode of ["rnnoise", "deepfilter"] as NoiseSuppression[]) test(`on an iPhone 24 kHz route, ${mode} runs at the route rate and converts to 48 kHz for the model`, async (t) => {
+  const { raw, contexts } = iphone(t, 24_000);
+  const capturing = captureMicrophone(undefined, mode, new AbortController().signal, () => undefined);
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  assert.notEqual(microphone.track, raw, "the processed track is published");
+  // The probe (closed at once), then the capture graph at the route's own rate.
+  assert.deepEqual(contexts.map((context) => [context.requestedRate, context.sampleRate, context.closeCalls]), [[undefined, 24_000, 1], [undefined, 24_000, 0]]);
+  assert.deepEqual(contexts[1].modules, ["/audio/resampler-v1/resampler.js", "/audio/noise-v1/worklet-v2.js"]);
+  assert.match(microphone.status, /active · (balanced · )?on-device/);
+  assert.equal(report(microphone).routeSampleRate, 24_000);
+  microphone.stop();
+  assert.equal(raw.readyState, "ended");
+});
+
+test("on an iPhone 24 kHz route, DPDFNet loads its converting worklet", async (t) => {
+  const { contexts } = iphone(t, 24_000);
+  const microphone = await captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "speakers", undefined, new DpdfnetPreparation());
+  assert.deepEqual(contexts[1].modules, ["/audio/resampler-v1/resampler.js", "/audio/dpdfnet8-v2/worklet-v4.js"]);
+  assert.equal(contexts[1].sampleRate, 24_000);
+  microphone.stop();
+});
+
+for (const browserSuppression of [true, false]) test(`a converted pipeline that cannot start sends the capture with browser suppression ${browserSuppression ? "on" : "unavailable"}, not a failed join`, async (t) => {
+  const { raw, contexts } = iphone(t, 24_000);
+  if (!browserSuppression) raw.applyConstraints = async () => undefined;
+  const capturing = captureMicrophone(undefined, "rnnoise", new AbortController().signal, () => undefined);
+  await tick();
+  WorkletNode.latest!.port.emit("failed");
+  const microphone = await capturing;
+  assert.equal(microphone.track, raw);
+  assert.equal(microphone.naturalTrack, raw);
+  assert.equal(contexts[1].closeCalls, 1, "the graph is released");
+  assert.equal(raw.readyState, "live");
+  assert.equal(microphone.status, browserSuppression
+    ? "RNNoise unavailable · browser suppression active · 24 kHz audio route"
+    : "RNNoise unavailable - noise suppression off · 24 kHz audio route");
+  microphone.stop();
+});
+
+test("on an iPhone 48 kHz route the on-device model still runs", async (t) => {
+  const { raw, contexts } = iphone(t, 48_000);
+  const capturing = captureMicrophone(undefined, "rnnoise", new AbortController().signal, () => undefined);
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  assert.notEqual(microphone.track, raw);
+  assert.equal(microphone.status, "RNNoise active · on-device");
+  assert.equal(report(microphone).routeSampleRate, 48_000);
+  assert.equal(contexts.length, 2);
+  assert.deepEqual(contexts[1].modules, ["/audio/noise-v1/worklet-v2.js"], "no conversion at 48 kHz");
+  microphone.stop();
+});
+
+test("other devices keep the model on a non-48 kHz output, which they resample", async (t) => {
+  const { raw, contexts } = iphone(t, 44_100, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15");
+  (globalThis.navigator as { maxTouchPoints: number }).maxTouchPoints = 0;
+  const capturing = captureMicrophone(undefined, "rnnoise", new AbortController().signal, () => undefined);
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  assert.notEqual(microphone.track, raw);
+  assert.equal(microphone.status, "RNNoise active · on-device");
+  assert.deepEqual(contexts.map((context) => context.sampleRate), [48_000]);
+  microphone.stop();
+});
+
+for (const mode of ["off", "browser"] as NoiseSuppression[]) test(`on an iPhone, ${mode} needs no route probe`, async (t) => {
+  const { raw, contexts } = iphone(t, 24_000);
+  const microphone = await captureMicrophone(undefined, mode, new AbortController().signal, () => undefined);
+  assert.equal(microphone.track, raw);
+  assert.equal(contexts.length, 0);
+  microphone.stop();
+});
+
+test("capture uses the default audio session from before getUserMedia until it stops", async (t) => {
+  resetCapturesForTests();
+  const session = { type: "ambient" };
+  const seen: string[] = [];
+  const { install, raw } = setup(t);
+  install("navigator", { audioSession: session, mediaDevices: { getUserMedia: async () => { seen.push(session.type); return new Stream([raw]); } } });
+  const microphone = await captureMicrophone(undefined, "off", new AbortController().signal, () => undefined);
+  assert.deepEqual(seen, ["auto"]);
+  mixWithOtherAudio();
+  assert.equal(session.type, "auto", "no mixing session while capturing");
+  microphone.stop();
+  mixWithOtherAudio();
+  assert.equal(session.type, "ambient");
 });
 
 test("a missing capture stream reports a microphone access error", async (t) => {

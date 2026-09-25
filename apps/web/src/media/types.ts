@@ -30,6 +30,8 @@ export interface JoinResponse {
   publish?: SessionDescriptionResponse;
   /** Everyone already publishing, pulled into a receive-only session during join. */
   receive?: BatchSubscribeResponse;
+  /** The join adopted the warm sessions whose ticket it sent. */
+  warm?: boolean;
 }
 
 export interface TurnGeneration {
@@ -75,6 +77,8 @@ export interface ConnectionDiagnostics {
   transportMs: number;
   iceMs?: number;
   rosterMs: number;
+  /** From Join until audio from the people already present can play; set shortly after Joined. */
+  hearingMs?: number;
   /** Connectivity checks on the selected candidate pair, first sampled after joining. */
   checks?: string;
   receivedBytes: number;

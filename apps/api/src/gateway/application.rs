@@ -741,6 +741,7 @@ async fn execute(
             Some(
                 "join"
                     | "prepare"
+                    | "warm"
                     | "leave"
                     | "state"
                     | "snapshot"

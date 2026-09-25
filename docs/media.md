@@ -1139,6 +1139,10 @@ live ingestion into the user's dataset has not been verified.
 - A transient WebRTC `disconnected` state gets ten seconds to recover in place;
   `failed` or a sustained disconnect triggers up to three consecutive failed rejoin
   attempts retaining mute/deafen and device choice; success resets that budget.
+  The voice diagnostics report `lastReconnect`: the trigger (for example
+  `connection lost`, `receive connection lost` or `lease renewal failed: HTTP 401`),
+  its time, and both peer connections' states. It survives the rejoin and resets on
+  an explicit Join; it carries no token, credential or SDP.
   Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
@@ -1367,7 +1371,7 @@ If RNNoise cannot initialize, the browser fallback remains. The reported track
 setting determines whether the UI says browser suppression is active or unavailable.
 The mic test displays that live status; both Natural and Enhanced use this same
 noise-suppressed input, and Enhanced adds EQ/compression rather than more denoising.
-The recovery worklet uses `worklet-v3.js` to avoid the immutable cache of older clients.
+The recovery worklet uses `worklet-v3.js` to avoid the immutable cache of older clients; current pages load `worklet-v4.js` (see iPhone and iPad audio routes).
 DPDFNet processor errors retry once before advancing to the next tier. An unrecoverable RNNoise
 processor error stops the microphone without restarting the connection.
 
@@ -1542,7 +1546,13 @@ them instead of calling Cloudflare for both. The browser sends it when the
 pointer or keyboard focus reaches a Join button, at most every 4 seconds per
 channel, and also as a mouse or pen pointer comes within 120 px of a Join
 button (one document listener, at most one geometry check per animation frame,
-signed-in members only; touch relies on pointerdown). The public demo still
+signed-in members only). Touch has no approach, and pointerdown arrives too close
+to the tap to help, so on a coarse-pointer screen the viewed channel is prepared
+once when its Join button first becomes visible (an `IntersectionObserver` on
+that one button, not the sidebar's). Real Chromium with touch emulation and the
+UI fixture sent exactly one `prepare`, for the viewed channel; desktop sent none
+from visibility alone. A tap more than about 10 seconds after opening the channel
+joins the ordinary way. The public demo still
 creates on join, and `prepare` returns 404 there. Real Chromium with the UI
 fixture confirmed: no request from far away, one when approaching within 100 px
 without touching the button, and none again on the hover that follows.
@@ -1584,6 +1594,92 @@ Deploy API, then gateway (its allowlist gains `media.prepare`), then web. An
 older API or gateway rejects `prepare`; the browser ignores the failure and joins
 the ordinary way.
 
+### Warm sessions: pre-connected for signed-in members
+
+A prepared join still leaves the connection handshakes on Join and lasts only
+seconds. Signed-in members now keep a **warm pair** instead: while a member is on
+an account channel, voice is available and they are not in a call, the browser
+creates two provider sessions with no tracks and connects both:
+
+- `media.warm` (account channels only; the public demo answers 404) takes two
+  browser offers, each carrying only a negotiated data channel (no track, no
+  in-band channel messages). The API calls Cloudflare `sessions/new` with each
+  offer, which is the only form Cloudflare accepts for a session without tracks:
+  `tracks/new` requires at least one track (live-checked September 25, 2026).
+  It also issues TURN, and returns both answers, the ICE servers and a ticket.
+- The ticket is not stored anywhere. It is signed with HMAC-SHA256 for that
+  account's session hash, using a key derived from the provider secret every
+  media pod already holds. It names both sessions, the TURN credentials, the
+  issuing channel and the issue time, so a join in **any** of that account's
+  channels can adopt it.
+- Join sends `warm: <ticket>` with its microphone offer, made on the warm
+  connection (a new audio section beside the data section). The API verifies
+  the ticket against the joining account and checks it is under 25 minutes old.
+  It refuses a ticket whose sessions a participant in the room already uses.
+  It then publishes into the warm session and pulls everyone present into the
+  warm receive session, creating no session and issuing no TURN. Both
+  connections are already connected, so no handshake follows. The warm receive
+  session becomes the participant's pull session even in an empty room, so
+  later pulls use a connected transport too. The response carries
+  `warm: true`, and the diagnostics label the join "pre-connected".
+- A refused ticket (409 `warm_unavailable`: foreign, altered, expired, replayed,
+  or sent with a monitor) is refused before anything is reserved. The browser
+  then closes the pair and joins the ordinary way in the same Join. So does a
+  422 from an API without the field.
+
+Lifecycle and cost:
+- The browser replaces the pair after 20 minutes. It rebuilds the pair at once
+  when either connection fails or stays disconnected for 5 seconds, and when a
+  hidden page (a backgrounded phone) becomes visible again.
+- It closes the pair during a call, on sign-out, and when leaving the call page.
+- Closing the connections ends the provider sessions. Unadopted TURN
+  credentials are revoked 30 minutes after issue, by a job scheduled in the
+  issuing channel's registry; adoption cancels that job there, even from
+  another channel.
+- A room accepts one warm request per account per 10 seconds, and at most 48
+  per 10 seconds in total.
+- Cloudflare bills egress only, and an idle connected session carries only
+  connectivity checks, so a warm pair costs no media. Cloudflare documents that
+  its media inactivity timeout does not define the lifetime of a connected
+  session without media.
+- Registry state gains `warmed` (rate limiting only) with a serde default,
+  compatible in both directions.
+
+Validation:
+- Rust tests cover issue, rate limit and validation, adoption, and pulls into
+  the warm receive session. They also cover the refusals (foreign, expired,
+  altered, replayed, monitor, public room) and cross-room cancellation of the
+  revocation. Each of the replay check, the signature check and the revocation
+  cancel was removed in turn to confirm a test fails.
+- Web tests cover the warm lifecycle, adoption with no new PeerConnection, the
+  409/422 fallback, replacement after failure, and stopping on 404.
+- Real Chromium over loopback, with a second local peer standing in for
+  Cloudflare (not Cloudflare): the data-channel-only pair connected in 31 ms.
+  Adding the microphone renegotiated without leaving `connected`, and audio
+  reached the stand-in 93 ms after starting. A server-style offer on the warm
+  receive connection delivered audio in 93 ms.
+- Live Cloudflare signaling: `sessions/new` with a data-channel-only offer
+  returned an answer that Chromium applied.
+- **Not verified:**
+  - Publishing into a *connected* warm Cloudflare session; the sandbox cannot
+    connect WebRTC.
+  - End-to-end join time on a device.
+  - How long iOS keeps the pair while the page is visible.
+
+Deploy API, then gateway (its allowlist gains `media.warm`), then web. An older
+gateway answers the command with 400, and the browser stops asking until
+reload. No migration, secret or configuration change. After merge:
+
+```bash
+MERGED_SHA=<full-merged-caper-commit>
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+```
+
 ### Join-time pulls on a receive-only connection
 
 A browser that publishes inside `media.join` also sends `receive: true`. When
@@ -1595,8 +1691,18 @@ with the publication answer. The browser answers that offer on a second
 `RTCPeerConnection`, so both connections come up together. Subscriptions, their
 answers (`negotiate`) and closes then use the receive session; `close` takes
 `subscription: true` because MIDs may repeat across the two sessions, and cleanup
-closes each MID in its own session. The join completes only when both
-connections are connected; received audio stays withheld until then.
+closes each MID in its own session.
+
+Join completes when the microphone connection is connected; it does not wait
+for the receive answer's round trip (`negotiate` through the API to Cloudflare)
+or the receive connection's handshake. The publication is queued ahead of that
+answer, so it never waits on it. Audio from the people present plays as soon as
+the receive connection is up, which the diagnostics report separately as
+"Hearing others" (`hearingMs`, from Join). If that answer fails, or the receive
+connection is not connected within 12 seconds of Join completing, the call
+rejoins with `lastReconnect` set to `hearing others failed`, as a failure would
+have failed the join before. An iPhone report attributed about 300 ms of a
+1,062 ms join to this step; the saving is not yet measured on a device.
 
 Why a second session: Cloudflare answers a pull into a session with no
 negotiated PeerConnection at once (its documented receive pattern, also used
@@ -1913,6 +2019,53 @@ The default model and runtime (~27 MB combined) are vendored and loaded from Cap
 versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
+
+### iPhone and iPad audio routes
+
+The models run at 48 kHz. On an iPhone whose audio route ran at 24 kHz (the rate
+a default `AudioContext` reported; the user confirmed AirPods were connected), a
+capture graph forced to 48 kHz sent silence: the phone showed a live, running
+capture and Opus sent only DTX packets (~0.6 kbps, audio level 0). On the same
+phone at a 48 kHz route, DPDFNet-8 HR ran at 5.2 ms mean per 10 ms hop and was
+heard normally.
+
+On iPhone/iPad WebKit (every iOS browser, and iPadOS in desktop mode) capture
+probes the route rate with a default context. When it is not 48 kHz, the capture
+graph runs at the route's own rate and the worklet converts to and from 48 kHz
+itself: `resampler-v1/resampler.js` (windowed-sinc, Blackman window, 16 zero
+crossings, cutoff at 95% of the lower rate's Nyquist) is added to the same
+AudioWorklet first, and `dpdfnet8-v2/worklet-v4.js` / `noise-v1/worklet-v2.js`
+wrap their unchanged 48 kHz processing in it. A 24 kHz route carries nothing above
+12 kHz, so converting up loses nothing the microphone captured. The conversion
+adds about 1.6 ms (38 samples at 24 kHz) and cost about 2.4% of one core in this
+sandbox. If the converted pipeline cannot start, capture sends the browser's
+voice-processed track rather than failing the join, and the status names the
+route rate. Capture diagnostics include `routeSampleRate`.
+
+Other platforms and 48 kHz routes load no resampler and behave as before; the v4/v2
+worklets are the v3/v1 code at 48 kHz, under new names because `/audio` assets are
+cached as immutable (old pages keep the old files). A route change after joining
+(connecting a headset mid-call) is not detected until the microphone is reopened.
+
+Validation: unit tests round-trip 16, 24 and 44.1 kHz through 48 kHz with a fixed
+delay and under 1% error, check anti-aliasing (an 18 kHz tone does not fold into
+a 24 kHz output), and run both worklets at 24 kHz. In real Chromium at 24 kHz,
+worklet-v4 sent 101 hops/s of 480 samples (48 kHz) with an echo in place of the
+model and output matched input level; worklet-v2 loaded the real RNNoise and
+behaved as at 48 kHz. The sandbox cannot run DPDFNet in real time (25 ms per
+10 ms hop), and no iPhone check at a 24 kHz route has been made.
+
+### UI sounds on phones
+
+Join, leave, mute and other UI sounds play on touch devices too; the Caper sound
+effects switch still turns them off. Where the browser has the Audio Session API
+(Safari/iOS WebKit 17+), a UI sound played while nothing captures the microphone
+sets `navigator.audioSession.type = "ambient"`, so it mixes with other apps'
+audio instead of pausing their music, and follows the silent switch. Every
+microphone capture (a call or the mic test) sets `"auto"` before
+`getUserMedia`, and the type is never changed while a capture is live. A capture
+whose track ended without release stops counting. Unit-tested with mocks only:
+whether iOS keeps other apps' music playing has not been checked on a device.
 
 ### Retained engine implementations (no user-facing selector)
 

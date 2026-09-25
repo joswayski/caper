@@ -129,6 +129,9 @@ export default defineConfig(async ({ command }) => {
         "/audio/dpdfnet8-v2/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },
+        "/audio/resampler-v1/**": {
+          headers: { "cache-control": "public, max-age=31536000, immutable" },
+        },
         "/assets/**": {
           headers: { "cache-control": "public, max-age=31536000, immutable" },
         },

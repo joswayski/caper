@@ -4,6 +4,7 @@ import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import { PublicCallClient, prepareVoiceJoin, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
+import { hasWarmVoice, keepVoiceWarm, setWarmRequestForTests, takeWarmVoice } from "../media/warm.ts";
 import type { CallViewState } from "../media/types.ts";
 
 class Track extends EventTarget {
@@ -47,6 +48,8 @@ class Peer extends EventTarget {
     this.remoteDescriptions.push(description);
     if (description?.type === "offer") this.ontrack?.({ track: new Track(), transceiver: { mid: "1" }, streams: [] });
   }
+  dataChannels: RTCDataChannelInit[] = [];
+  createDataChannel(_label: string, options: RTCDataChannelInit) { this.dataChannels.push(options); return {}; }
   getSenders() { return this.senders; }
   getReceivers() { return []; }
   async getStats() { return Peer.stats; }
@@ -668,6 +671,11 @@ test("invalid session is not treated as a transient outage", async (t) => {
   install("fetch", async () => Response.json({ error: "Session expired" }, { status: 401 }));
   await (client as unknown as { poll(): Promise<void> }).poll();
   assert.equal(states.at(-1)?.phase, "reconnecting");
+  // Diagnostics name the cause without any credential or SDP.
+  const { lastReconnect } = client.getAudioDiagnostics().voice;
+  assert.equal(lastReconnect?.reason, "lease renewal failed: HTTP 401");
+  assert.equal(lastReconnect?.phase, "connected");
+  assert.equal(lastReconnect?.peer, "connected");
 });
 
 test("heartbeat timeout covers response bodies without closing healthy media", async (t) => {
@@ -756,6 +764,7 @@ test("RTC failure immediately schedules recovery and leave cancels delayed recov
   peer.connectionState = "failed";
   peer.onconnectionstatechange!();
   assert.equal(states.at(-1)?.phase, "reconnecting");
+  assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "connection failed");
   await client.leave();
   t.mock.timers.tick(20_000);
   assert.equal(states.at(-1)?.phase, "idle");
@@ -1171,15 +1180,66 @@ test("join pulls everyone present onto a receive connection that comes up with t
   assert.equal(states.some((state) => state.remoteMedia.length > 0), false, "received audio is withheld while joining");
   main.connectionState = "connected";
   main.dispatchEvent(new Event("connectionstatechange"));
-  await tick();
-  assert.equal(states.at(-1)?.phase, "joining", "the join also waits for the receive connection");
+  await joining;
+  // Speaking needs only the microphone connection; hearing others follows.
+  assert.equal(states.at(-1)?.phase, "connected", "Join does not wait for the receive connection");
+  assert.equal(track.enabled, true);
+  const timing = () => (client as unknown as { joinTiming?: { hearingMs?: number } }).joinTiming;
+  assert.equal(timing()?.hearingMs, undefined);
   receiver.connectionState = "connected";
   receiver.dispatchEvent(new Event("connectionstatechange"));
-  await joining;
+  await tick();
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
-  assert.equal(track.enabled, true);
+  assert.equal(typeof timing()?.hearingMs, "number", "hearing others is timed separately");
   assert.equal(Peer.all.length, 2);
+});
+
+test("Join does not wait for the receive answer's round trip", async (t) => {
+  const { client, track, states, install } = setup(t);
+  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  const held = fetch;
+  let answered!: () => void;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/negotiate")
+    ? new Promise<Response>((resolve) => { answered = () => resolve(Response.json({})); })
+    : held(url, init));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const joining = client.join();
+  await tick();
+  const [main] = Peer.all;
+  assert.equal(typeof answered, "function", "the receive answer is in flight");
+  main.connectionState = "connected";
+  main.dispatchEvent(new Event("connectionstatechange"));
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected", "joined while the receive answer is pending");
+  assert.equal(track.enabled, true);
+  answered();
+  await joining;
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected");
+  client.leaveImmediately();
+});
+
+test("a receive connection that never comes up after Join reconnects the call", async (t) => {
+  const { client, states, install } = setup(t);
+  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  t.mock.method(Peer.prototype, "createAnswer", async function (this: Peer) {
+    this.connectionState = "connecting";
+    return { type: "answer", sdp: "v=0" };
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const joining = client.join();
+  await tick();
+  const [main] = Peer.all;
+  main.connectionState = "connected";
+  main.dispatchEvent(new Event("connectionstatechange"));
+  await joining;
+  assert.equal(states.at(-1)?.phase, "connected");
+  t.mock.timers.tick(15_000);
+  await tick();
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+  assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "hearing others failed: Error");
+  client.leaveImmediately(); // Cancel the scheduled rejoin.
 });
 
 test("later pulls and closes use the receive connection", async (t) => {
@@ -2275,4 +2335,117 @@ test("people who leave together are closed concurrently, keeping transient failu
   await tick();
   assert.deepEqual([...closed].sort(), ["1", "2", "2"]);
   assert.equal(states.at(-1)?.phase, "connected");
+});
+
+const WARM_ROOT = "/api/channels/warm00000000/media";
+const warmAnswer = (ticket = "ticket") => ({
+  ticket, adoptWithinMs: 25 * 60_000, iceServers: [{ urls: "turn:turn.test", username: "u", credential: "c" }],
+  main: { type: "answer", sdp: "v=0 main" }, receive: { type: "answer", sdp: "v=0 receive" },
+});
+
+/** Creates the warm pair through the module's own flow, with the API call stubbed. */
+async function warmed(t: TestContext, respond: () => Promise<object> = async () => warmAnswer()) {
+  const requests: Array<{ channelId?: string; body: any }> = [];
+  setWarmRequestForTests(async (channelId, body) => { requests.push({ channelId, body }); return await respond() as never; });
+  t.after(() => setWarmRequestForTests());
+  keepVoiceWarm(WARM_ROOT);
+  await tick();
+  return requests;
+}
+
+test("a signed-in page keeps a connected, trackless session pair ready for Join", async (t) => {
+  setup(t);
+  const requests = await warmed(t);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].channelId, "warm00000000");
+  assert.equal(requests[0].body.main.type, "offer");
+  assert.equal(requests[0].body.receive.type, "offer");
+  assert.equal(Peer.all.length, 2);
+  for (const peer of Peer.all) {
+    assert.deepEqual(peer.dataChannels, [{ negotiated: true, id: 0 }], "a transport without any track");
+    assert.equal(peer.senders.length, 0);
+    assert.equal((peer.configuration.iceServers as RTCIceServer[])[0].urls, "turn:turn.test", "TURN before gathering");
+  }
+  assert.deepEqual(Peer.all.map((peer) => peer.remoteDescriptions[0]?.sdp), ["v=0 main", "v=0 receive"]);
+  assert.equal(hasWarmVoice(), true);
+  keepVoiceWarm(WARM_ROOT);
+  await tick();
+  assert.equal(requests.length, 1, "a healthy pair is kept, not replaced");
+  // Public demo pages have no warm sessions.
+  setWarmRequestForTests(async () => { throw new Error("never called"); });
+  keepVoiceWarm("/api/media");
+  await tick();
+  assert.equal(hasWarmVoice(), false);
+});
+
+test("Join adopts the warm pair: publishes and pulls on connected sessions, creating no connection", async (t) => {
+  const { client, states, install } = setup(t);
+  await warmed(t);
+  const [warmMain, warmReceive] = Peer.all;
+  const original = fetch;
+  let joinBody: any;
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (!url.endsWith("/join")) return original(url, init);
+    joinBody = JSON.parse(init.body as string);
+    return Response.json({
+      token: "capability", id: "self", iceServers: warmAnswer().iceServers, warm: true,
+      publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
+      receive: { tracks: [{ trackId: "remote", mid: "1" }], gone: [], requiresImmediateRenegotiation: true, sessionDescription: { type: "offer", sdp: providerSdp } },
+    });
+  });
+  await client.join();
+  assert.equal(joinBody.warm, "ticket");
+  assert.equal(joinBody.receive, true);
+  assert.ok(joinBody.publish.sessionDescription);
+  assert.equal(Peer.all.length, 2, "no new PeerConnection: both came from the warm pair");
+  assert.equal(warmMain.senders.length, 1, "the microphone is added to the warm connection");
+  assert.equal(warmMain.remoteDescriptions.at(-1)?.type, "answer");
+  assert.equal(warmReceive.remoteDescriptions.at(-1)?.type, "offer", "people present are pulled onto the warm receive connection");
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.match(states.at(-1)?.diagnostics?.join ?? (client as any).joinTiming.join, /pre-connected/);
+  assert.equal(hasWarmVoice(), false, "the pair now belongs to the call");
+  assert.equal(takeWarmVoice(), undefined);
+});
+
+for (const refusal of [{ status: 409, code: "warm_unavailable" }, { status: 422 }]) test(`a refused warm ticket (${refusal.status}) closes the pair and joins the ordinary way`, async (t) => {
+  const { client, states, install } = setup(t);
+  await warmed(t);
+  const [warmMain, warmReceive] = Peer.all;
+  const original = fetch;
+  const joins: any[] = [];
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) {
+      const body = JSON.parse(init.body as string);
+      joins.push(body);
+      if (body.warm) return Response.json({ error: "refused", ...refusal }, { status: refusal.status });
+    }
+    return original(url, init);
+  });
+  await client.join();
+  assert.equal(joins.length, 2);
+  assert.equal(joins[1].warm, undefined);
+  assert.equal(warmMain.connectionState, "closed");
+  assert.equal(warmReceive.connectionState, "closed");
+  assert.equal(Peer.all.length, 3, "a fresh connection for the ordinary join");
+  assert.equal(states.at(-1)?.phase, "connected");
+});
+
+test("a warm connection that fails is replaced; an API without warm sessions is not asked again", async (t) => {
+  setup(t);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const requests = await warmed(t);
+  const [warmMain] = Peer.all;
+  warmMain.connectionState = "failed";
+  warmMain.dispatchEvent(new Event("connectionstatechange"));
+  assert.equal(hasWarmVoice(), false);
+  t.mock.timers.tick(0);
+  await tick();
+  assert.equal(requests.length, 2, "rebuilt at once");
+  assert.equal(hasWarmVoice(), true);
+
+  const unsupported = await warmed(t, async () => { throw Object.assign(new Error("not found"), { status: 404 }); });
+  t.mock.timers.tick(120_000);
+  await tick();
+  assert.equal(unsupported.length, 1);
+  assert.equal(hasWarmVoice(), false);
 });
