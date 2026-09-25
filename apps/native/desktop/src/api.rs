@@ -303,6 +303,19 @@ impl Api {
         )
     }
 
+    /// Whether voice is enabled for the General demo (`channel` None, no
+    /// credentials) or for one account channel, as web reads it.
+    pub fn media_status(&self, token: Option<&str>, channel: Option<&str>) -> bool {
+        let path = match channel {
+            Some(channel) => format!("api/channels/{channel}/media/status"),
+            None => "api/media/status".into(),
+        };
+        let token = channel.and(token);
+        // Web treats any failure or non-success response as not enabled.
+        self.request::<Value>(Method::GET, &path, token, None, None)
+            .is_ok_and(|status| status["enabled"].as_bool() == Some(true))
+    }
+
     pub fn logout(&self, token: &str) -> Result<(), ApiError> {
         let response = self.raw(Method::POST, "api/auth/logout", Some(token), None, None)?;
         checked(response).map(|_| ())

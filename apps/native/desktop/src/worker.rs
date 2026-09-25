@@ -55,6 +55,11 @@ pub enum Command {
         channel: String,
         before: String,
     },
+    MediaStatus {
+        root: String,
+        token: Option<String>,
+        channel: Option<String>,
+    },
     CheckVoice {
         request: u64,
         voice_generation: u64,
@@ -213,6 +218,10 @@ pub enum Event {
         generation: u64,
         channel: String,
         result: Result<History, LoadError>,
+    },
+    MediaStatus {
+        root: String,
+        enabled: bool,
     },
     VoiceChecked {
         request: u64,
@@ -525,6 +534,14 @@ fn advance_generation(current: &mut u64, candidate: u64) -> bool {
 
 fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::Context) {
     let event = match command {
+        Command::MediaStatus {
+            root,
+            token,
+            channel,
+        } => Event::MediaStatus {
+            root,
+            enabled: api.media_status(token.as_deref(), channel.as_deref()),
+        },
         Command::CheckVoice {
             request,
             voice_generation,

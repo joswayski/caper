@@ -178,6 +178,9 @@ struct CaperApp {
     voice_join_request: u64,
     channel_rosters: BTreeMap<String, Vec<model::VoiceOccupant>>,
     unavailable_rosters: BTreeSet<String>,
+    /// Web's `/status` answers by media root; absent while checking.
+    media_availability: BTreeMap<String, bool>,
+    media_status_root: Option<String>,
     collapsed_rosters: BTreeSet<String>,
     sidebar_width: f32,
     navigation_open: bool,
@@ -248,6 +251,8 @@ impl CaperApp {
             voice_join_request: 0,
             channel_rosters: BTreeMap::new(),
             unavailable_rosters: BTreeSet::new(),
+            media_availability: BTreeMap::new(),
+            media_status_root: None,
             collapsed_rosters: BTreeSet::new(),
             sidebar_width: 280.0,
             navigation_open: false,
@@ -292,6 +297,10 @@ impl CaperApp {
                         .as_ref()
                         .map_or_else(Vec::new, |detail| detail.members[..2].to_vec());
                     app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
+                } else if name == "parity-voice-checking" {
+                    app.media_availability.clear();
+                } else if name == "parity-voice-unavailable" {
+                    app.media_availability.insert("chan00000001".into(), false);
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
                 } else if matches!(name, "parity-voice-rosters" | "parity-voice-rosters-narrow") {
@@ -551,6 +560,45 @@ impl CaperApp {
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
         self.live = "Live".into();
+        // Fixtures never contact a media service; voice reads as enabled.
+        self.media_status_root = Some(self.media_root().0);
+        for root in ["general", "chan00000001", "chan00000002", "chan00000003"] {
+            self.media_availability.insert(root.into(), true);
+        }
+    }
+
+    /// The viewed channel's media root (web `mediaRoot`): General's demo
+    /// service, or the viewed account channel's.
+    fn media_root(&self) -> (String, Option<String>) {
+        match (&self.detail, &self.selected_channel) {
+            (Some(detail), Some(channel)) if !detail.space.demo => {
+                (channel.clone(), Some(channel.clone()))
+            }
+            _ => ("general".into(), None),
+        }
+    }
+
+    /// Web re-reads `/status` whenever the viewed media root changes.
+    fn refresh_media_status(&mut self) {
+        let (root, channel) = self.media_root();
+        if !self.persist_preferences || self.media_status_root.as_deref() == Some(root.as_str()) {
+            return;
+        }
+        self.media_status_root = Some(root.clone());
+        self.worker.send(Command::MediaStatus {
+            root,
+            token: channel.as_ref().and(self.token.clone()),
+            channel,
+        });
+    }
+
+    /// Why Join is unavailable for the viewed channel, as web's tooltip says.
+    fn join_unavailable(&self) -> Option<&'static str> {
+        match self.media_availability.get(&self.media_root().0) {
+            Some(true) => None,
+            Some(false) => Some("Joining is not available at this time."),
+            None => Some("Checking voice availability…"),
+        }
     }
 
     /// Web plays channel-leave when someone else leaves and channel-join when
@@ -701,6 +749,9 @@ impl CaperApp {
                 {
                     self.loading_older = false;
                     self.accept_older(&channel, result);
+                }
+                Event::MediaStatus { root, enabled } => {
+                    self.media_availability.insert(root, enabled);
                 }
                 Event::VoiceChecked {
                     request,
@@ -1153,6 +1204,7 @@ impl CaperApp {
         let target = detail.channels.iter().find(|item| item.id == channel)?;
         if self.unavailable_rosters.contains(channel)
             || (!detail.space.demo && self.token.is_none())
+            || self.join_unavailable().is_some()
         {
             return None;
         }
@@ -1794,6 +1846,7 @@ impl eframe::App for CaperApp {
             self.worker.send(Command::Activity);
         }
         self.receive();
+        self.refresh_media_status();
         self.periodic(context);
         if matches!(self.dialog, Some(Dialog::SignIn)) {
             self.login_page(context);
@@ -2861,7 +2914,11 @@ impl CaperApp {
                     button.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
                     });
-                    if button.on_hover_text(label).clicked() {
+                    let button = match self.join_unavailable() {
+                        Some(reason) => button.on_disabled_hover_text(reason),
+                        None => button.on_hover_text(label),
+                    };
+                    if button.clicked() {
                         self.join_voice_channel(id);
                     }
                 });
@@ -3964,8 +4021,15 @@ impl CaperApp {
                                     } else {
                                         "Join"
                                     };
+                                    let unavailable = (!already_here).then(|| self.join_unavailable()).flatten();
                                     if self.selected_channel.is_some()
-                                        && voice_join_button(ui, label).clicked()
+                                        && ui.add_enabled_ui(unavailable.is_none(), |ui| {
+                                            let button = voice_join_button(ui, label);
+                                            match unavailable {
+                                                Some(reason) => button.on_disabled_hover_text(reason),
+                                                None => button,
+                                            }
+                                        }).inner.clicked()
                                     {
                                         if already_here {
                                             if matches!(self.voice.state.phase, Phase::Connected(_)) { self.effects.play(Effect::Disconnect); }
@@ -6150,6 +6214,31 @@ mod tests {
             &render(&mut app, &context, vec![]),
             "Not connected"
         ));
+    }
+
+    #[test]
+    fn join_waits_for_the_viewed_channels_voice_availability() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-checking"),
+        );
+        app.token = Some("fixture-token".into());
+        assert_eq!(app.join_unavailable(), Some("Checking voice availability…"));
+        assert!(app.voice_target("chan00000002").is_none());
+        app.media_availability.insert("chan00000001".into(), false);
+        assert_eq!(
+            app.join_unavailable(),
+            Some("Joining is not available at this time.")
+        );
+        assert!(app.voice_target("chan00000002").is_none());
+        app.media_availability.insert("chan00000001".into(), true);
+        assert!(app.join_unavailable().is_none());
+        assert!(app.voice_target("chan00000002").is_some());
+        // General's demo service has its own status.
+        app.detail.as_mut().unwrap().space.demo = true;
+        assert_eq!(app.media_root(), ("general".into(), None));
     }
 
     #[test]
