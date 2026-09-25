@@ -367,8 +367,11 @@ def main() -> None:
 
     tap(description="Manage planning")
     overview = capture("caper-android-channel-settings", "Overview")
-    for required in ("Private channel", "Only you and the people you add can view or join.", "Delete channel"):
+    for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Delete channel"):
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
+    assert find(overview, text="Add") is not None
+    for removed in ("Private channel access", "Existing username", "Grant"):
+        assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
     tap(description="Close")
 
     viewport(390, 844)

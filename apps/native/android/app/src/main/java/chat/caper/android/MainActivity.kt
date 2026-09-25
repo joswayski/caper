@@ -703,7 +703,7 @@ internal data class VoiceJoinIntent(
         HorizontalDivider(color = Border)
         Text("Members · ${detail.members.size}", fontWeight = FontWeight.Bold)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Existing username") }, modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
             Spacer(Modifier.width(8.dp)); Button({ viewModel.addSpaceMember(username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Add") }
         }
         detail.members.forEach { member -> MemberManagerRow(member, member.owner, { viewModel.removeSpaceMember(member) }) }
@@ -723,10 +723,10 @@ internal data class VoiceJoinIntent(
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
         val dirty = name.removeSuffix("-") != channel.name || private != channel.private
         if (channel.private) {
-            HorizontalDivider(color = Border); Text("Private channel access · ${state.channelGrants.size}", fontWeight = FontWeight.Bold)
+            HorizontalDivider(color = Border); Text("Members · ${state.channelGrants.size}", fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Existing username") }, modifier = Modifier.weight(1f), singleLine = true)
-                Spacer(Modifier.width(8.dp)); Button({ viewModel.addChannelGrant(channel, username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Grant") }
+                OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
+                Spacer(Modifier.width(8.dp)); Button({ viewModel.addChannelGrant(channel, username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Add") }
             }
             state.channelGrants.forEach { member -> MemberManagerRow(member, member.owner) { viewModel.removeChannelGrant(channel, member) } }
         }
