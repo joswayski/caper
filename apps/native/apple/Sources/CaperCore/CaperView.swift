@@ -139,6 +139,10 @@ private struct WorkspaceView: View {
     }
 
     var body: some View {
+        workspace.task(id: model.viewedVoiceRoot) { await model.refreshVoiceAvailability() }
+    }
+
+    private var workspace: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
             let membersVisible = membersPreference ?? !narrow
@@ -492,7 +496,9 @@ private struct ChannelVoiceSlot: View {
                     Spacer(minLength: 0)
                     if !active {
                         Button("Join") { Task { await model.joinVoice(channel: channel) } }
-                            .buttonStyle(VoiceJoinButton())
+                            .buttonStyle(VoiceJoinButton()).disabled(model.voiceAvailable != true)
+                            .help(voiceAvailabilityHelp(model) ?? (model.voice.phase == .idle || model.voice.phase == .failed
+                                ? "Join voice in #\(channel.name)" : "Switch voice to #\(channel.name)"))
                             .accessibilityLabel(model.voice.phase == .idle || model.voice.phase == .failed
                                 ? "Join voice in #\(channel.name)" : "Switch voice to #\(channel.name)")
                             .accessibilityIdentifier("join-voice-\(channel.id)")
@@ -1000,6 +1006,15 @@ private struct ChatView: View {
     }
 }
 
+/// Web's Join tooltip while voice availability is unknown or off.
+@MainActor private func voiceAvailabilityHelp(_ model: AppModel) -> String? {
+    switch model.voiceAvailable {
+    case true?: return nil
+    case false?: return "Joining is not available at this time."
+    case nil: return "Checking voice availability…"
+    }
+}
+
 private struct VoiceHeaderButton: View {
     let model: AppModel
     @Bindable var voice: VoiceClient
@@ -1012,7 +1027,8 @@ private struct VoiceHeaderButton: View {
             ProgressView().controlSize(.small)
         } else {
             Button(action: joinSelectedChannel) { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Join") } }
-                .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil)
+                .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil || model.voiceAvailable != true)
+                .help(voiceAvailabilityHelp(model) ?? "Join voice")
                 .accessibilityIdentifier("join-voice-button")
         }
     }

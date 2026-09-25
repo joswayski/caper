@@ -19,6 +19,8 @@ public final class AppModel {
     public var navigationOpen = false
     public var openingSpaceID: String?
     public var openingChannelID: String?
+    /// Voice availability by media root ("general" or a channel id); nil while unchecked.
+    public private(set) var voiceAvailability: [String: Bool] = [:]
     public var navigationError: String?
     public let api: APIClient
     public let chat: ChatModel
@@ -572,6 +574,20 @@ public final class AppModel {
 
     /// Verify the target at click time. Reading another text channel must not
     /// change the call, and a stale/private channel must not evict a healthy one.
+    /// The media root voice uses for the viewed channel, as web keys its availability.
+    public var viewedVoiceRoot: String? {
+        guard let detail, let channelID = selectedChannelID else { return nil }
+        return detail.space.demo == true ? "general" : channelID
+    }
+
+    public var voiceAvailable: Bool? { viewedVoiceRoot.flatMap { voiceAvailability[$0] } }
+
+    public func refreshVoiceAvailability() async {
+        guard let root = viewedVoiceRoot else { return }
+        let enabled = (try? await api.mediaStatus(channelID: root == "general" ? nil : root)) ?? false
+        voiceAvailability[root] = enabled
+    }
+
     public func joinVoice(channel: Channel) async {
         guard let detail, detail.channels.contains(where: { $0.id == channel.id }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }

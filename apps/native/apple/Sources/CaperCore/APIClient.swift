@@ -182,6 +182,14 @@ public actor APIClient {
         return try await request("\(root)/\(operation)", method: "POST", body: body, extraHeaders: mediaToken.map { ["x-caper-media-token": $0] } ?? [:])
     }
 
+    /// Whether voice can be joined through this media root (web's `${mediaRoot}/status`).
+    public func mediaStatus(channelID: String?) async throws -> Bool {
+        struct Status: Decodable { let enabled: Bool }
+        let root = try channelID.map { "api/channels/\(try pathID($0))/media" } ?? "api/media"
+        let status: Status = try await request("\(root)/status")
+        return status.enabled
+    }
+
     public func media<B: Encodable>(channelID: String?, operation: String, token mediaToken: String? = nil, body: B) async throws {
         let _: Empty = try await media(channelID: channelID, operation: operation, token: mediaToken, body: body)
     }
