@@ -366,7 +366,7 @@ internal data class VoiceJoinIntent(
 ) {
     val channel = state.selectedChannel
     if (channel == null) return Box(modifier.fillMaxSize().background(SurfaceConversation), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.Tag, null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold); Text("Choose or create a channel.", color = TextMuted) }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.Tag, null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold) }
     }
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
@@ -568,7 +568,7 @@ internal data class VoiceJoinIntent(
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
     val form: @Composable ColumnScope.() -> Unit = {
-        Text(if (account.username == null) "Create your profile" else "Edit profile", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        if (close == null) Text("Create your profile", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -581,7 +581,6 @@ internal data class VoiceJoinIntent(
 @Composable private fun CreateSpaceDialog(busy: Boolean, close: () -> Unit, create: (String) -> Unit) {
     var name by remember { mutableStateOf("") }
     CaperDialog("Create a space", close) {
-        Text("A space keeps channels and members together.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         DialogActions(close, "Create space", busy || name.isBlank()) { create(name.trim()) }
     }
@@ -590,9 +589,8 @@ internal data class VoiceJoinIntent(
 @Composable private fun CreateChannelDialog(detail: SpaceDetail, busy: Boolean, close: () -> Unit, create: (String, Boolean) -> Unit) {
     var name by remember { mutableStateOf("") }; var private by remember { mutableStateOf(false) }
     CaperDialog("Create a channel", close) {
-        Text("Add a conversation to ${detail.space.name}.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(Icons.Default.Tag, null) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        PrivacyToggle(private) { private = it }
+        PrivacyToggle(private, detail.space.name) { private = it }
         DialogActions(close, "Create channel", busy || channelInvalid(name)) { create(name.removeSuffix("-"), private) }
     }
 }
@@ -615,7 +613,7 @@ internal data class VoiceJoinIntent(
         Text("Delete space", fontWeight = FontWeight.Bold); Text("Delete this space and all its channels for every member.", color = TextMuted, fontSize = 11.sp)
         OutlinedButton({ confirmingDelete = true }, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Delete space") }
     }
-    if (confirmingDelete) ConfirmDialog("Delete ${detail.space.name}?", "This permanently deletes every channel and message in the space.", "Delete space", state.busy, { confirmingDelete = false }) { viewModel.deleteCurrentSpace { close() } }
+    if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }) { viewModel.deleteCurrentSpace { close() } }
 }
 
 @Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {
@@ -624,7 +622,7 @@ internal data class VoiceJoinIntent(
     LaunchedEffect(channel.id, channel.private) { viewModel.loadChannelGrants(channel) }
     CaperDialog("Overview", close, wide = true) {
         OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, leadingIcon = { Icon(Icons.Default.Tag, null) }, modifier = Modifier.fillMaxWidth())
-        PrivacyToggle(private) { private = it }
+        PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
         val dirty = name.removeSuffix("-") != channel.name || private != channel.private
         if (channel.private) {
             HorizontalDivider(color = Border); Text("Private channel access · ${state.channelGrants.size}", fontWeight = FontWeight.Bold)
@@ -643,7 +641,7 @@ internal data class VoiceJoinIntent(
             Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { Text("Save changes") }
         }
     }
-    if (confirmingDelete) ConfirmDialog("Delete #${channel.name}?", "This permanently deletes its messages.", "Delete channel", state.busy, { confirmingDelete = false }) { viewModel.deleteChannel(channel) { close() } }
+    if (confirmingDelete) ConfirmDialog("Delete channel", "Delete #${channel.name} for everyone? This channel and its messages will disappear from the space. This cannot be undone.", "Delete channel", state.busy, { confirmingDelete = false }) { viewModel.deleteChannel(channel) { close() } }
 }
 
 @Composable private fun MemberManagerRow(member: Member, protected: Boolean, remove: () -> Unit) {
@@ -779,19 +777,19 @@ internal data class VoiceJoinIntent(
         if (dialogActive) teardownTest()
     } }
     CaperDialog("Audio settings", close) {
-        Text("Input and output routing", fontWeight = FontWeight.Bold)
-        if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
-            Row(Modifier.fillMaxWidth().clickable { VoiceCallService.selectRoute(context, route.id) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
-                Spacer(Modifier.width(8.dp)); Text(route.name)
+        if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) {
+            Text("Audio device", fontWeight = FontWeight.Bold)
+            voice.routes.forEach { route ->
+                Row(Modifier.fillMaxWidth().clickable { VoiceCallService.selectRoute(context, route.id) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
+                    Spacer(Modifier.width(8.dp)); Text(route.name)
+                }
             }
-        } else Text("Choose audio input and output in Android system settings. Available communication routes appear here during a call on Android 12 and newer.", color = TextMuted, fontSize = 12.sp)
-        Text("Android communication routes follow the selected system device; separate microphone and speaker hardware selectors are not available.", color = TextMuted, fontSize = 11.sp)
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input gain", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
         Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input gain" }, valueRange = 0f..200f)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Processing strength", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
         Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Processing strength" }, valueRange = 0f..100f)
-        Text("DPDFNet-8 with RNNoise fallback, then voice EQ, compression and limiting. Defaults to 25%.", color = TextMuted, fontSize = 11.sp)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$outputVolume%", color = TextMuted, fontSize = 11.sp) }
         Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) }, modifier = Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -803,7 +801,7 @@ internal data class VoiceJoinIntent(
                 enabled = !finishing && (testing || recording == null), shape = MaterialTheme.shapes.small) { Text(if (testing) "Stop mic test" else "Test microphone") }
             if (recording != null) TextButton(::teardownTest) { Text("Done") }
         }
-        if (testing) Text("Recording locally for up to 30 seconds. Your test audio is not published.", color = TextMuted, fontSize = 11.sp)
+        if (testing) Text("Recording your voice", color = TextMuted, fontSize = 11.sp)
         testError?.let { Text(it, color = ErrorText, fontSize = 11.sp) }
         recording?.let { clip ->
             Text("Compare your microphone", fontWeight = FontWeight.Bold, fontSize = 12.sp)
@@ -815,7 +813,6 @@ internal data class VoiceJoinIntent(
         }
         if (voice.phase == VoiceState.Phase.CONNECTED) {
             Text("Connected to #${voice.channelName}", color = CaperGreen, fontSize = 12.sp)
-            Text("Mute and deafen controls remain available in the account bar and ongoing notification.", color = TextMuted, fontSize = 12.sp)
             if (state.account?.debugEnabled == true && voice.processing.size == 5) {
                 val report = voice.processing
                 DiagnosticRow("Microphone processing", when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" })
@@ -835,13 +832,10 @@ internal data class VoiceJoinIntent(
                 DiagnosticRow("Max jitter", "${diagnostics.maxJitterMs} ms")
                 DiagnosticRow("RTT", "${diagnostics.roundTripMs} ms")
                 DiagnosticRow("Route", when (diagnostics.route) { "relay" -> "TURN relay"; "direct" -> "Direct"; else -> "Not observed yet" })
-                Text("Local estimates; counters reset when the call ends.", color = TextMuted, fontSize = 10.sp)
             }
-        } else Text("Join voice to inspect an active connection.", color = TextMuted, fontSize = 12.sp)
+        }
         if (state.account != null) {
             HorizontalDivider(color = Border)
-            Text("Account", fontWeight = FontWeight.Bold)
-            Text("Signed in as ${state.account.displayName} (@${state.account.username}).", color = TextMuted, fontSize = 12.sp)
             OutlinedButton({ close(); logout() }, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Sign out") }
         }
     }
@@ -856,8 +850,8 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
 private fun formatBytes(value: Long) = when { value >= 1_000_000 -> "%.1f MB".format(value / 1_000_000.0); value >= 1_000 -> "%.1f KB".format(value / 1_000.0); else -> "$value B" }
 private fun formatBitrate(value: Long) = "${value / 1_000} kbps"
 
-@Composable private fun PrivacyToggle(value: Boolean, change: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { change(!value) }, verticalAlignment = Alignment.CenterVertically) {
-    Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in this space can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, change)
+@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, change: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { change(!value) }, verticalAlignment = Alignment.CenterVertically) {
+    Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, change)
 }
 
 @Composable private fun ConfirmDialog(title: String, body: String, action: String, busy: Boolean, close: () -> Unit, confirm: () -> Unit) = CaperDialog(title, close) {

@@ -922,10 +922,10 @@ private struct ProfileView: View {
         VStack(spacing: 22) {
             Wordmark(); Text("Finish your profile").font(CaperTheme.font(28, weight: .bold))
             CaperField(title: "Username", text: $username)
-            Text("3–32 letters, numbers, or underscores. Usernames are saved in lowercase.")
+            Text("3-32 lowercase letters, numbers, or underscores.")
                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             CaperField(title: "Display name", text: $displayName)
-            Text("Display name: 1–64 characters.")
+            Text("Shown to other people. It does not need to be unique.")
                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
             Button(model.busy ? "Saving…" : "Continue") { Task { await model.saveProfile(username: username, displayName: displayName) } }
@@ -1276,10 +1276,6 @@ private struct AudioPreferencesView: View {
                 Slider(value: liveStrength, in: 0...100, step: 1)
                     .accessibilityLabel("Live voice processing")
                     .accessibilityValue("\(voice.voiceProcessingStrength)%")
-                Text("The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.")
-                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                Text(voice.noiseSuppressionStatus)
-                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Output gain").font(CaperTheme.font(13, weight: .bold)); Spacer(); Text("\(voice.outputGain)%").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
@@ -1295,21 +1291,9 @@ private struct AudioPreferencesView: View {
                     .accessibilityLabel("Choose system audio route")
                     .accessibilityIdentifier("system-audio-route-picker")
             }
-            Text("Use the iPhone system picker to switch available routes during a call.")
-                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-            #else
-            Text("Caper routes this call to the selected devices without changing macOS system defaults.")
-                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             #endif
             Divider().overlay(CaperTheme.border)
             Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
-            #if os(macOS)
-            Text("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.")
-                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-            #else
-            Text("Record up to 30 seconds from the current mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.")
-                .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-            #endif
             HStack {
                 Button(micTest.recording ? "Stop testing" : "Mic Test") {
                     if micTest.recording { micTest.stopRecording() }
@@ -1327,8 +1311,6 @@ private struct AudioPreferencesView: View {
                     Button("Play enhanced") { micTest.play(enhanced: true) }.disabled(recordedPreview)
                     Button("Stop playback") { micTest.stopPlayback() }.disabled(recordedPreview)
                 }
-                Text("Natural playback includes input gain and on-device noise suppression. Enhanced playback also applies live voice processing strength.")
-                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
             if let error = micTest.error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
             if debugEnabled {
@@ -1343,8 +1325,6 @@ private struct AudioPreferencesView: View {
                     AudioRouteRow(title: "Receive / send", value: "\(stats.receiveBitrate.map { String($0) } ?? "—") / \(stats.sendBitrate.map { String($0) } ?? "—") bps")
                     AudioRouteRow(title: "Packets lost / max jitter", value: "\(stats.packetsLost) / \(stats.maxJitterMs.map { String($0) } ?? "—") ms")
                     AudioRouteRow(title: "RTT / route", value: "\(stats.roundTripMs.map { String($0) } ?? "—") ms / \(stats.route == "relay" ? "TURN relay" : stats.route == "direct" ? "Direct" : "Not observed yet")")
-                    Text("Local estimates; counters reset on reconnect. No addresses or device IDs are shown.")
-                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 } else {
                     Text("Waiting for transport statistics…").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 }

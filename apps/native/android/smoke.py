@@ -274,11 +274,25 @@ def main() -> None:
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
 
+    tap(description="Create space")
+    create_space = capture("caper-android-create-space", "Space name")
+    assert find(create_space, contains="A space keeps") is None
+    tap(description="Close")
+    tap(description="Create channel")
+    create_channel = capture("caper-android-create-channel", "Channel name")
+    assert find(create_channel, contains="Add a conversation") is None
+    assert find(create_channel, text="Anyone in Fixture Studio can view or join this channel.") is not None
+    tap(description="Close")
+
     # Inspect prejoin audio controls without starting capture or playback.
     tap(description="Audio and account settings")
     audio = capture("caper-android-audio-prejoin", "Processing strength")
     for label in ("Input gain", "Processing strength", "Output volume"):
         assert find(audio, description=label) is not None, f"Missing labeled slider: {label}"
+    for removed in ("DPDFNet", "RNNoise", "voice EQ", "Android system settings", "communication routes", "Join voice", "Signed in as"):
+        assert find(audio, contains=removed) is None, f"Unexpected explanatory copy: {removed}"
+    assert find(audio, text="Audio device") is None, "Do not show a routing section without routes"
+    assert find(audio, text="Connection details") is None
     assert find(audio, text="25%") is not None
     output = find(audio, description="Output volume")
     left, top, right, bottom = map(int, re.findall(r"\d+", output.attrib["bounds"]))
@@ -310,6 +324,7 @@ def main() -> None:
     profile_error = capture("caper-android-profile-error", "temporarily unavailable")
     assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
     assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
+    assert sum(1 for node in nodes(profile_error) if node.get("text") == "Edit profile") == 1
     tap(text="Save profile")
     wait_for(description="Manage planning")
 
