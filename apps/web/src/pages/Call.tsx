@@ -714,7 +714,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
                 <AudioLines aria-hidden="true" />
                 <span>
                   <strong>{connected ? "Voice connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}</strong>
-                  <small>{voiceChannel ? `${voiceChannel.spaceName} / ${voiceChannel.name}` : "#general"}</small>
+                  <small>{voiceChannel?.name ?? initialHistory?.channel.name ?? "general"} / {voiceChannel?.spaceName ?? initialHistory?.space.name ?? "Public demo"}</small>
                 </span>
               </button>
               <Tooltip content={connected ? "Disconnect" : "Cancel"}><button type="button" className="voice-hangup" aria-label={connected ? "Leave voice" : "Cancel joining voice"} onClick={leave}><PhoneOff aria-hidden="true" /></button></Tooltip>
