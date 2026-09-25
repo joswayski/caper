@@ -44,10 +44,15 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   local numeric processing counters; ordinary connection details remain public.
 - Native playback of the web client's bundled interaction sounds; no network
   audio fetch and no sounds in static fixtures.
-- Explicit local microphone recording (30 seconds maximum), natural/enhanced
-  comparison playback, and cancellation on dismissal/leave. Samples stay in
-  memory, never go to the API, and are discarded when the test ends. During a
-  test, live microphone publication is suspended; newer mute intent is retained.
+- Audio test, as on web: microphone and speaker pickers with 0–200% volumes; a
+  speaker test looping the join sound through the selected output's own ADM at
+  the live speaker volume until stopped or the dialog closes; explicit local
+  microphone recording (30 seconds maximum) with a live input meter, then
+  natural and enhanced playback (natural first, enhanced when it ends), a new
+  comparison after volume or enhancement changes, and silent-recording
+  detection. Samples stay in memory, never go to the API, and are discarded
+  when the test ends. During a recording, live microphone publication is
+  suspended; newer mute intent is retained.
 
 The account bearer is sent only in the HTTP/WebSocket `Authorization` header.
 The short-lived chat capability is separate, held only in memory, and sent only

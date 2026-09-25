@@ -1,13 +1,13 @@
 use crate::{media, media_gateway, state};
 use eframe::egui;
-use media::mic_test::{MicTest, MicTestControl, PlaybackToken};
+use media::mic_test::{self, MicTest, MicTestControl, PlaybackToken, SpeakerTestControl};
 use media::{
     JoinControl, MediaApi, NativeSession, Participant, Snapshot, TrackPlayback, VoiceActivity,
     VoiceError,
 };
 use serde::{Deserialize, Serialize};
 use state::{CallContext, CallState, Phase};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 use url::Url;
@@ -52,13 +52,36 @@ impl Preferences {
     }
 }
 
-#[derive(Clone, Debug)]
+/// Web's input meter: 40 bars, a new level every 80 ms while recording.
+pub const INPUT_METER_BARS: usize = 40;
+const INPUT_METER_INTERVAL: Duration = Duration::from_millis(80);
+/// Web waits this long after the last slider change before re-preparing.
+const PREPARE_DELAY: Duration = Duration::from_millis(120);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recorded {
+    pub seconds: f32,
+    /// No enhanced sample above 0.001 full scale, as web checks.
+    pub silent: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum MicrophoneState {
     Idle,
     Preparing,
     Recording(Instant),
-    Ready(f32),
-    Playing { seconds: f32, enhanced: bool },
+    /// A changed volume or enhancement is preparing a new comparison.
+    Processing(Recorded),
+    Ready(Recorded),
+    Playing {
+        recorded: Recorded,
+        enhanced: bool,
+    },
+}
+
+enum MicCommand {
+    Play(bool, u16, PlaybackToken),
+    Prepare(u16, u8),
 }
 
 pub struct Voice {
@@ -75,10 +98,20 @@ pub struct Voice {
     pub refreshing_devices: bool,
     pub microphone: MicrophoneState,
     pub microphone_error: Option<String>,
+    pub input_meter: VecDeque<f32>,
+    pub speaker_testing: bool,
+    pub speaker_failed: bool,
     pub active_space: Option<String>,
     microphone_generation: u64,
     microphone_control: Option<MicTestControl>,
-    microphone_commands: Option<Sender<(bool, u16, PlaybackToken)>>,
+    microphone_commands: Option<Sender<MicCommand>>,
+    meter_sampled: Option<Instant>,
+    prepare_at: Option<Instant>,
+    natural_ended: bool,
+    playback_stopped: bool,
+    prepares_pending: u32,
+    speaker_generation: u64,
+    speaker_control: Option<SpeakerTestControl>,
     device_request: u64,
     participant_playback: BTreeMap<String, TrackPlayback>,
     base: Url,
@@ -104,6 +137,9 @@ enum Report {
     Activity(u64, VoiceActivity),
     Devices(u64, Result<media::AudioDevices, String>),
     Microphone(u64, Result<MicrophoneState, String>),
+    MicPlayed(u64, Recorded),
+    MicPrepared(u64, Recorded),
+    SpeakerFailed(u64),
 }
 
 impl Voice {
@@ -137,9 +173,19 @@ impl Voice {
             refreshing_devices: false,
             microphone: MicrophoneState::Idle,
             microphone_error: None,
+            input_meter: VecDeque::from(vec![0.0; INPUT_METER_BARS]),
+            speaker_testing: false,
+            speaker_failed: false,
             microphone_generation: 0,
             microphone_control: None,
             microphone_commands: None,
+            meter_sampled: None,
+            prepare_at: None,
+            natural_ended: false,
+            playback_stopped: false,
+            prepares_pending: 0,
+            speaker_generation: 0,
+            speaker_control: None,
             device_request: 0,
             participant_playback: BTreeMap::new(),
             base,
@@ -431,6 +477,7 @@ impl Voice {
         let strength = self.preferences.processing_strength;
         std::thread::spawn(move || {
             let send = |state| report(&events, &repaint, Report::Microphone(generation, state));
+            let done = |event| report(&events, &repaint, event);
             let result = (|| -> Result<(), String> {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(2)
@@ -443,12 +490,24 @@ impl Voice {
                     output.as_deref(),
                 ))?;
                 send(Ok(MicrophoneState::Recording(Instant::now())));
-                let sample = runtime.block_on(test.record_with_processing(gain, strength))?;
-                let seconds = sample.natural.len() as f32 / sample.sample_rate as f32;
-                send(Ok(MicrophoneState::Ready(seconds)));
-                while let Ok((enhanced, volume, token)) = receiver.recv() {
-                    runtime.block_on(test.play_prepared(enhanced, volume, token))?;
-                    send(Ok(MicrophoneState::Ready(seconds)));
+                let recorded = |sample: &mic_test::MicSample| Recorded {
+                    seconds: sample.natural.len() as f32 / sample.sample_rate as f32,
+                    silent: !mic_test::audible(&sample.enhanced),
+                };
+                let mut current =
+                    recorded(runtime.block_on(test.record_with_processing(gain, strength))?);
+                send(Ok(MicrophoneState::Ready(current)));
+                while let Ok(command) = receiver.recv() {
+                    match command {
+                        MicCommand::Play(enhanced, volume, token) => {
+                            runtime.block_on(test.play_prepared(enhanced, volume, token))?;
+                            done(Report::MicPlayed(generation, current));
+                        }
+                        MicCommand::Prepare(gain, strength) => {
+                            current = recorded(runtime.block_on(test.reprocess(gain, strength))?);
+                            done(Report::MicPrepared(generation, current));
+                        }
+                    }
                 }
                 test.stop();
                 Ok(())
@@ -468,31 +527,167 @@ impl Voice {
     }
 
     pub fn play_mic_sample(&mut self, enhanced: bool) {
-        if let MicrophoneState::Ready(seconds) = self.microphone
+        if let MicrophoneState::Ready(recorded) = self.microphone
             && let Some(sender) = &self.microphone_commands
             && let Some(control) = &self.microphone_control
             && sender
-                .send((
+                .send(MicCommand::Play(
                     enhanced,
                     self.preferences.master_percent,
                     control.prepare_playback(),
                 ))
                 .is_ok()
         {
-            self.microphone = MicrophoneState::Playing { seconds, enhanced };
+            self.playback_stopped = false;
+            self.microphone = MicrophoneState::Playing { recorded, enhanced };
         }
     }
 
-    pub fn stop_mic_playback(&self) {
+    pub fn stop_mic_playback(&mut self) {
         if let Some(control) = &self.microphone_control {
             control.stop_playback();
         }
+        self.playback_stopped = true;
         // Remain Playing until the worker acknowledges completion. Otherwise
         // the previous completion could overwrite a newly queued replay state.
     }
 
+    /// Web plays natural as soon as recording ends, then enhanced once
+    /// natural first plays to its end, and each newly prepared enhanced
+    /// sample after that.
+    fn played(&mut self, recorded: Recorded) {
+        let stopped = std::mem::take(&mut self.playback_stopped);
+        // A pending comparison stays Processing; its sample is replaced.
+        let MicrophoneState::Playing { enhanced, .. } = self.microphone else {
+            return;
+        };
+        self.microphone = MicrophoneState::Ready(recorded);
+        if !enhanced && !stopped && !self.natural_ended {
+            self.natural_ended = true;
+            self.play_mic_sample(true);
+        }
+    }
+
+    fn prepared(&mut self, recorded: Recorded) {
+        self.prepares_pending = self.prepares_pending.saturating_sub(1);
+        if self.prepares_pending > 0 || self.prepare_at.is_some() {
+            return;
+        }
+        self.microphone = MicrophoneState::Ready(recorded);
+        if self.natural_ended {
+            self.play_mic_sample(true);
+        }
+    }
+
+    /// Latest levels, oldest first; flat while not recording.
+    pub fn sample_input_meter(&mut self, now: Instant) {
+        let recording = matches!(self.microphone, MicrophoneState::Recording(_));
+        let Some(control) = self.microphone_control.as_ref().filter(|_| recording) else {
+            self.meter_sampled = None;
+            self.input_meter.iter_mut().for_each(|level| *level = 0.0);
+            return;
+        };
+        if self
+            .meter_sampled
+            .is_some_and(|sampled| now.duration_since(sampled) < INPUT_METER_INTERVAL)
+        {
+            return;
+        }
+        self.meter_sampled = Some(now);
+        // Web scales display separately from the recorded signal.
+        let level = (control.input_level().sqrt() * 2.5).min(1.0);
+        self.input_meter.pop_front();
+        self.input_meter.push_back(level);
+    }
+
+    fn schedule_prepare(&mut self) {
+        if matches!(
+            self.microphone,
+            MicrophoneState::Ready(_)
+                | MicrophoneState::Playing { .. }
+                | MicrophoneState::Processing(_)
+        ) {
+            self.prepare_at = Some(Instant::now() + PREPARE_DELAY);
+            self.repaint.request_repaint_after(PREPARE_DELAY);
+        }
+    }
+
+    fn send_due_prepare(&mut self, now: Instant) {
+        let Some(due) = self.prepare_at else {
+            return;
+        };
+        if now < due {
+            self.repaint.request_repaint_after(due - now);
+            return;
+        }
+        if let MicrophoneState::Playing { .. } = self.microphone {
+            self.stop_mic_playback();
+        }
+        self.prepare_at = None;
+        let recorded = match self.microphone {
+            MicrophoneState::Ready(recorded)
+            | MicrophoneState::Processing(recorded)
+            | MicrophoneState::Playing { recorded, .. } => recorded,
+            _ => return,
+        };
+        if let Some(sender) = &self.microphone_commands
+            && sender
+                .send(MicCommand::Prepare(
+                    self.preferences.input_percent,
+                    self.preferences.processing_strength,
+                ))
+                .is_ok()
+        {
+            self.prepares_pending += 1;
+            self.microphone = MicrophoneState::Processing(recorded);
+        }
+    }
+
+    pub fn start_speaker_test(&mut self) {
+        self.stop_speaker_test();
+        self.speaker_failed = false;
+        let control = SpeakerTestControl::new(self.preferences.master_percent);
+        self.speaker_control = Some(control.clone());
+        self.speaker_testing = true;
+        let generation = self.speaker_generation;
+        let events = self.events.clone();
+        let repaint = self.repaint.clone();
+        let output = self.preferences.output.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(), String> {
+                let pcm = crate::effects::speaker_test_pcm()
+                    .ok_or("speaker test sound is unavailable")?;
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build()
+                    .map_err(|error| error.to_string())?
+                    .block_on(mic_test::run_speaker_test(
+                        control.clone(),
+                        output.as_deref(),
+                        &pcm,
+                    ))
+            })();
+            if result.is_err() && !control.is_stopped() {
+                report(&events, &repaint, Report::SpeakerFailed(generation));
+            }
+        });
+    }
+
+    pub fn stop_speaker_test(&mut self) {
+        self.speaker_generation += 1;
+        if let Some(control) = self.speaker_control.take() {
+            control.stop();
+        }
+        self.speaker_testing = false;
+    }
+
     pub fn stop_mic_test(&mut self) {
         self.microphone_generation += 1;
+        self.prepare_at = None;
+        self.natural_ended = false;
+        self.playback_stopped = false;
+        self.prepares_pending = 0;
         if let Some(control) = self.microphone_control.take() {
             control.cancel();
             if let Some(call) = &self.control
@@ -573,12 +768,16 @@ impl Voice {
 
     pub fn set_master_gain(&mut self, percent: u16) {
         self.preferences.master_percent = percent.min(200);
+        if let Some(control) = &self.speaker_control {
+            control.set_volume(self.preferences.master_percent);
+        }
         self.apply_playback();
     }
 
     pub fn set_input_processing(&mut self, percent: u16, strength: u8) {
         self.preferences.input_percent = percent.min(200);
         self.preferences.processing_strength = strength.min(100);
+        self.schedule_prepare();
         if let Some(control) = &self.control
             && let Err(error) = control.set_input_processing(
                 self.preferences.input_percent,
@@ -637,6 +836,10 @@ impl Voice {
             self.preferences.input = guid;
         } else {
             self.preferences.output = guid;
+            // Web keeps a running speaker test playing on the new output.
+            if self.speaker_testing {
+                self.start_speaker_test();
+            }
         }
         self.device_error = None;
     }
@@ -720,12 +923,30 @@ impl Voice {
                     self.activity = activity;
                 }
                 Report::Microphone(g, state) if g == self.microphone_generation => match state {
-                    Ok(state) => self.microphone = state,
+                    Ok(state) => {
+                        let recorded = matches!(self.microphone, MicrophoneState::Recording(_))
+                            && matches!(state, MicrophoneState::Ready(_));
+                        self.microphone = state;
+                        if recorded {
+                            self.natural_ended = false;
+                            self.play_mic_sample(false);
+                        }
+                    }
                     Err(error) => {
                         self.stop_mic_test();
                         self.microphone_error = Some(error);
                     }
                 },
+                Report::MicPlayed(g, recorded) if g == self.microphone_generation => {
+                    self.played(recorded);
+                }
+                Report::MicPrepared(g, recorded) if g == self.microphone_generation => {
+                    self.prepared(recorded);
+                }
+                Report::SpeakerFailed(g) if g == self.speaker_generation => {
+                    self.stop_speaker_test();
+                    self.speaker_failed = true;
+                }
                 Report::Devices(request, result) if request == self.device_request => {
                     self.refreshing_devices = false;
                     match result {
@@ -747,7 +968,9 @@ impl Voice {
                 _ => {}
             }
         }
-        if let Some(release) = self.next_speaking_release(Instant::now()) {
+        let now = Instant::now();
+        self.send_due_prepare(now);
+        if let Some(release) = self.next_speaking_release(now) {
             self.repaint.request_repaint_after(release);
         }
     }
@@ -756,6 +979,7 @@ impl Voice {
 impl Drop for Voice {
     fn drop(&mut self) {
         self.leave();
+        self.stop_speaker_test();
     }
 }
 
@@ -883,6 +1107,160 @@ mod tests {
         assert_eq!(voice.preferences.master_percent, 75);
     }
 
+    const SAMPLE: Recorded = Recorded {
+        seconds: 2.7,
+        silent: false,
+    };
+
+    fn recording_voice() -> (Voice, Receiver<MicCommand>) {
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            egui::Context::default(),
+        );
+        let (sender, receiver) = mpsc::channel();
+        voice.microphone_commands = Some(sender);
+        voice.microphone_control = Some(MicTestControl::new());
+        voice.microphone = MicrophoneState::Recording(Instant::now());
+        (voice, receiver)
+    }
+
+    fn deliver(voice: &mut Voice, report: Report) {
+        voice.events.send(report).unwrap();
+        voice.receive();
+    }
+
+    #[test]
+    fn comparison_plays_natural_then_enhanced_like_web() {
+        let (mut voice, receiver) = recording_voice();
+        let g = voice.microphone_generation;
+        deliver(
+            &mut voice,
+            Report::Microphone(g, Ok(MicrophoneState::Ready(SAMPLE))),
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(MicCommand::Play(false, 100, _))
+        ));
+        deliver(&mut voice, Report::MicPlayed(g, SAMPLE));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(MicCommand::Play(true, _, _))
+        ));
+        assert_eq!(
+            voice.microphone,
+            MicrophoneState::Playing {
+                recorded: SAMPLE,
+                enhanced: true
+            }
+        );
+        deliver(&mut voice, Report::MicPlayed(g, SAMPLE));
+        assert_eq!(voice.microphone, MicrophoneState::Ready(SAMPLE));
+        voice.play_mic_sample(false);
+        receiver.try_recv().unwrap();
+        deliver(&mut voice, Report::MicPlayed(g, SAMPLE));
+        assert!(
+            receiver.try_recv().is_err(),
+            "enhanced follows only the first natural ending"
+        );
+    }
+
+    #[test]
+    fn stopping_natural_does_not_start_enhanced() {
+        let (mut voice, receiver) = recording_voice();
+        let g = voice.microphone_generation;
+        deliver(
+            &mut voice,
+            Report::Microphone(g, Ok(MicrophoneState::Ready(SAMPLE))),
+        );
+        receiver.try_recv().unwrap();
+        voice.stop_mic_playback();
+        deliver(&mut voice, Report::MicPlayed(g, SAMPLE));
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(voice.microphone, MicrophoneState::Ready(SAMPLE));
+    }
+
+    #[test]
+    fn changed_enhancement_prepares_once_after_the_web_delay() {
+        let (mut voice, receiver) = recording_voice();
+        let g = voice.microphone_generation;
+        deliver(
+            &mut voice,
+            Report::Microphone(g, Ok(MicrophoneState::Ready(SAMPLE))),
+        );
+        receiver.try_recv().unwrap();
+        deliver(&mut voice, Report::MicPlayed(g, SAMPLE));
+        receiver.try_recv().unwrap();
+        voice.set_input_processing(100, 40);
+        voice.set_input_processing(100, 60);
+        voice.receive();
+        assert!(receiver.try_recv().is_err(), "debounced like web");
+        std::thread::sleep(PREPARE_DELAY);
+        voice.receive();
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(MicCommand::Prepare(100, 60))
+        ));
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(voice.microphone, MicrophoneState::Processing(SAMPLE));
+        // The interrupted enhanced playback reports after Prepare was queued.
+        deliver(&mut voice, Report::MicPlayed(g, SAMPLE));
+        assert_eq!(voice.microphone, MicrophoneState::Processing(SAMPLE));
+        let silent = Recorded {
+            seconds: 2.7,
+            silent: true,
+        };
+        deliver(&mut voice, Report::MicPrepared(g, silent));
+        assert!(
+            matches!(receiver.try_recv(), Ok(MicCommand::Play(true, _, _))),
+            "after natural has ended, a new enhanced sample plays"
+        );
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            voice.microphone,
+            MicrophoneState::Playing {
+                recorded: silent,
+                enhanced: true
+            }
+        );
+    }
+
+    #[test]
+    fn input_meter_scales_like_web_and_rests_flat() {
+        let (mut voice, _receiver) = recording_voice();
+        let now = Instant::now();
+        voice.sample_input_meter(now);
+        assert_eq!(voice.input_meter.len(), INPUT_METER_BARS);
+        assert!(voice.input_meter.iter().all(|level| *level == 0.0));
+        voice.microphone = MicrophoneState::Idle;
+        voice.input_meter[0] = 0.5;
+        voice.sample_input_meter(now);
+        assert!(voice.input_meter.iter().all(|level| *level == 0.0));
+    }
+
+    #[test]
+    fn speaker_volume_and_stop_reach_the_running_test() {
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            egui::Context::default(),
+        );
+        let control = SpeakerTestControl::new(100);
+        voice.speaker_control = Some(control.clone());
+        voice.speaker_testing = true;
+        voice.set_master_gain(150);
+        voice.stop_speaker_test();
+        assert!(control.is_stopped());
+        assert!(!voice.speaker_testing);
+        let generation = voice.speaker_generation.wrapping_sub(1);
+        deliver(&mut voice, Report::SpeakerFailed(generation));
+        assert!(
+            !voice.speaker_failed,
+            "a stopped test cannot report failure"
+        );
+        let current = voice.speaker_generation;
+        deliver(&mut voice, Report::SpeakerFailed(current));
+        assert!(voice.speaker_failed);
+    }
+
     #[test]
     fn mic_sample_commands_use_current_gain_and_discard_rejects_late_completion() {
         let mut voice = Voice::new(
@@ -892,10 +1270,12 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         voice.microphone_commands = Some(sender);
         voice.microphone_control = Some(MicTestControl::new());
-        voice.microphone = MicrophoneState::Ready(2.7);
+        voice.microphone = MicrophoneState::Ready(SAMPLE);
         voice.set_master_gain(143);
         voice.play_mic_sample(true);
-        let (enhanced, volume, _) = receiver.try_recv().unwrap();
+        let Ok(MicCommand::Play(enhanced, volume, _)) = receiver.try_recv() else {
+            panic!("play command");
+        };
         assert!(enhanced);
         assert_eq!(volume, 143);
         voice.stop_mic_playback();
@@ -910,7 +1290,7 @@ mod tests {
             .events
             .send(Report::Microphone(
                 generation,
-                Ok(MicrophoneState::Ready(2.7)),
+                Ok(MicrophoneState::Ready(SAMPLE)),
             ))
             .unwrap();
         voice

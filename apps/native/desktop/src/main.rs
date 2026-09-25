@@ -22,7 +22,7 @@ use model::{
 use state::{CallContext, Phase};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
-use voice::{MicrophoneState, Voice, VoiceOperation};
+use voice::{MicrophoneState, Recorded, Voice, VoiceOperation};
 use worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
 
 const BLACKOUT: Color32 = Color32::from_rgb(12, 13, 15);
@@ -340,7 +340,10 @@ impl CaperApp {
                 } else if matches!(name, "parity-audio" | "parity-audio-recorded") {
                     app.dialog = Some(Dialog::Audio);
                     if name == "parity-audio-recorded" {
-                        app.voice.microphone = MicrophoneState::Ready(3.6);
+                        app.voice.microphone = MicrophoneState::Ready(Recorded {
+                            seconds: 3.6,
+                            silent: false,
+                        });
                     }
                 } else if matches!(
                     name,
@@ -1784,10 +1787,13 @@ impl eframe::App for CaperApp {
             self.shell(context);
             self.dialogs(context);
         }
-        if !matches!(self.dialog, Some(Dialog::Audio))
-            && !matches!(self.voice.microphone, MicrophoneState::Idle)
-        {
-            self.voice.stop_mic_test();
+        if !matches!(self.dialog, Some(Dialog::Audio)) {
+            if !matches!(self.voice.microphone, MicrophoneState::Idle) {
+                self.voice.stop_mic_test();
+            }
+            if self.voice.speaker_testing {
+                self.voice.stop_speaker_test();
+            }
         }
     }
 }
@@ -3250,7 +3256,7 @@ impl CaperApp {
                                 self.effects.play(Effect::ToggleOn);
                             }
                         }
-                        if ui.button("Audio preferences").clicked() {
+                        if ui.button("Audio test").clicked() {
                             self.voice.refresh_devices();
                             self.dialog = Some(Dialog::Audio);
                             ui.close();
@@ -3412,118 +3418,37 @@ impl CaperApp {
         }
     }
 
-    fn audio_preferences(&mut self, ui: &mut egui::Ui) {
-        self.input_processing(ui);
-        ui.add_space(12.0);
-        self.output_gain(ui);
-        ui.add_space(12.0);
-        for input in [true, false] {
-            let preferred = if input {
-                &self.voice.preferences.input
-            } else {
-                &self.voice.preferences.output
-            };
-            let devices = if input {
-                &self.voice.inputs
-            } else {
-                &self.voice.outputs
-            };
-            let label = preferred
-                .as_ref()
-                .map_or("System default", |id| {
-                    devices
-                        .iter()
-                        .find(|(guid, _)| guid == id)
-                        .map_or("Saved device (unavailable)", |(_, name)| name.as_str())
-                })
-                .to_owned();
-            ui.label(bold(if input { "Microphone" } else { "Output device" }).size(13.0));
-            let button = ui.add_sized(
-                [ui.available_width(), 36.0],
-                egui::Button::new(label)
-                    .fill(COMPOSER)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(8),
-            );
-            egui::Popup::menu(&button).width(300.0).show(|ui| {
-                ui.add_enabled_ui(
-                    matches!(self.voice.microphone, MicrophoneState::Idle),
-                    |ui| self.device_options(ui, input),
-                );
+    fn audio_test(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("Only you can hear these tests.")
+                .size(12.8)
+                .color(MUTED),
+        );
+        ui.add_space(20.0);
+        // Web stacks the pickers below a 540px viewport.
+        if ui.available_width() >= 500.0 {
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 24.0;
+            ui.columns(2, |columns| {
+                for (column, input) in columns.iter_mut().zip([true, false]) {
+                    column.spacing_mut().item_spacing.x = spacing;
+                    self.audio_test_device(column, input);
+                }
             });
-            ui.add_space(12.0);
+            ui.spacing_mut().item_spacing.x = spacing;
+        } else {
+            self.audio_test_device(ui, true);
+            ui.add_space(20.0);
+            self.audio_test_device(ui, false);
         }
         if let Some(error) = &self.voice.device_error {
+            ui.add_space(8.0);
             ui.label(RichText::new(error).color(ERROR));
         }
-        ui.add_space(16.0);
+        ui.add_space(24.0);
         ui.separator();
-        ui.add_space(12.0);
-        ui.label(bold("Microphone test").size(14.0));
-        ui.add_space(10.0);
-        if !self.persist_preferences {
-            ui.label(
-                RichText::new("TEST FIXTURE — no recording or playback.")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-        }
-        ui.add_enabled_ui(self.persist_preferences, |ui| {
-            match self.voice.microphone.clone() {
-                MicrophoneState::Idle => {
-                    if primary(ui, "Record microphone", false).clicked() {
-                        self.voice.start_mic_test();
-                    }
-                }
-                MicrophoneState::Preparing => {
-                    ui.label("Preparing local audio…");
-                    if ui.button("Cancel test").clicked() {
-                        self.voice.stop_mic_test();
-                    }
-                }
-                MicrophoneState::Recording(started) => {
-                    ui.label(format!(
-                        "Recording · {} / 30 seconds",
-                        started.elapsed().as_secs().min(30)
-                    ));
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
-                    ui.horizontal(|ui| {
-                        if ui.button("Finish recording").clicked() {
-                            self.voice.finish_mic_recording();
-                        }
-                        if ui.button("Cancel test").clicked() {
-                            self.voice.stop_mic_test();
-                        }
-                    });
-                }
-                MicrophoneState::Ready(seconds) => {
-                    ui.label(format!("Recorded {seconds:.1} seconds"));
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Play natural").clicked() {
-                            self.voice.play_mic_sample(false);
-                        }
-                        if ui.button("Play enhanced").clicked() {
-                            self.voice.play_mic_sample(true);
-                        }
-                    });
-                    if ui.button("Discard recording").clicked() {
-                        self.voice.stop_mic_test();
-                    }
-                }
-                MicrophoneState::Playing { seconds, enhanced } => {
-                    ui.label(format!(
-                        "Playing {} · {seconds:.1} seconds",
-                        if enhanced { "enhanced" } else { "natural" }
-                    ));
-                    if ui.button("Stop playback").clicked() {
-                        self.voice.stop_mic_playback();
-                    }
-                }
-            }
-        });
-        if let Some(error) = &self.voice.microphone_error {
-            ui.label(RichText::new(error).color(ERROR));
-        }
+        ui.add_space(24.0);
+        self.microphone_test(ui);
         if self
             .account
             .as_ref()
@@ -3531,6 +3456,301 @@ impl CaperApp {
         {
             ui.add_space(12.0);
             ui.collapsing("Audio diagnostics", |ui| self.audio_diagnostics(ui));
+        }
+    }
+
+    fn audio_test_device(&mut self, ui: &mut egui::Ui, input: bool) {
+        let (preferred, devices) = if input {
+            (&self.voice.preferences.input, &self.voice.inputs)
+        } else {
+            (&self.voice.preferences.output, &self.voice.outputs)
+        };
+        let selected = preferred
+            .as_ref()
+            .map_or("System default", |id| {
+                devices
+                    .iter()
+                    .find(|(guid, _)| guid == id)
+                    .map_or("Saved device (unavailable)", |(_, name)| name.as_str())
+            })
+            .to_owned();
+        let kind = if input { "Microphone" } else { "Speaker" };
+        let label = ui.label(bold(kind).size(11.5).color(MUTED));
+        ui.add_space(8.0);
+        let button = ui
+            .add_sized(
+                [ui.available_width(), 36.0],
+                egui::Button::new(RichText::new(selected).size(12.8))
+                    .fill(RAISED)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(8),
+            )
+            .labelled_by(label.id);
+        egui::Popup::menu(&button).width(300.0).show(|ui| {
+            ui.add_enabled_ui(
+                matches!(self.voice.microphone, MicrophoneState::Idle),
+                |ui| self.device_options(ui, input),
+            );
+        });
+        ui.add_space(16.0);
+        if input {
+            let mut gain = self.voice.preferences.input_percent;
+            if volume_slider(ui, "Microphone volume", &mut gain) {
+                let strength = self.voice.preferences.processing_strength;
+                self.voice.set_input_processing(gain, strength);
+                self.effects.slider(f32::from(gain) / 200.0);
+            }
+            return;
+        }
+        let mut gain = self.voice.preferences.master_percent;
+        if volume_slider(ui, "Speaker volume", &mut gain) {
+            self.voice.set_master_gain(gain);
+            self.effects.slider(f32::from(gain) / 200.0);
+        }
+        ui.add_space(12.0);
+        let testing = self.voice.speaker_testing;
+        let speaker = ui
+            .add_enabled_ui(self.persist_preferences, |ui| {
+                outlined_button(
+                    ui,
+                    if testing {
+                        "Stop speaker test"
+                    } else {
+                        "Test speakers"
+                    },
+                    testing,
+                )
+            })
+            .inner;
+        if speaker.clicked() {
+            if testing {
+                self.voice.stop_speaker_test();
+            } else {
+                self.voice.start_speaker_test();
+            }
+        }
+        if self.voice.speaker_failed {
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.label(
+                    RichText::new("Couldn’t play audio. Check your output and try again.")
+                        .size(12.8)
+                        .color(ERROR),
+                )
+            });
+        }
+    }
+
+    fn microphone_test(&mut self, ui: &mut egui::Ui) {
+        let state = self.voice.microphone.clone();
+        let recording = match state {
+            MicrophoneState::Recording(started) => Some(started),
+            _ => None,
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                bold(if recording.is_some() {
+                    "Recording…"
+                } else {
+                    "Try your microphone"
+                })
+                .size(16.0),
+            );
+            if let Some(started) = recording {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        bold(format!("{:.1}s", started.elapsed().as_secs_f32().min(30.0)))
+                            .size(14.0),
+                    );
+                    let (dot, _) =
+                        ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                    ui.painter().circle_filled(
+                        dot.center(),
+                        10.0,
+                        TERRACOTTA_BRIGHT.gamma_multiply(0.14),
+                    );
+                    ui.painter()
+                        .circle_filled(dot.center(), 5.0, TERRACOTTA_BRIGHT);
+                });
+            }
+        });
+        ui.add_space(12.0);
+        ui.label(RichText::new("Less noise. Clearer voice.").color(MUTED));
+        if !self.persist_preferences {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("TEST FIXTURE — no recording or playback.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        }
+        ui.add_space(24.0);
+        egui::Frame::new()
+            .fill(BLACKOUT)
+            .stroke(Stroke::new(1.0, BORDER))
+            .corner_radius(8)
+            .inner_margin(16)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                let mut strength = self.voice.preferences.processing_strength;
+                let label = ui
+                    .horizontal(|ui| {
+                        let label = ui.label(bold("Voice enhancement").size(13.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(bold(format!("{strength}%")).color(TERRACOTTA_BRIGHT));
+                        });
+                        label
+                    })
+                    .inner;
+                let changed = ui
+                    .add_enabled_ui(recording.is_none(), |ui| {
+                        ui.spacing_mut().slider_width = ui.available_width();
+                        ui.add(
+                            egui::Slider::new(&mut strength, 0..=100)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        )
+                        .labelled_by(label.id)
+                        .changed()
+                    })
+                    .inner;
+                if changed {
+                    let gain = self.voice.preferences.input_percent;
+                    self.voice.set_input_processing(gain, strength);
+                    self.effects.slider(f32::from(strength) / 100.0);
+                }
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Natural").size(10.9).color(MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new("Enhanced").size(10.9).color(MUTED));
+                    });
+                });
+            });
+        ui.add_space(18.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let (text, busy) = match state {
+                MicrophoneState::Recording(_) => ("Stop recording", false),
+                MicrophoneState::Preparing | MicrophoneState::Processing(_) => ("Preparing…", true),
+                _ => ("Test microphone", false),
+            };
+            let button = ui.add_enabled(
+                self.persist_preferences && !busy,
+                egui::Button::new(bold(text).color(Color32::WHITE))
+                    .fill(TERRACOTTA)
+                    .stroke(Stroke::new(1.0, TERRACOTTA))
+                    .corner_radius(8)
+                    .min_size(egui::vec2(160.0, 48.0)),
+            );
+            if button.clicked() {
+                if recording.is_some() {
+                    self.voice.finish_mic_recording();
+                } else {
+                    self.voice.start_mic_test();
+                }
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 7.0;
+                ui.label(bold("Input level").size(11.2).color(MUTED));
+                self.voice.sample_input_meter(Instant::now());
+                input_meter(ui, &self.voice.input_meter, recording.is_some());
+            });
+        });
+        if recording.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(80));
+        }
+        if let Some(error) = &self.voice.microphone_error {
+            ui.add_space(8.0);
+            ui.label(RichText::new(error).color(ERROR));
+        }
+        let (recorded, playing, processing) = match state {
+            MicrophoneState::Ready(recorded) => (recorded, None, false),
+            MicrophoneState::Playing { recorded, enhanced } => (recorded, Some(enhanced), false),
+            MicrophoneState::Processing(recorded) => (recorded, None, true),
+            _ => return,
+        };
+        ui.add_space(16.0);
+        let mut action = None;
+        let mut sample = |ui: &mut egui::Ui, enhanced: bool| {
+            let latest = enhanced && !processing;
+            egui::Frame::new()
+                .fill(BLACKOUT)
+                .stroke(Stroke::new(
+                    1.0,
+                    if latest {
+                        Color32::from_rgb(83, 99, 63)
+                    } else {
+                        BORDER
+                    },
+                ))
+                .corner_radius(8)
+                .inner_margin(14)
+                .show(ui, |ui| {
+                    ui.set_min_size(egui::vec2(ui.available_width(), 74.0));
+                    let name = if enhanced { "Enhanced" } else { "Natural" };
+                    ui.label(bold(name).size(13.0));
+                    ui.add_space(10.0);
+                    if enhanced && processing {
+                        ui.label(RichText::new("Preparing…").size(12.0).color(MUTED));
+                        return;
+                    }
+                    ui.horizontal(|ui| {
+                        let this = playing == Some(enhanced);
+                        let play = ui.add_enabled(
+                            self.persist_preferences && !processing && (playing.is_none() || this),
+                            egui::Button::new(if this { "Stop" } else { "Play" })
+                                .min_size(egui::vec2(64.0, 30.0)),
+                        );
+                        play.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                play.enabled(),
+                                format!(
+                                    "{} {} audio sample",
+                                    if this { "Stop" } else { "Play" },
+                                    name
+                                ),
+                            )
+                        });
+                        if play.clicked() {
+                            action = Some((enhanced, this));
+                        }
+                        ui.label(RichText::new(format!("{:.1}s", recorded.seconds)).color(MUTED));
+                    });
+                    if recorded.silent {
+                        ui.add_space(8.0);
+                        // Column layouts justify wrapped labels; web does not.
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.label(
+                                RichText::new(
+                                    "No audible signal detected. Check your mic and try again.",
+                                )
+                                .size(12.0)
+                                .color(ERROR),
+                            )
+                        });
+                    }
+                });
+        };
+        if ui.available_width() >= 500.0 {
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 10.0;
+            ui.columns(2, |columns| {
+                for (column, enhanced) in columns.iter_mut().zip([false, true]) {
+                    column.spacing_mut().item_spacing.x = spacing;
+                    sample(column, enhanced);
+                }
+            });
+            ui.spacing_mut().item_spacing.x = spacing;
+        } else {
+            sample(ui, false);
+            ui.add_space(10.0);
+            sample(ui, true);
+        }
+        match action {
+            Some((_, true)) => self.voice.stop_mic_playback(),
+            Some((enhanced, false)) => self.voice.play_mic_sample(enhanced),
+            None => {}
         }
     }
 
@@ -4030,7 +4250,7 @@ impl CaperApp {
                 }
             }
             Dialog::Profile => "Edit profile",
-            Dialog::Audio => "Audio preferences",
+            Dialog::Audio => "Audio test",
             Dialog::Connection => "Connection details",
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
@@ -4053,7 +4273,13 @@ impl CaperApp {
             ))
             .rect_filled(context.viewport_rect(), 0.0, Color32::from_black_alpha(190));
         let wide = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
-        let width: f32 = if wide { 600.0 } else { 440.0 };
+        let width: f32 = if matches!(dialog, Dialog::Audio) {
+            720.0
+        } else if wide {
+            600.0
+        } else {
+            440.0
+        };
         let minimum: f32 = if matches!(dialog, Dialog::ManageSpace) {
             658.0
         } else if matches!(dialog, Dialog::ManageChannel(_)) {
@@ -4129,7 +4355,7 @@ impl CaperApp {
                                         match dialog {
                                             Dialog::SignIn => unreachable!("sign-in is rendered as a full page"),
                                             Dialog::Profile => self.profile_dialog(ui),
-                                            Dialog::Audio => self.audio_preferences(ui),
+                                            Dialog::Audio => self.audio_test(ui),
                                             Dialog::Connection => self.connection_details(ui),
                                             Dialog::Diagnostics => self.audio_diagnostics(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
@@ -5040,6 +5266,88 @@ fn login_action(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response
     response
 }
 
+/// Web's labelled 0–200% volume control: name and value above the slider.
+fn volume_slider(ui: &mut egui::Ui, name: &str, value: &mut u16) -> bool {
+    let label = ui
+        .horizontal(|ui| {
+            let label = ui.label(bold(name).size(12.8).color(MUTED));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(bold(format!("{value}%")).size(12.8).color(MUTED));
+            });
+            label
+        })
+        .inner;
+    ui.add_space(5.0);
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = ui.available_width();
+        ui.add(
+            egui::Slider::new(value, 0..=200)
+                .show_value(false)
+                .trailing_fill(true),
+        )
+        .labelled_by(label.id)
+        .changed()
+    })
+    .inner
+}
+
+/// Web's `.voice-button`: terracotta outline on a faint terracotta fill.
+fn outlined_button(ui: &mut egui::Ui, text: &str, pressed: bool) -> egui::Response {
+    ui.spacing_mut().button_padding = egui::vec2(12.0, 7.0);
+    // Web's flex button fills its column with its label at the start.
+    let button = ui
+        .with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+            ui.add(
+                egui::Button::new(
+                    bold(text)
+                        .size(12.5)
+                        .color(Color32::from_rgb(227, 153, 133)),
+                )
+                .fill(Color32::from_rgba_unmultiplied(182, 77, 50, 36))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(137, 70, 53)))
+                .corner_radius(8)
+                .min_size(egui::vec2(0.0, 36.0)),
+            )
+        })
+        .inner;
+    button.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, button.enabled(), pressed, text)
+    });
+    button
+}
+
+/// Web's dotted 40-bar input meter, faded in from the left.
+fn input_meter(ui: &mut egui::Ui, levels: &std::collections::VecDeque<f32>, active: bool) {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Other,
+            true,
+            if active {
+                "Received microphone level"
+            } else {
+                "Microphone level inactive"
+            },
+        )
+    });
+    let count = levels.len().max(1);
+    let step = rect.width() / count as f32;
+    let lit = Color32::from_rgb(145, 171, 120);
+    for (index, level) in levels.iter().enumerate() {
+        let x = rect.left() + step * (index as f32 + 0.5);
+        let fade = ((x - rect.left()) / (rect.width() * 0.65)).min(1.0);
+        let height = 3.0 + (level * 8.0).round() * 4.0;
+        let dots = (height / 4.0).ceil() as usize;
+        let color = if active { lit } else { BORDER }.gamma_multiply(fade);
+        for dot in 0..dots {
+            let offset = (dot as f32 - (dots as f32 - 1.0) / 2.0) * 4.0;
+            ui.painter()
+                .circle_filled(egui::pos2(x, rect.center().y + offset), 1.4, color);
+        }
+    }
+}
+
 fn primary(ui: &mut egui::Ui, text: &str, disabled: bool) -> egui::Response {
     ui.add_enabled(
         !disabled,
@@ -5701,11 +6009,26 @@ mod tests {
         app.dialog = Some(Dialog::Audio);
         render(&mut app, &context, vec![]);
         let audio = render(&mut app, &context, vec![]);
-        assert!(contains(&audio, "Microphone test"));
+        for copy in [
+            "Only you can hear these tests.",
+            "Microphone volume",
+            "Speaker volume",
+            "Test speakers",
+            "Try your microphone",
+            "Less noise. Clearer voice.",
+            "Voice enhancement",
+            "Natural",
+            "Enhanced",
+            "Test microphone",
+            "Input level",
+        ] {
+            assert!(contains(&audio, copy), "Missing web copy: {copy}");
+        }
         for removed in [
             "contour",
             "noise suppression",
-            "Only you can hear",
+            "Mic test",
+            "Microphone test",
             "preferences are saved",
         ] {
             assert!(
