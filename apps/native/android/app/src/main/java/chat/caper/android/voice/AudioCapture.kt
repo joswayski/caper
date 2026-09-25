@@ -18,6 +18,7 @@ internal class AudioCapture private constructor(private val handle: Long) {
     @Volatile private var comparison: MicComparison? = null
     @Volatile private var testActive = false
     val isTesting get() = testActive
+    val inputLevel: Float get() = comparison?.level ?: 0f
 
     fun publication(enabled: Boolean) {
         gate.publish(enabled && !testActive, inputGain)

@@ -50,6 +50,8 @@ data class VoiceState(
     val error: String? = null,
     /** People currently speaking, from WebRTC audio levels (web's VoiceActivity). */
     val speakingParticipants: Set<String> = emptySet(),
+    /** The Audio test holds the microphone; web disables mute and deafen meanwhile. */
+    val monitoring: Boolean = false,
 ) { enum class Phase { IDLE, CONNECTING, CONNECTED, RECONNECTING, FAILED } }
 
 /** Web: RMS >= 0.004 is speech, released 180 ms after the last loud sample; muted people never light up. */
@@ -110,6 +112,7 @@ class VoiceCallService : Service() {
                 intent.getBooleanExtra(EXTRA_DEMO, false),
             ) else if (engine == null) stopSelf()
             ACTION_MUTE -> scope.launch {
+                if (state.value.monitoring) return@launch
                 val (current, attempt) = currentCall() ?: return@launch
                 runCatching { current.setMuted(!current.muted) {
                     commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened) }
@@ -118,6 +121,7 @@ class VoiceCallService : Service() {
                     .onFailure { localControlFailed(current, attempt, it, "Mute is local; voice status will retry.") }
             }
             ACTION_DEAFEN -> scope.launch {
+                if (state.value.monitoring) return@launch
                 val (current, attempt) = currentCall() ?: return@launch
                 runCatching { current.setDeafened(!current.deafened) {
                     commitCallResult(current, attempt) { it.copy(deafened = current.deafened, muted = current.muted) }
@@ -293,7 +297,7 @@ class VoiceCallService : Service() {
         activeAttempt = null
         heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         val token = current.closeLocal()
-        update { it.copy(phase = VoiceState.Phase.FAILED, error = error.message ?: "Voice connection failed.", speakingParticipants = emptySet()) }
+        update { it.copy(phase = VoiceState.Phase.FAILED, error = error.message ?: "Voice connection failed.", speakingParticipants = emptySet(), monitoring = false) }
         notifyState(); releaseAudio(); stopSelf()
         if (token != null) CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { current.leave(token) }
     }
@@ -521,8 +525,18 @@ class VoiceCallService : Service() {
             current.beginMicComparison()
             comparisonEngine = current
             comparisonAttempt = attempt
+            update { it.copy(monitoring = true) }
             return MicComparisonBinding(service, attempt)
         }
+        /** Records again within the same test; publication stays paused. */
+        internal fun restartMicComparison(binding: MicComparisonBinding): Boolean {
+            if (!comparisonContextMatches(binding.service, binding.attempt, active, comparisonAttempt) ||
+                active?.engine !== comparisonEngine) return false
+            comparisonEngine?.beginMicComparison()
+            return comparisonEngine != null
+        }
+        internal fun micComparisonLevel(binding: MicComparisonBinding): Float =
+            if (comparisonContextMatches(binding.service, binding.attempt, active, comparisonAttempt)) comparisonEngine?.micComparisonLevel() ?: 0f else 0f
         internal fun finishMicComparison(binding: MicComparisonBinding): MicComparison? =
             if (comparisonContextMatches(binding.service, binding.attempt, active, comparisonAttempt) &&
                 active?.engine === comparisonEngine) comparisonEngine?.finishMicComparison() else null
@@ -531,6 +545,7 @@ class VoiceCallService : Service() {
             val current = comparisonEngine
             comparisonEngine = null
             comparisonAttempt = null
+            update { it.copy(monitoring = false) }
             if (active?.engine === current && active?.activeAttempt == binding.attempt) current?.resumeAfterMicComparison()
         }
         fun setParticipantVolume(context: Context, id: String, value: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_PARTICIPANT_VOLUME).putExtra(EXTRA_PARTICIPANT_ID, id).putExtra(EXTRA_VOLUME, value)) }

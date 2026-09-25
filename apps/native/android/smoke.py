@@ -323,15 +323,22 @@ def main() -> None:
 
     # Inspect prejoin audio controls without starting capture or playback.
     tap(description="Audio and account settings")
-    audio = capture("caper-android-audio-prejoin", "Voice processing")
-    for label in ("Input volume", "Voice processing", "Output volume"):
+    settings = capture("caper-android-audio-settings", "Audio test")
+    for label in ("Caper sound effects", "Audio test", "Log out"):
+        assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
+    assert find(settings, text="Connection details") is None, "Connection details are only offered while connected"
+    tap(text="Audio test")
+    audio = capture("caper-android-audio-prejoin", "Only you can hear these tests.")
+    for label in ("Test microphone volume", "Voice processing", "Test speaker volume"):
         assert find(audio, description=label) is not None, f"Missing labeled slider: {label}"
-    for removed in ("DPDFNet", "RNNoise", "voice EQ", "Android system settings", "communication routes", "Join voice", "Signed in as"):
+    for label in ("Microphone volume", "Speaker volume", "Voice enhancement", "Test speakers", "Test microphone", "Try your microphone", "Input level"):
+        assert find(audio, text=label) is not None, f"Missing audio test copy: {label}"
+    for removed in ("DPDFNet", "RNNoise", "voice EQ", "Android system settings", "communication routes", "Join voice", "Signed in as", "Mic Test"):
         assert find(audio, contains=removed) is None, f"Unexpected explanatory copy: {removed}"
-    assert find(audio, text="Audio device") is None, "Do not show a routing section without routes"
+    assert find(audio, text="Choose speakers in system settings.") is not None, "Do not show a routing section without routes"
     assert find(audio, text="Connection details") is None
     assert find(audio, text="25%") is not None
-    output = find(audio, description="Output volume")
+    output = find(audio, description="Test speaker volume")
     left, top, right, bottom = map(int, re.findall(r"\d+", output.attrib["bounds"]))
     # Compose's accessibility bounds include padding outside the touch track.
     # Drag the current 100% thumb past the minimum instead of tapping padding;
@@ -341,8 +348,9 @@ def main() -> None:
     wait_for(text="0%")
     tap(description="Close")
     tap(description="Audio and account settings")
+    tap(text="Audio test")
     zero = capture("caper-android-audio-prejoin-zero-output", "0%")
-    assert find(zero, text="Mic Test") is not None
+    assert find(zero, text="Test microphone") is not None
     tap(description="Close")
 
     tap(description="Edit profile")
@@ -411,8 +419,9 @@ def main() -> None:
     tap(description="Expand channels")
     wait_for(text="planning")
     tap(description="Audio and account settings")
-    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Voice processing")
-    assert find(audio_narrow, description="Input volume") is not None
+    tap(text="Audio test")
+    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Only you can hear these tests.")
+    assert find(audio_narrow, description="Test microphone volume") is not None
     tap(description="Close")
 
     # Spectator snapshots are fixture-only; the media join endpoint remains 503.

@@ -51,17 +51,6 @@ import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
-import chat.caper.android.voice.MicComparison
-import chat.caper.android.voice.MicComparisonBinding
-import chat.caper.android.voice.PrejoinMicTest
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -83,6 +72,7 @@ private sealed interface Overlay {
     data object LeaveSpace : Overlay
     data object Profile : Overlay
     data object Audio : Overlay
+    data class AudioPanelOverlay(val panel: AudioPanel) : Overlay
 }
 
 internal data class VoiceJoinIntent(
@@ -141,7 +131,12 @@ internal data class VoiceJoinIntent(
         is Overlay.ManageChannel -> ManageChannelDialog(state, shown.channel, viewModel) { overlay = null }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
-        Overlay.Audio -> AudioSettingsDialog(state, voice, { overlay = null }, viewModel::logout)
+        Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin)
+        is Overlay.AudioPanelOverlay -> when (shown.panel) {
+            AudioPanel.Test -> AudioTestDialog(voice) { overlay = null }
+            AudioPanel.Connection -> ConnectionDetailsDialog(voice) { overlay = null }
+            AudioPanel.Diagnostics -> AudioDiagnosticsDialog(voice) { overlay = null }
+        }
         null -> Unit
     }
 }
@@ -529,8 +524,10 @@ internal data class VoiceJoinIntent(
                 Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
             if (voice.phase == VoiceState.Phase.CONNECTED) {
-                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(30.dp)) { Icon(if (voice.muted) Icons.Default.MicOff else Icons.Default.Mic, if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
-                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp)) { Icon(if (voice.deafened) Icons.Default.VolumeOff else Icons.Default.Headphones, if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+                // Web: mute and deafen wait while the Audio test holds the microphone.
+                val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
+                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(30.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) Icons.Default.MicOff else Icons.Default.Mic, if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) Icons.Default.VolumeOff else Icons.Default.Headphones, if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
             }
             IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(Icons.Default.Settings, "Audio and account settings", Modifier.size(18.dp), tint = TextMuted) }
         }
@@ -823,207 +820,8 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun AudioSettingsDialog(state: AppUiState, voice: VoiceState, close: () -> Unit, logout: () -> Unit) {
-    val context = LocalContext.current
-    val preferences = remember(context) { context.getSharedPreferences("audio", android.content.Context.MODE_PRIVATE) }
-    var inputGain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
-    var strength by remember { mutableIntStateOf(preferences.getInt("strength", 25)) }
-    var outputVolume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
-    // Preparation owns its scope until it can release the recorder, even when
-    // this dialog has already left composition.
-    val cleanupScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
-    var generation by remember { mutableLongStateOf(0L) }
-    var permissionGeneration by remember { mutableLongStateOf(0L) }
-    var testing by remember { mutableStateOf(false) }
-    var finishing by remember { mutableStateOf(false) }
-    var dialogActive by remember { mutableStateOf(true) }
-    var prejoin by remember { mutableStateOf<PrejoinMicTest?>(null) }
-    var binding by remember { mutableStateOf<MicComparisonBinding?>(null) }
-    var recording by remember { mutableStateOf<MicComparison?>(null) }
-    var playback by remember { mutableStateOf<Job?>(null) }
-    var playingEnhanced by remember { mutableStateOf<Boolean?>(null) }
-    var timeout by remember { mutableStateOf<Job?>(null) }
-    var testError by remember { mutableStateOf<String?>(null) }
-    fun stopPlayback() {
-        playback?.cancel()
-        recording?.stopPlayback() // Silence the AudioTrack before publication resumes.
-        playback = null
-        playingEnhanced = null
-    }
-    fun playClip(clip: MicComparison, enhanced: Boolean) {
-        stopPlayback()
-        val ticket = generation
-        val next = cleanupScope.launch(start = CoroutineStart.LAZY) {
-            if (!dialogActive || ticket != generation || recording !== clip) return@launch
-            playingEnhanced = enhanced
-            try { clip.play(enhanced, outputVolume) }
-            catch (error: CancellationException) { throw error }
-            catch (error: Throwable) { testError = error.message ?: "Local playback failed." }
-            finally {
-                if (playback === coroutineContext[Job]) {
-                    playback = null
-                    playingEnhanced = null
-                }
-            }
-        }
-        playback = next
-        next.start()
-    }
-    fun teardownTest() {
-        generation++
-        timeout?.cancel(); timeout = null
-        testing = false
-        finishing = false
-        prejoin?.let { local ->
-            local.stopNow()
-            cleanupScope.launch { local.finish() }
-        }
-        prejoin = null
-        stopPlayback()
-        recording = null
-        binding?.let { VoiceCallService.resumeMicPublication(it) }
-        binding = null
-    }
-    fun stopTest() {
-        if (!testing) return
-        testing = false
-        finishing = true
-        timeout?.cancel(); timeout = null
-        val ticket = generation
-        val local = prejoin
-        prejoin = null
-        if (local != null) cleanupScope.launch {
-            try {
-                val result = local.finish()
-                if (ticket == generation && dialogActive) recording = result
-            } finally { if (ticket == generation && dialogActive) finishing = false }
-        } else {
-            recording = binding?.let { VoiceCallService.finishMicComparison(it) }
-            finishing = false
-        }
-    }
-    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!dialogActive || permissionGeneration != generation) Unit
-        else if (!granted) {
-            finishing = false
-            testError = "Microphone permission is required to test audio."
-        }
-        else {
-            testError = null
-            recording = null
-            val ticket = generation
-            val call = VoiceCallService.beginMicComparison()
-            if (call != null) {
-                binding = call
-                finishing = false
-                testing = true
-            } else if (!VoiceCallService.canPreparePrejoinMicTest()) {
-                finishing = false
-                testError = "Wait for the current call to connect or leave it before testing the microphone."
-            } else cleanupScope.launch {
-                try {
-                    val local = PrejoinMicTest.prepare(context)
-                    if (!dialogActive || ticket != generation || !VoiceCallService.canPreparePrejoinMicTest()) {
-                        local.stopNow(); local.finish()
-                    } else {
-                        prejoin = local
-                        finishing = false
-                        testing = true
-                        timeout = cleanupScope.launch { delay(30_000); if (ticket == generation) stopTest() }
-                    }
-                } catch (error: Throwable) {
-                    if (dialogActive && ticket == generation) {
-                        finishing = false
-                        testError = error.message ?: "Microphone test could not start."
-                    }
-                }
-            }
-            if (testing) timeout = cleanupScope.launch { delay(30_000); if (ticket == generation) stopTest() }
-        }
-    }
-    DisposableEffect(Unit) { onDispose {
-        dialogActive = false
-        teardownTest()
-    } }
-    DisposableEffect(voice.channelId, voice.phase, voice.selectedRouteId) { onDispose {
-        if (dialogActive) teardownTest()
-    } }
-    CaperDialog("Audio settings", close) {
-        var soundEffects by remember { mutableStateOf(CaperEffects.enabled) }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Caper sound effects", Modifier.weight(1f), fontSize = 13.sp)
-            Switch(soundEffects, { soundEffects = it; CaperEffects.enabled = it; if (it) CaperEffects.play(CaperEffects.Effect.ToggleOn) })
-        }
-        if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) {
-            Text("Audio device", fontWeight = FontWeight.Bold)
-            voice.routes.forEach { route ->
-                Row(Modifier.fillMaxWidth().clickable { VoiceCallService.selectRoute(context, route.id) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
-                    Spacer(Modifier.width(8.dp)); Text(route.name)
-                }
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
-        Slider(inputGain.toFloat(), { inputGain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Voice processing", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
-        Slider(strength.toFloat(), { strength = it.toInt(); CaperEffects.slider(it / 100f); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Voice processing" }, valueRange = 0f..100f)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$outputVolume%", color = TextMuted, fontSize = 11.sp) }
-        Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); CaperEffects.slider(it / 200f); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) }, modifier = Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton({ if (testing) stopTest() else {
-                finishing = true
-                permissionGeneration = generation
-                microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-            } },
-                enabled = !finishing && (testing || recording == null), shape = MaterialTheme.shapes.small) { Text(if (testing) "Stop Testing" else "Mic Test") }
-            if (recording != null) TextButton(::teardownTest) { Text("Done") }
-        }
-        if (testing) Text("Recording your voice", color = TextMuted, fontSize = 11.sp)
-        testError?.let { Text(it, color = ErrorText, fontSize = 11.sp) }
-        recording?.let { clip ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton({ playClip(clip, false) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Natural") }
-                OutlinedButton({ playClip(clip, true) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Enhanced") }
-                if (playingEnhanced != null) TextButton(::stopPlayback) { Text("Stop playback") }
-            }
-        }
-        if (voice.phase == VoiceState.Phase.CONNECTED) {
-            if (state.account?.debugEnabled == true && voice.processing.size == 5) {
-                val report = voice.processing
-                DiagnosticRow("Microphone processing", when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" })
-                DiagnosticRow("Processed frames", (report[1] * 480).toString())
-                DiagnosticRow("Mean processing", if (report[1] == 0L) "Not sampled" else "%.1f ms".format(report[2] / report[1] / 1000.0))
-                DiagnosticRow("Maximum processing", "%.1f ms".format(report[3] / 1000.0))
-                DiagnosticRow("Queued microphone", "%.1f ms".format(report[4] / 48.0))
-            }
-            voice.diagnostics?.let { diagnostics ->
-                HorizontalDivider(color = Border)
-                Text("Connection details", fontWeight = FontWeight.Bold)
-                DiagnosticRow("Received", formatBytes(diagnostics.receivedBytes))
-                DiagnosticRow("Live receive", formatBitrate(diagnostics.receiveBitrate))
-                DiagnosticRow("Sent", formatBytes(diagnostics.sentBytes))
-                DiagnosticRow("Live send", formatBitrate(diagnostics.sendBitrate))
-                DiagnosticRow("Packets lost", diagnostics.packetsLost.toString())
-                DiagnosticRow("Max jitter", "${diagnostics.maxJitterMs} ms")
-                DiagnosticRow("RTT", "${diagnostics.roundTripMs} ms")
-                DiagnosticRow("Route", when (diagnostics.route) { "relay" -> "TURN relay"; "direct" -> "Direct"; else -> "Not observed yet" })
-            }
-        }
-        if (state.account != null) {
-            HorizontalDivider(color = Border)
-            OutlinedButton({ close(); logout() }, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Sign out") }
-        }
-    }
-}
-
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
     draft.isBlank() || draft == rejectedText
-
-@Composable private fun DiagnosticRow(label: String, value: String) = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-    Text(label, color = TextMuted, fontSize = 11.sp); Text(value, fontSize = 11.sp)
-}
-private fun formatBytes(value: Long) = when { value >= 1_000_000 -> "%.1f MB".format(value / 1_000_000.0); value >= 1_000 -> "%.1f KB".format(value / 1_000.0); else -> "$value B" }
-private fun formatBitrate(value: Long) = "${value / 1_000} kbps"
 
 @Composable private fun PrivacyToggle(value: Boolean, spaceName: String, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = Alignment.CenterVertically) {
     Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) })
@@ -1035,7 +833,7 @@ private fun formatBitrate(value: Long) = "${value / 1_000} kbps"
     Text(body, color = TextMuted); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(close) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(confirm, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger)) { Text(action) } }
 }
 
-@Composable private fun CaperDialog(title: String, close: () -> Unit, wide: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
+@Composable internal fun CaperDialog(title: String, close: () -> Unit, wide: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
     Dialog(close) { Surface(Modifier.widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth().heightIn(max = 760.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.Bold); IconButton(close) { Icon(Icons.Default.Close, "Close", tint = TextMuted) } }

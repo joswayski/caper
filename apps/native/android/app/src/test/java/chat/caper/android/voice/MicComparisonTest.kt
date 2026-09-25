@@ -39,4 +39,18 @@ class MicComparisonTest {
         recording.appendEnhanced(buffer, 2, true)
         assertArrayEquals(shortArrayOf(32767, -32768), recording.playbackSamples(false, 200))
     }
+
+    @Test fun `silence detection matches the web threshold and level tracks the latest buffer`() {
+        val recording = MicComparison(4)
+        val buffer = ByteBuffer.allocateDirect(4).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putShort(0, 32); buffer.putShort(2, (-32).toShort())
+        recording.appendNatural(buffer, 2, 100)
+        recording.appendEnhanced(buffer, 2, true)
+        assertFalse(recording.hasSignal())
+        assertEquals(32 / 32768f, recording.level, 1e-6f)
+        buffer.putShort(0, 33); buffer.putShort(2, 0)
+        recording.appendNatural(buffer, 2, 100)
+        recording.appendEnhanced(buffer, 2, true)
+        assertTrue(recording.hasSignal())
+    }
 }

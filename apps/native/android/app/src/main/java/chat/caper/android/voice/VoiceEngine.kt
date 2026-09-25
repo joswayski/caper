@@ -84,6 +84,7 @@ class VoiceEngine(
         capture?.beginComparison()
         microphone?.setEnabled(false)
     } }
+    fun micComparisonLevel(): Float = if (resources.isOpen) runCatching { resources.use { capture?.inputLevel } }.getOrNull() ?: 0f else 0f
     internal fun finishMicComparison(): MicComparison? = resources.use {
         capture?.endComparison()
     }
