@@ -387,6 +387,10 @@ final class CaperParityUITests: XCTestCase {
             .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.1, dy: 0.5)))
         XCTAssertEqual(outputGain(of: app.sliders["Live voice processing"]), 100)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
+        let controls = app.scrollViews["audio-preferences-controls"]
+        XCTAssertTrue(controls.frame.contains(app.buttons["local-mic-test"].frame))
+        XCTAssertLessThanOrEqual(controls.frame.maxY - app.buttons["local-mic-test"].frame.maxY, 24,
+                                 "The sheet must not reserve space for removed explanations")
         #endif
         for removed in [
             "The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.",

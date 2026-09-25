@@ -1204,6 +1204,7 @@ private struct AudioPreferencesView: View {
     @Bindable private var effects = CaperEffects.shared
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
+    @State private var controlsHeight: CGFloat = 500
     #else
     @State private var micTest = IOSMicrophoneTest()
     #endif
@@ -1223,10 +1224,13 @@ private struct AudioPreferencesView: View {
             }
             ScrollView {
                 controls.fixedSize(horizontal: false, vertical: true)
+                    #if os(macOS)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controlsHeight = $0 }
+                    #endif
             }
             .accessibilityIdentifier("audio-preferences-controls")
             #if os(macOS)
-            .frame(width: 426, height: 500)
+            .frame(width: 426, height: min(controlsHeight, 500))
             #else
             .frame(maxHeight: 580)
             #endif
