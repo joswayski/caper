@@ -391,7 +391,10 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Cancel"].tap()
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: confirm)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed)
-        XCTAssertTrue(app.buttons["Save changes"].exists)
+        XCTAssertTrue(app.buttons["Delete channel"].exists, "Cancelling keeps the overview open")
+        // Web shows its save bar only once something changed.
+        XCTAssertFalse(app.buttons["Save changes"].exists)
+        assertStaticText("Delete this channel for everyone in the space.", in: app)
     }
 
     func testAccountCanSendExactlyOneMessageAndComposerClears() {

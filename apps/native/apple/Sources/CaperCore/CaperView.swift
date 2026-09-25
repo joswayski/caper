@@ -1371,32 +1371,81 @@ private struct ChannelEditor: View {
     @State private var name = ""; @State private var privateChannel = false; @State private var members: [Member] = []; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
     @State private var membersError: String?
+    @State private var memberError: String?
     @State private var loadingMembers = false
+    @FocusState private var nameFocused: Bool
+    private var dirty: Bool { channel.map { name != $0.name || privateChannel != $0.private } ?? false }
     var body: some View {
         VStack(spacing: 0) {
             SheetHeader(title: channel == nil ? "Create a channel" : "Overview", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    CaperField(title: "Channel name", text: Binding(get: { name }, set: { name = WorkspaceValidation.normalizeChannelName($0) }))
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Channel name").font(CaperTheme.font(12, weight: .bold))
+                        HStack(spacing: 8) {
+                            if channel == nil { CaperIcon(name: privateChannel ? "lock" : "hash", size: 16).foregroundStyle(CaperTheme.muted) }
+                            TextField("project-updates", text: Binding(get: { name }, set: { name = WorkspaceValidation.normalizeChannelName($0) }))
+                                .focused($nameFocused).onSubmit(submit)
+                        }.textFieldStyle(CaperTextFieldStyle())
+                    }
+                    if channel == nil {
+                        Text("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.")
+                            .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
+                    }
                     Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in \(model.detail?.space.name ?? "this space") can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) } }.toggleStyle(.switch)
-                    Button(channel == nil ? "Create channel" : "Save changes") { run { if let existing = channel { channel = try await model.updateChannel(existing, name: name, privateChannel: privateChannel) } else { try await model.createChannel(name: name, privateChannel: privateChannel); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
+                    if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
+                    if channel == nil {
+                        HStack {
+                            Spacer()
+                            Button("Cancel", action: close).buttonStyle(.bordered).keyboardShortcut(.cancelAction)
+                            Button(pending ? "Creating…" : "Create channel", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 160)
+                                .disabled(pending).keyboardShortcut(.defaultAction)
+                        }
+                    }
                     if let channel, channel.private {
-                        Divider().overlay(CaperTheme.border); Text("Members  \(members.count)").font(CaperTheme.font(14, weight: .bold))
+                        Divider().overlay(CaperTheme.border)
+                        HStack { Text("Members").font(CaperTheme.font(14, weight: .bold)); Text("\(members.count)").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if loadingMembers { ProgressView("Loading members…") }
                         if let membersError {
                             Text(membersError).foregroundStyle(.red)
                             Button("Retry loading members") { Task { await loadMembers(channel) } }.disabled(loadingMembers)
                         }
-                        HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()); Button("Add") { run { let member = try await model.addChannelMember(channel, username: username); members.removeAll { $0.id == member.id }; members.append(member); username = "" } }.buttonStyle(.bordered) }
+                        HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()).onSubmit { addMember(channel) }; Button("Add") { addMember(channel) }.buttonStyle(.bordered) }
                             .disabled(pending || loadingMembers || membersError != nil)
-                        ForEach(members) { member in HStack { Avatar(name: member.displayName, size: 30); Text(member.displayName); Spacer(); if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } } }.font(CaperTheme.font(12)) }
-                            .disabled(pending || loadingMembers || membersError != nil)
+                        if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
+                        ForEach(members) { member in
+                            HStack {
+                                Avatar(name: member.displayName, size: 30)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(member.displayName).font(CaperTheme.font(12, weight: .bold))
+                                    Text("@\(member.username)\(member.owner ? " · Owner" : "")").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                                }
+                                Spacer()
+                                if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } }
+                            }.font(CaperTheme.font(12))
+                        }.disabled(pending || loadingMembers || membersError != nil)
                     }
-                    if channel != nil { Divider().overlay(CaperTheme.border); Button("Delete channel", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(.bordered).disabled(pending) }
-                    if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
+                    if channel != nil {
+                        Divider().overlay(CaperTheme.border)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Delete channel").font(CaperTheme.font(14, weight: .bold))
+                            Text("Delete this channel for everyone in the space.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            Button("Delete channel", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(.bordered).disabled(pending)
+                        }
+                    }
                 }.padding(22)
             }
-        }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false }
+            if dirty {
+                // Web's save bar appears only when something changed.
+                HStack {
+                    Text("You have unsaved changes.").font(CaperTheme.font(12))
+                    Spacer()
+                    Button("Reset") { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; error = nil }.buttonStyle(.bordered).disabled(pending)
+                    Button(pending ? "Saving…" : "Save changes", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 150).disabled(pending)
+                }.padding(.horizontal, 22).padding(.vertical, 12).background(CaperTheme.raised)
+                    .accessibilityIdentifier("channel-save-bar")
+            }
+        }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; if channel == nil { nameFocused = true } }
         .task(id: channel?.private) { if let channel, channel.private { await loadMembers(channel) } }
         .sheet(isPresented: $confirmDelete) {
             if let channel {
@@ -1407,6 +1456,24 @@ private struct ChannelEditor: View {
                 }
             }
         }
+    }
+    private func submit() {
+        guard !pending else { return }
+        if let existing = channel {
+            guard dirty else { return }
+            run { let updated = try await model.updateChannel(existing, name: name, privateChannel: privateChannel); channel = updated; name = updated.name; privateChannel = updated.private }
+        } else {
+            run {
+                let created = try await model.createChannel(name: name, privateChannel: privateChannel)
+                // Web opens a new private channel's overview so people can be added.
+                if let created, created.private { channel = created; name = created.name; privateChannel = created.private } else { close() }
+            }
+        }
+    }
+    private func addMember(_ channel: Channel) {
+        guard !username.isEmpty else { memberError = "Enter an exact username."; return }
+        memberError = nil
+        run { let member = try await model.addChannelMember(channel, username: username); members.removeAll { $0.id == member.id }; members.append(member); username = "" }
     }
     private func loadMembers(_ channel: Channel) async {
         guard !loadingMembers else { return }

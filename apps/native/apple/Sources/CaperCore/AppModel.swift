@@ -468,8 +468,9 @@ public final class AppModel {
         replace(detail: detail)
     }
 
-    public func createChannel(name: String, privateChannel: Bool) async throws {
-        guard var detail else { return }
+    @discardableResult
+    public func createChannel(name: String, privateChannel: Bool) async throws -> Channel? {
+        guard var detail else { return nil }
         clearNavigationCache()
         let attempt = generation
         let clean = name.hasSuffix("-") ? String(name.dropLast()) : name
@@ -479,6 +480,7 @@ public final class AppModel {
         detail = SpaceDetail(space: detail.space, channels: detail.channels + [channel], members: detail.members)
         replace(detail: detail)
         await select(channel: channel)
+        return channel
     }
 
     public func updateChannel(_ channel: Channel, name: String, privateChannel: Bool) async throws -> Channel {
