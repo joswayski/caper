@@ -366,7 +366,7 @@ def main() -> None:
     fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503,
                          "error": "TEST FIXTURE: profile save temporarily unavailable."}})
     tap(text="Save profile")
-    profile_error = capture("caper-android-profile-error", "temporarily unavailable")
+    profile_error = capture("caper-android-profile-error", "Your profile could not be saved. Please try again.")
     assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
     assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
     assert sum(1 for node in nodes(profile_error) if node.get("text") == "Edit profile") == 1
