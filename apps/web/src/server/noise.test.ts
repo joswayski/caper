@@ -30,7 +30,7 @@ test("RNNoise pinned binary performs finite, nonzero inference and suppresses st
 });
 
 test("shared worklet preserves frame order for both engines, selects DF blend and disables post-filter", async () => {
-  const code = (await readFile(new URL("noise-v1/worklet.js", assets), "utf8")).replace(/^import .*;\n/gm, "");
+  const code = (await readFile(new URL("noise-v1/worklet-v2.js", assets), "utf8")).replace(/^import .*;\n/gm, "");
   for (const engine of ["deepfilter", "rnnoise"]) {
     const messages: string[] = [];
     let Processor: any, attenuation: number | undefined, beta: number | undefined, destroyed = 0;

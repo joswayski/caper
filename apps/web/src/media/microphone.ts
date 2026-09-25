@@ -110,6 +110,26 @@ export async function captureMicrophone(
     }
     connectVoiceProcessing(voiceInput, destination, voiceProcessing);
   };
+  /** Drops the processing graph and publishes the raw capture instead. */
+  const releaseGraph = () => {
+    fallbackController.abort();
+    destination?.stream.getTracks().forEach((track) => track.stop());
+    naturalDestination?.stream.getTracks().forEach((track) => track.stop());
+    source?.disconnect();
+    gain?.disconnect();
+    voiceInput?.disconnect();
+    node?.port.postMessage("stop");
+    node?.disconnect();
+    node?.port.close();
+    if (voiceProcessing) disconnectVoiceProcessing(voiceProcessing);
+    prepared?.stop();
+    prepared = undefined;
+    if (context && context.state !== "closed") void context.close().catch(() => undefined);
+    context = undefined;
+    source = gain = voiceInput = destination = naturalDestination = node = voiceProcessing = undefined;
+    microphone.track = raw;
+    microphone.naturalTrack = raw;
+  };
   const microphone: Microphone = {
     track: raw,
     naturalTrack: raw,
@@ -173,25 +193,21 @@ export async function captureMicrophone(
       : "Browser suppression unavailable - noise suppression off";
     return microphone;
   }
-  // The on-device models run in a 48 kHz graph. iOS delivered silence into that
-  // graph while its audio route ran at another rate (24 kHz, as a Bluetooth
-  // headset microphone does), so send the browser-processed capture instead.
+  // The models run at 48 kHz. iOS delivered silence into a 48 kHz graph while
+  // its audio route ran at another rate (24 kHz, as a Bluetooth headset
+  // microphone does), so there the graph runs at the route's rate and the
+  // worklet converts to and from 48 kHz itself (resampler-v1).
   routeSampleRate = appleMobileWebKit() ? audioRouteSampleRate() : undefined;
-  if (routeSampleRate !== undefined && routeSampleRate !== 48_000) {
-    dpdfnet.stop(); // Free the prepared model; the client prepares again after Leave.
-    if (!raw.getSettings().noiseSuppression) await raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined);
-    signal.throwIfAborted();
-    const route = `${routeSampleRate / 1000} kHz audio route, on-device models need 48 kHz`;
-    microphone.status = raw.getSettings().noiseSuppression
-      ? `Browser suppression active · ${route}`
-      : `Browser suppression unavailable - noise suppression off · ${route}`;
-    ready();
-    return microphone;
-  }
+  const bridged = routeSampleRate !== undefined && routeSampleRate !== 48_000;
   const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet8" ? "dpdfnet8" : "deepfilter";
   const engineName = engine === "rnnoise" ? "RNNoise" : engine === "dpdfnet8" ? "DPDFNet-8 HR" : "DeepFilterNet";
   const attenuationLimit = mode === "deepfilter-gentle" ? 12 : mode === "deepfilter-strong" ? 40 : 20;
   const presetName = mode === "deepfilter-gentle" ? "gentle" : mode === "deepfilter-strong" ? "strong" : "balanced";
+
+  const addWorklet = async (engine: "dpdfnet8" | "noise") => {
+    if (context!.sampleRate !== 48_000) await context!.audioWorklet.addModule("/audio/resampler-v1/resampler.js");
+    await context!.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet-v4.js" : "/audio/noise-v1/worklet-v2.js");
+  };
 
   const fail = () => {
     if (stopped) return;
@@ -227,7 +243,7 @@ export async function captureMicrophone(
     const fallbackSignal = fallbackController.signal;
     try {
       const { module } = profile !== "rnnoise" ? { module: undefined } : await assets.load("rnnoise", fallbackSignal);
-      await context!.audioWorklet.addModule(profile !== "rnnoise" ? "/audio/dpdfnet8-v2/worklet-v3.js" : "/audio/noise-v1/worklet.js");
+      await addWorklet(profile !== "rnnoise" ? "dpdfnet8" : "noise");
       fallbackSignal.throwIfAborted();
       replacement = new AudioWorkletNode(context!, profile !== "rnnoise" ? "caper-dpdfnet8" : "caper-noise", {
         numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
@@ -334,8 +350,10 @@ export async function captureMicrophone(
 
   try {
     if (typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") throw new Error("Unsupported browser");
-    context = new AudioContext({ sampleRate: 48_000, latencyHint: "interactive" });
-    if (context.sampleRate !== 48_000 || !context.audioWorklet) throw new Error("Unsupported audio context");
+    context = bridged
+      ? new AudioContext({ latencyHint: "interactive" })
+      : new AudioContext({ sampleRate: 48_000, latencyHint: "interactive" });
+    if ((!bridged && context.sampleRate !== 48_000) || !context.audioWorklet) throw new Error("Unsupported audio context");
     // Resume immediately, before downloads, to retain the Join button's user activation.
     void context.resume().catch(() => undefined);
     source = context.createMediaStreamSource(stream);
@@ -350,7 +368,7 @@ export async function captureMicrophone(
     microphone.setInputVolume(inputVolume);
     voiceProcessing = createVoiceProcessingNodes(context, voiceProcessingStrength);
     const { module, model } = engine === "dpdfnet8" ? { module: undefined, model: undefined } : await assets.load(engine, signal);
-    await context.audioWorklet.addModule(engine === "dpdfnet8" ? "/audio/dpdfnet8-v2/worklet-v3.js" : "/audio/noise-v1/worklet.js");
+    await addWorklet(engine === "dpdfnet8" ? "dpdfnet8" : "noise");
     signal.throwIfAborted();
     node = new AudioWorkletNode(context, engine === "dpdfnet8" ? "caper-dpdfnet8" : "caper-noise", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
@@ -442,6 +460,18 @@ export async function captureMicrophone(
         ready();
         return microphone;
       }
+    }
+    // At a converted route rate, the browser's own processing is better than no audio.
+    if (bridged && !stopped && !signal.aborted) {
+      releaseGraph();
+      if (!raw.getSettings().noiseSuppression) await raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined);
+      signal.throwIfAborted();
+      const route = `${routeSampleRate! / 1000} kHz audio route`;
+      microphone.status = raw.getSettings().noiseSuppression
+        ? `${engineName} unavailable · browser suppression active · ${route}`
+        : `${engineName} unavailable - noise suppression off · ${route}`;
+      ready();
+      return microphone;
     }
     microphone.stop();
     signal.throwIfAborted();

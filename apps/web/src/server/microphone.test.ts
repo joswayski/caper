@@ -548,7 +548,15 @@ function iphone(t: TestContext, routeRate: number, userAgent = IPHONE_BRAVE) {
   const contexts: RoutedContext[] = [];
   class RoutedContext extends Context {
     readonly sampleRate: number;
-    constructor(options?: AudioContextOptions) { super(); this.sampleRate = options?.sampleRate ?? routeRate; contexts.push(this); }
+    readonly requestedRate?: number;
+    readonly modules: string[] = [];
+    constructor(options?: AudioContextOptions) {
+      super();
+      this.requestedRate = options?.sampleRate;
+      this.sampleRate = options?.sampleRate ?? routeRate;
+      this.audioWorklet = { addModule: async (url: string) => { this.modules.push(url); } };
+      contexts.push(this);
+    }
   }
   env.install("AudioContext", RoutedContext);
   let workers = 0;
@@ -560,32 +568,44 @@ function iphone(t: TestContext, routeRate: number, userAgent = IPHONE_BRAVE) {
   return { ...env, raw, requested, contexts, workers: () => workers };
 }
 
-for (const mode of ["dpdfnet8", "rnnoise", "deepfilter"] as NoiseSuppression[]) test(`on an iPhone 24 kHz route, ${mode} sends the browser-processed capture without Web Audio`, async (t) => {
-  const { raw, requested, contexts, fetches, workers } = iphone(t, 24_000);
-  const dpdfnet = new DpdfnetPreparation();
-  const microphone = await captureMicrophone(undefined, mode, new AbortController().signal, () => undefined, "speakers", undefined, dpdfnet);
-  assert.equal(microphone.track, raw);
-  assert.equal(microphone.naturalTrack, raw);
-  // Only the rate probe, closed at once; no capture graph.
-  assert.deepEqual(contexts.map((context) => [context.sampleRate, context.closeCalls]), [[24_000, 1]]);
-  assert.equal(fetches.length, 0);
-  assert.equal(workers(), 0);
-  // An unprepared DPDFNet already asks for browser suppression with the capture.
-  assert.equal(requested[0].noiseSuppression, mode === "dpdfnet8");
-  assert.equal(raw.settings.noiseSuppression, true);
-  assert.equal(report(microphone).requested, mode);
+for (const mode of ["rnnoise", "deepfilter"] as NoiseSuppression[]) test(`on an iPhone 24 kHz route, ${mode} runs at the route rate and converts to 48 kHz for the model`, async (t) => {
+  const { raw, contexts } = iphone(t, 24_000);
+  const capturing = captureMicrophone(undefined, mode, new AbortController().signal, () => undefined);
+  await tick();
+  WorkletNode.latest!.port.emit("ready");
+  const microphone = await capturing;
+  assert.notEqual(microphone.track, raw, "the processed track is published");
+  // The probe (closed at once), then the capture graph at the route's own rate.
+  assert.deepEqual(contexts.map((context) => [context.requestedRate, context.sampleRate, context.closeCalls]), [[undefined, 24_000, 1], [undefined, 24_000, 0]]);
+  assert.deepEqual(contexts[1].modules, ["/audio/resampler-v1/resampler.js", "/audio/noise-v1/worklet-v2.js"]);
+  assert.match(microphone.status, /active · (balanced · )?on-device/);
   assert.equal(report(microphone).routeSampleRate, 24_000);
-  assert.equal(microphone.status, "Browser suppression active · 24 kHz audio route, on-device models need 48 kHz");
   microphone.stop();
   assert.equal(raw.readyState, "ended");
 });
 
-test("on an iPhone 24 kHz route without browser suppression, the status says suppression is off", async (t) => {
-  const { raw } = iphone(t, 24_000);
-  raw.applyConstraints = async () => undefined;
-  const microphone = await captureMicrophone(undefined, "rnnoise", new AbortController().signal, () => undefined);
+test("on an iPhone 24 kHz route, DPDFNet loads its converting worklet", async (t) => {
+  const { contexts } = iphone(t, 24_000);
+  const microphone = await captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "speakers", undefined, new DpdfnetPreparation());
+  assert.deepEqual(contexts[1].modules, ["/audio/resampler-v1/resampler.js", "/audio/dpdfnet8-v2/worklet-v4.js"]);
+  assert.equal(contexts[1].sampleRate, 24_000);
+  microphone.stop();
+});
+
+for (const browserSuppression of [true, false]) test(`a converted pipeline that cannot start sends the capture with browser suppression ${browserSuppression ? "on" : "unavailable"}, not a failed join`, async (t) => {
+  const { raw, contexts } = iphone(t, 24_000);
+  if (!browserSuppression) raw.applyConstraints = async () => undefined;
+  const capturing = captureMicrophone(undefined, "rnnoise", new AbortController().signal, () => undefined);
+  await tick();
+  WorkletNode.latest!.port.emit("failed");
+  const microphone = await capturing;
   assert.equal(microphone.track, raw);
-  assert.equal(microphone.status, "Browser suppression unavailable - noise suppression off · 24 kHz audio route, on-device models need 48 kHz");
+  assert.equal(microphone.naturalTrack, raw);
+  assert.equal(contexts[1].closeCalls, 1, "the graph is released");
+  assert.equal(raw.readyState, "live");
+  assert.equal(microphone.status, browserSuppression
+    ? "RNNoise unavailable · browser suppression active · 24 kHz audio route"
+    : "RNNoise unavailable - noise suppression off · 24 kHz audio route");
   microphone.stop();
 });
 
@@ -599,6 +619,7 @@ test("on an iPhone 48 kHz route the on-device model still runs", async (t) => {
   assert.equal(microphone.status, "RNNoise active · on-device");
   assert.equal(report(microphone).routeSampleRate, 48_000);
   assert.equal(contexts.length, 2);
+  assert.deepEqual(contexts[1].modules, ["/audio/noise-v1/worklet-v2.js"], "no conversion at 48 kHz");
   microphone.stop();
 });
 

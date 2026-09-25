@@ -1371,7 +1371,7 @@ If RNNoise cannot initialize, the browser fallback remains. The reported track
 setting determines whether the UI says browser suppression is active or unavailable.
 The mic test displays that live status; both Natural and Enhanced use this same
 noise-suppressed input, and Enhanced adds EQ/compression rather than more denoising.
-The recovery worklet uses `worklet-v3.js` to avoid the immutable cache of older clients.
+The recovery worklet uses `worklet-v3.js` to avoid the immutable cache of older clients; current pages load `worklet-v4.js` (see iPhone and iPad audio routes).
 DPDFNet processor errors retry once before advancing to the next tier. An unrecoverable RNNoise
 processor error stops the microphone without restarting the connection.
 
@@ -1936,19 +1936,38 @@ No new environment variables or infrastructure configuration are required.
 
 ### iPhone and iPad audio routes
 
-The models run in a 48 kHz Web Audio graph. On an iPhone whose audio route ran at
-24 kHz (the rate a default `AudioContext` reported, typical of a Bluetooth headset
-microphone), that graph sent silence: the phone showed a live, running capture and
-Opus sent only DTX packets (~0.6 kbps, audio level 0). On the same phone at a
-48 kHz route, DPDFNet-8 HR ran at 5.2 ms mean per 10 ms hop and was heard normally.
-On iPhone/iPad WebKit (every iOS browser, and iPadOS in desktop mode) capture now
-probes the route rate with a default context. If it is not 48 kHz, it sends the
-browser's voice-processed track with no Web Audio on the send path and releases the
-prepared model. The status names the route rate, and capture diagnostics include
-`routeSampleRate`. Other platforms are unchanged: they resample into the 48 kHz
-graph. A route change after joining (connecting a headset mid-call) is not
-detected until the microphone is reopened. This is unit-tested with mocks only:
-no physical-device check at a 24 kHz route has been made.
+The models run at 48 kHz. On an iPhone whose audio route ran at 24 kHz (the rate
+a default `AudioContext` reported; the user confirmed AirPods were connected), a
+capture graph forced to 48 kHz sent silence: the phone showed a live, running
+capture and Opus sent only DTX packets (~0.6 kbps, audio level 0). On the same
+phone at a 48 kHz route, DPDFNet-8 HR ran at 5.2 ms mean per 10 ms hop and was
+heard normally.
+
+On iPhone/iPad WebKit (every iOS browser, and iPadOS in desktop mode) capture
+probes the route rate with a default context. When it is not 48 kHz, the capture
+graph runs at the route's own rate and the worklet converts to and from 48 kHz
+itself: `resampler-v1/resampler.js` (windowed-sinc, Blackman window, 16 zero
+crossings, cutoff at 95% of the lower rate's Nyquist) is added to the same
+AudioWorklet first, and `dpdfnet8-v2/worklet-v4.js` / `noise-v1/worklet-v2.js`
+wrap their unchanged 48 kHz processing in it. A 24 kHz route carries nothing above
+12 kHz, so converting up loses nothing the microphone captured. The conversion
+adds about 1.6 ms (38 samples at 24 kHz) and cost about 2.4% of one core in this
+sandbox. If the converted pipeline cannot start, capture sends the browser's
+voice-processed track rather than failing the join, and the status names the
+route rate. Capture diagnostics include `routeSampleRate`.
+
+Other platforms and 48 kHz routes load no resampler and behave as before; the v4/v2
+worklets are the v3/v1 code at 48 kHz, under new names because `/audio` assets are
+cached as immutable (old pages keep the old files). A route change after joining
+(connecting a headset mid-call) is not detected until the microphone is reopened.
+
+Validation: unit tests round-trip 16, 24 and 44.1 kHz through 48 kHz with a fixed
+delay and under 1% error, check anti-aliasing (an 18 kHz tone does not fold into
+a 24 kHz output), and run both worklets at 24 kHz. In real Chromium at 24 kHz,
+worklet-v4 sent 101 hops/s of 480 samples (48 kHz) with an echo in place of the
+model and output matched input level; worklet-v2 loaded the real RNNoise and
+behaved as at 48 kHz. The sandbox cannot run DPDFNet in real time (25 ms per
+10 ms hop), and no iPhone check at a 24 kHz route has been made.
 
 ### Retained engine implementations (no user-facing selector)
 

@@ -55,7 +55,7 @@ test("pinned DPDFNet-8 model performs stateful inference on real spectra", async
 });
 
 async function loadWorklet() {
-  const code = await readFile(new URL("worklet-v3.js", assets), "utf8");
+  const code = await readFile(new URL("worklet-v4.js", assets), "utf8");
   const messages: unknown[] = [];
   let Processor: any;
   new Function("AudioWorkletProcessor", "registerProcessor", code)(
