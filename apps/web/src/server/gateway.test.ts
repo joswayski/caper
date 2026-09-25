@@ -238,7 +238,7 @@ test("pointer movement reports throttled activity without focus state", (t) => {
 });
 
 test("a command is stamped once from the first server clock and preserves that stamp on retry", (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_700_000_000_000 });
   const f = setup(t);
   const serverTime = Date.now() + 45_000;
   void f.gateway.command({ method: "media.snapshot", timeoutMs: 5_000 }).catch(() => undefined);
