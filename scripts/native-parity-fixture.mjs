@@ -42,6 +42,11 @@ function initialState() {
     spaces: [{ space, channels, members: clone(members) }], messages,
     grants: new Map([[ids.private, [ids.owner, ids.member]]]), failures: [], challenges: new Map(),
     account, chatSessions: new Map(), sendKeys: new Map(), typingRevision: 0,
+    media: new Map([[ids.design, { type: 'snapshot', revision: 1, participants: [
+      { id: 'fixture-voice-maya', name: 'TEST FIXTURE Maya', muted: false, deafened: false },
+      { id: 'fixture-voice-alex', name: 'TEST FIXTURE Alex', muted: true, deafened: false },
+    ] }]]),
+    mediaDenied: new Set(),
   };
 }
 
@@ -96,6 +101,27 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           type: 'typing.updated', channelId: body.typing.channelId ?? ids.general,
           author: author(members[1]), typing: body.typing.active !== false, revision: String(++state.typingRevision),
         });
+        if (body.media) {
+          const channelId = body.media.channelId ?? ids.demo;
+          if (!channelFor(channelId) || !Array.isArray(body.media.participants)) return reject(response, 400, 'invalid media fixture');
+          const snapshot = { type: 'snapshot', revision: (state.media.get(channelId)?.revision ?? 0) + 1,
+            participants: body.media.participants.map(({ id, name, muted, deafened, countryCode }) => ({ id, name, muted, deafened, ...(countryCode ? { countryCode } : {}) })) };
+          state.media.set(channelId, snapshot);
+          broadcast('media', channelId, snapshot);
+        }
+        if (body.mediaAccessDenied) {
+          const channelId = body.mediaAccessDenied.channelId ?? ids.demo;
+          if (body.mediaAccessDenied.denied === false) state.mediaDenied.delete(channelId);
+          else {
+            state.mediaDenied.add(channelId);
+            for (const client of sockets) for (const [id, sub] of client.subscriptions) {
+              if (sub.kind === 'media' && (sub.channelId ?? ids.demo) === channelId) {
+                client.subscriptions.delete(id);
+                client.send({ type: 'error', id, status: 403, error: 'TEST FIXTURE: voice access ended.' });
+              }
+            }
+          }
+        }
         return json(response, 200, { fixture: true });
       }
       const failureIndex = state.failures.findIndex((failure) => failure.path === path && (!failure.method || failure.method === method));
@@ -279,8 +305,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             type: 'snapshot', members: frame.userIds.map((userId) => ({ userId, status: userId === ids.other ? 'idle' : 'online' })),
           } });
         } else if (frame.kind === 'media') {
+          const channelId = frame.channelId ?? ids.demo;
+          if (!channelFor(channelId) || state.mediaDenied.has(channelId) || (channelId !== ids.demo && !identity(request)))
+            return client.send({ type: 'error', id: frame.id, status: 403, error: 'TEST FIXTURE: voice access denied.' });
+          if (frame.token) return client.send({ type: 'error', id: frame.id, status: 503, error: 'TEST FIXTURE: no real media engine or SFU is connected.' });
           client.subscriptions.set(frame.id, frame);
-          client.send({ type: 'event', id: frame.id, event: { type: 'snapshot', revision: 1, participants: [] } });
+          client.send({ type: 'event', id: frame.id, event: state.media.get(channelId) ?? { type: 'snapshot', revision: 0, participants: [] } });
         } else return client.send({ type: 'error', id: frame.id, status: 400, error: 'invalid subscription' });
         client.send({ type: 'subscribed', id: frame.id });
       } else if (frame.type === 'unsubscribe') client.subscriptions.delete(frame.id);

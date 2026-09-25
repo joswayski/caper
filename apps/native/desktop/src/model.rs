@@ -32,6 +32,17 @@ pub struct Channel {
     pub private: bool,
 }
 
+/// Spectators receive identity and status, never media track capabilities.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceOccupant {
+    pub id: String,
+    pub name: String,
+    pub country_code: Option<String>,
+    pub muted: bool,
+    pub deafened: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {

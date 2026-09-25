@@ -87,14 +87,14 @@ class VoiceCallService : Service() {
             return START_NOT_STICKY
         }
         when (intent?.action) {
-            ACTION_START -> startCall(
+            ACTION_START -> if (joinAuthorizationCurrent(intent.getLongExtra(EXTRA_CONTROL_EPOCH, -1))) startCall(
                 requireNotNull(intent.getStringExtra(EXTRA_CHANNEL_ID)),
                 requireNotNull(intent.getStringExtra(EXTRA_SPACE_ID)),
                 requireNotNull(intent.getStringExtra(EXTRA_CHANNEL_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_SPACE_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_DISPLAY_NAME)),
                 intent.getBooleanExtra(EXTRA_DEMO, false),
-            )
+            ) else if (engine == null) stopSelf()
             ACTION_MUTE -> scope.launch {
                 val (current, attempt) = currentCall() ?: return@launch
                 runCatching { current.setMuted(!current.muted) {
@@ -134,6 +134,7 @@ class VoiceCallService : Service() {
 
     private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean, previous: VoiceEngine? = null) {
         if (engine != null) return
+        invalidateJoinAuthorization()
         val token = TokenStore(this).read()
         if (!demo && token == null) return stopSelf()
         val attempt = attempts.begin()
@@ -261,6 +262,7 @@ class VoiceCallService : Service() {
 
     private fun failCall(current: VoiceEngine, error: Throwable) {
         if (engine !== current) return
+        invalidateJoinAuthorization()
         if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         engine = null
         activeAttempt = null
@@ -283,6 +285,7 @@ class VoiceCallService : Service() {
     }
 
     private fun stopCall(stopService: Boolean = true) {
+        invalidateJoinAuthorization()
         attempts.end()
         activeAttempt = null
         val current = engine
@@ -380,6 +383,7 @@ class VoiceCallService : Service() {
 
     override fun onDestroy() {
         if (active === this) active = null
+        invalidateJoinAuthorization()
         attempts.end()
         connectJob?.cancel(); heartbeat?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); mediaEvents?.close(); mediaEvents = null
         val current = engine; engine = null
@@ -423,15 +427,20 @@ class VoiceCallService : Service() {
         const val EXTRA_ROUTE_ID = "routeId"
         const val EXTRA_PARTICIPANT_ID = "participantId"
         const val EXTRA_VOLUME = "volume"
+        const val EXTRA_CONTROL_EPOCH = "controlEpoch"
         private const val CHANNEL = "caper_voice"
         private const val NOTIFICATION_ID = 7401
         private val mutableState = MutableStateFlow(VoiceState())
+        private val controlEpoch = CallAttemptGate()
         @Volatile private var active: VoiceCallService? = null
         val state: StateFlow<VoiceState> = mutableState
         private fun update(block: (VoiceState) -> VoiceState) { mutableState.update(block) }
+        internal fun beginJoinAuthorization(): Long = controlEpoch.begin()
+        internal fun joinAuthorizationCurrent(epoch: Long): Boolean = controlEpoch.isCurrent(epoch)
+        internal fun invalidateJoinAuthorization() = controlEpoch.end()
 
-        fun start(context: Context, channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean = false) {
-            if (!BuildConfig.ENABLE_NATIVE_VOICE) return
+        fun start(context: Context, channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean = false, expectedControlEpoch: Long) {
+            if (!BuildConfig.ENABLE_NATIVE_VOICE || !joinAuthorizationCurrent(expectedControlEpoch)) return
             val current = active
             if (current != null && state.value.channelId != channelId) {
                 val previous = current.engine
@@ -443,9 +452,11 @@ class VoiceCallService : Service() {
                 .putExtra(EXTRA_CHANNEL_ID, channelId).putExtra(EXTRA_SPACE_ID, spaceId)
                 .putExtra(EXTRA_CHANNEL_NAME, channelName).putExtra(EXTRA_SPACE_NAME, spaceName)
                 .putExtra(EXTRA_DISPLAY_NAME, displayName).putExtra(EXTRA_DEMO, demo)
+                .putExtra(EXTRA_CONTROL_EPOCH, expectedControlEpoch)
             context.startForegroundService(intent)
         }
         fun stop(context: Context) {
+            invalidateJoinAuthorization()
             val current = active
             if (current != null) current.stopCall()
             else if (state.value.phase != VoiceState.Phase.IDLE) context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_STOP))

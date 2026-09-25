@@ -384,6 +384,7 @@ private struct ChannelSidebar: View {
                                             .buttonStyle(SidebarIconButton()).help("Manage \(channel.name)").accessibilityLabel("Manage \(channel.name)")
                                     }
                                 }
+                                ChannelVoiceSlot(model: model, channel: channel)
                             }
                         }
                     }
@@ -391,7 +392,8 @@ private struct ChannelSidebar: View {
                     if let error = model.error {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).padding(8)
                     }
-                    if model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty {
+                    if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
+                       (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })) {
                         VoiceRoster(model: model)
                     }
                 }.padding(.horizontal, 16)
@@ -426,6 +428,70 @@ private struct SidebarIconButton: ButtonStyle {
         configuration.label.font(.system(size: 14, weight: .semibold)).foregroundStyle(CaperTheme.muted)
             .frame(width: 28, height: 28).background(configuration.isPressed ? CaperTheme.border : .clear)
             .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+private struct ChannelVoiceSlot: View {
+    @Bindable var model: AppModel
+    let channel: Channel
+    @State private var collapsed = false
+
+    private var active: Bool {
+        model.voice.context?.channelID == channel.id && model.voice.phase != .idle && model.voice.phase != .failed
+    }
+    private var people: [VoiceSpectator] {
+        if active {
+            return model.voice.participants.map {
+                VoiceSpectator(id: $0.id, name: $0.name, muted: $0.muted,
+                               deafened: $0.deafened, countryCode: $0.countryCode)
+            }
+        }
+        return model.voicePresence.roster(for: channel.id)
+    }
+
+    var body: some View {
+        let occupants = people
+        if !occupants.isEmpty || model.selectedChannelID == channel.id || active {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    if !occupants.isEmpty {
+                        Button { collapsed.toggle() } label: {
+                            HStack(spacing: 5) {
+                                ForEach(occupants.prefix(3)) { person in
+                                    Avatar(name: person.name, size: 20)
+                                }
+                                if occupants.count > 3 { Text("+\(occupants.count - 3)") }
+                                CaperIcon(name: collapsed ? "chevron-right" : "chevron-down", size: 12)
+                            }
+                        }.buttonStyle(.plain)
+                            .accessibilityLabel("\(occupants.count) in voice in \(channel.name). \(collapsed ? "Show" : "Hide") who is in voice")
+                            .accessibilityIdentifier("voice-stack-\(channel.id)")
+                            .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+                    }
+                    Spacer(minLength: 0)
+                    if !active {
+                        Button("Join") { Task { await model.joinVoice(channel: channel) } }
+                            .buttonStyle(VoiceJoinButton())
+                            .accessibilityLabel(model.voice.phase == .idle || model.voice.phase == .failed
+                                ? "Join voice in #\(channel.name)" : "Switch voice to #\(channel.name)")
+                            .accessibilityIdentifier("join-voice-\(channel.id)")
+                    }
+                }
+                if active {
+                    if !collapsed { VoiceRoster(model: model) }
+                } else if !collapsed {
+                    ForEach(occupants) { person in
+                        HStack(spacing: 7) {
+                            Avatar(name: person.name, size: 23)
+                            Text(person.name).lineLimit(1)
+                            if person.muted { CaperIcon(name: "mic-off", size: 13) }
+                            if person.deafened { CaperIcon(name: "volume-x", size: 13) }
+                        }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            .accessibilityElement(children: .combine)
+                    }
+                }
+            }.padding(.leading, 34).padding(.trailing, 8).padding(.bottom, 5)
+        }
     }
 }
 
@@ -535,7 +601,7 @@ private struct VoiceRoster: View {
                                 .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
-                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; voice.leaveImmediately() } label: { CaperIcon(name: "x") }
+                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "x") }
                         .buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
             }
@@ -602,7 +668,7 @@ private struct AccountBar: View {
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             #endif
             if voice.phase == .connected || voice.phase == .reconnecting {
-                Button(role: .destructive) { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; voice.leaveImmediately() } label: { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
+                Button(role: .destructive) { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
             }
             Menu {
                 Button("Audio preferences") { voice.showAudioPreferences = true }
@@ -817,9 +883,9 @@ private struct VoiceHeaderButton: View {
     @Bindable var voice: VoiceClient
     var body: some View {
         if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
-            Button { voice.leaveImmediately() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Cancel") } }.buttonStyle(VoiceJoinButton())
+            Button { model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Cancel") } }.buttonStyle(VoiceJoinButton())
         } else if sameChannel, voice.phase == .connected {
-            Button { CaperEffects.shared.play(.leave); voice.leaveImmediately() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
+            Button { CaperEffects.shared.play(.leave); model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
         } else if voice.phase == .leaving {
             ProgressView().controlSize(.small)
         } else {
@@ -842,15 +908,8 @@ private struct VoiceHeaderButton: View {
     }
 
     private func joinSelectedChannel() {
-        guard let context = selectedContext else { return }
-        if voice.phase != .idle && voice.phase != .failed { voice.leaveImmediately() }
-        Task {
-            await voice.join(
-                channelID: model.detail?.space.demo == true ? nil : context.channelID,
-                context: context,
-                name: model.account?.displayName ?? "Guest"
-            )
-        }
+        guard let channel = model.detail?.channels.first(where: { $0.id == model.selectedChannelID }) else { return }
+        Task { await model.joinVoice(channel: channel) }
     }
 }
 

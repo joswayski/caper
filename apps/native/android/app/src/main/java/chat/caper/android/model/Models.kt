@@ -66,6 +66,13 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
     val tracks: List<MediaTrack>,
 )
 @Serializable data class MediaSnapshot(val participants: List<Participant>, val revision: Long? = null)
+@Serializable data class SpectatorParticipant(
+    val id: String, val name: String, val countryCode: String? = null,
+    val muted: Boolean, val deafened: Boolean,
+) {
+    fun asParticipant() = Participant(id, name, countryCode, muted, deafened, emptyList())
+}
+@Serializable data class SpectatorSnapshot(val participants: List<SpectatorParticipant>, val revision: Long)
 @Serializable data class SessionDescription(val type: String, val sdp: String)
 @Serializable data class SignalResponse(
     val sessionDescription: SessionDescription? = null,
@@ -99,6 +106,8 @@ data class AppUiState(
     val olderError: String? = null,
     val typingAuthors: List<ChatAuthor> = emptyList(),
     val presence: Map<String, String> = emptyMap(),
+    val voiceRosters: Map<String, List<Participant>> = emptyMap(),
+    val deniedVoiceChannels: Set<String> = emptySet(),
     val presencePage: Int = 0,
     val channelGrants: List<Member> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,

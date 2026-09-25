@@ -1,4 +1,4 @@
-use crate::model::{Author, Message, Presence, sequence};
+use crate::model::{Author, Message, Presence, VoiceOccupant, sequence};
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
@@ -8,6 +8,20 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::{Message as WsMessage, client::IntoClientRequest, stream::MaybeTlsStream};
+
+#[derive(Clone, Debug)]
+pub struct MediaChannel {
+    pub id: String,
+    pub demo: bool,
+}
+
+#[derive(Default)]
+pub struct MediaWatch {
+    pub epoch: u64,
+    pub channels: Vec<MediaChannel>,
+}
+
+pub const MAX_MEDIA_CHANNELS: usize = 24;
 
 #[derive(Debug)]
 pub enum GatewayEvent {
@@ -33,6 +47,19 @@ pub enum GatewayEvent {
         generation: u64,
         space: String,
         members: Vec<Presence>,
+    },
+    VoiceRoster {
+        generation: u64,
+        channel: String,
+        participants: Vec<VoiceOccupant>,
+    },
+    VoiceUnavailable {
+        generation: u64,
+        channel: String,
+        revoked: bool,
+    },
+    VoiceReset {
+        generation: u64,
     },
     Resync {
         generation: u64,
@@ -61,6 +88,7 @@ impl GatewayControl {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     base: &url::Url,
     account_token: Option<String>,
@@ -68,6 +96,7 @@ pub fn spawn(
     channel: String,
     cursor: String,
     presence: Option<(String, Vec<String>)>,
+    media: MediaWatch,
     events: Sender<GatewayEvent>,
 ) -> GatewayControl {
     let stop = Arc::new(AtomicBool::new(false));
@@ -89,6 +118,7 @@ pub fn spawn(
             channel,
             cursor,
             presence,
+            media,
             events,
             stopped,
             thread_activity,
@@ -124,6 +154,7 @@ fn run(
     channel: String,
     mut cursor: String,
     presence: Option<(String, Vec<String>)>,
+    media: MediaWatch,
     events: Sender<GatewayEvent>,
     stop: Arc<AtomicBool>,
     activity: Arc<Mutex<Instant>>,
@@ -141,18 +172,23 @@ fn run(
             }
             .into(),
         });
-        match connect_once(
+        let result = connect_once(
             &url,
             &token,
             generation,
             &channel,
             &mut cursor,
             presence.as_ref(),
+            &media,
             &events,
             &stop,
             &activity,
             TIMING,
-        ) {
+        );
+        let _ = events.send(GatewayEvent::VoiceReset {
+            generation: media.epoch,
+        });
+        match result {
             Ok(()) if stop.load(Ordering::Relaxed) => break,
             Ok(()) => {}
             Err(Failure::Denied(detail)) => {
@@ -191,6 +227,7 @@ fn connect_once(
     channel: &str,
     cursor: &mut String,
     presence: Option<&(String, Vec<String>)>,
+    media: &MediaWatch,
     events: &Sender<GatewayEvent>,
     stop: &AtomicBool,
     activity: &Mutex<Instant>,
@@ -224,6 +261,12 @@ fn connect_once(
         .map_err(|_| Failure::Retry("Could not configure the live connection.".into()))?;
     let subscription = uuid::Uuid::new_v4().to_string();
     let presence_subscription = presence.map(|_| uuid::Uuid::new_v4().to_string());
+    let mut media_subscriptions: std::collections::BTreeMap<_, _> = media
+        .channels
+        .iter()
+        .take(MAX_MEDIA_CHANNELS)
+        .map(|channel| (uuid::Uuid::new_v4().to_string(), (channel, None::<u64>)))
+        .collect();
     let mut subscribed = false;
     let mut last_server = Instant::now();
     let mut last_heartbeat = Instant::now();
@@ -293,6 +336,17 @@ fn connect_once(
                         ))
                         .map_err(|_| {
                             Failure::Retry("Could not subscribe to member presence.".into())
+                        })?;
+                }
+                for (id, (channel, _)) in &media_subscriptions {
+                    let mut frame = json!({"type":"subscribe", "id":id, "kind":"media"});
+                    if !channel.demo {
+                        frame["channelId"] = json!(channel.id);
+                    }
+                    socket
+                        .send(WsMessage::Text(frame.to_string().into()))
+                        .map_err(|_| {
+                            Failure::Retry("Could not subscribe to voice presence.".into())
                         })?;
                 }
             }
@@ -398,6 +452,49 @@ fn connect_once(
                         members,
                     });
                 }
+            }
+            Some("event")
+                if value["id"]
+                    .as_str()
+                    .is_some_and(|id| media_subscriptions.contains_key(id)) =>
+            {
+                let (channel, previous) = media_subscriptions
+                    .get_mut(value["id"].as_str().unwrap())
+                    .unwrap();
+                let event = &value["event"];
+                let revision = event["revision"]
+                    .as_u64()
+                    .filter(|_| event["type"] == "snapshot")
+                    .ok_or_else(|| Failure::Retry("Invalid voice roster.".into()))?;
+                if previous.is_some_and(|old| revision <= old) {
+                    continue;
+                }
+                let participants = serde_json::from_value(event["participants"].clone())
+                    .map_err(|_| Failure::Retry("Invalid voice roster.".into()))?;
+                *previous = Some(revision);
+                let _ = events.send(GatewayEvent::VoiceRoster {
+                    generation: media.epoch,
+                    channel: channel.id.clone(),
+                    participants,
+                });
+            }
+            Some("error")
+                if value["id"]
+                    .as_str()
+                    .is_some_and(|id| media_subscriptions.contains_key(id)) =>
+            {
+                // Remove this logical subscription before accepting another event;
+                // a denied spectator channel must not poison the active chat.
+                let (channel, _) = media_subscriptions
+                    .remove(value["id"].as_str().unwrap())
+                    .unwrap();
+                let _ = events.send(GatewayEvent::VoiceUnavailable {
+                    generation: media.epoch,
+                    channel: channel.id.clone(),
+                    revoked: value["status"]
+                        .as_u64()
+                        .is_some_and(|status| matches!(status, 401 | 403 | 404)),
+                });
             }
             Some("error") if value["id"] == subscription => {
                 if value["status"]
@@ -508,10 +605,137 @@ mod tests {
             "channel-id".into(),
             "37".into(),
             None,
+            MediaWatch::default(),
             events,
         );
         thread::sleep(Duration::from_millis(250));
         control.stop();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn spectator_channels_share_one_authenticated_socket_and_reject_stale_or_revoked_events() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, released) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut socket =
+                tungstenite::accept_hdr(stream, |request: &Request, response: Response| {
+                    assert_eq!(
+                        request.headers()["authorization"],
+                        "Bearer spectator-account"
+                    );
+                    assert!(request.uri().query().is_none());
+                    Ok(response)
+                })
+                .unwrap();
+            socket
+                .send(WsMessage::Text(json!({"type":"hello"}).to_string().into()))
+                .unwrap();
+            let mut subscriptions = std::collections::BTreeMap::new();
+            let mut chat = String::new();
+            for _ in 0..25 {
+                let frame: Value =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                assert_eq!(frame["type"], "subscribe");
+                assert!(
+                    frame.get("token").is_none(),
+                    "Spectators must not carry participant capabilities"
+                );
+                if frame["kind"] == "chat" {
+                    chat = frame["id"].as_str().unwrap().to_owned();
+                } else {
+                    assert_eq!(frame["kind"], "media");
+                    subscriptions.insert(
+                        frame["channelId"].as_str().unwrap_or("demo").to_owned(),
+                        frame["id"].clone(),
+                    );
+                }
+            }
+            assert_eq!(subscriptions.len(), 24);
+            assert!(subscriptions.contains_key("demo"));
+            assert!(!subscriptions.contains_key("channel24"));
+            let snapshot = |id: &Value, revision, name| {
+                json!({"type":"event","id":id,"event":{
+                    "type":"snapshot", "revision":revision, "participants":[{"id":"speaker", "name":name, "muted":false, "deafened":true}]
+                }})
+            };
+            for frame in [
+                snapshot(&subscriptions["channel1"], 7, "current"),
+                snapshot(&subscriptions["channel1"], 6, "old"),
+                json!({"type":"error", "id":subscriptions["channel1"], "status":403}),
+                snapshot(&subscriptions["channel1"], 8, "revoked"),
+                snapshot(&subscriptions["demo"], 0, "public"),
+                json!({"type":"subscribed", "id":chat}),
+            ] {
+                socket
+                    .send(WsMessage::Text(frame.to_string().into()))
+                    .unwrap();
+            }
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(
+                matches!(socket.read(), Ok(WsMessage::Close(_))),
+                "No extra subscriptions past the cap"
+            );
+        });
+        let (events, incoming) = mpsc::channel();
+        let control = spawn(
+            &url::Url::parse(&format!("http://{address}")).unwrap(),
+            Some("spectator-account".into()),
+            4,
+            "text-channel".into(),
+            "0".into(),
+            None,
+            MediaWatch {
+                epoch: 91,
+                channels: (0..26)
+                    .map(|index| MediaChannel {
+                        id: format!("channel{index}"),
+                        demo: index == 0,
+                    })
+                    .collect(),
+            },
+            events,
+        );
+        let mut rosters = vec![];
+        let mut denied = vec![];
+        loop {
+            match incoming.recv_timeout(Duration::from_secs(5)).unwrap() {
+                GatewayEvent::VoiceRoster {
+                    generation,
+                    channel,
+                    participants,
+                } => {
+                    assert_eq!(generation, 91);
+                    rosters.push((channel, participants[0].name.clone()));
+                }
+                GatewayEvent::VoiceUnavailable {
+                    generation,
+                    channel,
+                    revoked,
+                } => {
+                    assert_eq!(generation, 91);
+                    assert!(revoked);
+                    denied.push(channel);
+                }
+                GatewayEvent::Status { online: true, .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            rosters,
+            vec![
+                ("channel1".into(), "current".into()),
+                ("channel0".into(), "public".into())
+            ]
+        );
+        assert_eq!(denied, vec!["channel1"]);
+        control.stop();
+        release.send(()).unwrap();
         server.join().unwrap();
     }
 
@@ -536,6 +760,7 @@ mod tests {
             "private".into(),
             "0".into(),
             None,
+            MediaWatch::default(),
             events,
         );
         let denied =

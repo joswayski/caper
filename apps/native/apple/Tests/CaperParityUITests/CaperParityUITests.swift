@@ -117,6 +117,57 @@ final class CaperParityUITests: XCTestCase {
         capture("populated", app: app)
     }
 
+    func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
+        let app = launch()
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
+        #if os(iOS)
+        app.buttons["Open navigation"].tap()
+        #endif
+        let stack = app.buttons["voice-stack-chan00000002"]
+        XCTAssertTrue(stack.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
+        XCTAssertTrue(stack.label.contains("in voice in design"))
+        XCTAssertEqual(stack.value as? String, "Expanded")
+        #if os(iOS)
+        let selected = app.buttons["channel-chan00000001"]
+        XCTAssertEqual(selected.value as? String, "Selected")
+        #else
+        let selected = app.descendants(matching: .any)["selected-channel-name"]
+        XCTAssertEqual(selected.value as? String, "# general")
+        #endif
+        XCTAssertTrue(app.buttons["join-voice-chan00000002"].exists)
+        stack.tap()
+        XCTAssertEqual(stack.value as? String, "Collapsed")
+        #if os(iOS)
+        XCTAssertEqual(selected.value as? String, "Selected", "Collapsing voice occupants must not navigate text chat")
+        #else
+        XCTAssertEqual(selected.value as? String, "# general", "Collapsing voice occupants must not navigate text chat")
+        #endif
+        stack.tap()
+        XCTAssertEqual(stack.value as? String, "Expanded")
+        capture("spectator-voice-roster", app: app)
+
+        var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        control.httpMethod = "POST"
+        control.setValue("application/json", forHTTPHeaderField: "content-type")
+        control.httpBody = Data(#"{"mediaAccessDenied":{"channelId":"chan00000002"}}"#.utf8)
+        let (_, response) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: stack)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed,
+                       "Revoked private-channel occupancy must disappear without altering selected chat")
+        XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists)
+        #if os(iOS)
+        XCTAssertEqual(selected.value as? String, "Selected")
+        #else
+        XCTAssertEqual(selected.value as? String, "# general")
+        #endif
+        // The fixture clears this denial for subsequent tests; it does not
+        // restore an evicted watcher in this already-running app.
+        control.httpBody = Data(#"{"mediaAccessDenied":{"channelId":"chan00000002","denied":false}}"#.utf8)
+        let (_, restored) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((restored as? HTTPURLResponse)?.statusCode, 200)
+    }
+
     #if os(macOS)
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
         let app = launch()

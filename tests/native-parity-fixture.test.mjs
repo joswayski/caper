@@ -137,3 +137,33 @@ test('loopback WebSocket replays, delivers live messages/typing/presence, failur
   await fetch(`${base}/__fixture/control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ disconnect: true }) });
   await closed;
 });
+
+test('spectator rosters update and revoke without granting capture or account-channel access', async (t) => {
+  const { fixture, request } = await setup(t);
+  const stream = socket(`ws://127.0.0.1:${fixture.gatewayPort}/api/chat/events`);
+  t.after(() => stream.ws.close());
+  await stream.opened;
+  assert.equal((await stream.next()).type, 'hello');
+  stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'private', kind: 'media', channelId: ids.private }));
+  assert.equal((await stream.next()).status, 403);
+  stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'demo', kind: 'media' }));
+  assert.deepEqual((await stream.next()).event, { type: 'snapshot', revision: 0, participants: [] });
+  assert.equal((await stream.next()).type, 'subscribed');
+  const participant = { id: 'guest-voice', name: 'TEST FIXTURE Guest', muted: true, deafened: false };
+  await request('/__fixture/control', { method: 'POST', body: { media: { participants: [{ ...participant, tracks: ['must not leak'] }] } } });
+  assert.deepEqual(await stream.next(), { type: 'event', id: 'demo', event: { type: 'snapshot', revision: 1, participants: [participant] } });
+  await request('/__fixture/control', { method: 'POST', body: { media: { participants: [] } } });
+  assert.deepEqual((await stream.next()).event, { type: 'snapshot', revision: 2, participants: [] });
+  await request('/__fixture/control', { method: 'POST', body: { mediaAccessDenied: {} } });
+  assert.equal((await stream.next()).status, 403);
+  await request('/__fixture/control', { method: 'POST', body: { media: { participants: [participant] } } });
+  stream.ws.send(JSON.stringify({ type: 'heartbeat' }));
+  assert.equal((await stream.next()).type, 'heartbeat', 'revocation removed the spectator subscription');
+  stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'retry', kind: 'media' }));
+  assert.equal((await stream.next()).status, 403);
+  await request('/__fixture/control', { method: 'POST', body: { mediaAccessDenied: { denied: false } } });
+  stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'restored', kind: 'media' }));
+  assert.deepEqual(await stream.next(), { type: 'event', id: 'restored', event: { type: 'snapshot', revision: 3, participants: [participant] } });
+  assert.equal((await stream.next()).type, 'subscribed');
+  assert.equal((await request('/api/media/join', { method: 'POST', body: {} })).response.status, 503);
+});

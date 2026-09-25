@@ -27,6 +27,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -89,11 +90,14 @@ internal data class VoiceJoinIntent(
     val accountId: String?,
     val accountEpoch: Long,
     val demo: Boolean,
+    val controlEpoch: Long,
 ) {
-    fun isCurrent(state: AppUiState, currentAccountEpoch: Long): Boolean =
-        state.screen == SessionScreen.Home && state.selectedChannel?.id == channelId &&
+    fun isCurrent(state: AppUiState, currentAccountEpoch: Long, freshChannelIds: Set<String>? = null): Boolean =
+        state.screen == SessionScreen.Home &&
             state.selectedSpace?.space?.id == spaceId && state.account?.id == accountId &&
-            currentAccountEpoch == accountEpoch && state.selectedSpace.space.demo == demo
+            currentAccountEpoch == accountEpoch && state.selectedSpace.space.demo == demo &&
+            state.selectedSpace.channels.any { it.id == channelId } && channelId !in state.deniedVoiceChannels &&
+            (freshChannelIds == null || channelId in freshChannelIds)
 }
 
 @Composable private fun CaperApp(viewModel: CaperViewModel) {
@@ -157,6 +161,38 @@ internal data class VoiceJoinIntent(
     viewModel: CaperViewModel,
 ) {
     var channelsExpanded by rememberSaveable { mutableStateOf(true) }
+    val context = LocalContext.current
+    val latestState by rememberUpdatedState(state)
+    var pendingVoiceJoin by remember { mutableStateOf<VoiceJoinIntent?>(null) }
+    var voicePermissionError by remember { mutableStateOf<String?>(null) }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        val requested = pendingVoiceJoin
+        pendingVoiceJoin = null
+        if (requested?.isCurrent(latestState, viewModel.accountEpoch) == true &&
+            VoiceCallService.joinAuthorizationCurrent(requested.controlEpoch)) {
+            if (grants[Manifest.permission.RECORD_AUDIO] == true) {
+                voicePermissionError = null
+                viewModel.authorizeVoiceJoin(requested, {
+                    VoiceCallService.start(context, requested.channelId, requested.spaceId, requested.channelName,
+                        requested.spaceName, requested.displayName, requested.demo, requested.controlEpoch)
+                }, { voicePermissionError = it })
+            } else voicePermissionError = "Microphone permission is required to join voice. Allow microphone access in Android app settings or try Join again."
+        }
+    }
+    val joinVoice: (Channel) -> Unit = { channel ->
+        val space = state.selectedSpace?.space
+        if (BuildConfig.ENABLE_NATIVE_VOICE && space != null &&
+            state.selectedSpace.channels.any { it.id == channel.id } && channel.id !in state.deniedVoiceChannels) {
+            voicePermissionError = null
+            pendingVoiceJoin = VoiceJoinIntent(channel.id, space.id, channel.name, space.name,
+                state.account?.displayName ?: "Guest", state.account?.id, viewModel.accountEpoch, space.demo,
+                VoiceCallService.beginJoinAuthorization())
+            permission.launch(buildList {
+                add(Manifest.permission.RECORD_AUDIO)
+                if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+            }.toTypedArray())
+        }
+    }
     Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
@@ -170,17 +206,17 @@ internal data class VoiceJoinIntent(
                 if (narrow) Box {
                     if (navigationOpen) Row {
                         SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f), channelsExpanded, { channelsExpanded = it }) { setNavigationOpen(false) }
-                    } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }) { setNavigationOpen(true) }
+                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f), channelsExpanded, { channelsExpanded = it }, joinVoice) { setNavigationOpen(false) }
+                    } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, joinVoice, voicePermissionError) { setNavigationOpen(true) }
                     if (membersVisible && !navigationOpen) MemberPresencePanel(state, viewModel, Modifier.widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd))
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it })
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice)
                     if (medium) Column(Modifier.weight(1f)) {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, joinVoice, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.fillMaxWidth().heightIn(max = 240.dp), compact = true)
                     } else {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, joinVoice, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
                     }
                 }
@@ -218,6 +254,7 @@ internal data class VoiceJoinIntent(
     modifier: Modifier,
     channelsExpanded: Boolean,
     setChannelsExpanded: (Boolean) -> Unit,
+    joinVoice: (Channel) -> Unit,
     closeNavigation: (() -> Unit)? = null,
 ) {
     val detail = state.selectedSpace
@@ -225,6 +262,7 @@ internal data class VoiceJoinIntent(
     val channelCount = detail?.channels?.size ?: 0
     val canCreateChannel = detail != null && state.limits?.let { channelCount < it.channelsPerSpace } == true
     var channelMenuOpen by remember(detail?.space?.id) { mutableStateOf(false) }
+    val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -269,6 +307,8 @@ internal data class VoiceJoinIntent(
             }
             if (channelsExpanded) detail?.channels?.forEach { channel ->
                 val selected = channel.id == state.selectedChannel?.id
+                val people = if (activeChannel == channel.id) voice.participants else state.voiceRosters[if (detail.space.demo) "" else channel.id].orEmpty()
+                var rosterOpen by remember(channel.id) { mutableStateOf(true) }
                 Row(
                     Modifier.fillMaxWidth().height(38.dp).clip(MaterialTheme.shapes.small)
                         .background(if (selected) TerracottaWash else Color.Transparent)
@@ -280,8 +320,36 @@ internal data class VoiceJoinIntent(
                     Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                     if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(28.dp)) { Icon(Icons.Default.Settings, "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
                 }
+                if (BuildConfig.ENABLE_NATIVE_VOICE && (selected || people.isNotEmpty() || activeChannel == channel.id)) {
+                    Row(Modifier.fillMaxWidth().padding(start = 34.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, modifier = Modifier.weight(1f)
+                            .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
+                            Box(Modifier.width((24 + 16 * (people.size.coerceAtMost(3) - 1)).dp).height(24.dp)) {
+                                people.take(3).forEachIndexed { index, person ->
+                                    Avatar(person.name, 24.dp, Modifier.offset(x = (16 * index).dp).zIndex((3 - index).toFloat()))
+                                }
+                            }
+                            if (people.size > 3) Text("+${people.size - 3}", fontSize = 10.sp)
+                            Icon(if (rosterOpen) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null, Modifier.size(15.dp))
+                        } else Spacer(Modifier.weight(1f))
+                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }) {
+                            Text("Join", fontSize = 11.sp)
+                        }
+                    }
+                    if (rosterOpen) {
+                        if (activeChannel == channel.id) VoiceRoster(voice)
+                        else people.forEach { participant ->
+                            Row(Modifier.fillMaxWidth().padding(start = 42.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(participant.name, 28.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text(participant.name, fontSize = 12.sp)
+                                if (participant.deafened || participant.muted) Icon(if (participant.deafened) Icons.Default.VolumeOff else Icons.Default.MicOff, null, Modifier.size(15.dp), tint = TextMuted)
+                            }
+                        }
+                    }
+                }
             }
-            VoiceRoster(voice)
+            if (activeChannel != null && detail?.channels?.none { it.id == activeChannel } == true) VoiceRoster(voice)
         }
         if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED) ConnectedVoiceContext(voice)
         AccountBar(state, voice, viewModel, show)
@@ -400,6 +468,8 @@ internal data class VoiceJoinIntent(
     narrow: Boolean,
     membersVisible: Boolean,
     toggleMembers: () -> Unit,
+    joinVoice: (Channel) -> Unit,
+    voicePermissionError: String?,
     modifier: Modifier = Modifier,
     openNavigation: () -> Unit,
 ) {
@@ -408,25 +478,6 @@ internal data class VoiceJoinIntent(
         Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Default.Tag, null, tint = TerracottaBright); Text("No accessible channels", fontWeight = FontWeight.Bold) }
     }
     val context = LocalContext.current
-    val latestState by rememberUpdatedState(state)
-    var pendingVoiceJoin by remember { mutableStateOf<VoiceJoinIntent?>(null) }
-    var voicePermissionError by remember(channel.id) { mutableStateOf<String?>(null) }
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-        val requested = pendingVoiceJoin
-        pendingVoiceJoin = null
-        val current = latestState
-        if (requested?.isCurrent(current, viewModel.accountEpoch) == true) {
-            if (grants[Manifest.permission.RECORD_AUDIO] == true) {
-                voicePermissionError = null
-                VoiceCallService.start(
-                    context, requested.channelId, requested.spaceId, requested.channelName,
-                    requested.spaceName, requested.displayName, requested.demo,
-                )
-            } else {
-                voicePermissionError = "Microphone permission is required to join voice. Allow microphone access in Android app settings or try Join again."
-            }
-        }
-    }
     var draft by remember(channel.id) { mutableStateOf("") }
     val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
@@ -439,25 +490,15 @@ internal data class VoiceJoinIntent(
             if (state.gateway != GatewayStatus.LIVE) Text(if (state.gateway == GatewayStatus.ERROR) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp)
             Spacer(Modifier.width(10.dp))
             if (BuildConfig.ENABLE_NATIVE_VOICE) Button({
-                if (inCall) VoiceCallService.stop(context) else {
-                    voicePermissionError = null
-                    val space = requireNotNull(state.selectedSpace?.space)
-                    pendingVoiceJoin = VoiceJoinIntent(
-                        channel.id, space.id, channel.name, space.name,
-                        state.account?.displayName ?: "Guest", state.account?.id,
-                        viewModel.accountEpoch, space.demo,
-                    )
-                    permission.launch(buildList {
-                        add(Manifest.permission.RECORD_AUDIO); if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-                    }.toTypedArray())
-                }
-            }, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = TerracottaWash, contentColor = TerracottaBright), border = BorderStroke(1.dp, TerracottaBorder), contentPadding = PaddingValues(horizontal = 12.dp)) {
+                if (inCall) VoiceCallService.stop(context) else joinVoice(channel)
+            }, enabled = inCall || channel.id !in state.deniedVoiceChannels,
+                shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = TerracottaWash, contentColor = TerracottaBright), border = BorderStroke(1.dp, TerracottaBorder), contentPadding = PaddingValues(horizontal = 12.dp)) {
                 Icon(if (inCall) Icons.Default.CallEnd else Icons.Default.RecordVoiceOver, null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text(if (inCall) "Leave" else "Join")
             }
             IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(Icons.Default.People, if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
-        (voicePermissionError ?: voice.error.takeIf { voice.channelId == channel.id })?.let { error ->
+        (voicePermissionError ?: voice.error)?.let { error ->
             Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
         }
         MessageTimeline(state, viewModel, Modifier.weight(1f))
@@ -543,7 +584,7 @@ internal data class VoiceJoinIntent(
     Text(label, Modifier.fillMaxWidth().height(20.dp).padding(horizontal = 18.dp), color = TextMuted, fontSize = 10.sp)
 }
 
-@Composable private fun Avatar(name: String, size: Dp) = Box(Modifier.size(size).clip(CircleShape).background(if (size > 32.dp) SurfaceRaised else SurfaceComposer), contentAlignment = Alignment.Center) {
+@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier) = Box(modifier.size(size).clip(CircleShape).background(if (size > 32.dp) SurfaceRaised else SurfaceComposer), contentAlignment = Alignment.Center) {
     Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
 }
 
