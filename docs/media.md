@@ -542,7 +542,7 @@ gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main 
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
 # Wait for that workflow to succeed and every gateway pod to use the new image.
-kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
 gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 ```
@@ -1519,7 +1519,7 @@ MERGED_SHA=<full-merged-caper-commit>
 gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
 gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 ```
@@ -1675,7 +1675,7 @@ MERGED_SHA=<full-merged-caper-commit>
 gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
 kubectl -n default rollout status deployment/caper-api --timeout=15m
 gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
 gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
 kubectl -n default rollout status deployment/caper-web --timeout=15m
 ```
