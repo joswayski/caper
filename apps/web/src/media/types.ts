@@ -30,6 +30,8 @@ export interface JoinResponse {
   publish?: SessionDescriptionResponse;
   /** Everyone already publishing, pulled into a receive-only session during join. */
   receive?: BatchSubscribeResponse;
+  /** The join adopted the warm sessions whose ticket it sent. */
+  warm?: boolean;
 }
 
 export interface TurnGeneration {

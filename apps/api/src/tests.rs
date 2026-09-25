@@ -29,6 +29,8 @@ struct Mock {
     restart_started: tokio::sync::Notify,
     restart_resume: tokio::sync::Notify,
     restart_unauthorized: AtomicBool,
+    /// Sessions created from a browser offer (warm sessions).
+    connected: AtomicUsize,
 }
 impl Mock {
     fn new() -> Self {
@@ -48,6 +50,7 @@ impl Mock {
             restart_started: tokio::sync::Notify::new(),
             restart_resume: tokio::sync::Notify::new(),
             restart_unauthorized: AtomicBool::new(false),
+            connected: AtomicUsize::new(1),
         }
     }
 }
@@ -62,6 +65,19 @@ impl Provider for Mock {
             tokio::task::yield_now().await;
         }
         Ok(format!("s{}", self.next.fetch_add(1, Ordering::SeqCst)))
+    }
+    async fn connect_session(
+        &self,
+        _: &Config,
+        offer: &str,
+    ) -> Result<(String, Value), ProviderError> {
+        // Counts as session provisioning for the concurrency handshake with turn().
+        self.provisioning.fetch_or(1, Ordering::SeqCst);
+        assert!(!offer.is_empty());
+        Ok((
+            format!("w{}", self.connected.fetch_add(1, Ordering::SeqCst)),
+            json!({"type":"answer","sdp":"answer"}),
+        ))
     }
     async fn turn(&self, _: &Config) -> Result<Vec<IceServer>, ProviderError> {
         self.provisioning.fetch_or(2, Ordering::SeqCst);
@@ -1273,6 +1289,325 @@ fn public_speaker_room(s: &AppState) -> AppState {
     let mut room = s.clone();
     room.media_session = None;
     room
+}
+
+const WARM_OFFERS: &str =
+    r#"{"main":{"type":"offer","sdp":"v=0 main"},"receive":{"type":"offer","sdp":"v=0 receive"}}"#;
+
+fn warm_offers() -> Value {
+    serde_json::from_str(WARM_OFFERS).unwrap()
+}
+
+fn warm_join(ticket: &Value) -> Value {
+    json!({"name":"member","warm":ticket,"receive":true,
+        "publish":{"mid":"1","sessionDescription":{"type":"offer","sdp":"v=0"}}})
+}
+
+#[tokio::test]
+async fn warm_sessions_are_signed_in_only_rate_limited_and_revoked_unless_adopted() {
+    let (public, _) = state();
+    assert_eq!(
+        call(app(public), "POST", "/api/media/warm", None, warm_offers())
+            .await
+            .0,
+        StatusCode::NOT_FOUND,
+        "the public demo has no warm sessions"
+    );
+    let (mut s, mock) = state();
+    s.media_session = Some(b"member".to_vec());
+    let sessions = mock.next.load(Ordering::SeqCst);
+    let (status, warm) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/warm",
+        None,
+        warm_offers(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{warm}");
+    assert_eq!(warm["main"]["type"], "answer");
+    assert_eq!(warm["receive"]["type"], "answer");
+    assert!(warm["ticket"].as_str().unwrap().contains('.'));
+    assert_eq!(warm["adoptWithinMs"], 25 * 60 * 1000);
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        sessions,
+        "sessions come from the offers"
+    );
+    assert_eq!(
+        mock.connected.load(Ordering::SeqCst),
+        3,
+        "one session per connection"
+    );
+    let username = warm["iceServers"][0]["username"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    {
+        let r = s.registry.lock().await;
+        let job = r
+            .cleanup
+            .iter()
+            .find(|job| {
+                job.action
+                    == CleanupAction::Revoke {
+                        username: username.clone(),
+                    }
+            })
+            .expect("unadopted credentials are revoked on a schedule");
+        assert!(job.not_before > Timestamp::now() + WARM_ADOPT_WINDOW);
+    }
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/warm",
+            None,
+            warm_offers()
+        )
+        .await
+        .0,
+        StatusCode::TOO_MANY_REQUESTS,
+        "one warm pair per account at a time"
+    );
+    for body in [
+        json!({"main":{"type":"answer","sdp":"x"},"receive":{"type":"offer","sdp":"x"}}),
+        json!({"main":{"type":"offer","sdp":""},"receive":{"type":"offer","sdp":"x"}}),
+    ] {
+        let mut other = s.clone();
+        other.media_session = Some(b"validation".to_vec());
+        assert_eq!(
+            call(app(other), "POST", "/api/media/warm", None, body)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+}
+
+#[tokio::test]
+async fn joins_adopt_warm_sessions_without_provider_setup() {
+    let (mut s, mock) = state();
+    s.media_session = Some(b"member".to_vec());
+    let warm = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/warm",
+        None,
+        warm_offers(),
+    )
+    .await
+    .1;
+    let username = warm["iceServers"][0]["username"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sessions = mock.next.load(Ordering::SeqCst);
+    let (status, joined) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        warm_join(&warm["ticket"]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["warm"], true);
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        sessions,
+        "no provider session created"
+    );
+    assert_eq!(joined["iceServers"][0]["username"], username.as_str());
+    assert_eq!(joined["publish"]["sessionDescription"]["type"], "answer");
+    assert!(
+        joined.get("receive").is_none(),
+        "an empty room pulls nothing"
+    );
+    let id: Uuid = joined["id"].as_str().unwrap().parse().unwrap();
+    {
+        let r = s.registry.lock().await;
+        let p = &r.participants[&id];
+        assert_eq!(p.session, "w1");
+        assert_eq!(
+            p.receive_session.as_deref(),
+            Some("w2"),
+            "later pulls use the connected receive session"
+        );
+        assert!(
+            !r.cleanup.iter().any(|job| job.action
+                == CleanupAction::Revoke {
+                    username: username.clone()
+                }),
+            "adopted credentials are no longer scheduled for revocation"
+        );
+    }
+    assert!(
+        mock.session_calls
+            .lock()
+            .unwrap()
+            .contains(&("publish", "w1".into()))
+    );
+    // A ticket adopts its sessions once.
+    let (status, replay) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        warm_join(&warm["ticket"]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(replay["code"], "warm_unavailable");
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/leave",
+        joined["token"].as_str(),
+        json!({}),
+    )
+    .await;
+    assert!(
+        s.registry.lock().await.cleanup.iter().any(|job| job.action
+            == CleanupAction::Revoke {
+                username: username.clone()
+            }),
+        "leaving revokes the adopted credentials as for any participant"
+    );
+}
+
+#[tokio::test]
+async fn warm_joins_pull_everyone_present_into_the_connected_receive_session() {
+    let (mut s, mock) = state();
+    s.media_session = Some(b"member".to_vec());
+    let speaker = call(app(public_speaker_room(&s)), "POST", "/api/media/join", None,
+        json!({"name":"speaker","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}})).await.1;
+    let warm = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/warm",
+        None,
+        warm_offers(),
+    )
+    .await
+    .1;
+    let sessions = mock.next.load(Ordering::SeqCst);
+    let (status, joined) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        warm_join(&warm["ticket"]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        sessions,
+        "no receive session created"
+    );
+    assert_eq!(
+        joined["receive"]["tracks"][0]["trackId"],
+        speaker["publish"]["trackId"]
+    );
+    assert_eq!(joined["receive"]["sessionDescription"]["type"], "offer");
+    assert!(
+        mock.session_calls
+            .lock()
+            .unwrap()
+            .contains(&("pull", "w2".into()))
+    );
+}
+
+#[tokio::test]
+async fn a_join_in_another_room_cancels_the_issuing_rooms_revocation() {
+    let (mut s, _) = state();
+    s.media_session = Some(b"member".to_vec());
+    let mut issuing = s.clone();
+    issuing.media_channel = Some("channel00001".into());
+    let warm = call(
+        app(issuing.clone()),
+        "POST",
+        "/api/media/warm",
+        None,
+        warm_offers(),
+    )
+    .await
+    .1;
+    let username = warm["iceServers"][0]["username"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let scheduled = |r: &Registry| {
+        r.cleanup.iter().any(|job| {
+            job.action
+                == CleanupAction::Revoke {
+                    username: username.clone(),
+                }
+        })
+    };
+    assert!(issuing.read(|r| Ok(scheduled(r))).await.unwrap());
+    let (status, joined) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        warm_join(&warm["ticket"]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert!(
+        !issuing.read(|r| Ok(scheduled(r))).await.unwrap(),
+        "cancelled where it was scheduled"
+    );
+}
+
+#[tokio::test]
+async fn foreign_expired_altered_or_monitor_warm_tickets_are_refused_before_reserving() {
+    let (mut s, _) = state();
+    s.media_session = Some(b"member".to_vec());
+    let warm = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/warm",
+        None,
+        warm_offers(),
+    )
+    .await
+    .1;
+    let ticket = warm["ticket"].as_str().unwrap();
+    let expired = sign_warm(
+        &s.config,
+        b"member",
+        &WarmTicket {
+            channel: None,
+            session: "w1".into(),
+            receive: "w2".into(),
+            ice_servers: vec![],
+            issued: Timestamp::now() - WARM_ADOPT_WINDOW - Duration::from_secs(1),
+        },
+    );
+    let (payload, tag) = ticket.split_once('.').unwrap();
+    let altered = format!("{payload}A.{tag}");
+    let mut stranger = s.clone();
+    stranger.media_session = Some(b"someone else".to_vec());
+    for (room, body) in [
+        (stranger.clone(), warm_join(&json!(ticket))),
+        (s.clone(), warm_join(&json!(expired))),
+        (s.clone(), warm_join(&json!(altered))),
+        (public_speaker_room(&s), warm_join(&json!(ticket))),
+        (
+            s.clone(),
+            json!({"name":"monitor","monitor":"sender","warm":ticket,
+            "publish":{"mid":"1","sessionDescription":{"type":"offer","sdp":"v=0"}}}),
+        ),
+    ] {
+        let (status, refused) = call(app(room), "POST", "/api/media/join", None, body).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert_eq!(refused["code"], "warm_unavailable");
+    }
+    let r = s.registry.lock().await;
+    assert!(r.reservations.is_empty() && r.participants.is_empty());
 }
 
 #[tokio::test]

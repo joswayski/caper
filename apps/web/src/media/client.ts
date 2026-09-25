@@ -2,6 +2,7 @@ import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppress
 import { appGateway, GatewayError } from "../gateway/client.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
+import { closeWarmVoice, takeWarmVoice } from "./warm.ts";
 import { EventConnection } from "./event-connection.ts";
 import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
 import { TurnRenewal } from "./turn-renewal.ts";
@@ -65,6 +66,12 @@ function reconnectReason(context: string, error: unknown) {
   return `${context} failed: ${error instanceof Error ? error.name : "error"}`;
 }
 
+/** The MID of the offer's audio section; a warm offer also has a data section first. */
+function audioMid(sdp: string | undefined) {
+  const section = (sdp ?? "").split(/(?=^m=)/m).find((part) => part.startsWith("m=audio "));
+  return /^a=mid:(\S+)/m.exec(section ?? sdp ?? "")?.[1];
+}
+
 function transientControlError(error: unknown) {
   return error instanceof CallApiError
     ? error.status === 408 || error.status === 429 || error.status >= 500
@@ -72,7 +79,7 @@ function transientControlError(error: unknown) {
 }
 
 const MEDIA_OPERATIONS = new Set([
-  "join", "prepare", "state", "leave", "snapshot", "publish", "subscribe", "negotiate", "close",
+  "join", "prepare", "warm", "state", "leave", "snapshot", "publish", "subscribe", "negotiate", "close",
   "turn", "restart-ice", "restart-ice-ack", "status",
 ]);
 
@@ -320,32 +327,56 @@ export class PublicCallClient {
       return track;
     });
     const issuedAt = performance.now();
-    // An offer needs a transceiver, not audio. Create it while the microphone
-    // opens so session creation and publication share one request. TURN servers
-    // arrive with that response and are configured before the offer is applied.
-    const pc = this.makePeerConnection([]);
+    // A signed-in member's already-connected sessions, if any: Join then only
+    // publishes and pulls. A refused ticket falls back to the ordinary join.
+    const warm = takeWarmVoice();
     const offering = (async () => {
-      const transceiver = pc.addTransceiver("audio", { direction: "sendonly", streams: [new MediaStream([])] });
-      preferOpus(transceiver);
-      const offer = await pc.createOffer();
-      const mid = /^a=mid:(\S+)/m.exec(offer.sdp ?? "")?.[1];
-      if (!mid) throw new Error("The browser did not assign a media identifier.");
-      const joined = await this.joinWithOffer(offer, mid);
-      return { joined, publication: { pc, transceiver, offer, mid }, sessionMs: performance.now() - started };
+      if (warm) {
+        try { return { ...await this.offerAndJoin(this.makePeerConnection(warm.iceServers, false, warm.main), started, warm.ticket), warm }; }
+        catch (error) {
+          closeWarmVoice(warm);
+          if (!(error instanceof CallApiError && (error.code === "warm_unavailable" || error.status === 422))) throw error;
+        }
+      }
+      // An offer needs a transceiver, not audio. Create it while the microphone
+      // opens so session creation and publication share one request. TURN servers
+      // arrive with that response and are configured before the offer is applied.
+      return { ...await this.offerAndJoin(this.makePeerConnection([]), started), warm: undefined };
     })();
     const [captureResult, joinResult] = await Promise.allSettled([capture, offering]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
-      pc.close();
       if (captureResult.status === "fulfilled") this.stopMicrophone(captureResult.value);
-      if (joinResult.status === "fulfilled") void this.api("leave", {}, joinResult.value.joined.token).catch(() => undefined);
+      if (joinResult.status === "fulfilled") {
+        joinResult.value.publication.pc.close();
+        if (joinResult.value.warm) closeWarmVoice(joinResult.value.warm);
+        void this.api("leave", {}, joinResult.value.joined.token).catch(() => undefined);
+      }
       throw captureResult.status === "rejected" ? captureResult.reason : joinResult.status === "rejected" ? joinResult.reason : new Error("Join preparation failed.");
     }
     return { microphone: captureResult.value, ...joinResult.value, microphoneMs, issuedAt };
   }
 
-  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string) {
+  /** Adds the microphone's transceiver, offers, and joins with that offer. Closes `pc` on failure. */
+  private async offerAndJoin(pc: RTCPeerConnection, started: number, warmTicket?: string) {
+    try {
+      const transceiver = pc.addTransceiver("audio", { direction: "sendonly", streams: [new MediaStream([])] });
+      preferOpus(transceiver);
+      const offer = await pc.createOffer();
+      const mid = audioMid(offer.sdp);
+      if (!mid) throw new Error("The browser did not assign a media identifier.");
+      const joined = await this.joinWithOffer(offer, mid, warmTicket);
+      return { joined, publication: { pc, transceiver, offer, mid }, sessionMs: performance.now() - started };
+    } catch (error) {
+      pc.close();
+      throw error;
+    }
+  }
+
+  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string, warm?: string) {
     const body = { name: this.name, muted: this.muted, deafened: this.deafened };
     const publish = { mid, sessionDescription: { type: "offer", sdp: offer.sdp } };
+    // The offer belongs to the warm connection: no fallback shape can reuse it.
+    if (warm) return this.api<JoinResponse>("join", { ...body, publish, receive: true, warm }, undefined);
     // Older APIs reject unknown fields during deserialization, before any
     // mutation: retry without join-time pulls, then without combined publication.
     const attempts: object[] = [{ ...body, publish }, body];
@@ -394,7 +425,7 @@ export class PublicCallClient {
   }
 
   private async connectPrepared(
-    { microphone, joined, publication, issuedAt, microphoneMs, sessionMs }: Awaited<ReturnType<PublicCallClient["prepareJoin"]>>,
+    { microphone, joined, publication, issuedAt, microphoneMs, sessionMs, warm }: Awaited<ReturnType<PublicCallClient["prepareJoin"]>>,
     generation: number, started: number, label: string,
   ) {
     const prepared = performance.now();
@@ -417,7 +448,8 @@ export class PublicCallClient {
     // All startup promises have rejection handlers before any can fail.
     const opening = this.openEvents(generation);
     const publishing = this.publishMicrophone(microphone, publication, joined.publish, generation);
-    const pulls = this.acceptJoinPulls(joined, generation);
+    const pulls = this.acceptJoinPulls(joined, generation, warm && joined.warm ? warm.receive : undefined);
+    if (warm && !joined.warm) warm.receive.close();
     pulls.catch(() => undefined);
     const [events] = await Promise.all([
       opening,
@@ -454,7 +486,7 @@ export class PublicCallClient {
     // Monitoring has already detached the public sender; only its private return uses audio.
     microphone.enabled = this.monitoring || !this.muted;
     this.joinTiming = {
-      join: `${label} in ${(performance.now() - started).toFixed(0)} ms`,
+      join: `${label} in ${(performance.now() - started).toFixed(0)} ms${warm ? " · pre-connected" : ""}`,
       microphoneMs,
       microphoneDetail: this.microphoneDetail(microphone),
       sessionMs,
@@ -566,8 +598,8 @@ export class PublicCallClient {
     }
   }
 
-  private makePeerConnection(iceServers: RTCIceServer[], receiving = false) {
-    const pc = new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
+  private makePeerConnection(iceServers: RTCIceServer[], receiving = false, existing?: RTCPeerConnection) {
+    const pc = existing ?? new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
     pc.ontrack = (event) => {
       if (!this.owns(pc)) { event.track.stop(); return; }
       const transceiver = event.transceiver;
@@ -972,12 +1004,14 @@ export class PublicCallClient {
    * with no negotiated connection, which Cloudflare answers at once. Answer that
    * offer on a second connection, which then connects alongside the microphone.
    */
-  private acceptJoinPulls(joined: JoinResponse, generation: number) {
+  private acceptJoinPulls(joined: JoinResponse, generation: number, warmReceive?: RTCPeerConnection) {
+    // A warm receive connection is already connected, and later pulls use it too.
+    if (warmReceive) this.receivePc = this.makePeerConnection(joined.iceServers, true, warmReceive);
     const pulled = joined.receive;
     if (!pulled?.sessionDescription) return Promise.resolve();
     const offer = pulled.sessionDescription;
     return this.serialize(async () => {
-      const pc = this.receivePc = this.makePeerConnection(joined.iceServers, true);
+      const pc = this.receivePc ??= this.makePeerConnection(joined.iceServers, true);
       // Map every allocated MID before applying the offer; ontrack uses it.
       for (const { trackId, mid } of pulled.tracks ?? []) this.subscriptions.set(trackId, mid);
       await pc.setRemoteDescription(withOpusDtx(offer));

@@ -29,6 +29,15 @@ const LEASE: Duration = Duration::from_secs(45);
 const PREPARED_TTL: Duration = Duration::from_secs(8);
 // Revoke an unused prepared TURN credential once it can no longer be taken.
 const PREPARED_REVOKE_AFTER: Duration = Duration::from_secs(12);
+// A warm session pair is created and connected by a signed-in member's browser
+// before any Join, and kept connected while the app is open: Cloudflare does not
+// expire a connected session without media. A join may adopt it for this long;
+// the browser replaces it sooner (after 20 minutes).
+const WARM_ADOPT_WINDOW: Duration = Duration::from_secs(25 * 60);
+// Its TURN credentials are revoked then unless a join adopted them.
+const WARM_REVOKE_AFTER: Duration = Duration::from_secs(30 * 60);
+// Per account, per room: bounds provider calls from repeated warm requests.
+const WARM_MIN_INTERVAL: Duration = Duration::from_secs(10);
 // Cloudflare's maximum credential lifetime, not an application call-age limit.
 // Revoke on leave/lease expiry. The browser renews halfway through this lifetime
 // using ICE restart; setConfiguration alone does not renew allocations.
@@ -207,6 +216,15 @@ fn provider_code(value: &Value) -> Option<String> {
 #[async_trait]
 pub trait Provider: Send + Sync {
     async fn create_session(&self, config: &Config) -> Result<String, ProviderError>;
+    /// Creates a session from the browser's offer and returns its answer, so a
+    /// session can be connected before it has any track (a warm session).
+    async fn connect_session(
+        &self,
+        _config: &Config,
+        _offer: &str,
+    ) -> Result<(String, Value), ProviderError> {
+        Err(ProviderError::Rejected)
+    }
     async fn turn(&self, config: &Config) -> Result<Vec<IceServer>, ProviderError>;
     async fn revoke_turn(&self, config: &Config, username: &str) -> Result<(), ProviderError>;
     async fn session_tracks(&self, config: &Config, session: &str) -> Result<Value, ProviderError>;
@@ -285,6 +303,29 @@ impl Provider for Cloudflare {
             .and_then(Value::as_str)
             .map(str::to_owned)
             .ok_or(ProviderError::Rejected)
+    }
+    async fn connect_session(
+        &self,
+        c: &Config,
+        offer: &str,
+    ) -> Result<(String, Value), ProviderError> {
+        // The only form Cloudflare accepts for a session without tracks: tracks/new
+        // requires at least one track (live-checked September 25, 2026).
+        let value = self
+            .request(
+                "connect_session",
+                reqwest::Method::POST,
+                c,
+                &format!("apps/{}/sessions/new", required(&c.app_id)),
+                json!({"sessionDescription":{"type":"offer","sdp":offer}}),
+            )
+            .await?;
+        let session = value
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or(ProviderError::Rejected)?;
+        Ok((session, value["sessionDescription"].clone()))
     }
     async fn turn(&self, c: &Config) -> Result<Vec<IceServer>, ProviderError> {
         let value = self
@@ -562,6 +603,14 @@ impl Cloudflare {
                     .get("sessionId")
                     .and_then(Value::as_str)
                     .is_some_and(|v| !v.is_empty()),
+                "connect_session" => {
+                    value
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.is_empty())
+                        && value["sessionDescription"]["type"] == "answer"
+                        && value["sessionDescription"]["sdp"].is_string()
+                }
                 "turn_issue" => {
                     status == StatusCode::CREATED
                         && value.get("iceServers").is_some_and(|v| {
@@ -775,6 +824,14 @@ struct Registry {
     /// Provider sessions and TURN created shortly before a signed-in member joins.
     #[serde(default)]
     prepared: Vec<PreparedJoin>,
+    /// Recent warm session issues, only to rate-limit them per account.
+    #[serde(default)]
+    warmed: Vec<WarmIssue>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct WarmIssue {
+    account: Vec<u8>,
+    issued: Timestamp,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct PreparedJoin {
@@ -1070,6 +1127,7 @@ fn media_routes() -> Router<AppState> {
         .route("/api/media/presence/events", get(presence_events))
         .route("/api/media/join", post(join))
         .route("/api/media/prepare", post(prepare))
+        .route("/api/media/warm", post(warm))
         .route("/api/media/turn", post(turn))
         .route("/api/media/restart-ice", post(restart_ice))
         .route("/api/media/restart-ice-ack", post(restart_ice_ack))
@@ -1612,6 +1670,10 @@ struct Join {
     /// receive-only session, so both connections come up together.
     #[serde(default)]
     receive: bool,
+    /// A ticket from `warm`: publish into and pull into its already-connected
+    /// sessions instead of creating new ones.
+    #[serde(default)]
+    warm: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1654,6 +1716,25 @@ async fn join(
     {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
     }
+    // Verified before anything is reserved. Expired, foreign or malformed: the
+    // browser discards it and joins the ordinary way.
+    let warm = match &input.warm {
+        None => None,
+        Some(ticket) => {
+            let verified = match (&s.media_session, &input.monitor, &input.publish) {
+                (Some(account), None, Some(_)) => verify_warm(&s.config, account, ticket),
+                _ => None,
+            };
+            Some(
+                verified
+                    .filter(|t| t.issued.elapsed() < WARM_ADOPT_WINDOW)
+                    .ok_or_else(|| {
+                        ApiError::new(StatusCode::CONFLICT, "warm session unavailable")
+                            .with_code("warm_unavailable")
+                    })?,
+            )
+        }
+    };
     let country_code = country_code(&headers);
     let reservation = Uuid::new_v4();
     let (monitor, pulls) = s
@@ -1702,6 +1783,17 @@ async fn join(
             } else {
                 None
             };
+            // A ticket adopts its sessions once.
+            if let Some(warm) = &warm
+                && r.participants.values().any(|p| {
+                    p.session == warm.session || p.receive_session.as_ref() == Some(&warm.receive)
+                })
+            {
+                return Err(
+                    ApiError::new(StatusCode::CONFLICT, "warm session unavailable")
+                        .with_code("warm_unavailable"),
+                );
+            }
             r.joins.push_back(now);
             r.reservations.insert(
                 reservation,
@@ -1719,8 +1811,37 @@ async fn join(
         })
         .await?;
     let wants_receive = !pulls.is_empty();
-    let prepared = match (&s.media_session, monitor) {
-        (Some(account), None) => s.update(|r| Ok(take_prepared_locked(r, account))).await?,
+    if let Some(warm) = &warm {
+        // Adopted: its credentials now live and die with this participant.
+        let mut origin = s.clone();
+        origin.media_channel = warm.channel.clone();
+        let usernames: Vec<_> = warm
+            .ice_servers
+            .iter()
+            .filter_map(|server| server.username.as_ref())
+            .collect();
+        let cancelled = origin
+            .update(|r| {
+                r.cleanup.retain(|job| {
+                    !matches!(&job.action, CleanupAction::Revoke { username } if usernames.contains(&username))
+                });
+                Ok(())
+            })
+            .await;
+        if let Err(error) = cancelled {
+            release_join_reservation(&s, reservation).await;
+            return Err(error);
+        }
+    }
+    let prepared = match (&warm, &s.media_session, monitor) {
+        (Some(warm), _, _) => Some(PreparedJoin {
+            account: vec![],
+            session: warm.session.clone(),
+            ice_servers: warm.ice_servers.clone(),
+            issued: warm.issued,
+            receive_session: Some(warm.receive.clone()),
+        }),
+        (None, Some(account), None) => s.update(|r| Ok(take_prepared_locked(r, account))).await?,
         _ => None,
     };
     // These independent provider requests run together. Session creation is intentionally
@@ -1735,7 +1856,8 @@ async fn join(
     let provisioning = async {
         if let Some(prepared) = prepared {
             let receive = match prepared.receive_session {
-                Some(session) if wants_receive => Some(Ok(session)),
+                // A warm receive session is connected: keep it even with nobody to pull yet.
+                Some(session) if wants_receive || warm.is_some() => Some(Ok(session)),
                 _ => receiving.await,
             };
             (
@@ -1799,7 +1921,8 @@ async fn join(
         name: name.into(),
         country_code,
         session,
-        receive_session: None,
+        // Later pulls go to a warm receive session from the start.
+        receive_session: warm.as_ref().map(|warm| warm.receive.clone()),
         turn_usernames: ice
             .iter()
             .filter_map(|server| server.username.clone())
@@ -1862,6 +1985,9 @@ async fn join(
     })
     .await??;
     let mut response = json!({"token":token,"id":id,"iceServers":ice,"turn":turn_metadata(p.turn.as_ref().unwrap())});
+    if warm.is_some() {
+        response["warm"] = json!(true);
+    }
     // The capability was never returned, so nobody else can use this
     // participant yet: publication and the pulls run together without the
     // per-participant operation lock, and are committed afterwards.
@@ -1875,8 +2001,8 @@ async fn join(
     };
     let pulling = async {
         match &receive_session {
-            Some(session) => Some(pull_tracks(&s, session, &pulls).await),
-            None => None,
+            Some(session) if !pulls.is_empty() => Some(pull_tracks(&s, session, &pulls).await),
+            _ => None,
         }
     };
     let (published, pulled) = tokio::join!(publishing, pulling);
@@ -2042,6 +2168,157 @@ async fn prepare(State(s): State<AppState>, Json(_): Json<Empty>) -> Result<Stat
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// What a warm ticket carries. It is signed for one account and never stored:
+/// any room that account joins can adopt it, and the issuing room holds the
+/// scheduled revocation of its TURN credentials.
+#[derive(Serialize, Deserialize)]
+struct WarmTicket {
+    channel: Option<String>,
+    session: String,
+    receive: String,
+    ice_servers: Vec<IceServer>,
+    issued: Timestamp,
+}
+
+fn warm_mac(c: &Config, account: &[u8], payload: &[u8]) -> hmac::Hmac<Sha256> {
+    use hmac::Mac;
+    // A dedicated key derived from the provider secret every media pod already holds.
+    let key = Sha256::new()
+        .chain_update(b"caper-warm-ticket-v1\0")
+        .chain_update(required(&c.app_secret).as_bytes())
+        .finalize();
+    let mut mac = hmac::Hmac::<Sha256>::new_from_slice(&key).expect("HMAC accepts any key length");
+    mac.update(&(account.len() as u64).to_be_bytes());
+    mac.update(account);
+    mac.update(payload);
+    mac
+}
+
+fn sign_warm(c: &Config, account: &[u8], ticket: &WarmTicket) -> String {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use hmac::Mac;
+    let payload = serde_json::to_vec(ticket).expect("a warm ticket serializes");
+    let tag = warm_mac(c, account, &payload).finalize().into_bytes();
+    format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(&payload),
+        URL_SAFE_NO_PAD.encode(tag)
+    )
+}
+
+/// The ticket, if this account's own and unmodified. Age is checked by the caller.
+fn verify_warm(c: &Config, account: &[u8], ticket: &str) -> Option<WarmTicket> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use hmac::Mac;
+    if ticket.len() > 16_384 {
+        return None;
+    }
+    let (payload, tag) = ticket.split_once('.')?;
+    let payload = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let tag = URL_SAFE_NO_PAD.decode(tag).ok()?;
+    warm_mac(c, account, &payload).verify_slice(&tag).ok()?;
+    serde_json::from_slice(&payload).ok()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WarmInput {
+    main: Sdp,
+    receive: Sdp,
+}
+
+/// Creates a session pair from a signed-in member's two browser offers, before
+/// any Join, and returns their answers. The browser connects both and keeps them
+/// connected; Join then publishes and pulls into them, skipping session
+/// creation, TURN issuance and both connection handshakes. Nothing is stored:
+/// the returned ticket is signed for this account. Unadopted TURN credentials
+/// are revoked after WARM_REVOKE_AFTER; closing the browser's connections ends
+/// the provider sessions.
+async fn warm(
+    State(s): State<AppState>,
+    Json(input): Json<WarmInput>,
+) -> Result<Json<Value>, ApiError> {
+    ensure_enabled(&s)?;
+    let Some(account) = s.media_session.clone() else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not available"));
+    };
+    if [&input.main, &input.receive]
+        .iter()
+        .any(|d| !matches!(d.ty, SdpType::Offer) || !valid_text(&d.sdp, 200_000))
+    {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid request"));
+    }
+    s.update(|r| {
+        r.warmed.retain(|w| w.issued.elapsed() < WARM_MIN_INTERVAL);
+        if r.warmed.len() >= 4 * MAX_PARTICIPANTS || r.warmed.iter().any(|w| w.account == account) {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded",
+            ));
+        }
+        r.warmed.push(WarmIssue {
+            account: account.clone(),
+            issued: Timestamp::now(),
+        });
+        Ok(())
+    })
+    .await?;
+    let issued = Timestamp::now();
+    let (main, receive, ice) = tokio::join!(
+        s.provider.connect_session(&s.config, &input.main.sdp),
+        s.provider.connect_session(&s.config, &input.receive.sdp),
+        s.provider.turn(&s.config),
+    );
+    let usable = main.is_ok() && receive.is_ok() && ice.is_ok();
+    if let Ok(servers) = &ice {
+        // Whatever else failed, these credentials exist until revoked.
+        let revoke_at = if usable {
+            issued + WARM_REVOKE_AFTER
+        } else {
+            issued
+        };
+        s.update(|r| {
+            for username in servers.iter().filter_map(|server| server.username.as_ref()) {
+                enqueue_action_at_locked(
+                    r,
+                    CleanupAction::Revoke {
+                        username: username.clone(),
+                    },
+                    revoke_at,
+                );
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    // A provider session that is never connected needs no cleanup.
+    let ((session, main_answer), (receive_session, receive_answer), ice_servers) =
+        match (main, receive, ice) {
+            (Ok(main), Ok(receive), Ok(ice)) => (main, receive, ice),
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                return Err(error.into());
+            }
+        };
+    let ticket = sign_warm(
+        &s.config,
+        &account,
+        &WarmTicket {
+            channel: s.media_channel.clone(),
+            session,
+            receive: receive_session,
+            ice_servers: ice_servers.clone(),
+            issued,
+        },
+    );
+    Ok(Json(json!({
+        "ticket": ticket,
+        "main": main_answer,
+        "receive": receive_answer,
+        "iceServers": ice_servers,
+        "adoptWithinMs": WARM_ADOPT_WINDOW.as_millis() as u64,
+    })))
 }
 
 fn turn_metadata(cache: &TurnCache) -> Value {

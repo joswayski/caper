@@ -1594,6 +1594,92 @@ Deploy API, then gateway (its allowlist gains `media.prepare`), then web. An
 older API or gateway rejects `prepare`; the browser ignores the failure and joins
 the ordinary way.
 
+### Warm sessions: pre-connected for signed-in members
+
+A prepared join still leaves the connection handshakes on Join and lasts only
+seconds. Signed-in members now keep a **warm pair** instead: while a member is on
+an account channel, voice is available and they are not in a call, the browser
+creates two provider sessions with no tracks and connects both:
+
+- `media.warm` (account channels only; the public demo answers 404) takes two
+  browser offers, each carrying only a negotiated data channel (no track, no
+  in-band channel messages). The API calls Cloudflare `sessions/new` with each
+  offer, which is the only form Cloudflare accepts for a session without tracks:
+  `tracks/new` requires at least one track (live-checked September 25, 2026).
+  It also issues TURN, and returns both answers, the ICE servers and a ticket.
+- The ticket is not stored anywhere. It is signed with HMAC-SHA256 for that
+  account's session hash, using a key derived from the provider secret every
+  media pod already holds. It names both sessions, the TURN credentials, the
+  issuing channel and the issue time, so a join in **any** of that account's
+  channels can adopt it.
+- Join sends `warm: <ticket>` with its microphone offer, made on the warm
+  connection (a new audio section beside the data section). The API verifies
+  the ticket against the joining account and checks it is under 25 minutes old.
+  It refuses a ticket whose sessions a participant in the room already uses.
+  It then publishes into the warm session and pulls everyone present into the
+  warm receive session, creating no session and issuing no TURN. Both
+  connections are already connected, so no handshake follows. The warm receive
+  session becomes the participant's pull session even in an empty room, so
+  later pulls use a connected transport too. The response carries
+  `warm: true`, and the diagnostics label the join "pre-connected".
+- A refused ticket (409 `warm_unavailable`: foreign, altered, expired, replayed,
+  or sent with a monitor) is refused before anything is reserved. The browser
+  then closes the pair and joins the ordinary way in the same Join. So does a
+  422 from an API without the field.
+
+Lifecycle and cost:
+- The browser replaces the pair after 20 minutes. It rebuilds the pair at once
+  when either connection fails or stays disconnected for 5 seconds, and when a
+  hidden page (a backgrounded phone) becomes visible again.
+- It closes the pair during a call, on sign-out, and when leaving the call page.
+- Closing the connections ends the provider sessions. Unadopted TURN
+  credentials are revoked 30 minutes after issue, by a job scheduled in the
+  issuing channel's registry; adoption cancels that job there, even from
+  another channel.
+- A room accepts one warm request per account per 10 seconds, and at most 48
+  per 10 seconds in total.
+- Cloudflare bills egress only, and an idle connected session carries only
+  connectivity checks, so a warm pair costs no media. Cloudflare documents that
+  its media inactivity timeout does not define the lifetime of a connected
+  session without media.
+- Registry state gains `warmed` (rate limiting only) with a serde default,
+  compatible in both directions.
+
+Validation:
+- Rust tests cover issue, rate limit and validation, adoption, and pulls into
+  the warm receive session. They also cover the refusals (foreign, expired,
+  altered, replayed, monitor, public room) and cross-room cancellation of the
+  revocation. Each of the replay check, the signature check and the revocation
+  cancel was removed in turn to confirm a test fails.
+- Web tests cover the warm lifecycle, adoption with no new PeerConnection, the
+  409/422 fallback, replacement after failure, and stopping on 404.
+- Real Chromium over loopback, with a second local peer standing in for
+  Cloudflare (not Cloudflare): the data-channel-only pair connected in 31 ms.
+  Adding the microphone renegotiated without leaving `connected`, and audio
+  reached the stand-in 93 ms after starting. A server-style offer on the warm
+  receive connection delivered audio in 93 ms.
+- Live Cloudflare signaling: `sessions/new` with a data-channel-only offer
+  returned an answer that Chromium applied.
+- **Not verified:**
+  - Publishing into a *connected* warm Cloudflare session; the sandbox cannot
+    connect WebRTC.
+  - End-to-end join time on a device.
+  - How long iOS keeps the pair while the page is visible.
+
+Deploy API, then gateway (its allowlist gains `media.warm`), then web. An older
+gateway answers the command with 400, and the browser stops asking until
+reload. No migration, secret or configuration change. After merge:
+
+```bash
+MERGED_SHA=<full-merged-caper-commit>
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+```
+
 ### Join-time pulls on a receive-only connection
 
 A browser that publishes inside `media.join` also sends `receive: true`. When

@@ -12,6 +12,7 @@ import Tooltip from "../components/Tooltip";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
 import { PublicCallClient, prepareVoiceJoin } from "../media/client";
+import { hasWarmVoice, keepVoiceWarm, stopVoiceWarm } from "../media/warm";
 import { watchPresence } from "../media/presence";
 import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
@@ -526,8 +527,17 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   const prepareChannel = (channelId?: string) => {
     const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
     if (!signedIn || channel?.demo || joinBlocked || (!idle && clientRoot.current === root)) return;
+    if (hasWarmVoice()) return; // Join will use the connected pair instead.
     prepareVoiceJoin(root);
   };
+  // Signed-in members keep a connected session pair ready while voice is idle,
+  // so Join only publishes and pulls. None during a call or for the public demo.
+  const keepWarm = signedIn && !channel?.demo && identityReady && available === true && idle;
+  useEffect(() => {
+    if (!keepWarm) { stopVoiceWarm(); return; }
+    keepVoiceWarm(mediaRoot);
+  }, [keepWarm, mediaRoot]);
+  useEffect(() => () => stopVoiceWarm(), []);
   const prepareRef = useRef(prepareChannel);
   prepareRef.current = prepareChannel;
   // Start preparing as the pointer approaches a Join button, not only on hover.
@@ -569,8 +579,10 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     });
     observer.observe(button);
     return () => observer.disconnect();
-    // A new identity re-attaches when the viewed channel changes and React reuses the button.
-  }, [channel?.id]);
+    // A new identity re-attaches (and observes again) when the viewed channel
+    // changes with React reusing the button, or when Join becomes possible after
+    // the button was already shown: preparation is skipped while it is blocked.
+  }, [channel?.id, joinBlocked]);
   const openMicTest = () => {
     setVoiceError(undefined);
     setAudioPanel("mic");
