@@ -604,6 +604,83 @@ async fn provider_rejected_unavailable_track_preserves_listener_only_without_sdp
 }
 
 #[tokio::test]
+async fn join_time_pull_answers_cloudflares_placeholder_offer_through_the_real_adapter() {
+    // Replays the live September 25, 2026 shape: a refused pull into a brand-new
+    // receive session still carries an inactive placeholder offer to answer.
+    let (s, _) = state();
+    let speaker = joined(&s, "phone").await;
+    let published = call(app(s.clone()), "POST", "/api/media/publish", speaker["token"].as_str(),
+        json!({"kind":"microphone","mid":"phone-mic","sessionDescription":{"type":"offer","sdp":"v=0"}})).await;
+    assert_eq!(published.0, StatusCode::OK);
+    let track = published.1["trackId"].clone();
+    let created = Arc::new(AtomicUsize::new(0));
+    let pulled_into = Arc::new(std::sync::Mutex::new(String::new()));
+    let (config, server) = upstream(Router::new().fallback({
+        let created = created.clone();
+        let pulled_into = pulled_into.clone();
+        move |uri: axum::http::Uri, body: String| {
+            let created = created.clone();
+            let pulled_into = pulled_into.clone();
+            async move {
+                // Session creation sends no JSON body.
+                let request: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let path = uri.path();
+                // Cloudflare answers creation with 201 Created.
+                if path.ends_with("/sessions/new") {
+                    return (StatusCode::CREATED, Json(json!({"sessionId":format!("cf-{}", created.fetch_add(1, Ordering::SeqCst))})));
+                }
+                if path.contains("generate-ice-servers") {
+                    return (StatusCode::CREATED, Json(json!({"iceServers":[{"urls":["turn:turn.example:3478?transport=udp"],"username":"u","credential":"c"}]})));
+                }
+                let first = &request["tracks"][0];
+                if first["location"] == "local" {
+                    return (StatusCode::OK, Json(json!({"tracks":[{"mid":first["mid"]}],"sessionDescription":{"type":"answer","sdp":"v=0"}})));
+                }
+                *pulled_into.lock().unwrap() = path.to_owned();
+                (StatusCode::OK, Json(json!({
+                    "requiresImmediateRenegotiation": true,
+                    "tracks": [{
+                        "sessionId": first["sessionId"], "trackName": first["trackName"], "mid": "",
+                        "errorCode": "not_found_track_error",
+                        "errorDescription": "Track not found on remote peer. Make sure the publisher peer is connected and sending packets for this track"
+                    }],
+                    "sessionDescription": {"type":"offer","sdp":"v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=inactive\r\n"}
+                })))
+            }
+        }
+    }))
+    .await;
+    let mut api = s.clone();
+    api.config = config;
+    api.provider = Arc::new(Cloudflare::new());
+    let (status, joined) = call(app(api), "POST", "/api/media/join", None,
+        json!({"name":"laptop","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}},"receive":true})).await;
+    server.abort();
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(
+        created.load(Ordering::SeqCst),
+        2,
+        "main and receive sessions"
+    );
+    assert_eq!(joined["publish"]["sessionDescription"]["type"], "answer");
+    assert_eq!(joined["receive"]["gone"], json!([track]));
+    assert_eq!(joined["receive"]["tracks"], json!([]));
+    assert_eq!(joined["receive"]["sessionDescription"]["type"], "offer");
+    let id: Uuid = joined["id"].as_str().unwrap().parse().unwrap();
+    let r = s.registry.lock().await;
+    let p = r.participants.get(&id).expect("the listener joined");
+    let receive = p.receive_session.clone().expect("receive session");
+    assert_ne!(receive, p.session);
+    assert!(
+        pulled_into
+            .lock()
+            .unwrap()
+            .contains(&format!("/sessions/{receive}/tracks/new"))
+    );
+    assert!(p.pending_offer && !p.operation && p.subscriptions.is_empty());
+}
+
+#[tokio::test]
 async fn batched_pulls_keep_partial_success_and_fail_closed_on_uncertain_results() {
     // (per-track results for [first, second], offer?, pending?, expected outcome)
     // Outcome: Some((allocated first?, allocated second?)) or None for uncertain.
@@ -650,16 +727,16 @@ async fn batched_pulls_keep_partial_success_and_fail_closed_on_uncertain_results
             true,
             Some((true, false)),
         ),
-        // An offer without allocations, or allocations without one, is uncertain.
+        // A session with no negotiated PeerConnection gets an inactive
+        // placeholder offer even when every pull is refused (live-captured);
+        // it is answered, not treated as uncertain.
         (
-            vec![
-                refused("not_found_track_error"),
-                refused("not_found_track_error"),
-            ],
+            vec![live_refusal.clone(), live_refusal.clone()],
             true,
             true,
-            None,
+            Some((false, false)),
         ),
+        // Allocations without an offer are uncertain.
         (
             vec![allocated(1), refused("not_found_track_error")],
             false,
@@ -759,14 +836,11 @@ async fn batched_pulls_keep_partial_success_and_fail_closed_on_uncertain_results
             assert_eq!(gone.contains(track), !expected);
         }
         assert!(gone.contains(&json!(departed)));
-        assert_eq!(
-            response.get("sessionDescription").is_some(),
-            first || second
-        );
+        assert_eq!(response.get("sessionDescription").is_some(), offer);
         let r = s.registry.lock().await;
         let p = &r.participants[&id];
         assert!(!p.operation);
-        assert_eq!(p.pending_offer, first || second);
+        assert_eq!(p.pending_offer, pending);
         assert_eq!(
             p.subscriptions.len(),
             usize::from(first) + usize::from(second)

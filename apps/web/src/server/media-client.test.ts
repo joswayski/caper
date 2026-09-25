@@ -140,8 +140,8 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
     }
     if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
     if (op === "subscribe") {
-      const { trackIds } = JSON.parse(options.body as string) as { trackIds?: string[] };
-      if (trackIds) return Response.json({ requiresImmediateRenegotiation: true, tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })), gone: [], sessionDescription: { type: "offer", sdp: providerSdp } });
+      const { trackIds, receive } = JSON.parse(options.body as string) as { trackIds?: string[]; receive?: boolean };
+      if (trackIds) return Response.json({ ...(receive ? { receive: true } : {}), requiresImmediateRenegotiation: true, tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })), gone: [], sessionDescription: { type: "offer", sdp: providerSdp } });
       return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
     }
     if (op === "snapshot") return Response.json({ participants: [] });
@@ -1113,35 +1113,121 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   assert.equal(track.enabled, true);
 });
 
-test("lease renewal overlaps transport setup, but pulls and audio wait for it", async (t) => {
-  const { client, track, calls, states, install } = setup(t);
+/** Holds the microphone transport in "connecting" and records request bodies. */
+function holdTransport(t: TestContext, install: (key: string, value: unknown) => void, roster: object[], reject?: (op: string, body: Record<string, unknown>) => Response | undefined) {
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
-    ? (calls.push("snapshot"), Promise.resolve(Response.json({ participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }] })))
-    : original(url, init));
+  const bodies: Array<{ op: string; body: Record<string, unknown> }> = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    const op = url.split("?")[0].split("/").at(-1)!;
+    const body = init?.body ? JSON.parse(init.body as string) as Record<string, unknown> : {};
+    bodies.push({ op, body });
+    const rejected = reject?.(op, body);
+    if (rejected) return Promise.resolve(rejected);
+    if (op === "snapshot") return Promise.resolve(Response.json({ participants: roster }));
+    return original(url, init);
+  });
   const applyRemote = Peer.prototype.setRemoteDescription;
   let answers = 0;
   t.mock.method(Peer.prototype, "setRemoteDescription", async function (this: Peer, description: RTCSessionDescriptionInit) {
-    // Only the publication answer starts transport; later offers renegotiate a connected peer.
+    // Only the publication answer starts the microphone transport.
     if (answers++ === 0) { this.connectionState = "connecting"; return; }
     return applyRemote.call(this, description);
   });
+  return bodies;
+}
+
+const otherSpeaker = [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }];
+
+/** A join answer that also pulled everyone present, as an API with join-time pulls returns. */
+const joinWithPulls = (trackIds: string[]) => Response.json({
+  token: "capability", id: "self", iceServers: [],
+  publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
+  receive: {
+    tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })), gone: [],
+    requiresImmediateRenegotiation: true, sessionDescription: { type: "offer", sdp: providerSdp },
+  },
+});
+
+test("join pulls everyone present onto a receive connection that comes up with the microphone", async (t) => {
+  const { client, track, states, install } = setup(t);
+  const bodies = holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  t.mock.method(Peer.prototype, "createAnswer", async function (this: Peer) {
+    // The receive connection is still connecting when its answer is sent.
+    this.connectionState = "connecting";
+    return { type: "answer", sdp: "v=0" };
+  });
   const joining = client.join();
   await tick();
-  assert.equal(calls.includes("state"), true);
-  assert.equal(calls.includes("snapshot"), true, "the lease renewal overlaps transport setup");
-  // Cloudflare holds a pull for an unconnected listener, then answers 425.
-  assert.equal(calls.includes("subscribe"), false, "pulls wait for the listener's transport");
-  assert.equal(calls.includes("negotiate"), false);
+  const [main, receiver] = Peer.all;
+  assert.ok(receiver, "a second connection receives");
+  assert.equal(bodies.find((entry) => entry.op === "join")?.body.receive, true);
+  assert.equal(bodies.some((entry) => entry.op === "subscribe"), false, "no pull after joining");
+  assert.equal(bodies.some((entry) => entry.op === "publish"), false);
+  assert.equal(receiver.remoteDescriptions[0]?.type, "offer", "the join's pull offer goes to the receive connection");
+  assert.equal(main.remoteDescriptions.some((description) => description.type === "offer"), false);
+  assert.ok(bodies.some((entry) => entry.op === "negotiate"), "answered while the microphone connection is still connecting");
+  assert.equal(main.connectionState, "connecting");
   assert.equal(track.enabled, false);
-  assert.equal(states.at(-1)?.phase, "joining");
-  Peer.latest.connectionState = "connected";
-  Peer.latest.dispatchEvent(new Event("connectionstatechange"));
+  assert.equal(states.some((state) => state.remoteMedia.length > 0), false, "received audio is withheld while joining");
+  main.connectionState = "connected";
+  main.dispatchEvent(new Event("connectionstatechange"));
+  await tick();
+  assert.equal(states.at(-1)?.phase, "joining", "the join also waits for the receive connection");
+  receiver.connectionState = "connected";
+  receiver.dispatchEvent(new Event("connectionstatechange"));
   await joining;
-  assert.equal(calls.includes("subscribe"), true);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
   assert.equal(track.enabled, true);
+  assert.equal(Peer.all.length, 2);
+});
+
+test("later pulls and closes use the receive connection", async (t) => {
+  const { client, events, install } = setup(t);
+  const bodies = holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  const joining = client.join();
+  await tick();
+  const [main, receiver] = Peer.all;
+  main.connectionState = "connected";
+  main.dispatchEvent(new Event("connectionstatechange"));
+  await joining;
+  // A newcomer arrives; the pull uses the receive session, not a new connection.
+  const roster = [...otherSpeaker, { id: "late", name: "Late", muted: false, deafened: false, tracks: [{ id: "fresh", kind: "microphone" }] }];
+  events[0].enqueue(snapshotEvent(roster, 1));
+  await tick();
+  assert.equal(bodies.filter((entry) => entry.op === "subscribe").length, 1);
+  assert.equal(receiver.remoteDescriptions.length, 2);
+  assert.equal(main.remoteDescriptions.some((description) => description.type === "offer"), false);
+  assert.equal(Peer.all.length, 2);
+  // Departures are closed as subscriptions, since MIDs may repeat across sessions.
+  events[0].enqueue(snapshotEvent(roster.slice(1), 2));
+  await tick();
+  assert.deepEqual(bodies.find((entry) => entry.op === "close")?.body, { mid: "1", subscription: true });
+});
+
+test("an API without join-time pulls keeps combined publication and pulls after connecting", async (t) => {
+  const { client, states, install } = setup(t);
+  const bodies = holdTransport(t, install, otherSpeaker, (op, body) =>
+    op === "join" && body.receive ? Response.json({ error: "unknown field `receive`" }, { status: 422 }) : undefined);
+  const joining = client.join();
+  await tick();
+  const main = Peer.all[0];
+  const joins = bodies.filter((entry) => entry.op === "join");
+  assert.equal(joins.length, 2);
+  assert.equal(joins[1].body.receive, undefined);
+  assert.ok(joins[1].body.publish, "combined publication is kept");
+  assert.equal(bodies.some((entry) => entry.op === "subscribe"), false, "pulls wait for the transport");
+  main.connectionState = "connected";
+  main.dispatchEvent(new Event("connectionstatechange"));
+  await joining;
+  assert.equal(Peer.all.length, 1);
+  assert.equal(main.remoteDescriptions.at(-1)?.type, "offer", "the pull uses the microphone connection");
+  assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
+  // Later joins on this client skip the unsupported field.
+  client.leaveImmediately();
+  await tick();
+  await client.join();
+  assert.equal(bodies.filter((entry) => entry.op === "join").at(-1)?.body.receive, undefined);
 });
 
 test("startup renews the lease despite a pushed roster and keeps newer pushed state", async (t) => {
@@ -2041,7 +2127,7 @@ test("join carries current mute/deafen intent and synchronizes before slow publi
   await tick();
   try {
     assert.deepEqual(joinBody, {
-      name: "Laptop", muted: true, deafened: true,
+      name: "Laptop", muted: true, deafened: true, receive: true,
       publish: { mid: "0", sessionDescription: { type: "offer", sdp: "v=0\r\na=mid:0\r\n" } },
     });
     assert.deepEqual(stateUpdates, [{ muted: true, deafened: true }]);
@@ -2095,8 +2181,8 @@ test("an API without combined publication falls back to a separate publish", asy
   });
   await client.join();
   assert.equal(states.at(-1)?.phase, "connected");
-  assert.equal(bodies.length, 2);
-  assert.equal(bodies[1].publish, undefined);
+  assert.equal(bodies.length, 3, "with pulls, then publication only, then plain");
+  assert.equal(bodies[2].publish, undefined);
   assert.equal(calls.filter((op) => op === "publish").length, 1);
   assert.equal(calls.includes("leave"), false);
 });
