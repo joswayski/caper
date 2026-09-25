@@ -108,4 +108,19 @@ class CaperApiTest {
             owner.close()
         }
     }
+
+    @Test fun `voice status reads the web media roots and sends the account token only to channels`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"enabled":true}"""))
+        server.enqueue(MockResponse().setBody("""{"enabled":false}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertTrue(api.mediaStatus("account-secret", "chan00000001", demo = true).enabled)
+        assertFalse(api.mediaStatus("account-secret", "chan00000002", demo = false).enabled)
+
+        val demo = server.takeRequest(); val channel = server.takeRequest()
+        assertEquals("GET", demo.method)
+        assertEquals("/api/media/status", demo.path)
+        assertNull(demo.headers["Authorization"])
+        assertEquals("/api/channels/chan00000002/media/status", channel.path)
+        assertEquals("Bearer account-secret", channel.headers["Authorization"])
+    }
 }

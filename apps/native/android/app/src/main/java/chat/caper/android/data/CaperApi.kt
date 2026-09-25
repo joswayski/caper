@@ -110,6 +110,10 @@ class CaperApi(
         request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/members/${member.pathId()}", "DELETE", token)
     }
 
+    /** Web: GET `${mediaRoot}/status` — the channel's media root, or the demo root for General. */
+    suspend fun mediaStatus(accountToken: String?, channel: String, demo: Boolean): MediaStatus =
+        get(if (demo) "/api/media/status" else "/api/channels/${channel.pathId()}/media/status", accountToken.takeUnless { demo })
+
     suspend inline fun <reified T> media(
         accountToken: String?,
         channel: String,

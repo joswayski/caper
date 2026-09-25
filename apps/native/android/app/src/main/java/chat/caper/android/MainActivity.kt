@@ -179,9 +179,13 @@ internal data class VoiceJoinIntent(
             } else voicePermissionError = "Microphone permission is required to join voice. Allow microphone access in Android app settings or try Join again."
         }
     }
+    val availabilityKnown = state.voiceAvailable != null
+    LaunchedEffect(state.selectedChannel?.id, state.selectedSpace?.space?.demo, state.account?.id, availabilityKnown) {
+        if (!availabilityKnown) viewModel.checkVoiceAvailability()
+    }
     val joinVoice: (Channel) -> Unit = { channel ->
         val space = state.selectedSpace?.space
-        if (BuildConfig.ENABLE_NATIVE_VOICE && space != null &&
+        if (BuildConfig.ENABLE_NATIVE_VOICE && space != null && state.voiceAvailable == true &&
             state.selectedSpace.channels.any { it.id == channel.id } && channel.id !in state.deniedVoiceChannels) {
             voicePermissionError = null
             pendingVoiceJoin = VoiceJoinIntent(channel.id, space.id, channel.name, space.name,
@@ -334,8 +338,9 @@ internal data class VoiceJoinIntent(
                             if (people.size > 3) Text("+${people.size - 3}", fontSize = 10.sp)
                             Icon(if (rosterOpen) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null, Modifier.size(15.dp))
                         } else Spacer(Modifier.weight(1f))
-                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, modifier = Modifier.semantics {
-                            contentDescription = if (activeChannel != null) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
+                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, modifier = Modifier.semantics {
+                            contentDescription = voiceJoinUnavailableLabel(state.voiceAvailable)
+                                ?: if (activeChannel != null) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
                         }) {
                             Text("Join", fontSize = 11.sp)
                         }
@@ -565,7 +570,8 @@ internal data class VoiceJoinIntent(
             Spacer(Modifier.width(10.dp))
             if (BuildConfig.ENABLE_NATIVE_VOICE) Button({
                 if (inCall) VoiceCallService.stop(context) else joinVoice(channel)
-            }, enabled = inCall || channel.id !in state.deniedVoiceChannels,
+            }, enabled = inCall || (channel.id !in state.deniedVoiceChannels && state.voiceAvailable == true),
+                modifier = Modifier.semantics { if (!inCall) voiceJoinUnavailableLabel(state.voiceAvailable)?.let { contentDescription = it } },
                 shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = TerracottaWash, contentColor = TerracottaBright), border = BorderStroke(1.dp, TerracottaBorder), contentPadding = PaddingValues(horizontal = 12.dp)) {
                 Icon(if (inCall) Icons.Default.CallEnd else Icons.Default.RecordVoiceOver, null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text(if (inCall) "Leave" else "Join")
             }

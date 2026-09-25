@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
+@Serializable data class MediaStatus(val enabled: Boolean = false)
 @Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false)
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
@@ -93,6 +94,16 @@ sealed interface SessionScreen {
     data class Spaces(val account: Account) : SessionScreen
 }
 
+/** Web keys availability by media root: General uses the demo root. */
+fun voiceRootKey(demo: Boolean, channelId: String) = if (demo) "" else channelId
+
+/** Web's Join tooltip while availability is unknown or false; null once available. */
+fun voiceJoinUnavailableLabel(available: Boolean?): String? = when (available) {
+    true -> null
+    false -> "Joining is not available at this time."
+    null -> "Checking voice availability…"
+}
+
 data class AppUiState(
     val screen: SessionScreen = SessionScreen.Loading,
     val account: Account? = null,
@@ -108,13 +119,20 @@ data class AppUiState(
     val presence: Map<String, String> = emptyMap(),
     val voiceRosters: Map<String, List<Participant>> = emptyMap(),
     val deniedVoiceChannels: Set<String> = emptySet(),
+    /** Voice availability by media root ("" is General's demo root); absent while checking. */
+    val voiceAvailability: Map<String, Boolean> = emptyMap(),
     val presencePage: Int = 0,
     val channelGrants: List<Member> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val busy: Boolean = false,
     val error: String? = null,
-)
+) {
+    /** The viewed channel's media root decides every Join, as on web. */
+    val voiceAvailable: Boolean? get() = selectedChannel?.let { channel ->
+        voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
+    }
+}
 
 data class PendingMessageUi(
     val clientMessageId: String,

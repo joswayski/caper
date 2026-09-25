@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val api = CaperApi()
@@ -252,6 +253,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val next = page.coerceIn(0, max)
         mutable.value = mutable.value.copy(presencePage = next, presence = emptyMap())
         watchVisiblePresence()
+    }
+
+    private var availabilityRequest: Job? = null
+
+    /** Web: fetch `${mediaRoot}/status` for the viewed channel; failure or timeout means unavailable. */
+    fun checkVoiceAvailability() {
+        val current = mutable.value
+        val channel = current.selectedChannel ?: return
+        val demo = current.selectedSpace?.space?.demo == true
+        val key = voiceRootKey(demo, channel.id)
+        val token = accountToken
+        availabilityRequest?.cancel()
+        availabilityRequest = viewModelScope.launch {
+            val enabled = withTimeoutOrNull(10_000) {
+                runCatching { api.mediaStatus(token, channel.id, demo).enabled }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; false }
+            } ?: false
+            mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (key to enabled))
+        }
     }
 
     fun reportActivity() { gateway?.reportActivity() }
