@@ -168,6 +168,35 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual((restored as? HTTPURLResponse)?.statusCode, 200)
     }
 
+    func testCompactActiveRosterAudioMenuAndCollapsedCallContextFixture() {
+        let app = launch(fixture: "voice-roster")
+        #if os(iOS)
+        app.buttons["Open navigation"].tap()
+        #endif
+        let context = app.descendants(matching: .any)["active-voice-context"]
+        XCTAssertTrue(context.waitForExistence(timeout: 10))
+        assertStaticText("TEST FIXTURE You (you)", in: app)
+        assertStaticText("TEST FIXTURE Maya", in: app)
+        XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
+        XCTAssertFalse(app.sliders["TEST FIXTURE Maya volume"].exists, "Volume stays in the remote-only Audio menu")
+        let audio = app.buttons["participant-audio-fixture-remote"]
+        XCTAssertTrue(audio.exists)
+        let stack = app.buttons["voice-stack-chan00000001"]
+        XCTAssertTrue(stack.exists)
+        capture("active-voice-compact-test-fixture", app: app)
+        stack.tap()
+        XCTAssertEqual(stack.value as? String, "Collapsed")
+        XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists)
+        XCTAssertTrue(context.exists, "Call context and Disconnect remain outside the collapsed participant roster")
+        XCTAssertTrue(app.buttons["Disconnect voice"].exists)
+        capture("active-voice-collapsed-test-fixture", app: app)
+        stack.tap()
+        audio.tap()
+        XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any)["Mute"].exists)
+        capture("active-voice-audio-menu-test-fixture", app: app)
+    }
+
     #if os(macOS)
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
         let app = launch()

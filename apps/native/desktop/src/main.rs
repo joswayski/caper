@@ -2620,7 +2620,13 @@ impl CaperApp {
                     avatar(ui, &participant.name, 28.0, false);
                     ui.allocate_ui_with_layout(
                         egui::vec2(
-                            (ui.available_width() - if own { 58.0 } else { 23.0 }).max(0.0),
+                            (ui.available_width()
+                                - if own && participant.id != self.voice.self_id {
+                                    80.0
+                                } else {
+                                    23.0
+                                })
+                            .max(0.0),
                             32.0,
                         ),
                         egui::Layout::left_to_right(egui::Align::Center),
@@ -2663,22 +2669,39 @@ impl CaperApp {
                         });
                     }
                     if own && participant.id != self.voice.self_id {
-                        let options = drawn_icon_button(
-                            ui,
-                            NavIcon::More,
-                            &format!("Audio for {}", participant.name),
+                        let options = ui.add(
+                            egui::Button::new(RichText::new("Audio").size(10.0).color(MUTED))
+                                .frame(false)
+                                .min_size(egui::vec2(46.0, 28.0)),
                         );
+                        options.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                ui.is_enabled(),
+                                format!("Audio controls for {}", participant.name),
+                            )
+                        });
                         if options.clicked() {
                             self.effects.toggle(!egui::Popup::menu(&options).is_open());
                         }
                         egui::Popup::menu(&options).width(240.0).show(|ui| {
-                            ui.label(bold(&participant.name));
-                            let volume = ui.add(
-                                egui::Slider::new(&mut playback.gain_percent, 0..=200)
-                                    .text("Volume")
-                                    .suffix("%"),
-                            );
-                            let muted = ui.checkbox(&mut playback.muted, "Mute for me");
+                            let label = ui.horizontal(|ui| {
+                                let label = ui.label(bold("User volume"));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(format!("{}%", playback.gain_percent));
+                                    },
+                                );
+                                label
+                            });
+                            let volume = ui
+                                .add(
+                                    egui::Slider::new(&mut playback.gain_percent, 0..=200)
+                                        .show_value(false),
+                                )
+                                .labelled_by(label.inner.id);
+                            let muted = ui.checkbox(&mut playback.muted, "Mute");
                             if volume.changed() {
                                 self.effects
                                     .slider(f32::from(playback.gain_percent) / 200.0);
@@ -4937,13 +4960,32 @@ mod tests {
         for label in ["Fixture Owner (you)", "Maya", "Alex"] {
             assert_eq!(position(&output, label, true).x, 106.0);
         }
+        assert_eq!(
+            output.shapes.iter().filter(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Audio")
+            }).count(),
+            2,
+            "Only remote participants have Audio buttons"
+        );
+        assert!(!output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "User volume")
+        }));
+        app.voice.set_participant_playback(
+            "fixture-maya",
+            crate::media::TrackPlayback {
+                gain_percent: 170,
+                muted: false,
+            },
+        );
         click(
             &mut app,
             &context,
-            egui::pos2(313.0, position(&output, "Maya", true).y + 6.0),
+            position(&output, "Audio", true) + egui::vec2(4.0, 4.0),
         );
         let menu = render(&mut app, &context, vec![]);
-        let mute = position(&menu, "Mute for me", false) + egui::vec2(4.0, 4.0);
+        position(&menu, "User volume", false);
+        position(&menu, "170%", false);
+        let mute = position(&menu, "Mute", false) + egui::vec2(4.0, 4.0);
         click(&mut app, &context, mute);
         assert!(app.voice.playback("fixture-maya").muted);
         assert!(!app.voice.playback("fixture-alex").muted);

@@ -249,6 +249,9 @@ jobs:
           disable-animations: true
           script: |
             CMAKE_BUILD_PARALLEL_LEVEL=1 apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 -PcaperFixtureMode=true -PcaperApiBaseUrl=http://localhost:3001 connectedDebugAndroidTest
+            mkdir -p apps/native/android/dist/ui
+            adb pull /sdcard/Android/data/chat.caper.android.debug/files/ui/voice-roster-connected-closed.png apps/native/android/dist/ui/
+            adb pull /sdcard/Android/data/chat.caper.android.debug/files/ui/voice-roster-connected-open.png apps/native/android/dist/ui/
             python apps/native/android/smoke.py
       - uses: actions/upload-artifact@v4
         if: always()

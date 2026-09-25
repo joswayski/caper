@@ -32,6 +32,26 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(CaperRuntime.isAudioPreview("audio-recorded", environment: environment))
     }
 
+    @MainActor
+    func testActiveRosterPreviewRequiresLoopbackFixture() throws {
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        let channel = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let space = Space(id: channel.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [channel], members: [])
+        model.selectedChannelID = channel.id
+        let fixture = ["CAPER_TEST_MODE": "parity", "CAPER_UI_FIXTURE": "voice-roster", "CAPER_API_BASE_URL": "http://127.0.0.1:3001"]
+        CaperRuntime.showVoiceRosterPreview(model, environment: fixture.merging(["CAPER_API_BASE_URL": "https://caper.chat"]) { _, new in new })
+        XCTAssertNil(model.voice.context)
+        CaperRuntime.showVoiceRosterPreview(model, environment: fixture)
+        XCTAssertEqual(model.voice.context?.channelID, channel.id)
+        XCTAssertEqual(model.voice.phase, .connected)
+        XCTAssertEqual(model.voice.participants.count, 2)
+        XCTAssertTrue(model.voice.isSelf(participantID: "fixture-self"))
+        XCTAssertFalse(model.voice.isSelf(participantID: "fixture-remote"))
+        XCTAssertTrue(model.voice.participants.allSatisfy { !$0.muted || $0.id == "fixture-remote" })
+        model.voice.leaveImmediately()
+    }
+
     #if os(macOS)
     @MainActor
     func testAllBundledWebEffectsDecodeWithoutOpeningOutput() throws {

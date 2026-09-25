@@ -238,6 +238,7 @@ private struct WorkspaceView: View {
             guard sheet == nil, model.detail != nil else { return }
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
+            else if parityFixture == "voice-roster" { CaperRuntime.showVoiceRosterPreview(model) }
         }
     }
 
@@ -545,74 +546,63 @@ private struct MemberPresenceView: View {
 }
 
 private struct VoiceRoster: View {
-    @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
-    init(model: AppModel) { self.model = model; voice = model.voice }
+    @State private var audioParticipantID: String? = nil
+    init(model: AppModel) { voice = model.voice }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Voice").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                Spacer()
-                switch voice.phase {
-                case .idle, .failed: EmptyView()
-                case .joining: Text("Joining…").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                case .connected: Text("Connected").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.green)
-                case .reconnecting: Text("Recovering…").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                case .leaving: ProgressView().controlSize(.small)
-                }
-            }
+        VStack(alignment: .leading, spacing: 2) {
             ForEach(voice.participants) { participant in
-                VStack(spacing: 7) {
-                    HStack(spacing: 10) {
-                        Avatar(name: participant.name, size: 38)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(participant.name).font(CaperTheme.font(14, weight: .bold)).lineLimit(1)
-                            Text(participant.muted ? "Muted" : "Listening").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                        }
-                        Spacer()
-                        if !voice.isSelf(participantID: participant.id) {
-                            Button {
-                                voice.setParticipantMuted(!voice.locallyMutedParticipants.contains(participant.id), participantID: participant.id)
-                                CaperEffects.shared.toggle(!voice.locallyMutedParticipants.contains(participant.id))
-                            } label: {
-                                Image(systemName: voice.locallyMutedParticipants.contains(participant.id) ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            }.buttonStyle(SidebarIconButton()).accessibilityLabel("Mute \(participant.name) locally")
-                        }
-                        if participant.muted { CaperIcon(name: "mic-off").foregroundStyle(CaperTheme.muted).accessibilityHidden(false).accessibilityLabel("Muted") }
-                        if participant.deafened { CaperIcon(name: "volume-x").foregroundStyle(CaperTheme.muted).accessibilityHidden(false).accessibilityLabel("Deafened") }
+                HStack(spacing: 8) {
+                    Avatar(name: participant.name, size: 20)
+                    Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
+                        .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if (voice.isSelf(participantID: participant.id) ? voice.muted : participant.muted) {
+                        CaperIcon(name: "mic-off", size: 14).accessibilityHidden(false).accessibilityLabel("Muted")
+                    }
+                    if (voice.isSelf(participantID: participant.id) ? voice.deafened : participant.deafened) {
+                        CaperIcon(name: "volume-x", size: 14).accessibilityHidden(false).accessibilityLabel("Deafened")
                     }
                     if !voice.isSelf(participantID: participant.id) {
-                        HStack(spacing: 8) {
-                            Slider(value: participantGain(participant.id), in: 0...200, step: 1)
-                                .accessibilityLabel("\(participant.name) volume")
-                            Text("\(voice.participantGains[participant.id] ?? 100)%")
-                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).frame(width: 36, alignment: .trailing)
-                        }
+                        Button { audioParticipantID = audioParticipantID == participant.id ? nil : participant.id } label: {
+                            Text("Audio").font(CaperTheme.font(10, weight: .bold))
+                        }.buttonStyle(.plain)
+                            .accessibilityLabel("Audio controls for \(participant.name)")
+                            .accessibilityIdentifier("participant-audio-\(participant.id)")
+                            .popover(isPresented: Binding(
+                                get: { audioParticipantID == participant.id },
+                                set: { if !$0, audioParticipantID == participant.id { audioParticipantID = nil } }
+                            ), arrowEdge: .trailing) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("User volume · \(voice.participantGains[participant.id] ?? 100)%")
+                                        .font(CaperTheme.font(12, weight: .bold))
+                                    Slider(value: participantGain(participant.id), in: 0...200, step: 1)
+                                        .accessibilityLabel("\(participant.name) volume")
+                                    Toggle("Mute", isOn: participantMute(participant.id))
+                                        .font(CaperTheme.font(12, weight: .medium))
+                                }.padding(16).frame(width: 220).background(CaperTheme.surface)
+                                #if os(iOS)
+                                .presentationCompactAdaptation(.popover)
+                                #endif
+                            }
                     }
-                }.padding(9).background(CaperTheme.raised.opacity(0.45)).clipShape(RoundedRectangle(cornerRadius: 8))
+                }.foregroundStyle(CaperTheme.muted).padding(.vertical, 4)
+                    .accessibilityIdentifier("active-participant-\(participant.id)")
             }
-            if let context = voice.context {
-                HStack(spacing: 8) {
-                    Button { Task { await model.openVoiceContext() } } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(voice.phase == .connected ? "Voice connected" : "Connecting voice…")
-                                .font(CaperTheme.font(11, weight: .bold))
-                            Text("\(context.spaceName) / \(context.channelName)")
-                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(.plain)
-                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "x") }
-                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
-                }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            if let error = voice.error { Text(error).font(CaperTheme.font(10)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
-        }.padding(.vertical, 16)
+        }
     }
 
     private func participantGain(_ id: String) -> Binding<Double> {
         Binding(
             get: { Double(voice.participantGains[id] ?? 100) },
             set: { voice.setParticipantGain(Int($0), participantID: id); CaperEffects.shared.slider($0 / 200) }
+        )
+    }
+
+    private func participantMute(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { voice.locallyMutedParticipants.contains(id) },
+            set: { voice.setParticipantMuted($0, participantID: id); CaperEffects.shared.toggle(!$0) }
         )
     }
 }
@@ -636,7 +626,23 @@ private struct AccountBar: View {
     #endif
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
     var body: some View {
-        HStack(spacing: 5) {
+        VStack(spacing: 0) {
+            if let context = voice.context, voice.phase != .idle && voice.phase != .failed {
+                HStack(spacing: 8) {
+                    Button { Task { await model.openVoiceContext() } } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(voice.phase == .connected ? "Voice connected" : "Connecting voice…")
+                                .font(CaperTheme.font(11, weight: .bold))
+                            Text("\(context.spaceName) / \(context.channelName)")
+                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.buttonStyle(.plain)
+                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "x") }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
+                }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("active-voice-context")
+            }
+            HStack(spacing: 5) {
             Button { sheet = model.account == nil ? .login : .profile } label: {
                 HStack(spacing: 7) {
                     Avatar(name: model.account?.displayName ?? "Guest", size: 30)
@@ -667,9 +673,6 @@ private struct AccountBar: View {
             }.buttonStyle(.plain).accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             #endif
-            if voice.phase == .connected || voice.phase == .reconnecting {
-                Button(role: .destructive) { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Disconnect voice")
-            }
             Menu {
                 Button("Audio preferences") { voice.showAudioPreferences = true }
                 #if os(macOS)
@@ -680,8 +683,8 @@ private struct AccountBar: View {
                 if model.account != nil { Button("Log out", role: .destructive) { Task { await model.logout() } } }
             } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).frame(width: 28)
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
+            }.padding(4).frame(height: 42).background(CaperTheme.raised)
         }
-        .padding(4).frame(height: 42).background(CaperTheme.raised)
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
         .padding(12)
         .sheet(isPresented: $voice.showAudioPreferences) { AudioPreferencesView(voice: voice, debugEnabled: model.account?.debugEnabled == true).presentationBackground(CaperTheme.surface) }
