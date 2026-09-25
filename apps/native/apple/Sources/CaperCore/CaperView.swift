@@ -53,6 +53,21 @@ public enum CaperTheme {
             CaperEffects.shared.preload()
             if model.phase == .loading { await model.start() }
         }
+        .task(id: model.voice.phase) {
+            while !Task.isCancelled && model.voice.phase == .connected {
+                await model.voice.sampleSpeaking()
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+            }
+            model.voice.clearSpeaking()
+        }
+        .onChange(of: model.voice.participants.map(\.id)) { old, new in
+            // Web chimes when someone else joins or leaves the call you are in.
+            guard model.voice.phase == .connected,
+                  let me = old.first(where: { model.voice.isSelf(participantID: $0) }), new.contains(me) else { return }
+            let before = Set(old).subtracting([me]), after = Set(new).subtracting([me])
+            if !before.subtracting(after).isEmpty { CaperEffects.shared.play(.leave) }
+            else if !after.subtracting(before).isEmpty { CaperEffects.shared.play(.join) }
+        }
         .onChange(of: model.voice.phase) { _, new in
             if new == .idle || new == .failed || new == .joining { announcedVoice = false }
             if new == .connected, !announcedVoice {
@@ -464,7 +479,7 @@ private struct ChannelVoiceSlot: View {
                         Button { collapsed.toggle() } label: {
                             HStack(spacing: 5) {
                                 ForEach(occupants.prefix(3)) { person in
-                                    Avatar(name: person.name, size: 20)
+                                    Avatar(name: person.name, size: 20, speaking: active && model.voice.speakingParticipants.contains(person.id))
                                 }
                                 if occupants.count > 3 { Text("+\(occupants.count - 3)") }
                                 CaperIcon(name: collapsed ? "chevron-right" : "chevron-down", size: 12)
@@ -620,7 +635,8 @@ private struct VoiceRoster: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(voice.participants) { participant in
                 HStack(spacing: 8) {
-                    Avatar(name: participant.name, size: 20)
+                    Avatar(name: participant.name, size: 20, speaking: voice.speakingParticipants.contains(participant.id))
+                        .accessibilityValue(voice.speakingParticipants.contains(participant.id) ? "Speaking" : "")
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 5) {
                             Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
@@ -726,7 +742,7 @@ private struct AccountBar: View {
                         }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(.plain)
-                    Button { if voice.phase == .connected { CaperEffects.shared.play(.leave) }; model.leaveVoice() } label: { CaperIcon(name: "phone-off") }
+                    Button { if voice.phase == .connected { CaperEffects.shared.play(.disconnect) }; model.leaveVoice() } label: { CaperIcon(name: "phone-off") }
                         .buttonStyle(SidebarIconButton()).help(voice.phase == .connected ? "Disconnect" : "Cancel")
                         .accessibilityLabel(voice.phase == .connected ? "Leave voice" : "Cancel joining voice")
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -841,9 +857,13 @@ private struct AccountAudioMenu: View {
 
 private struct Avatar: View {
     let name: String; let size: CGFloat
+    var speaking = false
     var body: some View {
         Text(String(name.prefix(1)).uppercased()).font(CaperTheme.font(size * 0.36, weight: .black))
             .frame(width: size, height: size).background(CaperTheme.raised).clipShape(Circle())
+            // Web: caper-green border with a soft outer ring while speaking.
+            .overlay { if speaking { Circle().stroke(CaperTheme.green, lineWidth: 2) } }
+            .background { if speaking { Circle().fill(CaperTheme.green.opacity(0.2)).padding(-3) } }
     }
 }
 
@@ -987,7 +1007,7 @@ private struct VoiceHeaderButton: View {
         if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
             Button { model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Cancel") } }.buttonStyle(VoiceJoinButton())
         } else if sameChannel, voice.phase == .connected {
-            Button { CaperEffects.shared.play(.leave); model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
+            Button { CaperEffects.shared.play(.disconnect); model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
         } else if voice.phase == .leaving {
             ProgressView().controlSize(.small)
         } else {

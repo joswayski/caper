@@ -9,7 +9,7 @@ import AVFoundation
 @MainActor @Observable final class CaperEffects {
     enum Effect: String, CaseIterable {
         case toggleOff = "toggle-off", toggleOn = "toggle-on", slider = "slider-tick"
-        case leave = "channel-leave", warning, join = "channel-join", message = "new-message", delete
+        case leave = "channel-leave", warning, join = "channel-join", message = "new-message", delete, disconnect
     }
     static let shared = CaperEffects(enabled: ProcessInfo.processInfo.environment["CAPER_TEST_MODE"] != "parity")
     private let enabled: Bool
