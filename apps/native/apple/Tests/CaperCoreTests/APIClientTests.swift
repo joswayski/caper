@@ -680,6 +680,68 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testDeniedVoiceTargetDoesNotEvictDifferentCallOrChangeSelectedChat() async {
+        let model = AppModel(api: client())
+        let text = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let target = Channel(id: "chan00000002", spaceId: "space0000001", name: "design", private: true)
+        let space = Space(id: "space0000001", name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [text, target], members: [])
+        model.selectedSpaceID = space.id
+        model.selectedChannelID = text.id
+        model.account = Account(id: "member000001", username: "member", displayName: "Member")
+        model.voice.phase = .connected
+        model.voice.context = VoiceContext(channelID: text.id, channelName: text.name, spaceID: space.id, spaceName: space.name)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/spaces/\(space.id)" {
+                return (200, Data("""
+                {"space":{"id":"\(space.id)","name":"Fixture","ownerId":"owner0000001"},"channels":[
+                {"id":"\(text.id)","spaceId":"\(space.id)","name":"general","private":false},
+                {"id":"\(target.id)","spaceId":"\(space.id)","name":"design","private":true}],"members":[]}
+                """.utf8))
+            }
+            if request.url?.path.contains(target.id) == true { return (403, Data(#"{"error":"Private channel denied"}"#.utf8)) }
+            throw URLError(.badURL)
+        }
+        await model.joinVoice(channel: target)
+        XCTAssertEqual(model.selectedChannelID, text.id)
+        XCTAssertEqual(model.voice.context?.channelID, text.id)
+        XCTAssertEqual(model.voice.phase, .connected)
+        XCTAssertTrue(model.voicePresence.roster(for: target.id).isEmpty)
+    }
+
+    @MainActor
+    func testLeaveCancelsPendingPermissionCheckBeforeVoiceSwitch() async throws {
+        let model = AppModel(api: client())
+        let current = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let target = Channel(id: "chan00000002", spaceId: current.spaceId, name: "design", private: false)
+        let space = Space(id: current.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [current, target], members: [])
+        model.selectedSpaceID = space.id
+        model.selectedChannelID = current.id
+        model.voice.phase = .connected
+        model.voice.context = VoiceContext(channelID: current.id, channelName: current.name, spaceID: space.id, spaceName: space.name)
+        let requested = expectation(description: "target permission request")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/spaces/\(space.id)" else { return false }
+            held = request; requested.fulfill(); return true
+        }
+        MockURLProtocol.handler = { _ in throw URLError(.badURL) }
+        let joining = Task { await model.joinVoice(channel: target) }
+        await fulfillment(of: [requested], timeout: 2)
+        model.leaveVoice()
+        held?.respond(status: 200, data: Data("""
+        {"space":{"id":"\(space.id)","name":"Fixture","ownerId":"owner0000001"},"channels":[
+        {"id":"\(current.id)","spaceId":"\(space.id)","name":"general","private":false},
+        {"id":"\(target.id)","spaceId":"\(space.id)","name":"design","private":false}],"members":[]}
+        """.utf8))
+        await joining.value
+        XCTAssertEqual(model.voice.phase, .idle)
+        XCTAssertNil(model.voice.context, "The late permission response must not start a new call after Leave")
+        XCTAssertEqual(model.selectedChannelID, current.id)
+    }
+
+    @MainActor
     func testNavigationPrefetchIsReadOnlyAndBounded() async throws {
         let model = AppModel(api: client())
         var paths: [String] = []

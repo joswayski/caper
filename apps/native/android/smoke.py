@@ -412,6 +412,39 @@ def main() -> None:
     assert find(audio_narrow, description="Input gain") is not None
     tap(description="Close")
 
+    # Spectator snapshots are fixture-only; the media join endpoint remains 503.
+    # Read #general while #design has occupants, without granting microphone access.
+    fixture({"media": {"channelId": "chan00000002", "participants": [
+        {"id": f"spectator00{index}", "name": f"Fixture Voice {index}", "muted": False, "deafened": False}
+        for index in range(1, 5)
+    ]}})
+    tap(description="Open navigation")
+    roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
+    assert find(roster, text="Fixture Voice 1") is not None
+    assert find(roster, text="Fixture Voice 4") is not None
+    assert find(roster, text="+1") is not None, "Avatar stack must cap at three faces"
+    assert find(roster, text="4 in voice in design") is None, "Voice count belongs in accessibility, not visible copy"
+    assert find(roster, contains="Message #general") is None  # conversation is behind narrow navigation
+    tap(description="4 in voice in design. Hide who is in voice")
+    collapsed = capture("caper-android-voice-roster-collapsed", "4 in voice in design. Show who is in voice")
+    assert find(collapsed, text="Fixture Voice 1") is None, "Collapsed roster still exposed occupants"
+    tap(description="4 in voice in design. Show who is in voice")
+    wait_for(text="Fixture Voice 1")
+    fixture({"mediaAccessDenied": {"channelId": "chan00000002"}})
+    try:
+        gone = hierarchy()
+        for _ in range(25):
+            gone = hierarchy()
+            if find(gone, text="Fixture Voice 1") is None:
+                break
+            time.sleep(0.2)
+        assert find(gone, text="Fixture Voice 1") is None, "Revoked spectator remained visible"
+    finally:
+        fixture({"mediaAccessDenied": {"channelId": "chan00000002", "denied": False}})
+    tap(description="Close navigation")
+    assert find(hierarchy(), contains="Message #general") is not None, "Spectator updates changed selected chat"
+    tap(description="Open navigation")
+
     # Run after parity captures so the stable seeded reference conversation is
     # unchanged. This crosses the real Compose input -> HTTP send -> gateway UI
     # path and independently checks fixture persistence.

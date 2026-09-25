@@ -22,10 +22,12 @@ public final class AppModel {
     public let chat: ChatModel
     public let voice: VoiceClient
     public let presence: PresenceModel
+    public let voicePresence: VoicePresenceModel
     private let preferredInitialSpaceID: String?
     private var generation = 0
     private var demoDetail: SpaceDetail?
     private var navigationGeneration = 0
+    private var voiceJoinGeneration = 0
     private var navigationCacheEpoch = 0
     private var navigationTarget: (space: Space, channelID: String?)?
     private struct PreparedNavigation {
@@ -53,8 +55,10 @@ public final class AppModel {
         chat = chatModel
         voice = voiceClient
         presence = PresenceModel(api: api)
+        voicePresence = VoicePresenceModel(api: api)
         chatModel.onAccessRevoked = { [weak self, weak voiceClient] channelID in
             if let channelID, voiceClient?.isActive(channelID: channelID) == true { voiceClient?.leaveImmediately() }
+            if let channelID { self?.voicePresence.revoke(channelID: channelID) }
             if let channelID { self?.invalidateNavigation(spaceID: nil, channelID: channelID) }
             else { self?.clearNavigationCache() }
         }
@@ -62,6 +66,8 @@ public final class AppModel {
 
     public func start() async {
         generation += 1
+        voiceJoinGeneration += 1
+        await voicePresence.stop()
         clearNavigationCache()
         let attempt = generation
         do {
@@ -88,6 +94,8 @@ public final class AppModel {
     public func verify(code: String) async {
         guard let challengeID else { return }
         generation += 1
+        voiceJoinGeneration += 1
+        await voicePresence.stop()
         clearNavigationCache()
         let attempt = generation
         await work(generation: attempt) {
@@ -123,6 +131,7 @@ public final class AppModel {
 
     public func logout() async {
         generation += 1
+        voiceJoinGeneration += 1
         clearNavigationCache()
         voice.leaveImmediately()
         account = nil; spaces = []; detail = nil
@@ -135,6 +144,7 @@ public final class AppModel {
         async let revoke: Void = api.logout()
         await chat.stop()
         await presence.stop()
+        await voicePresence.stop()
         do { try await revoke } catch { self.error = error.localizedDescription }
         await loadSpaces()
     }
@@ -279,6 +289,10 @@ public final class AppModel {
             } else { history = nil }
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             // Keep the current conversation, draft and selection until the target is ready.
+            if selectedSpaceID != space.id {
+                await voicePresence.stop()
+                guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
+            }
             selectedSpaceID = space.id
             selectedChannelID = channel?.id
             self.detail = detail
@@ -300,6 +314,8 @@ public final class AppModel {
             if detail.space.demo == true { await self.presence.stop() }
             else { await self.presence.watch(spaceID: detail.space.id, members: detail.members) }
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
+            await voicePresence.watch(spaceID: detail.space.id, channels: detail.channels, demo: detail.space.demo == true)
+            guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
         } catch {
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             navigationError = error.localizedDescription
@@ -309,7 +325,7 @@ public final class AppModel {
                 selectedChannelID = nil
                 if voice.isActive(spaceID: space.id), !spaceVerified || channelID.map({ voice.isActive(channelID: $0) }) ?? true { voice.leaveImmediately() }
                 await chat.stop()
-                if !spaceVerified { await presence.stop() }
+                if !spaceVerified { await presence.stop(); await voicePresence.stop() }
             }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
                 invalidateNavigation(spaceID: space.id)
@@ -345,6 +361,7 @@ public final class AppModel {
     }
     private func invalidateNavigation(spaceID: String? = nil, channelID: String? = nil) {
         navigationCacheEpoch += 1
+        if let channelID { voicePresence.revoke(channelID: channelID) }
         let keys = Set(prefetches.keys).union(visited.keys).filter { key in
             if let spaceID, !key.hasPrefix("\(spaceID):") { return false }
             // A space-only prefetch may have selected this channel; drop these
@@ -463,6 +480,7 @@ public final class AppModel {
         try await api.deleteChannel(spaceID: detail.space.id, channelID: channel.id)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
         if voice.isActive(channelID: channel.id) { voice.leaveImmediately() }
+        voicePresence.revoke(channelID: channel.id)
         detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id }, members: detail.members)
         replace(detail: detail)
         if selectedChannelID == channel.id {
@@ -499,10 +517,16 @@ public final class AppModel {
     private func replace(detail: SpaceDetail) {
         self.detail = detail
         spaces = spaces.map { $0.id == detail.space.id ? detail.space : $0 }
+        let attempt = generation
+        Task { [weak self] in
+            guard let self, self.generation == attempt, self.detail?.space.id == detail.space.id else { return }
+            await self.voicePresence.watch(spaceID: detail.space.id, channels: detail.channels, demo: detail.space.demo == true)
+        }
     }
 
     private func removeCurrentSpace(id: String) async {
         generation += 1
+        voiceJoinGeneration += 1
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
@@ -510,6 +534,7 @@ public final class AppModel {
         detail = nil; selectedSpaceID = nil; selectedChannelID = nil
         await chat.stop()
         await presence.stop()
+        await voicePresence.stop()
         if let first = spaces.first { await select(space: first) }
     }
 
@@ -519,6 +544,51 @@ public final class AppModel {
         if selectedSpaceID != space.id { await select(space: space) }
         guard let channel = detail?.channels.first(where: { $0.id == context.channelID }) else { return }
         if selectedChannelID != channel.id { await select(channel: channel) }
+    }
+
+    public func leaveVoice() {
+        voiceJoinGeneration += 1
+        voice.leaveImmediately()
+    }
+
+    /// Verify the target at click time. Reading another text channel must not
+    /// change the call, and a stale/private channel must not evict a healthy one.
+    public func joinVoice(channel: Channel) async {
+        guard let detail, detail.channels.contains(where: { $0.id == channel.id }),
+              voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
+        voiceJoinGeneration += 1
+        let joinAttempt = voiceJoinGeneration
+        let accountGeneration = generation
+        let space = detail.space
+        let ownerID = account?.id
+        do {
+            if space.demo != true {
+                let verified = try await api.space(space.id)
+                guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
+                guard verified.space.id == space.id, verified.channels.contains(where: { $0.id == channel.id }) else {
+                    voicePresence.revoke(channelID: channel.id)
+                    return
+                }
+                let history = try await api.history(channelID: channel.id)
+                guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
+                guard history.space?.id == space.id, history.channel?.id == channel.id else {
+                    voicePresence.revoke(channelID: channel.id)
+                    return
+                }
+            }
+            guard voiceJoinGeneration == joinAttempt, generation == accountGeneration,
+                  account?.id == ownerID, self.detail?.space.id == space.id,
+                  self.detail?.channels.contains(where: { $0.id == channel.id }) == true else { return }
+            if voice.phase != .idle && voice.phase != .failed { voice.leaveImmediately() }
+            await voice.join(channelID: space.demo == true ? nil : channel.id,
+                             context: VoiceContext(channelID: channel.id, channelName: channel.name,
+                                                   spaceID: space.id, spaceName: space.name),
+                             name: account?.displayName ?? "Guest")
+        } catch {
+            guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
+            voicePresence.revoke(channelID: channel.id)
+            navigationError = error.localizedDescription
+        }
     }
 
     private var needsProfile: Bool { account?.username == nil || account?.displayName == nil }

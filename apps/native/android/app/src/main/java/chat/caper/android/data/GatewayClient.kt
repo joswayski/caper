@@ -4,6 +4,8 @@ import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.GatewayStatus
 import chat.caper.android.model.PresenceSnapshot
+import chat.caper.android.model.Participant
+import chat.caper.android.model.SpectatorSnapshot
 import java.util.UUID
 import java.math.BigInteger
 import java.util.concurrent.TimeUnit
@@ -21,6 +23,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -36,6 +39,9 @@ class GatewayClient(
     private val onMessage: (ChatMessage) -> Unit,
     private val onTyping: (ChatAuthor, Boolean, String) -> Unit = { _, _, _ -> },
     private val onPresence: (PresenceSnapshot) -> Unit = {},
+    private val onMedia: (String, List<Participant>) -> Unit = { _, _ -> },
+    private val onMediaDenied: (String) -> Unit = {},
+    private val onMediaDisconnected: () -> Unit = {},
     private val onAccessDenied: () -> Unit,
     private val onResync: () -> Unit,
     private val json: Json = Json { ignoreUnknownKeys = true },
@@ -47,6 +53,8 @@ class GatewayClient(
     private var presenceSubscriptionId: String? = null
     private var presenceSpaceId: String? = null
     private var presenceUserIds: List<String> = emptyList()
+    private val mediaSubscriptions = mutableMapOf<String, String>() // subscription ID -> channel ID (empty for demo)
+    private val mediaRevisions = mutableMapOf<String, Long>()
     private var socket: WebSocket? = null
     private var heartbeat: Job? = null
     private var reconnect: Job? = null
@@ -69,6 +77,30 @@ class GatewayClient(
         presenceUserIds = userIds.distinct()
         presenceSubscriptionId = UUID.randomUUID().toString()
         socket?.let(::sendPresenceSubscription)
+    }
+
+    @Synchronized fun watchMedia(channelIds: List<String>, demo: Boolean) {
+        require(channelIds.size <= 24)
+        val desired = if (demo) listOf("") else channelIds.distinct().take(24)
+        mediaSubscriptions.filterValues { it !in desired }.keys.toList().forEach { id ->
+            socket?.send("""{"type":"unsubscribe","id":"$id"}""")
+            val channel = mediaSubscriptions.remove(id)!!
+            mediaRevisions.remove(id)
+            onMedia(channel, emptyList())
+        }
+        desired.filter { it !in mediaSubscriptions.values }.forEach { channel ->
+            val id = UUID.randomUUID().toString()
+            mediaSubscriptions[id] = channel
+            socket?.let { sendMediaSubscription(it, id, channel) }
+        }
+    }
+
+    private fun sendMediaSubscription(webSocket: WebSocket, id: String, channel: String) {
+        val frame = buildJsonObject {
+            put("type", "subscribe"); put("id", id); put("kind", "media")
+            if (channel.isNotEmpty()) put("channelId", channel)
+        }
+        webSocket.send(frame.toString())
     }
 
     private fun connect() {
@@ -94,7 +126,7 @@ class GatewayClient(
         }
     }
 
-    private fun receive(webSocket: WebSocket, frame: JsonObject) {
+    @Synchronized private fun receive(webSocket: WebSocket, frame: JsonObject) {
         if (socket !== webSocket) return
         when (frame["type"]?.jsonPrimitive?.content) {
             "hello" -> {
@@ -102,6 +134,8 @@ class GatewayClient(
                 serverOffsetMs = frame["serverTime"]?.jsonPrimitive?.content?.toLongOrNull()?.minus(System.currentTimeMillis()) ?: 0L
                 webSocket.send("""{"type":"subscribe","id":"$subscriptionId","kind":"chat","channelId":"$channelId","after":"$cursor"}""")
                 if (presenceSubscriptionId != null) sendPresenceSubscription(webSocket)
+                mediaRevisions.clear()
+                mediaSubscriptions.forEach { (id, channel) -> sendMediaSubscription(webSocket, id, channel) }
                 heartbeat?.cancel()
                 heartbeat = scope.launch {
                     while (true) {
@@ -152,8 +186,30 @@ class GatewayClient(
                 if (event["type"]?.jsonPrimitive?.content == "snapshot") {
                     onPresence(json.decodeFromJsonElement(PresenceSnapshot.serializer(), event))
                 }
+            } else {
+                val id = frame["id"]?.jsonPrimitive?.content ?: return
+                val channel = mediaSubscriptions[id] ?: return
+                val event = frame["event"]?.jsonObject ?: return
+                if (event["type"]?.jsonPrimitive?.content != "snapshot") return
+                require(event["participants"]?.jsonArray?.all { participant -> "tracks" !in participant.jsonObject } == true)
+                val snapshot = json.decodeFromJsonElement(SpectatorSnapshot.serializer(), event)
+                val revision = snapshot.revision
+                require(revision >= 0)
+                if (revision > (mediaRevisions[id] ?: -1L)) {
+                    mediaRevisions[id] = revision
+                    onMedia(channel, snapshot.participants.map { it.asParticipant() })
+                }
             }
-            "error" -> if (frame["id"]?.jsonPrimitive?.content in setOf(subscriptionId, presenceSubscriptionId)) {
+            "error" -> if (frame["id"]?.jsonPrimitive?.content in mediaSubscriptions) {
+                val id = frame["id"]!!.jsonPrimitive.content
+                val status = frame["status"]?.jsonPrimitive?.content?.toIntOrNull()
+                if (status == 401 || status == 403 || status == 404) {
+                    val channel = mediaSubscriptions.remove(id) ?: return
+                    mediaRevisions.remove(id)
+                    onMedia(channel, emptyList())
+                    onMediaDenied(channel)
+                } else fail(webSocket, terminal = false)
+            } else if (frame["id"]?.jsonPrimitive?.content in setOf(subscriptionId, presenceSubscriptionId)) {
                 val status = frame["status"]?.jsonPrimitive?.content?.toIntOrNull()
                 val denied = status == 401 || status == 403 || status == 404
                 fail(webSocket, terminal = denied)
@@ -194,6 +250,8 @@ class GatewayClient(
     @Synchronized private fun fail(webSocket: WebSocket, terminal: Boolean) {
         if (socket !== webSocket) return
         socket = null
+        mediaRevisions.clear()
+        onMediaDisconnected()
         heartbeat?.cancel()
         watchdog?.cancel()
         webSocket.cancel()
@@ -207,13 +265,15 @@ class GatewayClient(
         }
     }
 
-    override fun close() {
+    @Synchronized override fun close() {
         closed = true
         heartbeat?.cancel()
         watchdog?.cancel()
         reconnect?.cancel()
         socket?.close(1000, "channel closed")
         socket = null
+        mediaRevisions.clear()
+        onMediaDisconnected()
         scope.coroutineContext[Job]?.cancel()
         mutableStatus.value = GatewayStatus.DISCONNECTED
     }

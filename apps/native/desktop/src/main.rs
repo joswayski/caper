@@ -20,7 +20,7 @@ use model::{
     Account, Author, ChatSession, Member, Presence, SpaceDetail, SpaceLimits, Spaces, Timeline,
 };
 use state::{CallContext, Phase};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 use voice::{MicrophoneState, Voice, VoiceOperation};
 use worker::{AdminOperation, AdminResult, Command, Event, Worker, current};
@@ -168,6 +168,11 @@ struct CaperApp {
     members_visible: bool,
     narrow_members_visible: bool,
     channels_expanded: bool,
+    roster_generation: u64,
+    voice_join_request: u64,
+    channel_rosters: BTreeMap<String, Vec<model::VoiceOccupant>>,
+    unavailable_rosters: BTreeSet<String>,
+    collapsed_rosters: BTreeSet<String>,
     sidebar_width: f32,
     navigation_open: bool,
     navigation: u64,
@@ -230,6 +235,11 @@ impl CaperApp {
             members_visible: true,
             narrow_members_visible: false,
             channels_expanded: true,
+            roster_generation: 0,
+            voice_join_request: 0,
+            channel_rosters: BTreeMap::new(),
+            unavailable_rosters: BTreeSet::new(),
+            collapsed_rosters: BTreeSet::new(),
             sidebar_width: 280.0,
             navigation_open: false,
             navigation: 0,
@@ -274,6 +284,27 @@ impl CaperApp {
                     app.dialog = Some(Dialog::ManageChannel("chan00000003".into()));
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
+                } else if matches!(name, "parity-voice-rosters" | "parity-voice-rosters-narrow") {
+                    app.channel_rosters.insert(
+                        "chan00000002".into(),
+                        vec![
+                            model::VoiceOccupant {
+                                id: "fixture-maya".into(),
+                                name: "Maya".into(),
+                                country_code: None,
+                                muted: false,
+                                deafened: false,
+                            },
+                            model::VoiceOccupant {
+                                id: "fixture-alex".into(),
+                                name: "Alex".into(),
+                                country_code: None,
+                                muted: true,
+                                deafened: false,
+                            },
+                        ],
+                    );
+                    app.navigation_open = name.ends_with("-narrow");
                 } else if name == "parity-rejected" {
                     let mut pending = PendingSend::prepare(
                         None,
@@ -591,6 +622,15 @@ impl CaperApp {
                     self.loading_older = false;
                     self.accept_older(&channel, result);
                 }
+                Event::VoiceChecked {
+                    request,
+                    voice_generation,
+                    space,
+                    channel,
+                    result,
+                } => {
+                    self.accept_voice_target(request, voice_generation, &space, &channel, result);
+                }
                 Event::Sent {
                     generation,
                     channel,
@@ -735,9 +775,26 @@ impl CaperApp {
         self.connect_gateway();
     }
 
-    fn connect_gateway(&self) {
+    fn connect_gateway(&mut self) {
         let Some(channel) = self.selected_channel.clone() else {
             return;
+        };
+        self.roster_generation += 1;
+        self.channel_rosters.clear();
+        self.unavailable_rosters.clear();
+        let media = gateway::MediaWatch {
+            epoch: self.roster_generation,
+            channels: self.detail.as_ref().map_or_else(Vec::new, |detail| {
+                detail
+                    .channels
+                    .iter()
+                    .take(gateway::MAX_MEDIA_CHANNELS)
+                    .map(|channel| gateway::MediaChannel {
+                        id: channel.id.clone(),
+                        demo: detail.space.demo,
+                    })
+                    .collect()
+            }),
         };
         let presence = if self.token.is_some() {
             self.detail
@@ -756,6 +813,7 @@ impl CaperApp {
             channel,
             cursor: self.timeline.cursor(),
             presence,
+            media,
         });
     }
 
@@ -872,6 +930,7 @@ impl CaperApp {
     }
 
     fn invalidate_navigation_cache(&mut self) {
+        self.voice_join_request += 1;
         self.navigation_cache_generation += 1;
         self.navigation_cache.clear();
         self.navigation += 1;
@@ -891,6 +950,14 @@ impl CaperApp {
         self.opening = false;
         match result {
             Ok(prepared) => {
+                if self.selected_space.as_deref()
+                    != prepared
+                        .detail
+                        .as_ref()
+                        .map(|detail| detail.space.id.as_str())
+                {
+                    self.voice_join_request += 1;
+                }
                 self.generation += 1;
                 self.clear_channel_state();
                 self.loading = false;
@@ -998,26 +1065,115 @@ impl CaperApp {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
-        let space = self
-            .selected_space
-            .as_ref()
-            .filter(|space| *space != "general")
-            .cloned();
+        self.join_voice_channel(&channel);
+    }
+
+    fn voice_target(&self, channel: &str) -> Option<(CallContext, Option<String>)> {
+        let detail = self.detail.as_ref()?;
+        let target = detail.channels.iter().find(|item| item.id == channel)?;
+        if self.unavailable_rosters.contains(channel)
+            || (!detail.space.demo && self.token.is_none())
+        {
+            return None;
+        }
         let context = CallContext {
-            channel_id: channel,
-            channel_name: self.channel_name().into(),
-            space_name: self
-                .detail
-                .as_ref()
-                .map_or("General", |detail| detail.space.name.as_str())
-                .into(),
+            channel_id: target.id.clone(),
+            channel_name: target.name.clone(),
+            space_name: detail.space.name.clone(),
         };
-        self.voice
-            .join(context, space, self.token.clone(), self.identity_name());
+        Some((
+            context,
+            (!detail.space.demo).then(|| detail.space.id.clone()),
+        ))
+    }
+
+    fn join_voice_channel(&mut self, channel: &str) {
+        if self.voice.state.active_channel() == Some(channel)
+            && !matches!(self.voice.state.phase, Phase::Failed(_))
+        {
+            return;
+        }
+        let Some((context, space)) = self.voice_target(channel) else {
+            return;
+        };
+        self.voice_join_request += 1;
+        if let Some(space) = space {
+            self.worker.send(Command::CheckVoice {
+                request: self.voice_join_request,
+                voice_generation: self.voice.state.generation,
+                token: self.token.clone().unwrap_or_default(),
+                space,
+                channel: channel.into(),
+            });
+        } else {
+            self.voice
+                .join(context, None, self.token.clone(), self.identity_name());
+        }
+    }
+
+    fn accept_voice_target(
+        &mut self,
+        request: u64,
+        voice_generation: u64,
+        space: &str,
+        channel: &str,
+        result: Result<(), worker::LoadError>,
+    ) {
+        if request != self.voice_join_request || voice_generation != self.voice.state.generation {
+            return;
+        }
+        let Some((context, target_space)) = self.voice_target(channel) else {
+            return;
+        };
+        if target_space.as_deref() != Some(space) {
+            return;
+        }
+        match result {
+            Ok(()) => self.voice.join(
+                context,
+                target_space,
+                self.token.clone(),
+                self.identity_name(),
+            ),
+            Err(error) => {
+                if error.access_denied {
+                    self.unavailable_rosters.insert(channel.into());
+                    self.channel_rosters.remove(channel);
+                }
+                self.voice.error = Some(error.message);
+            }
+        }
     }
 
     fn gateway(&mut self, event: GatewayEvent) {
         match event {
+            GatewayEvent::VoiceRoster {
+                generation,
+                channel,
+                participants,
+            } if generation == self.roster_generation
+                && self.selected_channel.is_some()
+                && self.detail.as_ref().is_some_and(|detail| {
+                    detail.channels.iter().any(|item| item.id == channel)
+                }) =>
+            {
+                self.unavailable_rosters.remove(&channel);
+                self.channel_rosters.insert(channel, participants);
+            }
+            GatewayEvent::VoiceUnavailable {
+                generation,
+                channel,
+                revoked,
+            } if generation == self.roster_generation => {
+                self.channel_rosters.remove(&channel);
+                self.unavailable_rosters.insert(channel.clone());
+                if revoked {
+                    self.voice.revoke_channel(&channel);
+                }
+            }
+            GatewayEvent::VoiceReset { generation } if generation == self.roster_generation => {
+                self.channel_rosters.clear();
+            }
             GatewayEvent::Status {
                 generation,
                 channel,
@@ -1249,6 +1405,9 @@ impl CaperApp {
 
     fn clear_channel_state(&mut self) {
         self.worker.send(Command::StopGateway);
+        self.roster_generation += 1;
+        self.channel_rosters.clear();
+        self.unavailable_rosters.clear();
         self.selected_channel = None;
         self.session = None;
         self.loading_older = false;
@@ -1456,6 +1615,7 @@ impl CaperApp {
                 }
                 self.dialog = None;
                 if self.selected_channel.as_deref() != Some(&id) {
+                    self.connect_gateway();
                     return;
                 }
                 self.clear_channel_state();
@@ -2317,118 +2477,224 @@ impl CaperApp {
                                     channel: Some(id.clone()),
                                 });
                             }
+                            ui.push_id(&id, |ui| self.channel_voice(ui, &id, &name, active));
                             ui.add_space(3.0);
                         }
-                        if !self.voice.participants.is_empty() {
+                        let active_visible = self.channels_expanded
+                            && self.detail.as_ref().is_some_and(|detail| {
+                                detail.channels.iter().any(|channel| {
+                                    self.voice.state.active_channel() == Some(&channel.id)
+                                })
+                            });
+                        if !active_visible && !self.voice.participants.is_empty() {
                             ui.add_space(14.0);
-                            ui.label(
-                                RichText::new(format!(
-                                    "IN VOICE · {}",
-                                    self.voice.participants.len()
-                                ))
-                                .size(11.0)
-                                .color(MUTED),
-                            );
-                            for participant in self.voice.participants.clone() {
-                                ui.push_id(&participant.id, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 7.0;
-                                        avatar(ui, &participant.name, 28.0, false);
-                                        ui.allocate_ui_with_layout(
-                                            egui::vec2(ui.available_width() - 58.0, 32.0),
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                            |ui| {
-                                                ui.set_min_width(ui.available_width());
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        bold(
-                                                            if participant.id == self.voice.self_id
-                                                            {
-                                                                format!(
-                                                                    "{} (you)",
-                                                                    participant.name
-                                                                )
-                                                            } else {
-                                                                participant.name.clone()
-                                                            },
-                                                        )
-                                                        .size(12.0),
-                                                    )
-                                                    .truncate(),
-                                                );
-                                            },
-                                        );
-                                        let mut playback = self.voice.playback(&participant.id);
-                                        let (rect, response) = ui.allocate_exact_size(
-                                            egui::vec2(16.0, 16.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        if participant.deafened
-                                            || participant.muted
-                                            || playback.muted
-                                        {
-                                            paint_icon(
-                                                ui.painter(),
-                                                rect,
-                                                if participant.deafened || playback.muted {
-                                                    NavIcon::VolumeX
-                                                } else {
-                                                    NavIcon::MicOff
-                                                },
-                                                MUTED,
-                                            );
-                                            response.on_hover_text(if playback.muted {
-                                                "Muted for you"
-                                            } else if participant.deafened {
-                                                "Deafened"
-                                            } else {
-                                                "Microphone muted"
-                                            });
-                                        }
-                                        if participant.id != self.voice.self_id {
-                                            let options = drawn_icon_button(
-                                                ui,
-                                                NavIcon::More,
-                                                &format!("Audio for {}", participant.name),
-                                            );
-                                            if options.clicked() {
-                                                self.effects
-                                                    .toggle(!egui::Popup::menu(&options).is_open());
-                                            }
-                                            egui::Popup::menu(&options).width(240.0).show(|ui| {
-                                                ui.label(bold(&participant.name));
-                                                let volume = ui.add(
-                                                    egui::Slider::new(
-                                                        &mut playback.gain_percent,
-                                                        0..=200,
-                                                    )
-                                                    .text("Volume")
-                                                    .suffix("%"),
-                                                );
-                                                let muted =
-                                                    ui.checkbox(&mut playback.muted, "Mute for me");
-                                                if volume.changed() {
-                                                    self.effects.slider(
-                                                        f32::from(playback.gain_percent) / 200.0,
-                                                    );
-                                                }
-                                                if muted.changed() {
-                                                    self.effects.toggle(!playback.muted);
-                                                }
-                                                if volume.changed() || muted.changed() {
-                                                    self.voice.set_participant_playback(
-                                                        &participant.id,
-                                                        playback,
-                                                    );
-                                                }
-                                            });
-                                        }
-                                    })
-                                });
-                            }
+                            self.voice_roster(ui, self.roster_for_active_call(), true);
                         }
                     });
             });
+    }
+
+    fn roster_for_active_call(&self) -> Vec<model::VoiceOccupant> {
+        self.voice
+            .participants
+            .iter()
+            .map(|participant| model::VoiceOccupant {
+                id: participant.id.clone(),
+                name: participant.name.clone(),
+                country_code: participant.country_code.clone(),
+                muted: participant.muted,
+                deafened: participant.deafened,
+            })
+            .collect()
+    }
+
+    fn channel_voice(&mut self, ui: &mut egui::Ui, id: &str, name: &str, viewed: bool) {
+        let own = self.voice.state.active_channel() == Some(id)
+            && !matches!(self.voice.state.phase, Phase::Failed(_));
+        let people = if own {
+            self.roster_for_active_call()
+        } else {
+            self.channel_rosters.get(id).cloned().unwrap_or_default()
+        };
+        if people.is_empty() && (!viewed || own) {
+            return;
+        }
+        let open = !self.collapsed_rosters.contains(id);
+        ui.horizontal(|ui| {
+            ui.add_space(32.0);
+            if !people.is_empty() {
+                let faces_width = people.len().min(3) as f32 * 16.0 + 8.0;
+                let width = faces_width + 18.0 + if people.len() > 3 { 24.0 } else { 0.0 };
+                let (rect, stack) =
+                    ui.allocate_exact_size(egui::vec2(width, 30.0), egui::Sense::click());
+                let label = format!(
+                    "{} in voice in {name}. {} who is in voice.",
+                    people.len(),
+                    if open { "Hide" } else { "Show" }
+                );
+                stack.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        open,
+                        &label,
+                    )
+                });
+                if stack.hovered() || stack.has_focus() {
+                    ui.painter().rect_filled(rect, 8.0, RAISED);
+                }
+                for (index, person) in people.iter().take(3).enumerate() {
+                    let center =
+                        egui::pos2(rect.left() + 12.0 + index as f32 * 16.0, rect.center().y);
+                    ui.painter().circle_filled(center, 11.0, SURFACE);
+                    ui.painter()
+                        .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
+                    ui.painter().text(
+                        center,
+                        egui::Align2::CENTER_CENTER,
+                        person
+                            .name
+                            .chars()
+                            .next()
+                            .unwrap_or('?')
+                            .to_uppercase()
+                            .to_string(),
+                        egui::FontId::proportional(11.0),
+                        TEXT,
+                    );
+                }
+                if people.len() > 3 {
+                    ui.painter().text(
+                        egui::pos2(rect.left() + faces_width, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        format!("+{}", people.len() - 3),
+                        egui::FontId::proportional(10.0),
+                        MUTED,
+                    );
+                }
+                paint_icon(
+                    ui.painter(),
+                    egui::Rect::from_center_size(
+                        egui::pos2(rect.right() - 8.0, rect.center().y),
+                        egui::vec2(14.0, 14.0),
+                    ),
+                    if open {
+                        NavIcon::Chevron
+                    } else {
+                        NavIcon::ChevronRight
+                    },
+                    MUTED,
+                );
+                let stack = stack.on_hover_text(label);
+                if stack.clicked() {
+                    if open {
+                        self.collapsed_rosters.insert(id.into());
+                    } else {
+                        self.collapsed_rosters.remove(id);
+                    }
+                }
+            }
+            if !own {
+                ui.add_enabled_ui(self.voice_target(id).is_some(), |ui| {
+                    let button = voice_join_button(ui, "Join");
+                    let label = format!("Join voice in #{name}");
+                    button.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
+                    });
+                    if button.on_hover_text(label).clicked() {
+                        self.join_voice_channel(id);
+                    }
+                });
+            }
+        });
+        if open {
+            self.voice_roster(ui, people, own);
+        }
+    }
+
+    fn voice_roster(&mut self, ui: &mut egui::Ui, people: Vec<model::VoiceOccupant>, own: bool) {
+        for participant in people {
+            ui.push_id(&participant.id, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 7.0;
+                    avatar(ui, &participant.name, 28.0, false);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(
+                            (ui.available_width() - if own { 58.0 } else { 23.0 }).max(0.0),
+                            32.0,
+                        ),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(
+                                    bold(if own && participant.id == self.voice.self_id {
+                                        format!("{} (you)", participant.name)
+                                    } else {
+                                        participant.name.clone()
+                                    })
+                                    .size(12.0),
+                                )
+                                .truncate(),
+                            );
+                        },
+                    );
+                    let mut playback = self.voice.playback(&participant.id);
+                    let local_muted = own && playback.muted;
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    if participant.deafened || participant.muted || local_muted {
+                        paint_icon(
+                            ui.painter(),
+                            rect,
+                            if participant.deafened || local_muted {
+                                NavIcon::VolumeX
+                            } else {
+                                NavIcon::MicOff
+                            },
+                            MUTED,
+                        );
+                        response.on_hover_text(if local_muted {
+                            "Muted for you"
+                        } else if participant.deafened {
+                            "Deafened"
+                        } else {
+                            "Microphone muted"
+                        });
+                    }
+                    if own && participant.id != self.voice.self_id {
+                        let options = drawn_icon_button(
+                            ui,
+                            NavIcon::More,
+                            &format!("Audio for {}", participant.name),
+                        );
+                        if options.clicked() {
+                            self.effects.toggle(!egui::Popup::menu(&options).is_open());
+                        }
+                        egui::Popup::menu(&options).width(240.0).show(|ui| {
+                            ui.label(bold(&participant.name));
+                            let volume = ui.add(
+                                egui::Slider::new(&mut playback.gain_percent, 0..=200)
+                                    .text("Volume")
+                                    .suffix("%"),
+                            );
+                            let muted = ui.checkbox(&mut playback.muted, "Mute for me");
+                            if volume.changed() {
+                                self.effects
+                                    .slider(f32::from(playback.gain_percent) / 200.0);
+                            }
+                            if muted.changed() {
+                                self.effects.toggle(!playback.muted);
+                            }
+                            if volume.changed() || muted.changed() {
+                                self.voice
+                                    .set_participant_playback(&participant.id, playback);
+                            }
+                        });
+                    }
+                });
+            });
+        }
     }
 
     fn account_bar(&mut self, ui: &mut egui::Ui) {
@@ -4427,10 +4693,12 @@ fn main() -> eframe::Result {
         eprintln!("Caper could not start: {message}");
         std::process::exit(2)
     });
-    let viewport_size = if fixture
-        .as_deref()
-        .is_some_and(|name| matches!(name, "parity-narrow" | "parity-browse"))
-    {
+    let viewport_size = if fixture.as_deref().is_some_and(|name| {
+        matches!(
+            name,
+            "parity-narrow" | "parity-browse" | "parity-voice-rosters-narrow"
+        )
+    }) {
         [390.0, 844.0]
     } else {
         [1440.0, 900.0]
@@ -4458,8 +4726,8 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, Dialog, PendingSend, endpoint, member_page_ids, normalize_channel,
-        permanent_send_rejection,
+        CaperApp, Dialog, GatewayEvent, PendingSend, Phase, endpoint, member_page_ids,
+        normalize_channel, permanent_send_rejection,
     };
     use crate::model::{
         Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
@@ -4505,6 +4773,141 @@ mod tests {
                 ],
             );
         }
+    }
+
+    #[test]
+    fn spectator_rosters_collapse_without_navigating_or_exposing_playback_controls() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-rosters"),
+        );
+        app.token = Some("fixture-only".into());
+        let selected = app.selected_channel.clone();
+        let (target, space) = app.voice_target("chan00000002").unwrap();
+        assert_eq!(target.channel_name, "design");
+        assert_eq!(target.channel_id, "chan00000002");
+        assert_eq!(space.as_deref(), Some("space0000001"));
+        assert_eq!(app.selected_channel, selected);
+        assert!(app.voice_target("not-in-space").is_none());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let sidebar_text = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.pos.x < 340.0 && text.galley.job.text == label => {
+                    Some(text.pos)
+                }
+                _ => None,
+            })
+        };
+        assert!(sidebar_text(&output, "Maya").is_some());
+        let stack = sidebar_text(&output, "M").unwrap() + egui::vec2(3.0, 3.0);
+        click(&mut app, &context, stack);
+        assert!(app.collapsed_rosters.contains("chan00000002"));
+        assert!(sidebar_text(&render(&mut app, &context, vec![]), "Maya").is_none());
+        assert_eq!(app.selected_channel, selected);
+        click(&mut app, &context, stack);
+        let reopened = render(&mut app, &context, vec![]);
+        assert!(sidebar_text(&reopened, "Maya").is_some());
+        assert_eq!(app.selected_channel, selected);
+        assert!(matches!(app.voice.state.phase, Phase::Idle));
+    }
+
+    #[test]
+    fn denied_voice_switch_preserves_call_and_leave_fences_late_permission() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-rosters"),
+        );
+        app.token = Some("fixture-only".into());
+        let (original, _) = app.voice_target("chan00000001").unwrap();
+        app.voice.state.phase = Phase::Connected(original.clone());
+        let chat = app.selected_channel.clone();
+        app.voice_join_request = 7;
+        app.accept_voice_target(
+            7,
+            0,
+            "space0000001",
+            "chan00000002",
+            Err(LoadError {
+                message: "Denied target".into(),
+                access_denied: true,
+                space_access_denied: false,
+            }),
+        );
+        assert_eq!(app.voice.state.phase, Phase::Connected(original.clone()));
+        assert_eq!(app.selected_channel, chat);
+        assert!(app.voice_target("chan00000002").is_none());
+        app.accept_voice_target(6, 0, "space0000001", "chan00000003", Ok(()));
+        assert_eq!(app.voice.state.phase, Phase::Connected(original));
+        app.voice.leave();
+        app.accept_voice_target(7, 0, "space0000001", "chan00000003", Ok(()));
+        assert_eq!(app.voice.state.phase, Phase::Idle);
+        app.voice.state.phase = Phase::Failed(app.voice_target("chan00000003").unwrap().0);
+        app.join_voice_channel("chan00000003");
+        assert_eq!(app.voice_join_request, 8, "A failed join must be retryable");
+        assert_eq!(app.selected_channel, chat);
+    }
+
+    #[test]
+    fn roster_epochs_and_revocation_keep_late_private_occupancy_out_of_chat() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-voice-rosters"),
+        );
+        let people = app.channel_rosters["chan00000002"].clone();
+        app.token = Some("fixture-only".into());
+        let (target, _) = app.voice_target("chan00000002").unwrap();
+        app.voice.state.phase = Phase::Connected(target);
+        let selected = app.selected_channel.clone();
+        app.roster_generation = 42;
+        app.gateway(GatewayEvent::VoiceUnavailable {
+            generation: 41,
+            channel: "chan00000002".into(),
+            revoked: true,
+        });
+        assert!(app.channel_rosters.contains_key("chan00000002"));
+        app.gateway(GatewayEvent::VoiceUnavailable {
+            generation: 42,
+            channel: "chan00000002".into(),
+            revoked: false,
+        });
+        assert!(!app.channel_rosters.contains_key("chan00000002"));
+        assert!(
+            matches!(app.voice.state.phase, Phase::Connected(_)),
+            "A spectator service failure is not call revocation"
+        );
+        app.gateway(GatewayEvent::VoiceUnavailable {
+            generation: 42,
+            channel: "chan00000002".into(),
+            revoked: true,
+        });
+        assert!(app.voice.state.active_channel().is_none());
+        assert!(app.voice_target("chan00000002").is_none());
+        assert_eq!(app.selected_channel, selected);
+        app.clear_channel_state();
+        app.gateway(GatewayEvent::VoiceRoster {
+            generation: 42,
+            channel: "chan00000002".into(),
+            participants: people.clone(),
+        });
+        assert!(app.channel_rosters.is_empty());
+        app.selected_channel = selected;
+        app.gateway(GatewayEvent::VoiceRoster {
+            generation: 43,
+            channel: "chan00000003".into(),
+            participants: people,
+        });
+        assert!(app.channel_rosters.contains_key("chan00000003"));
+        app.gateway(GatewayEvent::VoiceReset { generation: 42 });
+        assert!(!app.channel_rosters.is_empty());
+        app.gateway(GatewayEvent::VoiceReset { generation: 43 });
+        assert!(app.channel_rosters.is_empty());
     }
 
     #[test]
@@ -4765,7 +5168,9 @@ mod tests {
         let text = |label: &str| {
             *texts
                 .iter()
-                .find(|text| text.galley.job.text == label)
+                .find(|text| {
+                    text.galley.job.text == label && (label != "Join" || text.pos.x > 340.0)
+                })
                 .unwrap_or_else(|| panic!("missing {label}"))
         };
         // Independent values from the current web CSS: 54px header, 44px history.

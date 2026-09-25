@@ -55,12 +55,20 @@ pub enum Command {
         channel: String,
         before: String,
     },
+    CheckVoice {
+        request: u64,
+        voice_generation: u64,
+        token: String,
+        space: String,
+        channel: String,
+    },
     Connect {
         generation: u64,
         token: Option<String>,
         channel: String,
         cursor: String,
         presence: Option<(String, Vec<String>)>,
+        media: gateway::MediaWatch,
     },
     Send {
         generation: u64,
@@ -204,6 +212,13 @@ pub enum Event {
         generation: u64,
         channel: String,
         result: Result<History, LoadError>,
+    },
+    VoiceChecked {
+        request: u64,
+        voice_generation: u64,
+        space: String,
+        channel: String,
+        result: Result<(), LoadError>,
     },
     Sent {
         generation: u64,
@@ -435,6 +450,7 @@ fn manage(api: Api, context: egui::Context, incoming: Receiver<Command>, events:
                 channel,
                 cursor,
                 presence,
+                media,
             } => {
                 if let Some(control) = gateway.take() {
                     control.stop();
@@ -447,6 +463,7 @@ fn manage(api: Api, context: egui::Context, incoming: Receiver<Command>, events:
                     channel,
                     cursor,
                     presence,
+                    media,
                     gateway_tx,
                 ));
                 let events = events.clone();
@@ -502,6 +519,39 @@ fn advance_generation(current: &mut u64, candidate: u64) -> bool {
 
 fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::Context) {
     let event = match command {
+        Command::CheckVoice {
+            request,
+            voice_generation,
+            token,
+            space,
+            channel,
+        } => {
+            let result = prepare_navigation_read(api, Some(&token), Some(&space), Some(&channel))
+                .and_then(|(detail, history)| {
+                    if detail
+                        .as_ref()
+                        .is_some_and(|detail| detail.space.id == space)
+                        && history.as_ref().is_some_and(|history| {
+                            history.space.id == space && history.channel.id == channel
+                        })
+                    {
+                        Ok(())
+                    } else {
+                        Err(LoadError {
+                            message: "This channel is no longer accessible.".into(),
+                            access_denied: true,
+                            space_access_denied: false,
+                        })
+                    }
+                });
+            Event::VoiceChecked {
+                request,
+                voice_generation,
+                space,
+                channel,
+                result,
+            }
+        }
         Command::Restore { generation } => {
             let result = crate::credentials::load(api.base()).and_then(|token| {
                 token.map_or(Ok(None), |token| {
@@ -849,6 +899,91 @@ mod tests {
         });
         let read = super::prefetch_navigation(&api, Some("account"), Some("s"), Some("c")).unwrap();
         assert_eq!(read.history.unwrap().cursor, "7");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn voice_permission_checks_exact_history_target_before_replacement() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (status, history) in [
+                (
+                    200,
+                    r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"c","name":"channel"},"messages":[],"cursor":"7","hasMore":false}"#,
+                ),
+                (
+                    200,
+                    r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"other","name":"channel"},"messages":[],"cursor":"7","hasMore":false}"#,
+                ),
+                (403, r#"{"error":"Grant revoked"}"#),
+            ] {
+                for (path, status, body) in [
+                    (
+                        "/api/spaces/s",
+                        200,
+                        r#"{"space":{"id":"s","name":"Space","ownerId":"owner"},"channels":[{"id":"c","spaceId":"s","name":"channel","private":true}],"members":[]}"#,
+                    ),
+                    ("/api/chat/channels/c/messages", status, history),
+                ] {
+                    let (stream, _) = server.accept().unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut request = String::new();
+                    reader.read_line(&mut request).unwrap();
+                    assert_eq!(request, format!("GET {path} HTTP/1.1\r\n"));
+                    let mut headers = String::new();
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        headers.push_str(&line);
+                    }
+                    assert!(
+                        headers
+                            .to_lowercase()
+                            .contains("authorization: bearer permission-only\r\n")
+                    );
+                    write!(reader.get_mut(), "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                }
+            }
+        });
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for allowed in [true, false, false] {
+            super::execute(
+                &api,
+                super::Command::CheckVoice {
+                    request: 13,
+                    voice_generation: 27,
+                    token: "permission-only".into(),
+                    space: "s".into(),
+                    channel: "c".into(),
+                },
+                &sender,
+                &eframe::egui::Context::default(),
+            );
+            let super::Event::VoiceChecked {
+                request,
+                voice_generation,
+                space,
+                channel,
+                result,
+            } = receiver.recv().unwrap()
+            else {
+                panic!("missing permission result")
+            };
+            assert_eq!(
+                (request, voice_generation, space.as_str(), channel.as_str()),
+                (13, 27, "s", "c")
+            );
+            assert_eq!(result.is_ok(), allowed);
+            if !allowed {
+                assert!(result.unwrap_err().access_denied);
+            }
+        }
         worker.join().unwrap();
     }
 

@@ -29,7 +29,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val typers = mutableMapOf<String, TypingAuthor>()
     private var generation = 0L
     private var accountGeneration = 0L
+    private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
+    private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
 
     init { loadHome() }
@@ -113,6 +115,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val token = accountToken
         VoiceCallService.stop(getApplication())
         ++accountGeneration
+        ++spaceAccessGeneration
         invalidate()
         accountToken = null
         chatToken = null
@@ -125,8 +128,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun selectSpace(id: String) {
         val existing = mutable.value.spaces.find { it.id == id } ?: return
         if (existing.demo) return selectDemo()
+        ++spaceAccessGeneration
         val request = ++generation
         closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
         mutable.value = mutable.value.copy(busy = true, error = null)
         viewModelScope.launch {
             try {
@@ -139,8 +144,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun selectDemo() {
+        ++spaceAccessGeneration
         val request = ++generation
         closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
         mutable.value = mutable.value.copy(busy = true, error = null)
         viewModelScope.launch {
             try {
@@ -207,6 +214,38 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reportActivity() { gateway?.reportActivity() }
     fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
+
+    internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
+        val request = ++voiceAuthorizationRequest
+        val spaceRequest = spaceAccessGeneration
+        val token = accountToken
+        viewModelScope.launch {
+            try {
+                // The cached sidebar listing is not an authorization decision. Check fresh
+                // server access before start() synchronously replaces a healthy current call.
+                val accessible = if (intent.demo) {
+                    setOfNotNull(api.general().channel?.id)
+                } else api.space(checkNotNull(token), intent.spaceId).let { detail ->
+                    if (detail.space.id != intent.spaceId) emptySet() else detail.channels.mapTo(mutableSetOf()) { it.id }
+                }
+                if (request != voiceAuthorizationRequest || spaceRequest != spaceAccessGeneration ||
+                    !intent.isCurrent(mutable.value, accountGeneration)) return@launch
+                if (intent.isCurrent(mutable.value, accountGeneration, accessible)) onAuthorized()
+                else {
+                    mutable.value = mutable.value.copy(
+                        deniedVoiceChannels = mutable.value.deniedVoiceChannels + intent.channelId,
+                        voiceRosters = mutable.value.voiceRosters - intent.channelId,
+                    )
+                    onFailure("Voice is not available in this channel.")
+                }
+            } catch (error: Throwable) {
+                if (request == voiceAuthorizationRequest && spaceRequest == spaceAccessGeneration &&
+                    intent.isCurrent(mutable.value, accountGeneration)) {
+                    onFailure(message(error))
+                }
+            }
+        }
+    }
 
     fun send(text: String, confirmed: () -> Unit = {}) {
         if (text.isBlank()) return
@@ -279,6 +318,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             onPresence = { snapshot -> viewModelScope.launch {
                 if (generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
             } },
+            onMedia = { channelId, people -> viewModelScope.launch {
+                if (generation == request && (channelId.isEmpty() && mutable.value.selectedSpace?.space?.demo == true ||
+                    mutable.value.selectedSpace?.channels?.any { it.id == channelId } == true && channelId !in mutable.value.deniedVoiceChannels)) {
+                    mutable.value = mutable.value.copy(voiceRosters = mutable.value.voiceRosters + (channelId to people))
+                }
+            } },
+            onMediaDenied = { channelId -> viewModelScope.launch {
+                if (generation == request) {
+                    VoiceCallService.stopIfChannel(getApplication(), channelId)
+                    mutable.value = mutable.value.copy(
+                        voiceRosters = mutable.value.voiceRosters - channelId,
+                        deniedVoiceChannels = mutable.value.deniedVoiceChannels + channelId,
+                    )
+                }
+            } },
+            onMediaDisconnected = { viewModelScope.launch {
+                if (generation == request) mutable.value = mutable.value.copy(voiceRosters = emptyMap())
+            } },
             onAccessDenied = { viewModelScope.launch { if (generation == request) revokeChannel() } },
             onResync = { viewModelScope.launch { if (generation == request) resyncChannel(channel) } },
         )
@@ -288,6 +345,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         connection.start()
         watchVisiblePresence()
+        val detail = mutable.value.selectedSpace
+        if (detail != null) connection.watchMedia(detail.channels.take(24).map { it.id }, detail.space.demo)
     }
 
     private fun watchVisiblePresence() {
@@ -454,7 +513,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(
             selectedSpace = detail,
             spaces = mutable.value.spaces.map { if (it.id == detail.space.id) detail.space else it },
+            voiceRosters = mutable.value.voiceRosters.filterKeys { id -> id.isEmpty() && detail.space.demo || detail.channels.any { it.id == id } },
+            deniedVoiceChannels = mutable.value.deniedVoiceChannels.filterTo(mutableSetOf()) { id -> detail.channels.any { it.id == id } },
         )
+        gateway?.watchMedia(detail.channels.take(24).map { it.id }, detail.space.demo)
         watchVisiblePresence()
     }
 
@@ -472,6 +534,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (clearPending) pendingSends.clear()
         mutable.value = mutable.value.copy(
             selectedChannel = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            voiceRosters = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
         )
     }

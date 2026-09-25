@@ -102,7 +102,10 @@ or a one-shot failure such as
 `{ "failure": { "path": "/api/auth/email/request", "method": "POST", "status": 503 } }`.
 It can inject another participant's typing with
 `{ "typing": { "channelId": "chan00000001", "active": true } }`.
-Media operations deliberately return 503. Authentication, authorization and
+Read-only voice rosters use `{ "media": { "channelId": "chan00000002", "participants": [{ "id": "fixture-voice", "name": "TEST FIXTURE Voice", "muted": false, "deafened": false }] } }`.
+`{ "mediaAccessDenied": { "channelId": "chan00000002" } }` evicts that spectator
+subscription; add `"denied": false` to permit future subscriptions again.
+Media join and participant-token operations deliberately return 503. Authentication, authorization and
 presence are simplified; this fixture is not a substitute for real API tests.
 
 Compare signed-out/error, populated conversation, guest, narrow Browse-open, and
