@@ -1,7 +1,11 @@
 package chat.caper.android
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -14,6 +18,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import chat.caper.android.model.Account
+import chat.caper.android.ui.Blackout
 import chat.caper.android.ui.CaperTheme
 import java.io.File
 import org.junit.Assert.assertEquals
@@ -31,8 +36,12 @@ class ProfileUiTest {
         var submitted: Pair<String, String>? = null
         compose.setContent {
             CaperTheme {
-                ProfileScreen(account.value, busy.value, null, close = if (account.value.username == null) null else ({})) { username, name ->
-                    submitted = username to name
+                Scaffold(containerColor = Blackout) { padding ->
+                    Box(Modifier.padding(padding)) {
+                        ProfileScreen(account.value, busy.value, null, close = if (account.value.username == null) null else ({})) { username, name ->
+                            submitted = username to name
+                        }
+                    }
                 }
             }
         }

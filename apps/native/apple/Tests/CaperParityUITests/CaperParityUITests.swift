@@ -194,7 +194,11 @@ final class CaperParityUITests: XCTestCase {
         stack.tap()
         audio.tap()
         XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
-        let mute = app.descendants(matching: .any)["Mute"]
+        #if os(macOS)
+        let mute = app.checkBoxes["Mute"]
+        #else
+        let mute = app.switches["Mute"]
+        #endif
         XCTAssertTrue(mute.exists)
         capture("active-voice-audio-menu-test-fixture", app: app)
         mute.tap()
@@ -209,7 +213,7 @@ final class CaperParityUITests: XCTestCase {
         capture("active-voice-locally-muted-test-fixture", app: app)
         audio.tap()
         XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
-        app.descendants(matching: .any)["Mute"].tap()
+        mute.tap()
         #if os(macOS)
         app.typeKey(.escape, modifierFlags: [])
         #else
@@ -320,11 +324,14 @@ final class CaperParityUITests: XCTestCase {
         let app = launch(fixture: "login", signedIn: false)
         assertStaticText("Come on in.", in: app)
         XCTAssertTrue(app.buttons["guest-general-button"].label.contains("Join #general as a guest."))
-        capture("login", app: app)
         let email = app.textFields["Email address"]
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(app.buttons["guest-general-button"].frame))
+        capture("login", app: app)
         email.tap(); email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
         XCTAssertTrue(app.textFields["Sign-in code"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(app.textFields["Sign-in code"].frame))
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)

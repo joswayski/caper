@@ -989,20 +989,26 @@ private struct ProfileView: View {
     @State private var username = ""
     @State private var displayName = ""
     var body: some View {
-        VStack(spacing: 22) {
-            Wordmark(); Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
-            CaperField(title: "Username", text: $username)
-            Text("3-32 lowercase letters, numbers, or underscores.")
-                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            CaperField(title: "Display name", text: $displayName)
-            Text("Shown to other people. It does not need to be unique.")
-                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
-            Button(model.busy ? "Saving…" : "Finish account") { Task { await model.saveProfile(username: username, displayName: displayName) } }
-                .buttonStyle(CaperPrimaryButton())
-                .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
-                .accessibilityIdentifier("profile-continue")
-        }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
+        ScrollView {
+            VStack(spacing: 22) {
+                Wordmark(); Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
+                    .fixedSize(horizontal: false, vertical: true)
+                CaperField(title: "Username", text: $username)
+                Text("3-32 lowercase letters, numbers, or underscores.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                CaperField(title: "Display name", text: $displayName)
+                Text("Shown to other people. It does not need to be unique.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                if let error = model.error {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button(model.busy ? "Saving…" : "Finish account") { Task { await model.saveProfile(username: username, displayName: displayName) } }
+                    .buttonStyle(CaperPrimaryButton())
+                    .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                    .accessibilityIdentifier("profile-continue")
+            }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
+        }.background(CaperTheme.blackout)
     }
 }
 
@@ -1095,8 +1101,13 @@ private struct LoginPage: View {
                     Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18)
                 }
             }
-            .frame(width: 440)
+            .frame(maxWidth: 440)
+            .padding(.horizontal, 20)
+            #if os(iOS)
+            .padding(.vertical, 32)
+            #else
             .padding(.top, 108)
+            #endif
             .frame(maxWidth: .infinity, alignment: .center)
         }.background(CaperTheme.blackout.ignoresSafeArea())
     }
