@@ -158,7 +158,7 @@ private struct WorkspaceView: View {
                 Group {
                     if narrow && !model.navigationOpen {
                         ZStack(alignment: .trailing) {
-                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                            ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                 membersPreference = !membersVisible
                             }
                             if membersVisible {
@@ -222,14 +222,14 @@ private struct WorkspaceView: View {
                                 Group {
                                     if geometry.size.width >= 1100 {
                                         HStack(spacing: 0) {
-                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
                                             if membersVisible { MemberPresenceView(model: model).frame(width: 220) }
                                         }
                                     } else {
                                         VStack(spacing: 0) {
-                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, membersVisible: membersVisible) {
+                                            ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
                                             if membersVisible { MemberPresenceView(model: model).frame(maxHeight: 240) }
@@ -894,6 +894,7 @@ private struct ConversationStage: View {
     @Bindable var model: AppModel
     let narrow: Bool
     let browse: () -> Void
+    var createChannel: () -> Void = {}
     let membersVisible: Bool
     let toggleMembers: () -> Void
     var body: some View {
@@ -904,6 +905,7 @@ private struct ConversationStage: View {
                 Text("No accessible channels").font(CaperTheme.font(20, weight: .bold))
                 Text(model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
                     .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                if model.isOwner { Button("Create channel", action: createChannel).buttonStyle(VoiceJoinButton()).padding(.top, 6) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.conversation)
         } else { ChatView(model: model, narrow: narrow, browse: browse, membersVisible: membersVisible, toggleMembers: toggleMembers) }
     }
