@@ -57,6 +57,9 @@ enum NavIcon {
     Headphones,
     VolumeX,
     Menu,
+    PhoneOff,
+    HeadphoneOff,
+    AudioLines,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,6 +157,7 @@ struct CaperApp {
     live: String,
     email: String,
     challenge: Option<String>,
+    attempts_remaining: Option<u64>,
     code: String,
     username: String,
     display_name: String,
@@ -221,6 +225,7 @@ impl CaperApp {
             live: "Connecting…".into(),
             email: String::new(),
             challenge: None,
+            attempts_remaining: None,
             code: String::new(),
             username: String::new(),
             display_name: String::new(),
@@ -317,6 +322,11 @@ impl CaperApp {
                 } else if name == "parity-profile" {
                     app.username = "fixture_owner".into();
                     app.display_name = "Fixture Owner".into();
+                    app.dialog = Some(Dialog::Profile);
+                } else if name == "parity-onboarding" {
+                    let account = app.account.as_mut().unwrap();
+                    account.username = None;
+                    account.display_name = None;
                     app.dialog = Some(Dialog::Profile);
                 } else if name == "parity-member" {
                     app.account.as_mut().unwrap().id = "fixture-maya".into();
@@ -540,12 +550,18 @@ impl CaperApp {
                         Ok(challenge) => {
                             self.challenge = Some(challenge);
                             self.code.clear();
+                            self.attempts_remaining = None;
                         }
                         Err(error) => self.error = Some(error),
                     }
                 }
-                Event::Verified { generation, result } if generation == self.generation => {
+                Event::Verified {
+                    generation,
+                    result,
+                    attempts_remaining,
+                } if generation == self.generation => {
                     self.loading = false;
+                    self.attempts_remaining = attempts_remaining;
                     match result {
                         Ok((token, account, spaces)) => {
                             self.establish(token.clone(), account, spaces);
@@ -1718,6 +1734,8 @@ impl eframe::App for CaperApp {
         self.periodic(context);
         if matches!(self.dialog, Some(Dialog::SignIn)) {
             self.login_page(context);
+        } else if self.onboarding() {
+            self.onboarding_page(context);
         } else {
             self.shell(context);
             self.dialogs(context);
@@ -1731,6 +1749,121 @@ impl eframe::App for CaperApp {
 }
 
 impl CaperApp {
+    /// A signed-in account without a profile finishes it on its own page, as on web.
+    fn onboarding(&self) -> bool {
+        matches!(self.dialog, Some(Dialog::Profile))
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.username.is_none() || account.display_name.is_none())
+    }
+
+    fn onboarding_page(&mut self, context: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BLACKOUT))
+            .show(context, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(440.0);
+                        ui.add_space(100.0);
+                        ui.horizontal(|ui| {
+                            ui.label(bold("caper").size(23.0));
+                            ui.label(bold(".").size(23.0).color(TERRACOTTA_BRIGHT));
+                        });
+                        ui.add_space(58.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.label(
+                                bold("ONE LAST THING")
+                                    .size(11.0)
+                                    .extra_letter_spacing(1.5)
+                                    .color(MUTED),
+                            );
+                            ui.add_space(24.0);
+                            ui.label(black("Choose how you show up.").size(40.0));
+                            ui.add_space(20.0);
+                            ui.label(
+                                RichText::new(
+                                    "Your username is unique. Your display name is what people see in conversations.",
+                                )
+                                .size(16.0)
+                                .color(MUTED),
+                            );
+                            ui.add_space(24.0);
+                            ui.label(bold("Username").size(14.0));
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.username)
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(32)
+                                    .min_size(egui::vec2(0.0, 52.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            self.username = normalize_username(&self.username);
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("3-32 lowercase letters, numbers, or underscores.")
+                                    .size(12.8)
+                                    .color(MUTED),
+                            );
+                            ui.add_space(20.0);
+                            ui.label(bold("Display name").size(14.0));
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.display_name)
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(64)
+                                    .min_size(egui::vec2(0.0, 52.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("Shown to other people. It does not need to be unique.")
+                                    .size(12.8)
+                                    .color(MUTED),
+                            );
+                            if let Some(error) = &self.error {
+                                ui.add_space(16.0);
+                                login_error_frame(ui, error);
+                            }
+                            ui.add_space(24.0);
+                            if login_action(
+                                ui,
+                                if self.loading { "Saving…" } else { "Finish account" },
+                                self.loading
+                                    || self.username.len() < 3
+                                    || self.display_name.trim().is_empty(),
+                            )
+                            .clicked()
+                            {
+                                self.loading = true;
+                                self.error = None;
+                                self.worker.send(Command::Profile {
+                                    generation: self.generation,
+                                    token: self.token.clone().unwrap_or_default(),
+                                    username: self.username.trim().to_ascii_lowercase(),
+                                    display_name: self.display_name.trim().into(),
+                                });
+                            }
+                            ui.add_space(16.0);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Log out").size(13.6).color(MUTED),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.logout();
+                                }
+                            });
+                        });
+                    });
+                });
+            });
+    }
+
     fn login_page(&mut self, context: &egui::Context) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BLACKOUT))
@@ -1759,9 +1892,13 @@ impl CaperApp {
                         ui.add_space(28.0);
                         ui.label(
                             RichText::new(if self.challenge.is_some() {
-                                "Enter the six-character code from your email. It expires in 10 minutes."
+                                format!(
+                                    "Enter the six-character code sent to {}. It expires in 10 minutes.",
+                                    self.email.trim()
+                                )
                             } else {
                                 "Use your email to create an account or return to one. No password needed."
+                                    .into()
                             })
                             .size(16.0)
                             .color(MUTED),
@@ -1770,22 +1907,52 @@ impl CaperApp {
                         if self.challenge.is_some() {
                             ui.label(bold("Sign-in code").size(14.0));
                             ui.add_space(4.0);
-                            let response = ui.add_sized(
-                                [440.0, 52.0],
+                            let exhausted = self.attempts_remaining == Some(0);
+                            let response = ui.add_enabled(
+                                !exhausted,
                                 egui::TextEdit::singleline(&mut self.code)
-                                    .vertical_align(egui::Align::Center).char_limit(6),
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(6)
+                                    .min_size(egui::vec2(440.0, 52.0))
+                                    .desired_width(440.0),
                             );
                             self.code.make_ascii_uppercase();
                             self.code.retain(|character| {
                                 "ABCDEFGHJKMNPQRSTWXYZ23456789".contains(character)
                             });
+                            if let Some(error) = &self.error {
+                                ui.add_space(12.0);
+                                login_error_frame(ui, error);
+                            }
+                            if self.attempts_remaining == Some(1) {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    bold("One attempt left. Check the code carefully.").size(14.0),
+                                );
+                            }
                             ui.add_space(20.0);
-                            let submit = login_action(
+                            if exhausted {
+                                if login_action(
+                                    ui,
+                                    if self.loading { "Sending…" } else { "Email me a new code" },
+                                    self.loading,
+                                )
+                                .clicked()
+                                {
+                                    self.loading = true;
+                                    self.error = None;
+                                    self.code.clear();
+                                    self.worker.send(Command::RequestCode {
+                                        generation: self.generation,
+                                        email: self.email.trim().to_owned(),
+                                    });
+                                }
+                            } else if login_action(
                                 ui,
                                 if self.loading { "Checking…" } else { "Continue" },
                                 self.loading || self.code.len() != 6,
-                            );
-                            if submit.clicked()
+                            )
+                            .clicked()
                                 || (response.lost_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
                             {
@@ -1799,10 +1966,21 @@ impl CaperApp {
                                 });
                             }
                             ui.add_space(10.0);
-                            if ui.button("Use a different email").clicked() {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Use a different email")
+                                            .size(13.6)
+                                            .color(MUTED),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
                                 self.challenge = None;
                                 self.code.clear();
                                 self.error = None;
+                                self.attempts_remaining = None;
                             }
                         } else {
                             ui.label(bold("Email address").size(14.0));
@@ -1815,14 +1993,7 @@ impl CaperApp {
                             );
                             if let Some(error) = &self.error {
                                 ui.add_space(12.0);
-                                egui::Frame::new()
-                                    .stroke(Stroke::new(1.0, TERRACOTTA))
-                                    .corner_radius(6)
-                                    .inner_margin(egui::Margin::symmetric(12, 14))
-                                    .show(ui, |ui| {
-                                        ui.set_width(414.0);
-                                        ui.label(RichText::new(error).size(13.0).color(ERROR));
-                                    });
+                                login_error_frame(ui, error);
                             }
                             ui.add_space(20.0);
                             let submit = login_action(
@@ -1842,31 +2013,34 @@ impl CaperApp {
                                 });
                             }
                         }
-                        ui.add_space(12.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(
-                                    "We only send a code when you ask. Prefer to look around first?",
-                                )
-                                .size(14.0)
-                                .color(MUTED),
-                            );
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Join #general as a guest.")
-                                            .size(14.0)
-                                            .color(MUTED),
+                        // Web offers the guest room on the email step only.
+                        if self.challenge.is_none() {
+                            ui.add_space(12.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(
+                                        "We only send a code when you ask. Prefer to look around first?",
                                     )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                self.dialog = None;
-                                self.error = None;
-                                self.open_general();
-                            }
-                        });
+                                    .size(14.0)
+                                    .color(MUTED),
+                                );
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Join #general as a guest.")
+                                                .size(14.0)
+                                                .color(TEXT),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.dialog = None;
+                                    self.error = None;
+                                    self.open_general();
+                                }
+                            });
+                        }
                     });
                 });
             });
@@ -2267,7 +2441,7 @@ impl CaperApp {
                                     egui::Popup::menu(&actions).width(width).show(|ui| {
                                         if self.can_leave_space() {
                                             if ui
-                                                .button(RichText::new("Leave space").color(ERROR))
+                                                .button(RichText::new("Leave space…").color(ERROR))
                                                 .clicked()
                                             {
                                                 if let Some(detail) = &self.detail {
@@ -2598,7 +2772,13 @@ impl CaperApp {
             if !own {
                 ui.add_enabled_ui(self.voice_target(id).is_some(), |ui| {
                     let button = voice_join_button(ui, "Join");
-                    let label = format!("Join voice in #{name}");
+                    let switching =
+                        !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_));
+                    let label = if switching {
+                        format!("Switch voice to #{name}")
+                    } else {
+                        format!("Join voice in #{name}")
+                    };
                     button.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
                     });
@@ -2629,134 +2809,151 @@ impl CaperApp {
             let mut playback = self.voice.playback(&participant.id);
             let local_muted = own && !is_self && playback.muted;
             ui.push_id(&participant.id, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 7.0;
-                    avatar(ui, &participant.name, 28.0, false);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(
-                            (ui.available_width()
-                                - if own && participant.id != self.voice.self_id {
-                                    80.0
-                                } else {
-                                    23.0
-                                }
-                                - if muted && deafened { 23.0 } else { 0.0 })
-                            .max(0.0),
-                            32.0,
-                        ),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.vertical(|ui| {
-                                ui.set_min_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 0.0;
-                                ui.add(
-                                    egui::Label::new(
-                                        bold(if is_self {
-                                            format!("{} (you)", participant.name)
-                                        } else {
-                                            participant.name.clone()
-                                        })
-                                        .size(12.0),
-                                    )
-                                    .truncate(),
-                                );
-                                if local_muted {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(10.0, 10.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        paint_icon(
-                                            ui.painter(),
-                                            rect,
-                                            NavIcon::VolumeX,
-                                            TERRACOTTA_BRIGHT,
-                                        );
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(format!(
-                                                    "You muted {}",
-                                                    participant.name
-                                                ))
-                                                .size(10.0)
-                                                .color(TERRACOTTA_BRIGHT),
-                                            )
-                                            .truncate(),
-                                        );
-                                    });
-                                }
-                            });
-                        },
-                    );
-                    if !muted && !deafened {
-                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                // Web opens the participant's audio menu on right-click too.
+                let menu_id = ui.id().with("audio-menu");
+                ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                    if own && !is_self && ui.response().secondary_clicked() {
+                        egui::Popup::open_id(ui.ctx(), menu_id);
                     }
-                    for (active, icon, label) in [
-                        (muted, NavIcon::MicOff, "Muted"),
-                        (deafened, NavIcon::VolumeX, "Deafened"),
-                    ] {
-                        if active {
-                            let (rect, response) = ui
-                                .allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                            paint_icon(ui.painter(), rect, icon, MUTED);
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Image,
-                                    ui.is_enabled(),
-                                    format!("{}: {label}", participant.name),
-                                )
-                            });
-                            response.on_hover_text(label);
-                        }
-                    }
-                    if own && participant.id != self.voice.self_id {
-                        let options = ui.add(
-                            egui::Button::new(RichText::new("Audio").size(10.0).color(MUTED))
-                                .frame(false)
-                                .min_size(egui::vec2(46.0, 28.0)),
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        avatar(ui, &participant.name, 28.0, false);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(
+                                (ui.available_width()
+                                    - if own && participant.id != self.voice.self_id {
+                                        80.0
+                                    } else {
+                                        23.0
+                                    }
+                                    - if muted && deafened { 23.0 } else { 0.0 })
+                                .max(0.0),
+                                32.0,
+                            ),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    ui.add(
+                                        egui::Label::new(
+                                            bold(if is_self {
+                                                format!("{} (you)", participant.name)
+                                            } else {
+                                                participant.name.clone()
+                                            })
+                                            .size(12.0),
+                                        )
+                                        .truncate(),
+                                    );
+                                    if local_muted {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(10.0, 10.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            paint_icon(
+                                                ui.painter(),
+                                                rect,
+                                                NavIcon::VolumeX,
+                                                TERRACOTTA_BRIGHT,
+                                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(format!(
+                                                        "You muted {}",
+                                                        participant.name
+                                                    ))
+                                                    .size(10.0)
+                                                    .color(TERRACOTTA_BRIGHT),
+                                                )
+                                                .truncate(),
+                                            );
+                                        });
+                                    }
+                                });
+                            },
                         );
-                        options.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                ui.is_enabled(),
-                                format!("Audio controls for {}", participant.name),
-                            )
-                        });
-                        if options.clicked() {
-                            self.effects.toggle(!egui::Popup::menu(&options).is_open());
+                        if !muted && !deafened {
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                         }
-                        egui::Popup::menu(&options).width(240.0).show(|ui| {
-                            let label = ui.horizontal(|ui| {
-                                let label = ui.label(bold("User volume"));
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(format!("{}%", playback.gain_percent));
-                                    },
+                        for (active, icon, label) in [
+                            (muted, NavIcon::MicOff, "Muted"),
+                            (deafened, NavIcon::HeadphoneOff, "Deafened"),
+                        ] {
+                            if active {
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(16.0, 16.0),
+                                    egui::Sense::hover(),
                                 );
-                                label
-                            });
-                            let volume = ui
-                                .add(
-                                    egui::Slider::new(&mut playback.gain_percent, 0..=200)
-                                        .show_value(false),
+                                paint_icon(ui.painter(), rect, icon, MUTED);
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Image,
+                                        ui.is_enabled(),
+                                        format!("{}: {label}", participant.name),
+                                    )
+                                });
+                                response.on_hover_text(label);
+                            }
+                        }
+                        if own && participant.id != self.voice.self_id {
+                            let options = ui.add(
+                                egui::Button::new(RichText::new("Audio").size(10.0).color(MUTED))
+                                    .frame(false)
+                                    .min_size(egui::vec2(46.0, 28.0)),
+                            );
+                            options.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    format!("Audio controls for {}", participant.name),
                                 )
-                                .labelled_by(label.inner.id);
-                            let muted = ui.checkbox(&mut playback.muted, "Mute");
-                            if volume.changed() {
-                                self.effects
-                                    .slider(f32::from(playback.gain_percent) / 200.0);
+                            });
+                            if options.clicked() {
+                                self.effects.toggle(!egui::Popup::menu(&options).is_open());
                             }
-                            if muted.changed() {
-                                self.effects.toggle(!playback.muted);
-                            }
-                            if volume.changed() || muted.changed() {
-                                self.voice
-                                    .set_participant_playback(&participant.id, playback);
-                            }
-                        });
-                    }
+                            egui::Popup::menu(&options)
+                                .id(menu_id)
+                                .width(240.0)
+                                .show(|ui| {
+                                    let label = ui.horizontal(|ui| {
+                                        let label = ui.label(bold("User volume"));
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(format!("{}%", playback.gain_percent));
+                                            },
+                                        );
+                                        label
+                                    });
+                                    let volume = ui
+                                        .add(
+                                            egui::Slider::new(&mut playback.gain_percent, 0..=200)
+                                                .show_value(false),
+                                        )
+                                        .labelled_by(label.inner.id);
+                                    let muted = ui.checkbox(&mut playback.muted, "Mute");
+                                    if volume.changed() {
+                                        self.effects
+                                            .slider(f32::from(playback.gain_percent) / 200.0);
+                                    }
+                                    if muted.changed() {
+                                        self.effects.toggle(!playback.muted);
+                                    }
+                                    if volume.changed() || muted.changed() {
+                                        self.voice
+                                            .set_participant_playback(&participant.id, playback);
+                                    }
+                                    ui.label(
+                                        RichText::new("Only changes what you hear.")
+                                            .size(11.0)
+                                            .color(MUTED),
+                                    );
+                                });
+                        }
+                    });
                 });
             });
         }
@@ -2778,16 +2975,29 @@ impl CaperApp {
             };
             ui.add_space(8.0);
             ui.separator();
+            let joining = matches!(self.voice.state.phase, Phase::Joining(_));
             ui.horizontal(|ui| {
+                let (icon, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                // Web: green when connected, amber while connecting or reconnecting.
+                let tone = if connected {
+                    Color32::from_rgb(140, 178, 98)
+                } else {
+                    Color32::from_rgb(217, 171, 92)
+                };
+                paint_icon(ui.painter(), icon, NavIcon::AudioLines, tone);
                 let status = ui.vertical(|ui| {
                     ui.add(
                         egui::Label::new(
                             bold(if connected {
                                 "Voice connected"
+                            } else if joining {
+                                "Connecting…"
                             } else {
-                                "Connecting voice…"
+                                "Reconnecting…"
                             })
-                            .size(12.0),
+                            .size(12.0)
+                            .color(tone),
                         )
                         .selectable(false),
                     );
@@ -2803,11 +3013,39 @@ impl CaperApp {
                 if open.clicked() {
                     self.navigate(target);
                 }
-                if drawn_icon_button(ui, NavIcon::Close, "Disconnect voice").clicked() {
+                let hangup = ui
+                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        drawn_icon_button_with_tooltip(
+                            ui,
+                            NavIcon::PhoneOff,
+                            if connected {
+                                "Leave voice"
+                            } else {
+                                "Cancel joining voice"
+                            },
+                            if connected { "Disconnect" } else { "Cancel" },
+                        )
+                    })
+                    .inner;
+                if hangup.clicked() {
                     if connected {
                         self.effects.play(Effect::Leave);
                     }
                     self.voice.leave();
+                }
+            });
+            ui.add_space(8.0);
+        }
+        if let Some(error) = self.voice.error.clone() {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(error).size(11.0).color(ERROR))
+                        .wrap()
+                        .selectable(false),
+                );
+                if drawn_icon_button(ui, NavIcon::Close, "Dismiss voice error").clicked() {
+                    self.voice.error = None;
                 }
             });
             ui.add_space(8.0);
@@ -2878,12 +3116,14 @@ impl CaperApp {
                     },
                     muted,
                 )
+                .on_hover_text(if muted { "Unmute" } else { "Mute" })
                 .clicked()
                 {
                     self.voice.command(VoiceOperation::Mute(!muted));
                     self.effects.toggle(muted);
                 }
-                let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted);
+                let input = audio_icon_button(ui, NavIcon::Chevron, 16.0, "Input Options", muted)
+                    .on_hover_text("Input Options");
                 if input.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&input).is_open());
                     self.voice.refresh_devices();
@@ -2909,13 +3149,15 @@ impl CaperApp {
                     },
                     deafened,
                 )
+                .on_hover_text(if deafened { "Undeafen" } else { "Deafen" })
                 .clicked()
                 {
                     self.voice.command(VoiceOperation::Deafen(!deafened));
                     self.effects.toggle(deafened);
                 }
                 let output =
-                    audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened);
+                    audio_icon_button(ui, NavIcon::Chevron, 16.0, "Output Options", deafened)
+                        .on_hover_text("Output Options");
                 if output.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&output).is_open());
                     self.voice.refresh_devices();
@@ -2926,7 +3168,8 @@ impl CaperApp {
                     .show(|ui| self.device_options(ui, false));
                 ui.add_space(2.0);
                 let settings =
-                    audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false);
+                    audio_icon_button(ui, NavIcon::Settings, 28.0, "User Settings", false)
+                        .on_hover_text("User Settings");
                 if settings.clicked() {
                     self.effects.toggle(!egui::Popup::menu(&settings).is_open());
                 }
@@ -2965,19 +3208,14 @@ impl CaperApp {
                             ui.close();
                         }
                         ui.separator();
-                        if ui
-                            .button(if self.account.is_some() {
-                                "Edit profile"
-                            } else {
-                                "Sign in"
-                            })
-                            .clicked()
-                        {
-                            self.dialog = Some(if self.account.is_some() {
-                                Dialog::Profile
-                            } else {
-                                Dialog::SignIn
-                            });
+                        // Web: Log out for accounts, Sign in for guests.
+                        if self.account.is_some() {
+                            if ui.button("Log out").clicked() {
+                                ui.close();
+                                self.logout();
+                            }
+                        } else if ui.button("Sign in").clicked() {
+                            self.dialog = Some(Dialog::SignIn);
                             ui.close();
                         }
                     });
@@ -3482,9 +3720,6 @@ impl CaperApp {
                     if let Some(error) = &self.error {
                         ui.colored_label(ERROR, error);
                     }
-                    if let Some(error) = &self.voice.error {
-                        ui.colored_label(ERROR, error);
-                    }
                     if self.live != "Live" {
                         ui.label(RichText::new(&self.live).size(11.0).color(MUTED));
                     }
@@ -3722,7 +3957,8 @@ impl CaperApp {
         if matches!(dialog, Dialog::SignIn) {
             return;
         }
-        let title = match &dialog {
+        let mut leave_title = None;
+        let title: &str = match &dialog {
             Dialog::SignIn => {
                 if self.challenge.is_some() {
                     "Check your email"
@@ -3736,7 +3972,7 @@ impl CaperApp {
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
-            Dialog::LeaveSpace { .. } => "Leave space?",
+            Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::ConfirmDelete { channel, .. } => {
                 if channel.is_some() {
                     "Delete channel"
@@ -3848,8 +4084,8 @@ impl CaperApp {
                                                     }
                                                 });
                                             }
-                                            Dialog::LeaveSpace { id, name } => {
-                                                ui.label(format!("Leave {name}? You will lose access to its channels and conversations. An owner can add you again later."));
+                                            Dialog::LeaveSpace { id, .. } => {
+                                                ui.label("You will lose access to its channels and conversations. An owner can add you again later.");
                                                 ui.add_space(16.0);
                                                 ui.horizontal(|ui| {
                                                     if ui.add_enabled(!self.loading, egui::Button::new("Cancel")).clicked() {
@@ -4198,6 +4434,17 @@ impl CaperApp {
     }
 }
 
+fn login_error_frame(ui: &mut egui::Ui, error: &str) {
+    egui::Frame::new()
+        .stroke(Stroke::new(1.0, TERRACOTTA))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(12, 14))
+        .show(ui, |ui| {
+            ui.set_width(414.0);
+            ui.label(RichText::new(error).size(13.0).color(ERROR));
+        });
+}
+
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     if response.hovered() || response.has_focus() {
@@ -4213,6 +4460,28 @@ fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Res
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response.on_hover_text(label)
+}
+
+fn drawn_icon_button_with_tooltip(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    label: &str,
+    tooltip: &str,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 6.0, RAISED);
+    }
+    paint_icon(
+        ui.painter(),
+        rect.shrink(5.0),
+        icon,
+        if response.hovered() { TEXT } else { MUTED },
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    response.on_hover_text(tooltip)
 }
 
 fn audio_icon_button(
@@ -4252,7 +4521,7 @@ fn audio_icon_button(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
-    response.on_hover_text(label)
+    response
 }
 
 fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
@@ -4324,6 +4593,9 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Headphones => egui::include_image!("../resources/icons/headphones.svg"),
         NavIcon::VolumeX => egui::include_image!("../resources/icons/volume-x.svg"),
         NavIcon::Menu => egui::include_image!("../resources/icons/menu.svg"),
+        NavIcon::PhoneOff => egui::include_image!("../resources/icons/phone-off.svg"),
+        NavIcon::HeadphoneOff => egui::include_image!("../resources/icons/headphone-off.svg"),
+        NavIcon::AudioLines => egui::include_image!("../resources/icons/audio-lines.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =

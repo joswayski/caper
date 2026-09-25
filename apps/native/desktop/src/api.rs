@@ -18,6 +18,8 @@ pub struct Api {
 pub struct ApiError {
     pub status: Option<StatusCode>,
     pub message: String,
+    /// Remaining sign-in code attempts, when the server reports them.
+    pub attempts_remaining: Option<u64>,
 }
 
 impl std::fmt::Display for ApiError {
@@ -344,6 +346,7 @@ impl Api {
         request.send().map_err(|_| ApiError {
             status: None,
             message: "Could not reach Caper. Check your connection and try again.".into(),
+            attempts_remaining: None,
         })
     }
 }
@@ -353,14 +356,15 @@ fn checked(response: Response) -> Result<Response, ApiError> {
     if status.is_success() {
         return Ok(response);
     }
-    let message = response
-        .json::<Value>()
-        .ok()
+    let body = response.json::<Value>().ok();
+    let message = body
+        .as_ref()
         .and_then(|body| body["error"].as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("Caper request failed ({status})."));
     Err(ApiError {
         status: Some(status),
         message,
+        attempts_remaining: body.and_then(|body| body["attemptsRemaining"].as_u64()),
     })
 }
 
@@ -368,5 +372,6 @@ fn invalid(message: &str) -> ApiError {
     ApiError {
         status: None,
         message: message.into(),
+        attempts_remaining: None,
     }
 }

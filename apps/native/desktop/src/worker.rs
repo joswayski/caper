@@ -185,6 +185,7 @@ pub enum Event {
     Verified {
         generation: u64,
         result: Result<(String, Account, Spaces), String>,
+        attempts_remaining: Option<u64>,
     },
     Profiled {
         generation: u64,
@@ -292,6 +293,7 @@ fn prepare_navigation(
         return Err(crate::api::ApiError {
             status: None,
             message: "Caper returned another space.".into(),
+            attempts_remaining: None,
         }
         .into());
     }
@@ -305,6 +307,7 @@ fn prepare_navigation(
                     .ok_or_else(|| crate::api::ApiError {
                         status: Some(reqwest::StatusCode::NOT_FOUND),
                         message: "This channel is no longer accessible.".into(),
+                        attempts_remaining: None,
                     })?,
             )
         } else {
@@ -336,6 +339,7 @@ fn prepare_navigation(
         return Err(crate::api::ApiError {
             status: None,
             message: "Caper returned another conversation.".into(),
+            attempts_remaining: None,
         }
         .into());
     }
@@ -348,6 +352,7 @@ fn prepare_navigation(
             return Err(crate::api::ApiError {
                 status: None,
                 message: "Caper returned messages from another channel.".into(),
+                attempts_remaining: None,
             }
             .into());
         }
@@ -356,6 +361,7 @@ fn prepare_navigation(
             .map_err(|message| crate::api::ApiError {
                 status: None,
                 message,
+                attempts_remaining: None,
             })?;
     }
     let conversation = history
@@ -564,21 +570,33 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         }
         Command::RequestCode { generation, email } => Event::CodeRequested {
             generation,
-            result: api.request_code(&email).map_err(|error| error.to_string()),
+            result: api
+                .request_code(&email)
+                .map_err(|error| login_error(&error)),
         },
         Command::VerifyCode {
             generation,
             challenge,
             code,
         } => {
-            let result = api
-                .verify_code(&challenge, &code)
-                .and_then(|(account, token)| {
-                    let spaces = api.spaces(&token)?;
-                    Ok((token, account, spaces))
-                })
-                .map_err(|error| error.to_string());
-            Event::Verified { generation, result }
+            let mut attempts_remaining = None;
+            let result = match api.verify_code(&challenge, &code) {
+                Ok((account, token)) => api
+                    .spaces(&token)
+                    .map(|spaces| (token, account, spaces))
+                    .map_err(|error| error.to_string()),
+                Err(error) => {
+                    if error.status == Some(reqwest::StatusCode::UNAUTHORIZED) {
+                        attempts_remaining = error.attempts_remaining;
+                    }
+                    Err(login_error(&error))
+                }
+            };
+            Event::Verified {
+                generation,
+                result,
+                attempts_remaining,
+            }
         }
         Command::Profile {
             generation,
@@ -589,8 +607,12 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             generation,
             result: api
                 .update_profile(&token, &username, &display_name)
-                .and_then(|account| api.spaces(&token).map(|spaces| (account, spaces)))
-                .map_err(|error| error.to_string()),
+                .map_err(|error| profile_error(&error))
+                .and_then(|account| {
+                    api.spaces(&token)
+                        .map(|spaces| (account, spaces))
+                        .map_err(|error| error.to_string())
+                }),
         },
         Command::PrepareNavigation {
             generation,
@@ -1061,5 +1083,74 @@ mod tests {
         assert!(advance_generation(&mut generation, 9));
         assert_eq!(generation, 9);
         assert!(!advance_generation(&mut generation, 8));
+    }
+}
+
+/// Web's sign-in copy (`routes/login.tsx`); raw server messages are not shown.
+pub fn login_error(error: &crate::api::ApiError) -> String {
+    use reqwest::StatusCode;
+    match error.status {
+        Some(StatusCode::UNAUTHORIZED) if error.attempts_remaining == Some(0) => {
+            "That code can no longer be used. Request a new one."
+        }
+        Some(StatusCode::UNAUTHORIZED) => {
+            "That code is incorrect or expired. Request a new one if needed."
+        }
+        Some(StatusCode::BAD_REQUEST) => "Enter a valid email address.",
+        Some(StatusCode::SERVICE_UNAVAILABLE) => {
+            "Sign-in is temporarily unavailable. Please try again later."
+        }
+        _ => "Something went wrong. Please try again.",
+    }
+    .into()
+}
+
+/// Web's profile save copy (`account/ProfileForm.tsx`).
+pub fn profile_error(error: &crate::api::ApiError) -> String {
+    use reqwest::StatusCode;
+    match error.status {
+        Some(StatusCode::CONFLICT) => "That username is already taken.",
+        Some(StatusCode::BAD_REQUEST) => "Check the username and display name requirements.",
+        _ => "Your profile could not be saved. Please try again.",
+    }
+    .into()
+}
+
+#[cfg(test)]
+mod login_copy_tests {
+    use super::{login_error, profile_error};
+    use crate::api::ApiError;
+    use reqwest::StatusCode;
+
+    fn error(status: StatusCode, attempts_remaining: Option<u64>) -> ApiError {
+        ApiError {
+            status: Some(status),
+            message: "raw server text".into(),
+            attempts_remaining,
+        }
+    }
+
+    #[test]
+    fn sign_in_and_profile_errors_use_web_copy() {
+        assert_eq!(
+            login_error(&error(StatusCode::UNAUTHORIZED, Some(2))),
+            "That code is incorrect or expired. Request a new one if needed."
+        );
+        assert_eq!(
+            login_error(&error(StatusCode::UNAUTHORIZED, Some(0))),
+            "That code can no longer be used. Request a new one."
+        );
+        assert_eq!(
+            login_error(&error(StatusCode::SERVICE_UNAVAILABLE, None)),
+            "Sign-in is temporarily unavailable. Please try again later."
+        );
+        assert_eq!(
+            profile_error(&error(StatusCode::CONFLICT, None)),
+            "That username is already taken."
+        );
+        assert_eq!(
+            profile_error(&error(StatusCode::INTERNAL_SERVER_ERROR, None)),
+            "Your profile could not be saved. Please try again."
+        );
     }
 }
