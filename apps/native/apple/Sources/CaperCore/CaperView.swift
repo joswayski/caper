@@ -736,9 +736,9 @@ private struct AccountBar: View {
     @Binding var sheet: WorkspaceSheet?
     @State private var connectionDetails = false
     @Bindable private var effects = CaperEffects.shared
-    #if os(macOS)
     @State private var inputOptions = false
     @State private var outputOptions = false
+    #if os(macOS)
     @State private var audioDiagnostics = false
     #endif
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
@@ -790,24 +790,20 @@ private struct AccountBar: View {
             }.buttonStyle(SidebarIconButton()).help(voice.muted ? "Unmute" : "Mute")
                 .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
                 .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
-            #if os(macOS)
             Button { inputOptions.toggle(); CaperEffects.shared.toggle(inputOptions) } label: {
                 CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
-            }.buttonStyle(.plain).accessibilityLabel("Input Options")
+            }.buttonStyle(.plain).help("Input Options").accessibilityLabel("Input Options")
                 .popover(isPresented: $inputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: true) }
-            #endif
             Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
                 CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
                     .foregroundStyle(voice.deafened ? CaperTheme.terracottaBright : CaperTheme.muted)
             }.buttonStyle(SidebarIconButton()).help(voice.deafened ? "Undeafen" : "Deafen")
                 .accessibilityLabel(voice.deafened ? "Undeafen audio" : "Deafen audio")
                 .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
-            #if os(macOS)
             Button { outputOptions.toggle(); CaperEffects.shared.toggle(outputOptions) } label: {
                 CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
-            }.buttonStyle(.plain).accessibilityLabel("Output Options")
+            }.buttonStyle(.plain).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
-            #endif
             Menu {
                 // Web's User Settings menu.
                 Section("Audio settings") {
@@ -845,7 +841,7 @@ private struct AccountBar: View {
     }
 }
 
-#if os(macOS)
+/// Web's Input Options / Output Options menus.
 private struct AccountAudioMenu: View {
     @Bindable var voice: VoiceClient
     let input: Bool
@@ -853,6 +849,7 @@ private struct AccountAudioMenu: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(input ? "Microphone" : "Audio output").font(CaperTheme.font(13, weight: .bold))
+            #if os(macOS)
             Picker("Device", selection: Binding(get: { (input ? voice.selectedInputID : voice.selectedOutputID) ?? "" }, set: { uid in
                 let changed = input ? voice.selectInput(uid) : voice.selectOutput(uid)
                 error = changed ? nil : "Could not switch devices. Check system audio settings."
@@ -862,6 +859,17 @@ private struct AccountAudioMenu: View {
                     Text(device.name).tag(device.id)
                 }
             }.labelsHidden()
+            #else
+            // iPhone follows the system audio route.
+            HStack {
+                Text((input ? voice.availableInputs.first(where: { $0.id == voice.selectedInputID }) : voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID }))?.name ?? "System default")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Spacer()
+                if !input {
+                    SystemAudioRoutePicker().frame(width: 44, height: 36).accessibilityLabel("Choose system audio route")
+                }
+            }
+            #endif
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(.red) }
             if input {
                 Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
@@ -873,10 +881,12 @@ private struct AccountAudioMenu: View {
                     .accessibilityLabel("Output volume")
             }
         }.padding(16).frame(width: 260).background(CaperTheme.surface)
+            #if os(iOS)
+            .presentationCompactAdaptation(.popover)
+            #endif
             .task { await voice.refreshAudioDevices() }
     }
 }
-#endif
 
 private struct Avatar: View {
     let name: String; let size: CGFloat
