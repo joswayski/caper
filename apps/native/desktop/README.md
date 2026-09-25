@@ -36,6 +36,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   local mute and 0–200% software playback gain, and aggregate connection
   statistics. Participant mute survives microphone-track replacement and takes
   effect locally even while signaling is waiting for HTTP.
+- Speaking rings in your own call's roster and voice stack, from the web
+  client's rule (32 ms RMS ≥ 0.004, 180 ms release, never while muted) applied
+  to your published microphone PCM and each subscription's decoded PCM.
 - Persisted 0–200% input gain and voice-contour strength, with on-device DPDFNet-8
   HR denoising and RNNoise fallback. Account-enabled audio diagnostics show only
   local numeric processing counters; ordinary connection details remain public.
@@ -192,7 +195,8 @@ For deterministic visual inspection without live accounts, launch
 explicitly labeled static previews; the chat fixture at loopback port 3001
 does not provide live SFU media. Use normal `--api-url` for networked chat tests.
 `parity-voice-joining` and `parity-voice-connected` preview Cancel/Leave and the
-audio bar without starting a media transport.
+audio bar without starting a media transport; `parity-voice-speaking` adds fixed
+speaking rings for you and Maya.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

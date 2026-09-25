@@ -157,6 +157,51 @@ pub struct Diagnostics {
     pub route: &'static str,
 }
 
+/// The web client's speaking cutoff: RMS of float PCM in [-1, 1].
+pub const VOICE_ACTIVITY_THRESHOLD: f64 = 0.004;
+/// 32 ms of 48 kHz mono PCM, the web client's sampling interval.
+const VOICE_ACTIVITY_WINDOW: usize = 1_536;
+
+/// RMS over consecutive 32 ms windows of decoded or published PCM.
+#[derive(Default)]
+pub(crate) struct LoudnessWindow {
+    energy: f64,
+    samples: usize,
+}
+
+impl LoudnessWindow {
+    /// Some(loud) once at least one window completes, loud if any was.
+    pub(crate) fn push(&mut self, pcm: &[i16]) -> Option<bool> {
+        let mut loud = None;
+        for &sample in pcm {
+            let value = f64::from(sample) / 32_768.0;
+            self.energy += value * value;
+            self.samples += 1;
+            if self.samples == VOICE_ACTIVITY_WINDOW {
+                let window =
+                    (self.energy / VOICE_ACTIVITY_WINDOW as f64).sqrt() >= VOICE_ACTIVITY_THRESHOLD;
+                loud = Some(loud.unwrap_or(false) || window);
+                *self = Self::default();
+            }
+        }
+        loud
+    }
+}
+
+/// When each voice last had a loud window. Remote entries are keyed by
+/// participant through the roster's track owners.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VoiceActivity {
+    pub local: Option<Instant>,
+    pub participants: BTreeMap<String, Instant>,
+}
+
+#[derive(Default)]
+struct ActivityLog {
+    local: Option<Instant>,
+    tracks: BTreeMap<String, Instant>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioDevice {
     pub id: String,
@@ -574,6 +619,7 @@ pub struct JoinControl {
     input_processing: Arc<Mutex<InputProcessing>>,
     processing_diagnostics: Arc<Mutex<Option<AudioProcessingDiagnostics>>>,
     playback: Arc<Mutex<PlaybackState>>,
+    activity: Arc<Mutex<ActivityLog>>,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -677,6 +723,7 @@ async fn publish_denoised_input(
     settings: InputProcessing,
     capture: &MicTestControl,
     epoch: u64,
+    published: impl FnOnce(&[i16]),
 ) -> Result<ProcessedVoice, String> {
     let pcm = frame.data.as_ref().to_vec();
     let started = Instant::now();
@@ -692,16 +739,15 @@ async fn publish_denoised_input(
     let mut processor = processor;
     processor.observe_wall_time(started.elapsed());
     let data = processed?;
-    capture.publish_if_current(
-        source,
-        &AudioFrame {
-            data: data.into(),
-            sample_rate: 48_000,
-            num_channels: 1,
-            samples_per_channel: frame.samples_per_channel,
-        },
-        epoch,
-    )?;
+    let frame = AudioFrame {
+        data: data.into(),
+        sample_rate: 48_000,
+        num_channels: 1,
+        samples_per_channel: frame.samples_per_channel,
+    };
+    if capture.publish_if_current(source, &frame, epoch)? {
+        published(frame.data.as_ref());
+    }
     Ok(processor)
 }
 
@@ -727,7 +773,73 @@ impl JoinControl {
                 roster_reconciled: false,
                 silenced: true,
             })),
+            activity: Arc::new(Mutex::new(ActivityLog::default())),
         }
+    }
+
+    /// Last loud 32 ms window of the published microphone and of each
+    /// current remote track, mapped to its roster owner.
+    pub fn voice_activity(&self) -> VoiceActivity {
+        let (local, tracks) = match self.activity.lock() {
+            Ok(log) => (log.local, log.tracks.clone()),
+            Err(_) => return VoiceActivity::default(),
+        };
+        let mut participants = BTreeMap::new();
+        if let Ok(playback) = self.playback.lock() {
+            for (track, loud) in tracks {
+                if playback.tracks.contains_key(&track)
+                    && let Some(owner) = playback.track_owners.get(&track)
+                {
+                    let latest = participants.entry(owner.clone()).or_insert(loud);
+                    *latest = (*latest).max(loud);
+                }
+            }
+        }
+        VoiceActivity {
+            local,
+            participants,
+        }
+    }
+
+    fn record_loud(&self, track: Option<&str>) {
+        if let Ok(mut log) = self.activity.lock() {
+            let now = Instant::now();
+            match track {
+                Some(track) => {
+                    log.tracks.insert(track.to_owned(), now);
+                }
+                None => log.local = Some(now),
+            }
+        }
+    }
+
+    /// Measures decoded PCM from WebRTC's sink, before local volume, as the
+    /// web client analyses the received stream. Ends with the call or track.
+    async fn meter_remote_track(self, id: String, track: libwebrtc::audio_track::RtcAudioTrack) {
+        let mut stream = libwebrtc::audio_stream::native::NativeAudioStream::new(track, 48_000, 1);
+        let mut stopped = self.stop.subscribe();
+        let mut window = LoudnessWindow::default();
+        while !*stopped.borrow() {
+            let frame = tokio::select! {
+                biased;
+                _ = stopped.changed() => continue,
+                frame = stream.next_frame() => frame,
+            };
+            let Some(frame) = frame else {
+                break;
+            };
+            if !self
+                .playback
+                .lock()
+                .is_ok_and(|playback| playback.tracks.contains_key(&id))
+            {
+                break;
+            }
+            if window.push(frame.data.as_ref()) == Some(true) {
+                self.record_loud(Some(&id));
+            }
+        }
+        stream.close();
     }
 
     pub fn cancel(&self) {
@@ -1034,7 +1146,7 @@ impl JoinControl {
         Ok(())
     }
 
-    fn add_remote_track(&self, id: String, track: MediaStreamTrack) {
+    fn add_remote_track(&self, id: String, track: MediaStreamTrack) -> bool {
         if let Ok(mut playback) = self.playback.lock() {
             if self.is_cancelled()
                 || (playback.roster_reconciled && !playback.track_owners.contains_key(&id))
@@ -1043,12 +1155,14 @@ impl JoinControl {
                 if let MediaStreamTrack::Audio(audio) = &track {
                     audio.set_volume(0.0);
                 }
-                return;
+                return false;
             }
             playback.apply(&id, &track);
             playback.tracks.insert(id, track);
+            true
         } else {
             track.set_enabled(false);
+            false
         }
     }
 
@@ -1230,6 +1344,7 @@ impl NativeSession {
         let subscriptions = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
         let callback_subscriptions = subscriptions.clone();
         let callback_control = control.clone();
+        let runtime = tokio::runtime::Handle::current();
         peer.on_track(Some(Box::new(move |event| {
             let Some(mid) = event.transceiver.mid() else {
                 event.track.set_enabled(false);
@@ -1244,7 +1359,15 @@ impl NativeSession {
                         .find_map(|(track, assigned)| (assigned == &mid).then(|| track.clone()))
                 });
             if let Some(track_id) = track_id {
-                callback_control.add_remote_track(track_id, event.track);
+                let audio = match &event.track {
+                    MediaStreamTrack::Audio(audio) => Some(audio.clone()),
+                    _ => None,
+                };
+                if callback_control.add_remote_track(track_id.clone(), event.track)
+                    && let Some(audio) = audio
+                {
+                    runtime.spawn(callback_control.clone().meter_remote_track(track_id, audio));
+                }
             } else {
                 event.track.set_enabled(false);
             }
@@ -1294,11 +1417,13 @@ impl NativeSession {
         let processed = processed_source.clone();
         let capture_gate = capture.clone();
         let capture_control = control.clone();
+        let local_activity = control.clone();
         let diagnostics = control.processing_diagnostics.clone();
         let initial_input_route = input_guid.map(str::to_owned);
         guard.live_task = Some(tokio::spawn(async move {
             let mut processor = None;
             let mut active_epoch = None;
+            let mut loudness = LoudnessWindow::default();
             loop {
                 // A request to resume an already used ADM is not a readable
                 // generation. Retire its sender, receiver, decoder and input
@@ -1375,6 +1500,11 @@ impl NativeSession {
                     settings,
                     &capture_gate,
                     epoch.unwrap(),
+                    |pcm| {
+                        if loudness.push(pcm) == Some(true) {
+                            local_activity.record_loud(None);
+                        }
+                    },
                 )
                 .await;
                 processor = match result {
@@ -1976,6 +2106,53 @@ mod tests {
     use std::thread;
 
     #[test]
+    fn loudness_uses_web_rms_threshold_over_32_ms_windows() {
+        // 0.004 RMS is about 131 in i16 PCM; a constant signal's RMS is itself.
+        let mut window = LoudnessWindow::default();
+        assert_eq!(window.push(&[200; 1_535]), None, "window still open");
+        assert_eq!(window.push(&[200]), Some(true));
+        assert_eq!(window.push(&[120; 1_536]), Some(false), "below -48 dBFS");
+        assert_eq!(window.push(&[132; 1_536]), Some(true));
+        // One short click in otherwise silent 32 ms stays below the cutoff.
+        let mut click = vec![0; 1_536];
+        click[..8].fill(1_000);
+        assert_eq!(window.push(&click), Some(false));
+        let mut two = vec![0; 1_536];
+        two.extend(std::iter::repeat_n(-400, 1_536));
+        assert_eq!(window.push(&two), Some(true), "any loud window counts");
+    }
+
+    #[test]
+    fn voice_activity_maps_current_tracks_to_owners_only() {
+        let control = JoinControl::new();
+        control.record_loud(None);
+        control.record_loud(Some("track-a"));
+        control.record_loud(Some("track-gone"));
+        {
+            let mut playback = control.playback.lock().unwrap();
+            playback
+                .track_owners
+                .insert("track-a".into(), "participant-a".into());
+            playback
+                .track_owners
+                .insert("track-gone".into(), "participant-b".into());
+            let factory = PeerConnectionFactory::default();
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            playback.tracks.insert(
+                "track-a".into(),
+                factory.create_audio_track("a", source).into(),
+            );
+        }
+        let activity = control.voice_activity();
+        assert!(activity.local.is_some());
+        assert_eq!(
+            activity.participants.keys().collect::<Vec<_>>(),
+            ["participant-a"],
+            "unsubscribed tracks cannot keep a participant speaking"
+        );
+    }
+
+    #[test]
     fn participant_intent_precedes_replacement_track_and_cancel_silences_late_callbacks() {
         let factory = PeerConnectionFactory::default();
         let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
@@ -2324,6 +2501,7 @@ mod tests {
                 settings,
                 &capture_control,
                 epoch,
+                |_| {},
             )
             .await
             .unwrap();
@@ -2996,7 +3174,58 @@ mod tests {
             .unwrap();
         assert!((audio.volume() - 1.35).abs() < 0.001);
 
+        control
+            .playback
+            .lock()
+            .unwrap()
+            .track_owners
+            .insert("remote-microphone".into(), "remote-person".into());
+        tokio::spawn(
+            control
+                .clone()
+                .meter_remote_track("remote-microphone".into(), audio.clone()),
+        );
+        // Locally muting someone only changes what you hear, as on web.
+        control.set_remote_muted("remote-microphone", true).unwrap();
+        let speech = AudioFrame {
+            data: (0..480)
+                .map(|n| (1_500.0 * (std::f64::consts::TAU * n as f64 / 48.0).sin()) as i16)
+                .collect(),
+            sample_rate: 48_000,
+            num_channels: 1,
+            samples_per_channel: 480,
+        };
+        let lit = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                remote_source.capture_frame(&speech).await.unwrap();
+                if let Some(loud) = control.voice_activity().participants.get("remote-person") {
+                    break *loud;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("decoded remote speech must mark its owner speaking");
+        control
+            .set_remote_muted("remote-microphone", false)
+            .unwrap();
         let zero = AudioFrame::new(48_000, 1, 480);
+        for _ in 0..60 {
+            remote_source.capture_frame(&zero).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let settled = control.voice_activity().participants["remote-person"];
+        for _ in 0..30 {
+            remote_source.capture_frame(&zero).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(settled >= lit);
+        assert_eq!(
+            control.voice_activity().participants["remote-person"],
+            settled,
+            "decoded silence must not refresh speaking"
+        );
+
         let work = async {
             loop {
                 remote_source.capture_frame(&zero).await.unwrap();

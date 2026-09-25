@@ -2,7 +2,8 @@ use crate::{media, media_gateway, state};
 use eframe::egui;
 use media::mic_test::{MicTest, MicTestControl, PlaybackToken};
 use media::{
-    JoinControl, MediaApi, NativeSession, Participant, Snapshot, TrackPlayback, VoiceError,
+    JoinControl, MediaApi, NativeSession, Participant, Snapshot, TrackPlayback, VoiceActivity,
+    VoiceError,
 };
 use serde::{Deserialize, Serialize};
 use state::{CallContext, CallState, Phase};
@@ -10,6 +11,14 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 use url::Url;
+
+/// Web keeps a voice lit this long after its last loud 32 ms window.
+pub const SPEAKING_RELEASE: Duration = Duration::from_millis(180);
+
+/// A muted voice is never shown speaking, whatever its last level.
+pub fn speaking_at(last_loud: Option<Instant>, muted: bool, now: Instant) -> bool {
+    !muted && last_loud.is_some_and(|loud| now.saturating_duration_since(loud) < SPEAKING_RELEASE)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -58,6 +67,7 @@ pub struct Voice {
     pub self_id: String,
     pub error: Option<String>,
     pub diagnostics: Option<(media::Diagnostics, Instant)>,
+    pub activity: VoiceActivity,
     pub inputs: Vec<(String, String)>,
     pub outputs: Vec<(String, String)>,
     pub preferences: Preferences,
@@ -91,6 +101,7 @@ enum Report {
     Failed(u64, VoiceError),
     Changed(u64, Result<(), VoiceError>),
     Diagnostics(u64, media::Diagnostics),
+    Activity(u64, VoiceActivity),
     Devices(u64, Result<media::AudioDevices, String>),
     Microphone(u64, Result<MicrophoneState, String>),
 }
@@ -118,6 +129,7 @@ impl Voice {
             self_id: String::new(),
             error: None,
             diagnostics: None,
+            activity: VoiceActivity::default(),
             inputs: vec![],
             outputs: vec![],
             preferences: Preferences::default(),
@@ -247,6 +259,7 @@ impl Voice {
             let mut roster_ready = false;
             let mut next_snapshot = Instant::now();
             let mut next_diagnostics = Instant::now();
+            let mut activity = VoiceActivity::default();
             let mut next_turn = session
                 .turn_refresh_delay()
                 .map(|delay| Instant::now() + delay);
@@ -359,6 +372,13 @@ impl Voice {
                         }
                     }
                 }
+                if ready && !control.is_cancelled() {
+                    let current = control.voice_activity();
+                    if current != activity {
+                        activity = current.clone();
+                        report(&events, &repaint, Report::Activity(generation, current));
+                    }
+                }
                 if ready && !control.is_cancelled() && Instant::now() >= next_diagnostics {
                     if let Ok(Ok(stats)) = runtime.block_on(async {
                         tokio::time::timeout(Duration::from_secs(2), session.diagnostics()).await
@@ -383,6 +403,7 @@ impl Voice {
         self.participants.clear();
         self.self_id.clear();
         self.diagnostics = None;
+        self.activity = VoiceActivity::default();
         self.participant_playback.clear();
         self.state.leave_now();
     }
@@ -502,6 +523,28 @@ impl Voice {
                 Report::Devices(request, media::enumerate_audio_devices()),
             );
         });
+    }
+
+    /// Only this client's own call has levels; `muted` is the local mute for
+    /// yourself and the roster's flag for others, as on web.
+    pub fn speaking(&self, participant: &str, muted: bool, now: Instant) -> bool {
+        let last_loud = if participant == self.self_id {
+            self.activity.local
+        } else {
+            self.activity.participants.get(participant).copied()
+        };
+        speaking_at(last_loud, muted, now)
+    }
+
+    /// When the next lit voice releases, so the UI repaints on time.
+    pub fn next_speaking_release(&self, now: Instant) -> Option<Duration> {
+        self.activity
+            .local
+            .iter()
+            .chain(self.activity.participants.values())
+            .filter_map(|loud| (*loud + SPEAKING_RELEASE).checked_duration_since(now))
+            .filter(|remaining| !remaining.is_zero())
+            .min()
     }
 
     pub fn playback(&self, participant: &str) -> TrackPlayback {
@@ -673,6 +716,9 @@ impl Voice {
                 Report::Diagnostics(g, stats) if g == self.state.generation => {
                     self.diagnostics = Some((stats, Instant::now()));
                 }
+                Report::Activity(g, activity) if g == self.state.generation => {
+                    self.activity = activity;
+                }
                 Report::Microphone(g, state) if g == self.microphone_generation => match state {
                     Ok(state) => self.microphone = state,
                     Err(error) => {
@@ -700,6 +746,9 @@ impl Voice {
                 }
                 _ => {}
             }
+        }
+        if let Some(release) = self.next_speaking_release(Instant::now()) {
+            self.repaint.request_repaint_after(release);
         }
     }
 }
@@ -872,6 +921,61 @@ mod tests {
         assert!(matches!(voice.microphone, MicrophoneState::Idle));
         assert!(voice.microphone_error.is_none());
         assert!(voice.microphone_commands.is_none());
+    }
+
+    #[test]
+    fn speaking_follows_web_release_and_never_lights_muted_voices() {
+        let loud = Instant::now();
+        assert!(!speaking_at(None, false, loud));
+        assert!(speaking_at(Some(loud), false, loud));
+        assert!(speaking_at(
+            Some(loud),
+            false,
+            loud + Duration::from_millis(179)
+        ));
+        assert!(!speaking_at(
+            Some(loud),
+            false,
+            loud + Duration::from_millis(180)
+        ));
+        assert!(!speaking_at(Some(loud), true, loud), "muted is never lit");
+
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            egui::Context::default(),
+        );
+        voice.self_id = "self".into();
+        voice.activity = VoiceActivity {
+            local: Some(loud),
+            participants: [("a".to_owned(), loud - Duration::from_millis(100))].into(),
+        };
+        assert!(voice.speaking("self", false, loud));
+        assert!(!voice.speaking("self", true, loud), "local mute wins");
+        assert!(voice.speaking("a", false, loud));
+        assert!(!voice.speaking("a", true, loud), "their muted flag wins");
+        assert!(!voice.speaking("b", false, loud));
+        assert_eq!(
+            voice.next_speaking_release(loud),
+            Some(Duration::from_millis(80))
+        );
+        assert_eq!(
+            voice.next_speaking_release(loud + Duration::from_millis(180)),
+            None
+        );
+        let generation = voice.state.generation;
+        voice.leave();
+        voice
+            .events
+            .send(Report::Activity(
+                generation,
+                VoiceActivity {
+                    local: Some(loud),
+                    participants: BTreeMap::new(),
+                },
+            ))
+            .unwrap();
+        voice.receive();
+        assert_eq!(voice.activity, VoiceActivity::default());
     }
 
     #[test]

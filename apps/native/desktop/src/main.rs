@@ -342,7 +342,10 @@ impl CaperApp {
                     if name == "parity-audio-recorded" {
                         app.voice.microphone = MicrophoneState::Ready(3.6);
                     }
-                } else if matches!(name, "parity-voice-joining" | "parity-voice-connected") {
+                } else if matches!(
+                    name,
+                    "parity-voice-joining" | "parity-voice-connected" | "parity-voice-speaking"
+                ) {
                     // Explicit visual fixtures only: no media transport is started.
                     let call = CallContext {
                         channel_id: "chan00000001".into(),
@@ -350,7 +353,7 @@ impl CaperApp {
                         space_name: "Fixture Studio".into(),
                     };
                     app.voice.active_space = Some("space0000001".into());
-                    app.voice.state.phase = if name == "parity-voice-connected" {
+                    app.voice.state.phase = if name != "parity-voice-joining" {
                         app.voice.self_id = "fixture-owner".into();
                         app.voice.participants = app
                             .detail
@@ -383,6 +386,14 @@ impl CaperApp {
                             },
                             Instant::now(),
                         ));
+                        if name == "parity-voice-speaking" {
+                            // Fixture levels: you and Maya lit, Alex quiet.
+                            let lit = Instant::now() + Duration::from_secs(3_600);
+                            app.voice.activity = media::VoiceActivity {
+                                local: Some(lit),
+                                participants: [("fixture-maya".to_owned(), lit)].into(),
+                            };
+                        }
                         Phase::Connected(call)
                     } else {
                         Phase::Joining(call)
@@ -2751,12 +2762,25 @@ impl CaperApp {
                 if stack.hovered() || stack.has_focus() {
                     ui.painter().rect_filled(rect, 8.0, RAISED);
                 }
+                let now = Instant::now();
                 for (index, person) in people.iter().take(3).enumerate() {
                     let center =
                         egui::pos2(rect.left() + 12.0 + index as f32 * 16.0, rect.center().y);
+                    let muted = if person.id == self.voice.self_id {
+                        self.voice.state.audio.muted
+                    } else {
+                        person.muted
+                    };
+                    let speaking = own && self.voice.speaking(&person.id, muted, now);
                     ui.painter().circle_filled(center, 11.0, SURFACE);
-                    ui.painter()
-                        .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
+                    if speaking {
+                        // Web: caper border plus a 1px caper ring.
+                        ui.painter()
+                            .circle_stroke(center, 11.0, Stroke::new(2.5, CAPER));
+                    } else {
+                        ui.painter()
+                            .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
+                    }
                     ui.painter().text(
                         center,
                         egui::Align2::CENTER_CENTER,
@@ -2827,6 +2851,7 @@ impl CaperApp {
     }
 
     fn voice_roster(&mut self, ui: &mut egui::Ui, people: Vec<model::VoiceOccupant>, own: bool) {
+        let now = Instant::now();
         for participant in people {
             let is_self = own && participant.id == self.voice.self_id;
             let muted = if is_self {
@@ -2850,7 +2875,12 @@ impl CaperApp {
                     }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 7.0;
-                        avatar(ui, &participant.name, 28.0, false);
+                        avatar(
+                            ui,
+                            &participant.name,
+                            28.0,
+                            own && self.voice.speaking(&participant.id, muted, now),
+                        );
                         ui.allocate_ui_with_layout(
                             egui::vec2(
                                 (ui.available_width()
@@ -4794,11 +4824,17 @@ fn message_row(
         });
 }
 
-fn avatar(ui: &mut egui::Ui, name: &str, size: f32, online: bool) {
+fn avatar(ui: &mut egui::Ui, name: &str, size: f32, speaking: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     ui.painter()
         .circle_filled(rect.center(), size / 2.0, RAISED);
-    if online {
+    if speaking {
+        // Web: caper border with a soft 3px caper halo.
+        ui.painter().circle_stroke(
+            rect.center(),
+            size / 2.0 + 1.5,
+            Stroke::new(3.0, CAPER.gamma_multiply(0.2)),
+        );
         ui.painter()
             .circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(2.0, CAPER));
     }
