@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -579,14 +581,15 @@ internal data class VoiceJoinIntent(
     var draft by remember(channel.id) { mutableStateOf("") }
     val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
-        // Match the 34dp message-avatar column without shrinking the 48dp menu target.
-        Row(Modifier.fillMaxWidth().height(53.dp).padding(start = if (narrow) 11.dp else 18.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.lucide_menu), "Open navigation", Modifier.size(24.dp))
-            }
-            Text("# ${channel.name}", Modifier.weight(1f).padding(start = if (narrow) 3.dp else 0.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (state.gateway != GatewayStatus.LIVE) Text(if (state.gateway == GatewayStatus.ERROR) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp)
-            Spacer(Modifier.width(10.dp))
+        // Web waits a second before announcing a lost connection.
+        val live = state.gateway == GatewayStatus.LIVE
+        var showConnection by remember(channel.id) { mutableStateOf(false) }
+        LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
+        Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Web: narrow screens show a bordered Menu + "Browse" toggle before the title.
+            if (narrow) BrowseButton("Browse", R.drawable.lucide_menu, openNavigation)
+            Text("# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             if (BuildConfig.ENABLE_NATIVE_VOICE) Button({
                 if (inCall) VoiceCallService.stop(context) else joinVoice(channel)
             }, enabled = inCall || (channel.id !in state.deniedVoiceChannels && state.voiceAvailable == true),
@@ -597,6 +600,14 @@ internal data class VoiceJoinIntent(
             IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
+        state.refreshError?.let { error ->
+            Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                    TextButton(viewModel::retryMessages) { Text("Retry", color = Text, fontSize = 12.sp) }
+                }
+            }
+        }
         voicePermissionError?.let { error ->
             Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
         }
@@ -621,6 +632,7 @@ internal data class VoiceJoinIntent(
                 OutlinedTextField(
                     draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
                     modifier = Modifier.weight(1f), placeholder = { Text("Message #${channel.name}") }, maxLines = 6,
+                    enabled = !state.messagesLoading && state.messagesError == null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
@@ -635,7 +647,8 @@ internal data class VoiceJoinIntent(
                     ),
                 ) { Icon(painterResource(R.drawable.lucide_arrow_up), null) }
             }
-            if (draft.codePointCount(0, draft.length) >= 3000) Text("${draft.codePointCount(0, draft.length)} / 4,000", Modifier.align(Alignment.End), color = if (draft.codePointCount(0, draft.length) >= 3900) ErrorText else TextMuted, fontSize = 10.sp)
+            val count = draft.codePointCount(0, draft.length)
+            if (count >= 3000) Text("${"%,d".format(java.util.Locale.US, count)} / 4,000", Modifier.align(Alignment.End), color = counterTone(count), fontSize = 10.sp)
         }
     }
 }
@@ -668,12 +681,29 @@ internal data class VoiceJoinIntent(
 }
 
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+    // Web's chat phases: loading, failed first load, then the conversation.
+    if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Text("Loading messages…", color = TextMuted, fontSize = 13.sp)
+    }
+    state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(error, color = TextMuted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            OutlinedButton(viewModel::retryMessages, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+                colors = ButtonDefaults.outlinedButtonColors(containerColor = SurfaceRaised, contentColor = Text)) { Text("Try again", fontSize = 12.sp) }
+        }
+    } }
     LazyColumn(modifier.fillMaxWidth(), reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         item {
-            Box(Modifier.fillMaxWidth().height(44.dp), contentAlignment = Alignment.Center) {
+            Row(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+                val historyButton: @Composable (String, Boolean) -> Unit = { label, enabled ->
+                    OutlinedButton(viewModel::loadOlder, enabled = enabled, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMuted)) {
+                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
                 when {
-                    state.olderError != null -> TextButton(viewModel::loadOlder) { Text("Couldn’t load older messages · Retry") }
-                    state.hasMoreMessages -> OutlinedButton(viewModel::loadOlder, enabled = !state.loadingOlder, border = BorderStroke(1.dp, Border)) { Text(if (state.loadingOlder) "Loading…" else "Load older messages") }
+                    state.olderError != null -> { Text("Couldn’t load older messages.", color = TextMuted, fontSize = 11.sp); historyButton("Retry", true) }
+                    state.hasMoreMessages -> historyButton(if (state.loadingOlder) "Loading…" else "Load older messages", !state.loadingOlder)
                     else -> Text("Beginning of conversation", color = TextMuted, fontSize = 11.sp)
                 }
             }
@@ -685,7 +715,12 @@ internal data class VoiceJoinIntent(
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true)
         } }
-        if (state.messages.isEmpty() && state.pendingMessage == null) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) { Text("No messages yet. Start the conversation.", color = TextMuted) } }
+        if (state.messages.isEmpty() && state.pendingMessage == null) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text("No messages yet.", color = TextMuted)
+                Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
+            }
+        } }
     }
 }
 
@@ -707,7 +742,45 @@ internal data class VoiceJoinIntent(
 
 @Composable private fun TypingLine(authors: List<ChatAuthor>) {
     val label = when { authors.size > 2 -> "Several people are typing…"; authors.size == 2 -> "${authors[0].name} and ${authors[1].name} are typing…"; authors.size == 1 -> "${authors[0].name} is typing…"; else -> "" }
-    Text(label, Modifier.fillMaxWidth().height(20.dp).padding(horizontal = 18.dp), color = TextMuted, fontSize = 10.sp)
+    // Web keeps the last label for its 180 ms fade-out.
+    var shown by remember { mutableStateOf("") }
+    LaunchedEffect(label) { if (label.isNotEmpty()) shown = label else { kotlinx.coroutines.delay(180); shown = "" } }
+    val alpha by androidx.compose.animation.core.animateFloatAsState(if (label.isNotEmpty()) 1f else 0f, androidx.compose.animation.core.tween(180), label = "typing")
+    Row(Modifier.fillMaxWidth().height(20.dp).padding(horizontal = 18.dp).graphicsLayer { this.alpha = alpha }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+        if (shown.isNotEmpty()) {
+            TypingDots()
+            Text(shown, color = TextMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/** Web's three 4px dots: 1.2 s bounce staggered by .15 s, still when animations are off. */
+@Composable private fun TypingDots() {
+    val context = LocalContext.current
+    val still = remember { android.provider.Settings.Global.getFloat(context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "typing-dots")
+    Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+        repeat(3) { index ->
+            val bounce = if (still) 0f else transition.animateFloat(0f, 0f, androidx.compose.animation.core.infiniteRepeatable(
+                androidx.compose.animation.core.keyframes {
+                    durationMillis = 1_200
+                    0f at 0 using androidx.compose.animation.core.FastOutSlowInEasing
+                    1f at 360 using androidx.compose.animation.core.FastOutSlowInEasing
+                    0f at 720
+                },
+                initialStartOffset = androidx.compose.animation.core.StartOffset(150 * index),
+            ), label = "dot$index").value
+            Box(Modifier.size(4.dp).graphicsLayer { translationY = -3.dp.toPx() * bounce; alpha = .45f + .55f * bounce }.clip(CircleShape).background(TextMuted))
+        }
+    }
+}
+
+/** Web's `.chat-counter` tones at 3,500, 3,750 and 3,900 characters. */
+internal fun counterTone(count: Int): Color = when {
+    count >= 3900 -> Color(0xFFFF827C)
+    count >= 3750 -> Color(0xFFEDA361)
+    count >= 3500 -> Color(0xFFE4C76A)
+    else -> TextMuted
 }
 
 @Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, speaking: Boolean = false) = Box(

@@ -176,16 +176,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(channel: Channel) {
         val request = ++generation
         closeChannel(clearPending = true)
-        mutable.value = mutable.value.copy(selectedChannel = channel, messages = emptyList(), busy = true, error = null)
+        mutable.value = mutable.value.copy(selectedChannel = channel, messages = emptyList(), busy = true, error = null, messagesLoading = true)
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
                 if (request != generation) return@launch
-                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false)
+                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false, messagesLoading = false)
                 openGateway(channel.id, history.cursor, request)
             } catch (error: Throwable) {
                 if (request != generation) return@launch
-                if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel() else fail(error)
+                if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                // Web shows a failed first load in the conversation with Try again.
+                else mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
             }
         }
     }
@@ -224,6 +226,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     error !is ApiException) fail(error)
             }
         }
+    }
+
+    /** Web's Try again (failed first load) and Retry (failed refresh). */
+    fun retryMessages() {
+        val current = mutable.value
+        val channel = current.selectedChannel ?: return
+        if (current.messagesError != null) selectChannel(channel)
+        else if (current.refreshError != null) resyncChannel(channel.id)
     }
 
     fun loadOlder() {
@@ -461,8 +471,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun resyncChannel(channelId: String) {
         val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
         val request = ++generation
+        val previous = mutable.value
         closeChannel(clearPending = false)
-        mutable.value = mutable.value.copy(gateway = GatewayStatus.CONNECTING, busy = true, error = null)
+        // Keep the conversation readable while it reloads, as the web does.
+        mutable.value = mutable.value.copy(
+            selectedChannel = channel, messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
+            gateway = GatewayStatus.CONNECTING, busy = true, error = null,
+        )
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
@@ -472,7 +487,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 openGateway(channel.id, history.cursor, request)
             } catch (error: Throwable) {
                 if (generation == request) {
-                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel() else fail(error)
+                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                    else mutable.value = mutable.value.copy(busy = false, refreshError = message(error))
                 }
             }
         }
@@ -599,6 +615,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (clearPending) pendingSends.clear()
         mutable.value = mutable.value.copy(
             selectedChannel = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
         )

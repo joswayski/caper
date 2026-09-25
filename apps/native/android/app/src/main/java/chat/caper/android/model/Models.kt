@@ -115,6 +115,11 @@ data class AppUiState(
     val hasMoreMessages: Boolean = false,
     val loadingOlder: Boolean = false,
     val olderError: String? = null,
+    /** Web's chat phases: first history page loading, or failed with no messages to show. */
+    val messagesLoading: Boolean = false,
+    val messagesError: String? = null,
+    /** A resync that failed while earlier messages stay visible. */
+    val refreshError: String? = null,
     val typingAuthors: List<ChatAuthor> = emptyList(),
     val presence: Map<String, String> = emptyMap(),
     val voiceRosters: Map<String, List<Participant>> = emptyMap(),
