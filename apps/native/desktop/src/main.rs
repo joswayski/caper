@@ -336,6 +336,7 @@ impl CaperApp {
                         channel_name: "general".into(),
                         space_name: "Fixture Studio".into(),
                     };
+                    app.voice.active_space = Some("space0000001".into());
                     app.voice.state.phase = if name == "parity-voice-connected" {
                         app.voice.self_id = "fixture-owner".into();
                         app.voice.participants = app
@@ -2726,27 +2727,40 @@ impl CaperApp {
         {
             let label = format!("{} / {}", context.space_name, context.channel_name);
             let connected = matches!(self.voice.state.phase, Phase::Connected(_));
+            let target = NavigationTarget {
+                space: self.voice.active_space.clone(),
+                channel: self
+                    .voice
+                    .active_space
+                    .as_ref()
+                    .map(|_| context.channel_id.clone()),
+            };
             ui.add_space(8.0);
             ui.separator();
             ui.horizontal(|ui| {
                 let status = ui.vertical(|ui| {
-                    ui.label(
-                        bold(if connected {
-                            "Voice connected"
-                        } else {
-                            "Connecting voice…"
-                        })
-                        .size(12.0),
+                    ui.add(
+                        egui::Label::new(
+                            bold(if connected {
+                                "Voice connected"
+                            } else {
+                                "Connecting voice…"
+                            })
+                            .size(12.0),
+                        )
+                        .selectable(false),
                     );
-                    ui.label(RichText::new(label).size(11.0).color(MUTED));
+                    ui.add(
+                        egui::Label::new(RichText::new(&label).size(11.0).color(MUTED))
+                            .selectable(false),
+                    );
                 });
-                if status
-                    .response
-                    .interact(egui::Sense::click())
-                    .on_hover_text("Connection details")
-                    .clicked()
-                {
-                    self.dialog = Some(Dialog::Connection);
+                let open = status.response.interact(egui::Sense::click());
+                open.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
+                });
+                if open.clicked() {
+                    self.navigate(target);
                 }
                 if drawn_icon_button(ui, NavIcon::Close, "Disconnect voice").clicked() {
                     if connected {
@@ -4993,6 +5007,92 @@ mod tests {
             !app.voice.state.audio.muted,
             "local listener control must not mute our microphone"
         );
+    }
+
+    #[test]
+    fn call_dock_opens_exact_voice_target_without_replacing_call_or_denied_chat() {
+        for space in [Some("space0000001"), Some("other-space"), None] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-voice-connected"),
+            );
+            let channel = if space.is_some() {
+                "chan00000002"
+            } else {
+                "general"
+            };
+            app.voice.active_space = space.map(str::to_owned);
+            app.voice.state.phase = Phase::Connected(crate::state::CallContext {
+                channel_id: channel.into(),
+                channel_name: "design".into(),
+                space_name: "Voice Space".into(),
+            });
+            let call = app.voice.state.phase.clone();
+            let call_generation = app.voice.state.generation;
+            let original_chat = app.selected_channel.clone();
+            app.draft = "Unsent text".into();
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let dock = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Voice Space / design" => {
+                        Some(text.pos + egui::vec2(4.0, 4.0))
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            click(&mut app, &context, dock);
+            let target = app
+                .navigation_target
+                .as_ref()
+                .expect("dock must request navigation, not connection details");
+            assert_eq!(target.space.as_deref(), space);
+            assert_eq!(target.channel.as_deref(), space.map(|_| "chan00000002"));
+            assert!(app.dialog.is_none());
+            assert_eq!(app.selected_channel, original_chat);
+            app.accept_navigation(
+                app.generation,
+                app.navigation,
+                Err(LoadError {
+                    message: "Channel denied".into(),
+                    access_denied: true,
+                    space_access_denied: false,
+                }),
+            );
+            assert_eq!(app.selected_channel, original_chat);
+            assert_eq!(app.draft, "Unsent text");
+            assert_eq!(app.voice.state.phase, call);
+            click(&mut app, &context, dock);
+            let detail = app.detail.as_ref().unwrap().clone();
+            let prepared = || {
+                let mut detail = detail.clone();
+                if let Some(space) = space {
+                    detail.space.id = space.into();
+                }
+                let mut history = history(channel);
+                history.space.id = space.unwrap_or("general").into();
+                crate::worker::PreparedNavigation {
+                    detail: space.map(|_| detail),
+                    conversation: Some((history, session())),
+                }
+            };
+            app.accept_navigation(app.generation + 1, app.navigation, Ok(prepared()));
+            assert_eq!(
+                app.selected_channel, original_chat,
+                "another account epoch must not commit"
+            );
+            app.accept_navigation(app.generation, app.navigation, Ok(prepared()));
+            assert_eq!(app.selected_channel.as_deref(), Some(channel));
+            assert_eq!(app.voice.state.phase, call);
+            assert_eq!(
+                app.voice.state.generation, call_generation,
+                "opening chat must not rejoin voice"
+            );
+        }
     }
 
     #[test]

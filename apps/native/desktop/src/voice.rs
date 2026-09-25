@@ -65,6 +65,7 @@ pub struct Voice {
     pub refreshing_devices: bool,
     pub microphone: MicrophoneState,
     pub microphone_error: Option<String>,
+    pub active_space: Option<String>,
     microphone_generation: u64,
     microphone_control: Option<MicTestControl>,
     microphone_commands: Option<Sender<(bool, u16, PlaybackToken)>>,
@@ -76,7 +77,6 @@ pub struct Voice {
     events: Sender<Report>,
     incoming: Receiver<Report>,
     repaint: egui::Context,
-    active_space: Option<String>,
 }
 
 enum Operation {

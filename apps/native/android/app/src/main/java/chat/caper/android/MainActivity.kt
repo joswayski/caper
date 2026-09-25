@@ -257,6 +257,7 @@ internal data class VoiceJoinIntent(
     joinVoice: (Channel) -> Unit,
     closeNavigation: (() -> Unit)? = null,
 ) {
+    val context = LocalContext.current
     val detail = state.selectedSpace
     val owner = state.account != null && state.account.id == detail?.space?.ownerId
     val channelCount = detail?.channels?.size ?: 0
@@ -351,7 +352,8 @@ internal data class VoiceJoinIntent(
             }
             if (activeChannel != null && detail?.channels?.none { it.id == activeChannel } == true) VoiceRoster(voice)
         }
-        if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED) ConnectedVoiceContext(voice)
+        if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED)
+            ConnectedVoiceContext(voice, { viewModel.openVoiceChannel(voice) { closeNavigation?.invoke() } }, { VoiceCallService.stop(context) })
         AccountBar(state, voice, viewModel, show)
     }
 }
@@ -390,15 +392,15 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun ConnectedVoiceContext(voice: VoiceState) {
-    val context = LocalContext.current
+@Composable internal fun ConnectedVoiceContext(voice: VoiceState, openChannel: () -> Unit, leave: () -> Unit) {
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
         Row(Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable(role = Role.Button, onClick = openChannel)
+                .semantics { contentDescription = "Open voice channel" }) {
                 Text(if (voice.phase == VoiceState.Phase.CONNECTED) "Voice connected" else "Connecting voice…", color = CaperGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Text(listOfNotNull(voice.spaceName, voice.channelName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
             }
-            IconButton({ VoiceCallService.stop(context) }, Modifier.size(40.dp)) {
+            IconButton(leave, Modifier.size(40.dp)) {
                 Icon(Icons.Default.CallEnd, if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
             }
         }
