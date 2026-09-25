@@ -144,6 +144,17 @@ struct CaperApp {
     loading: bool,
     loading_older: bool,
     older_error: Option<String>,
+    /// The first history load failed; shown in the pane with "Try again".
+    load_error: Option<String>,
+    /// When the live state last changed, for web's 1 s status delay.
+    live_changed: Instant,
+    was_live: bool,
+    /// Auto-loading older history waits until the list has settled once.
+    older_armed: bool,
+    /// History height before older messages were prepended, to keep position.
+    older_anchor: Option<f32>,
+    history_height: f32,
+    history_offset: Option<f32>,
     has_more: bool,
     error: Option<String>,
     warning: Option<String>,
@@ -218,6 +229,13 @@ impl CaperApp {
             loading: fixture.is_none(),
             loading_older: false,
             older_error: None,
+            load_error: None,
+            live_changed: now,
+            was_live: false,
+            older_armed: false,
+            older_anchor: None,
+            history_height: 0.0,
+            history_offset: None,
             has_more: false,
             error: None,
             warning: None,
@@ -341,6 +359,34 @@ impl CaperApp {
                         ],
                     );
                     app.navigation_open = name.ends_with("-narrow");
+                } else if name == "parity-typing" {
+                    app.typers.insert(
+                        "fixture-maya".into(),
+                        Typer {
+                            author: Author {
+                                id: "fixture-maya".into(),
+                                name: "Maya".into(),
+                                is_guest: false,
+                            },
+                            revision: 1,
+                            expires: Instant::now() + Duration::from_secs(3_600),
+                        },
+                    );
+                    app.draft = "a".repeat(3_760);
+                } else if name == "parity-load-error" {
+                    app.timeline = Timeline::default();
+                    app.load_error =
+                        Some("Could not reach Caper. Check your connection and try again.".into());
+                    app.live = "Offline".into();
+                    app.live_changed = Instant::now() - Duration::from_secs(2);
+                } else if name == "parity-loading" {
+                    app.timeline = Timeline::default();
+                    app.loading = true;
+                } else if name == "parity-older-error" {
+                    app.has_more = true;
+                    app.older_error = Some("History unavailable".into());
+                    app.live = "Reconnecting…".into();
+                    app.live_changed = Instant::now() - Duration::from_secs(2);
                 } else if name == "parity-rejected" {
                     let mut pending = PendingSend::prepare(
                         None,
@@ -759,7 +805,7 @@ impl CaperApp {
                             self.accept_channel(history, session, general, &channel)
                         }
                         Err(error) if error.access_denied => self.clear_channel(&error.message),
-                        Err(error) => self.error = Some(error.message),
+                        Err(error) => self.load_error = Some(error.message),
                     }
                 }
                 Event::OlderLoaded {
@@ -896,6 +942,9 @@ impl CaperApp {
             self.clear_channel("Caper returned messages from another channel.");
             return;
         }
+        self.older_armed = false;
+        self.older_anchor = None;
+        self.load_error = None;
         if let Err(error) = self.timeline.reset(history.messages, &history.cursor) {
             self.clear_channel(&error);
             return;
@@ -1190,6 +1239,9 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.older_armed = false;
+        self.older_anchor = None;
+        self.load_error = None;
         self.pending = None;
         self.draft.clear();
         self.typers.clear();
@@ -1536,6 +1588,7 @@ impl CaperApp {
                     .all(|message| message.channel_id == requested_channel) =>
             {
                 self.has_more = history.has_more;
+                self.older_anchor = Some(self.history_height);
                 if let Err(error) = self.timeline.prepend(history.messages) {
                     self.older_error = Some(error);
                 }
@@ -1568,6 +1621,9 @@ impl CaperApp {
         self.older_error = None;
         self.has_more = false;
         self.timeline = Timeline::default();
+        self.older_armed = false;
+        self.older_anchor = None;
+        self.load_error = None;
         self.pending = None;
         self.draft.clear();
         self.typers.clear();
@@ -1813,6 +1869,11 @@ impl CaperApp {
 
     fn periodic(&mut self, context: &egui::Context) {
         let now = Instant::now();
+        let live = self.live == "Live";
+        if live != self.was_live {
+            self.was_live = live;
+            self.live_changed = now;
+        }
         self.typers.retain(|_, typer| typer.expires > now);
         let active = !self.draft.trim().is_empty()
             && now.duration_since(self.typing_edited) < Duration::from_millis(600);
@@ -4009,21 +4070,7 @@ impl CaperApp {
             let height = if owner { 170.0 } else { 110.0 } + if narrow { 56.0 } else { 0.0 };
             ui.vertical_centered(|ui| {
                 ui.add_space(((ui.available_height() - height) / 2.0).max(24.0));
-                if narrow
-                    && ui
-                        .add(
-                            egui::Button::image_and_text(
-                                egui::Image::new(egui::include_image!(
-                                    "../resources/icons/hash.svg"
-                                ))
-                                .tint(MUTED)
-                                .fit_to_exact_size(egui::vec2(16.0, 16.0)),
-                                bold("Browse spaces").size(12.5),
-                            )
-                            .min_size(egui::vec2(0.0, 36.0)),
-                        )
-                        .clicked()
-                {
+                if narrow && navigation_toggle(ui, NavIcon::Hash, "Browse spaces").clicked() {
                     self.navigation_open = true;
                 }
                 if narrow {
@@ -4091,9 +4138,7 @@ impl CaperApp {
                         egui::vec2(ui.available_width(), 38.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            if narrow
-                                && drawn_icon_button(ui, NavIcon::Menu, "Browse channels").clicked()
-                            {
+                            if narrow && navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
                                 self.navigation_open = true;
                             }
                             ui.label(
@@ -4174,9 +4219,6 @@ impl CaperApp {
                     if let Some(error) = &self.error {
                         ui.colored_label(ERROR, error);
                     }
-                    if self.live != "Live" {
-                        ui.label(RichText::new(&self.live).size(11.0).color(MUTED));
-                    }
                     let before = self.draft.clone();
                     let channel_name = self.channel_name().to_owned();
                     let editor = egui::ScrollArea::vertical()
@@ -4223,13 +4265,12 @@ impl CaperApp {
                     }
                     let count = self.draft.chars().count();
                     if count >= 3_000 {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("{count} / 4,000"))
-                                    .size(10.0)
-                                    .color(if count >= 3_900 { ERROR } else { MUTED }),
-                            );
-                        });
+                        ui.add_space(7.0);
+                        ui.label(
+                            RichText::new(format!("{} / 4,000", grouped(count)))
+                                .size(10.24)
+                                .color(counter_tone(count)),
+                        );
                     }
                 });
             ui.painter().hline(
@@ -4252,6 +4293,9 @@ impl CaperApp {
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
+                        ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        typing_dots(ui);
                         ui.label(
                             RichText::new(if names.len() > 2 {
                                 "Several people are typing…".into()
@@ -4265,48 +4309,50 @@ impl CaperApp {
                             .size(11.0)
                             .color(MUTED),
                         );
-                    }
-                });
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if self.has_more
-                        && ui
-                            .add_enabled(
-                                !self.loading_older,
-                                egui::Button::new(if self.loading_older {
-                                    "Loading…"
-                                } else if self.older_error.is_some() {
-                                    "Retry older messages"
-                                } else {
-                                    "Load older messages"
-                                }),
-                            )
-                            .clicked()
-                    {
-                        self.load_older();
-                    } else if !self.has_more {
-                        let (history, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 44.0),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().text(
-                            history.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "Beginning of conversation",
-                            egui::FontId::proportional(11.52),
-                            MUTED,
-                        );
-                    }
-                    if let Some(error) = &self.older_error {
-                        ui.colored_label(egui::Color32::LIGHT_RED, error);
-                    }
-                    if self.loading && self.timeline.messages().next().is_none() {
-                        ui.centered_and_justified(|ui| {
-                            ui.spinner();
                         });
                     }
+                });
+            // Web's End key on the message list jumps to the latest message.
+            let jump_latest = ui.memory(|memory| memory.focused().is_none())
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
+            let mut history = egui::ScrollArea::vertical()
+                .id_salt("history")
+                .stick_to_bottom(true)
+                .auto_shrink([false, false]);
+            if let Some(offset) = self.history_offset.take() {
+                history = history.vertical_scroll_offset(offset);
+            } else if jump_latest {
+                history = history.vertical_scroll_offset(f32::MAX);
+            }
+            let empty = self.timeline.messages().next().is_none() && self.pending.is_none();
+            let history = history.show(ui, |ui| {
+                    if self.loading && empty {
+                        chat_state(ui, 1, |ui| {
+                            ui.label(RichText::new("Loading messages…").color(MUTED));
+                        });
+                        return;
+                    }
+                    if let Some(error) = self.load_error.clone().filter(|_| empty) {
+                        chat_state(ui, 2, |ui| {
+                            ui.label(RichText::new(error).color(MUTED));
+                            ui.add_space(10.0);
+                            ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(bold("Try again").size(11.52))
+                                        .fill(RAISED)
+                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .corner_radius(8),
+                                )
+                                .clicked()
+                            {
+                                self.reload_channel();
+                            }
+                        });
+                        return;
+                    }
+                    // Web's history header: older-page status above the messages.
+                    self.history_header(ui);
                     let messages: Vec<_> = self.timeline.messages().cloned().collect();
                     for message in messages {
                         self.message(ui, &message);
@@ -4358,7 +4404,117 @@ impl CaperApp {
                         });
                     }
                 });
+            self.after_history(ui, &history, heading.response.rect);
         });
+    }
+
+    fn history_header(&mut self, ui: &mut egui::Ui) {
+        let font = egui::FontId::proportional(11.52);
+        let width = |ui: &egui::Ui, text: &str| {
+            ui.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(text.into(), font.clone(), MUTED)
+                    .size()
+                    .x
+            })
+        };
+        let button = |text: &str| {
+            egui::Button::new(bold(text).size(11.52).color(MUTED))
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::new(1.0, BORDER))
+                .corner_radius(8)
+        };
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 44.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_height(44.0);
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.spacing_mut().button_padding = egui::vec2(10.0, 6.0);
+                if self.older_error.is_some() {
+                    let label = "Couldn’t load older messages.";
+                    let total = width(ui, label) + 8.0 + width(ui, "Retry") + 20.0;
+                    ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+                    ui.label(RichText::new(label).font(font.clone()).color(MUTED));
+                    if ui.add(button("Retry")).clicked() {
+                        self.load_older();
+                    }
+                } else if self.has_more {
+                    let label = if self.loading_older {
+                        "Loading…"
+                    } else {
+                        "Load older messages"
+                    };
+                    ui.add_space(((ui.available_width() - width(ui, label) - 20.0) / 2.0).max(0.0));
+                    if ui.add_enabled(!self.loading_older, button(label)).clicked() {
+                        self.load_older();
+                    }
+                } else {
+                    let label = "Beginning of conversation";
+                    ui.add_space(((ui.available_width() - width(ui, label)) / 2.0).max(0.0));
+                    ui.label(RichText::new(label).font(font.clone()).color(MUTED));
+                }
+            },
+        );
+    }
+
+    fn after_history(
+        &mut self,
+        ui: &mut egui::Ui,
+        history: &egui::scroll_area::ScrollAreaOutput<()>,
+        heading: egui::Rect,
+    ) {
+        let height = history.content_size.y;
+        let viewport = history.inner_rect.height();
+        let offset = history.state.offset.y;
+        if let Some(previous) = self.older_anchor.take() {
+            // Keep the reader's place after older messages arrive above.
+            self.history_offset = Some(offset + (height - previous).max(0.0));
+            ui.ctx().request_repaint();
+        }
+        self.history_height = height;
+        if self.timeline.messages().next().is_some()
+            && (height <= viewport + 1.0 || offset >= height - viewport - 2.0)
+        {
+            self.older_armed = true;
+        }
+        // Web loads the previous page when the list reaches its start.
+        if self.older_armed
+            && self.history_offset.is_none()
+            && offset <= 1.0
+            && self.has_more
+            && !self.loading_older
+            && self.older_error.is_none()
+        {
+            self.load_older();
+        }
+        // Web shows the connection state under the header after a second.
+        if self.live != "Live" && self.selected_channel.is_some() {
+            let waited = self.live_changed.elapsed();
+            if waited >= Duration::from_secs(1) {
+                let text = if self.load_error.is_some() || self.live == "Offline" {
+                    "Offline"
+                } else {
+                    "Connecting…"
+                };
+                let galley = ui.painter().layout_no_wrap(
+                    text.into(),
+                    egui::FontId::new(11.2, egui::FontFamily::Name("Satoshi Bold".into())),
+                    MUTED,
+                );
+                let anchor = egui::pos2(heading.right() - 18.0, heading.bottom() + 8.0);
+                let rect = egui::Rect::from_min_size(
+                    anchor - egui::vec2(galley.size().x + 12.0, 0.0),
+                    galley.size() + egui::vec2(12.0, 6.0),
+                );
+                ui.painter().rect_filled(rect, 4.0, CONVERSATION);
+                ui.painter()
+                    .galley(rect.min + egui::vec2(6.0, 3.0), galley, MUTED);
+            } else {
+                ui.ctx()
+                    .request_repaint_after(Duration::from_secs(1) - waited);
+            }
+        }
     }
 
     fn message(&self, ui: &mut egui::Ui, message: &model::Message) {
@@ -5866,6 +6022,109 @@ fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool)
     .inner
 }
 
+/// Web's `.chat-state`: a 120 px block at the top of the list, content centered.
+fn chat_state(ui: &mut egui::Ui, lines: u8, content: impl FnOnce(&mut egui::Ui)) {
+    let height = if lines > 1 { 58.0 } else { 18.0 };
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 120.0),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(120.0);
+            ui.add_space((120.0 - height) / 2.0);
+            content(ui);
+        },
+    );
+}
+
+/// Web's composer counter tones.
+fn counter_tone(count: usize) -> Color32 {
+    match count {
+        3_900.. => Color32::from_rgb(0xff, 0x82, 0x7c),
+        3_750.. => Color32::from_rgb(0xed, 0xa3, 0x61),
+        3_500.. => Color32::from_rgb(0xe4, 0xc7, 0x6a),
+        _ => MUTED,
+    }
+}
+
+/// `toLocaleString()` for the counter: 3500 → "3,500".
+fn grouped(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// Web's three typing dots: 4 px, 3 px apart, bouncing 3 px every 1.2 s.
+fn typing_dots(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::hover());
+    let time = ui.input(|input| input.time);
+    for index in 0..3 {
+        let phase = ((time - index as f64 * 0.15).rem_euclid(1.2) / 1.2) as f32;
+        // Keyframes: rest at 0%/60%/100%, peak at 30%, eased in and out.
+        let lift = if phase < 0.6 {
+            let t = if phase < 0.3 {
+                phase / 0.3
+            } else {
+                (0.6 - phase) / 0.3
+            };
+            t * t * (3.0 - 2.0 * t)
+        } else {
+            0.0
+        };
+        let center = egui::pos2(
+            rect.left() + 2.0 + index as f32 * 7.0,
+            rect.center().y - 3.0 * lift,
+        );
+        ui.painter()
+            .circle_filled(center, 2.0, MUTED.gamma_multiply(0.45 + 0.55 * lift));
+    }
+    ui.ctx().request_repaint();
+}
+
+/// Web's narrow `.navigation-toggle`: a bordered icon + label button.
+fn navigation_toggle(ui: &mut egui::Ui, icon: NavIcon, text: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        text.into(),
+        egui::FontId::new(11.2, egui::FontFamily::Name("Satoshi Bold".into())),
+        MUTED,
+    );
+    let size = egui::vec2(9.0 + 15.0 + 6.0 + galley.size().x + 9.0, 34.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hover = response.hovered() || response.has_focus();
+    if hover {
+        ui.painter().rect_filled(rect, 6.0, RAISED);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let color = if hover { TEXT } else { MUTED };
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 16.5, rect.center().y),
+            egui::vec2(15.0, 15.0),
+        ),
+        icon,
+        color,
+    );
+    ui.painter().galley_with_override_text_color(
+        egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    response
+}
+
 fn destructive(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Button::new(RichText::new(text).color(Color32::from_rgb(255, 128, 149)))
@@ -6591,6 +6850,56 @@ mod tests {
         assert!(matches!(&app.dialog, Some(Dialog::ManageChannel(id)) if id == "chan00000009"));
         assert_eq!(app.form_name, "secret");
         assert!(app.form_private);
+    }
+
+    #[test]
+    fn chat_counter_and_history_follow_web() {
+        use super::{counter_tone, grouped};
+        assert_eq!(grouped(3_000), "3,000");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(counter_tone(3_499), super::MUTED);
+        assert_eq!(
+            counter_tone(3_500),
+            egui::Color32::from_rgb(0xe4, 0xc7, 0x6a)
+        );
+        assert_eq!(
+            counter_tone(3_750),
+            egui::Color32::from_rgb(0xed, 0xa3, 0x61)
+        );
+        assert_eq!(
+            counter_tone(3_900),
+            egui::Color32::from_rgb(0xff, 0x82, 0x7c)
+        );
+
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.has_more = true;
+        // The whole history fits, so its start is visible: web loads older.
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        assert!(app.loading_older);
+        // A failed older page waits for Retry instead of looping.
+        app.loading_older = false;
+        app.older_error = Some("History unavailable".into());
+        render(&mut app, &context, vec![]);
+        assert!(!app.loading_older);
+        let contains = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(label))
+            })
+        };
+        assert!(contains(
+            &render(&mut app, &context, vec![]),
+            "Couldn’t load older messages."
+        ));
+        app.timeline = crate::model::Timeline::default();
+        app.load_error = Some("Could not reach Caper.".into());
+        let output = render(&mut app, &context, vec![]);
+        assert!(contains(&output, "Could not reach Caper.") && contains(&output, "Try again"));
     }
 
     #[test]
