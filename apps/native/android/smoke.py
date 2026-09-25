@@ -252,6 +252,14 @@ def main() -> None:
 
     guest = capture("caper-android-guest-populated-desktop", "TEST FIXTURE")
     assert find(guest, contains="The same conversation") is not None
+    assert find(guest, description="Channel options") is None
+    assert find(guest, description="Create channel") is None
+    tap(description="Collapse channels")
+    guest_collapsed = wait_for(description="Expand channels")
+    assert find(guest_collapsed, text="general") is None
+    assert find(guest_collapsed, contains="Message #general") is not None
+    tap(description="Expand channels")
+    wait_for(text="general")
     tap(text="Guest")
     login = capture("caper-android-login", "Come on in.")
     for required in ("WELCOME TO CAPER", "Email address", "Email me a code", "Join general as a guest."):
@@ -270,9 +278,33 @@ def main() -> None:
     tap(description="Fixture Studio")
     wait_for(text="design")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
-    for required in ("CHANNELS", "general", "design", "planning", "Members", "Maya"):
+    for required in ("Channels", "general", "design", "planning", "Members", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
+
+    # Hide the list while reading a non-default channel: collapsing must not
+    # silently select General, disconnect chat, or expose hidden row actions.
+    tap(text="design")
+    wait_for(contains="Message #design")
+    tap(description="Channel options")
+    options = capture("caper-android-channel-options", "Collapse channels")
+    assert find(options, text="Create channel") is not None
+    tap(text="Collapse channels")
+    collapsed = capture("caper-android-channels-collapsed", "Expand channels")
+    for hidden in ("general", "design", "planning"):
+        assert find(collapsed, text=hidden) is None
+    assert find(collapsed, description="Manage design") is None
+    assert find(collapsed, contains="Message #design") is not None
+    assert find(collapsed, text="Create channel") is None, "The action must close its menu"
+    tap(description="Channel options")
+    tap(text="Expand channels")
+    wait_for(text="planning")
+    tap(description="Collapse channels")
+    wait_for(description="Expand channels")
+    tap(description="Expand channels")
+    wait_for(description="Manage design")
+    tap(text="general")
+    wait_for(contains="Message #general")
 
     tap(description="Create space")
     create_space = capture("caper-android-create-space", "Space name")
@@ -283,6 +315,11 @@ def main() -> None:
     assert find(create_channel, contains="Add a conversation") is None
     assert find(create_channel, text="Anyone in Fixture Studio can view or join this channel.") is not None
     tap(description="Close")
+    tap(description="Channel options")
+    tap(text="Create channel")
+    wait_for(text="Channel name")
+    tap(description="Close")
+    assert find(hierarchy(), text="Collapse channels") is None, "Opening a dialog must close the menu"
 
     # Inspect prejoin audio controls without starting capture or playback.
     tap(description="Audio and account settings")
@@ -356,7 +393,20 @@ def main() -> None:
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")
     browse = capture("caper-android-browse", "Fixture Studio")
-    assert find(browse, text="CHANNELS") is not None
+    assert find(browse, contains="Channels") is not None
+    tap(description="Collapse channels")
+    wait_for(description="Expand channels")
+    tap(description="Close navigation")
+    wait_for(contains="Message #general")
+    tap(description="Open navigation")
+    collapsed_browse = capture("caper-android-browse-collapsed", "Expand channels")
+    assert find(collapsed_browse, text="planning") is None, "Browse must retain the collapsed state"
+    tap(description="Channel options")
+    capture("caper-android-channel-options-narrow", "Expand channels")
+    adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    assert find(hierarchy(), text="Expand channels") is None, "Back must dismiss the options menu"
+    tap(description="Expand channels")
+    wait_for(text="planning")
     tap(description="Audio and account settings")
     audio_narrow = capture("caper-android-audio-prejoin-narrow", "Processing strength")
     assert find(audio_narrow, description="Input gain") is not None
