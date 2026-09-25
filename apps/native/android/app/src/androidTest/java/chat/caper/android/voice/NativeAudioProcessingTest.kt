@@ -1,6 +1,7 @@
 package chat.caper.android.voice
 
 import android.media.AudioFormat
+import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.nio.ByteBuffer
@@ -19,6 +20,7 @@ class NativeAudioProcessingTest {
     @Test fun modelComparisonAndZeroGainNeverPublishPrivatePCM() {
         val capture = AudioCapture.prepare(InstrumentationRegistry.getInstrumentation().targetContext)
         val buffer = ByteBuffer.allocateDirect(960).order(ByteOrder.LITTLE_ENDIAN)
+        val deadline = SystemClock.elapsedRealtime() + 60_000
         try {
             assertEquals("Pinned ONNX model must initialize before fallback is needed", 1L, capture.report()[0])
             capture.gain(150)
@@ -29,10 +31,11 @@ class NativeAudioProcessingTest {
                 stimulus(buffer, hop)
                 capture.onBuffer(buffer, AudioFormat.ENCODING_PCM_16BIT, 1, 48000, 960)
                 assertEquals("comparison must send exact silence", 0, peak(buffer))
-                Thread.sleep(10)
+                awaitProcessedHops(capture, hop.toLong(), deadline)
             }
             val warm = capture.endComparison()!!
             assertTrue("worker must process actual hops", capture.report()[1] > 80)
+            assertEquals("paced functional test must exercise DPDFNet, not only fallback", 1L, capture.report()[0])
             val natural = warm.samples(false)
             val enhanced = warm.samples(true)
             assertTrue("comparison must retain positive processed PCM", natural.any { abs(it.toInt()) > 1 })
@@ -49,7 +52,7 @@ class NativeAudioProcessingTest {
                 stimulus(buffer, hop + 150)
                 capture.onBuffer(buffer, AudioFormat.ENCODING_PCM_16BIT, 1, 48000, 960)
                 assertEquals(0, peak(buffer))
-                Thread.sleep(10)
+                awaitProcessedHops(capture, (hop + 150).toLong(), deadline)
             }
             val zero = capture.endComparison()!!
             assertEquals(20 * 480, zero.frames)
@@ -65,10 +68,23 @@ class NativeAudioProcessingTest {
                 capture.onBuffer(buffer, AudioFormat.ENCODING_PCM_16BIT, 1, 48000, 960)
                 if (hop == 0) assertEquals("read-entry epoch fence", 0, peak(buffer))
                 publishedPeak = maxOf(publishedPeak, peak(buffer))
-                Thread.sleep(10)
+                awaitProcessedHops(capture, (hop + 170).toLong(), deadline)
             }
             assertTrue("fresh processed audio resumes after reopening", publishedPeak > 1)
         } finally { capture.close() }
+    }
+
+    private fun awaitProcessedHops(capture: AudioCapture, minimum: Long, deadline: Long) {
+        // One capture frame stays ahead for the resampler's adjacent sample.
+        // This tests DSP/privacy, not whether a shared emulator sustains 100 Hz.
+        // Production callback scheduling and overload limits are unchanged.
+        while (true) {
+            val report = capture.report()
+            assertTrue("worker failed closed: ${report.contentToString()}", report[0] != 0L)
+            if (report[1] >= minimum) return
+            assertTrue("worker stalled: ${report.contentToString()}", SystemClock.elapsedRealtime() < deadline)
+            Thread.sleep(2)
+        }
     }
 
     private fun stimulus(buffer: ByteBuffer, hop: Int) {
