@@ -668,6 +668,11 @@ test("invalid session is not treated as a transient outage", async (t) => {
   install("fetch", async () => Response.json({ error: "Session expired" }, { status: 401 }));
   await (client as unknown as { poll(): Promise<void> }).poll();
   assert.equal(states.at(-1)?.phase, "reconnecting");
+  // Diagnostics name the cause without any credential or SDP.
+  const { lastReconnect } = client.getAudioDiagnostics().voice;
+  assert.equal(lastReconnect?.reason, "lease renewal failed: HTTP 401");
+  assert.equal(lastReconnect?.phase, "connected");
+  assert.equal(lastReconnect?.peer, "connected");
 });
 
 test("heartbeat timeout covers response bodies without closing healthy media", async (t) => {
@@ -756,6 +761,7 @@ test("RTC failure immediately schedules recovery and leave cancels delayed recov
   peer.connectionState = "failed";
   peer.onconnectionstatechange!();
   assert.equal(states.at(-1)?.phase, "reconnecting");
+  assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "connection failed");
   await client.leave();
   t.mock.timers.tick(20_000);
   assert.equal(states.at(-1)?.phase, "idle");

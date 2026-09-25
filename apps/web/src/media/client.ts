@@ -59,6 +59,12 @@ function message(error: unknown) {
   return error instanceof Error ? error.message : "The call could not continue.";
 }
 
+/** A short, secret-free cause for diagnostics: an API status or an error name. */
+function reconnectReason(context: string, error: unknown) {
+  if (error instanceof CallApiError) return `${context} failed: HTTP ${error.status}${error.code ? ` ${error.code}` : ""}`;
+  return `${context} failed: ${error instanceof Error ? error.name : "error"}`;
+}
+
 function transientControlError(error: unknown) {
   return error instanceof CallApiError
     ? error.status === 408 || error.status === 429 || error.status >= 500
@@ -132,6 +138,7 @@ export class PublicCallClient {
   private snapshotPromise?: Promise<boolean>;
   private generation = 0;
   private reconnects = 0;
+  private lastReconnect?: { reason: string; at: string; phase: string; peer?: string; receivePeer?: string; participants: number; subscriptions: number };
   private muted = false;
   private deafened = false;
   private mutedBeforeDeafen?: boolean;
@@ -358,6 +365,7 @@ export class PublicCallClient {
     const started = performance.now();
     this.name = name.trim();
     if (microphoneDeviceId !== undefined) this.microphoneDeviceId = microphoneDeviceId || undefined;
+    this.lastReconnect = undefined;
     this.phase = "joining";
     this.emit();
     const generation = ++this.generation;
@@ -457,7 +465,7 @@ export class PublicCallClient {
         (operation, body, token, owner) => this.api(operation, body, token, FETCH_TIMEOUT_MS, owner),
         (operation) => this.serialize(operation, generation),
         () => generation === this.generation && pc === this.pc,
-        () => { if (generation === this.generation) this.scheduleReconnect(); }, issuedAt);
+        () => { if (generation === this.generation) this.scheduleReconnect("TURN renewal failed"); }, issuedAt);
     }
   }
 
@@ -466,7 +474,7 @@ export class PublicCallClient {
     const events = this.events = new EventConnection(() => {
       if (generation !== this.generation) return;
       ++this.snapshotInvalidation;
-      if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+      if (this.phase === "connected") void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
       else this.pollAgain = true;
     }, (error, draining) => {
       if (generation !== this.generation) return;
@@ -475,7 +483,7 @@ export class PublicCallClient {
     }, (snapshot) => {
       if (generation !== this.generation) return;
       this.queueSnapshot(snapshot);
-      if (this.phase === "connected") void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+      if (this.phase === "connected") void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
     }, () => {
       if (generation === this.generation && this.phase === "connected") this.scheduleEventRecovery(generation, true);
     }, this.apiRoot, () => {
@@ -502,7 +510,7 @@ export class PublicCallClient {
     this.eventRetryTimer = window.setTimeout(() => {
       if (generation !== this.generation || this.phase !== "connected") return;
       void this.openEvents(generation).then(() => {
-        if (generation === this.generation) return this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+        if (generation === this.generation) return this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
       }).catch(() => { /* Stream failures schedule their own retry; heartbeat validates the session. */ });
     }, delay);
   }
@@ -575,10 +583,10 @@ export class PublicCallClient {
         if (pc.connectionState === "connected") {
           window.clearTimeout(this.receiveDisconnectTimer);
           this.receiveDisconnectTimer = undefined;
-        } else if (pc.connectionState === "failed") this.scheduleReconnect();
+        } else if (pc.connectionState === "failed") this.scheduleReconnect("receive connection failed");
         else if (this.receiveDisconnectTimer === undefined) {
           this.receiveDisconnectTimer = window.setTimeout(() => {
-            if (pc === this.receivePc && pc.connectionState !== "connected") this.scheduleReconnect();
+            if (pc === this.receivePc && pc.connectionState !== "connected") this.scheduleReconnect("receive connection lost");
           }, DISCONNECT_GRACE_MS);
         }
         return;
@@ -588,11 +596,11 @@ export class PublicCallClient {
         this.disconnectTimer = undefined;
         const microphone = this.senders.get("microphone");
         if (microphone) microphone.track.enabled = this.monitoring || !this.muted;
-      } else if (pc.connectionState === "failed") this.scheduleReconnect();
+      } else if (pc.connectionState === "failed") this.scheduleReconnect("connection failed");
       else if (this.disconnectTimer === undefined) {
         // Intermediate states must not cancel or extend an existing deadline.
         this.disconnectTimer = window.setTimeout(() => {
-          if (pc === this.pc && pc.connectionState !== "connected") this.scheduleReconnect();
+          if (pc === this.pc && pc.connectionState !== "connected") this.scheduleReconnect("connection lost");
         }, DISCONNECT_GRACE_MS);
       }
     };
@@ -626,13 +634,13 @@ export class PublicCallClient {
       this.localMedia = new MediaStream([track]);
       track.addEventListener("ended", () => {
         if (generation === this.generation && this.senders.get(kind)?.track === track) {
-          void this.unpublish(kind).catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+          void this.unpublish(kind).catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("microphone ended", error)); });
         }
       }, { once: true });
       if (this.muted || this.monitoring) track.enabled = this.readyToTalk && this.monitoring;
     }, generation).catch((error) => {
       track.stop();
-      if (generation === this.generation && this.phase === "connected") { this.pc?.close(); this.scheduleReconnect(); }
+      if (generation === this.generation && this.phase === "connected") { this.pc?.close(); this.scheduleReconnect(reconnectReason("microphone publish", error)); }
       throw error;
     });
   }
@@ -811,6 +819,7 @@ export class PublicCallClient {
         readyState: track.readyState, muted: track.muted, enabled: track.enabled,
       }))).flat(),
       media: this.mediaDetail,
+      lastReconnect: this.lastReconnect,
     };
   }
 
@@ -946,7 +955,7 @@ export class PublicCallClient {
           } catch { rollbackFailed = true; }
         }
         if (track) this.stopMicrophone(track);
-        if (rollbackFailed && generation === this.generation) this.scheduleReconnect();
+        if (rollbackFailed && generation === this.generation) this.scheduleReconnect("microphone change failed");
         throw error;
       }
     }, generation);
@@ -1107,8 +1116,8 @@ export class PublicCallClient {
     window.clearInterval(this.statsTimer);
     // Gateway snapshots handle discovery; command snapshots still renew the lease and repair missed state.
     const generation = this.generation;
-    if (this.pollAgain) void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
-    this.pollTimer = window.setInterval(() => void this.poll(true).catch(() => { if (generation === this.generation) this.scheduleReconnect(); }), 15_000);
+    if (this.pollAgain) void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
+    this.pollTimer = window.setInterval(() => void this.poll(true).catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("heartbeat", error)); }), 15_000);
     void this.readStats();
     this.statsTimer = window.setInterval(() => void this.readStats(), 1_000);
   }
@@ -1191,11 +1200,11 @@ export class PublicCallClient {
       if (this.phase !== "connected") throw error;
       this.controlFailedSince ??= started;
       if (!transientControlError(error) || performance.now() - this.controlFailedSince >= CONTROL_RECOVERY_MS) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(reconnectReason("lease renewal", error));
       } else {
         window.clearTimeout(this.pollRetryTimer);
         this.pollRetryTimer = window.setTimeout(() => {
-          if (generation === this.generation) void this.poll(true).catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+          if (generation === this.generation) void this.poll(true).catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("heartbeat", error)); });
         }, 3_000);
       }
       return false;
@@ -1282,12 +1291,18 @@ export class PublicCallClient {
     const delay = PULL_RETRY_DELAYS_MS[this.unavailableRetries++];
     this.unavailableRetryTimer = window.setTimeout(() => {
       if (generation !== this.generation) return;
-      void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+      void this.poll().catch((error) => { if (generation === this.generation) this.scheduleReconnect(reconnectReason("roster sync", error)); });
     }, delay);
   }
 
-  private scheduleReconnect() {
+  private scheduleReconnect(reason: string) {
     if (this.phase !== "connected" && this.phase !== "joining") return;
+    // Kept across the rejoin, so a report taken afterwards still says why.
+    this.lastReconnect = {
+      reason, at: new Date().toISOString(), phase: this.phase,
+      peer: this.pc?.connectionState, receivePeer: this.receivePc?.connectionState,
+      participants: this.participants.length, subscriptions: this.subscriptions.size,
+    };
     this.phase = "reconnecting";
     ++this.generation;
     this.captureController.abort(new Error("Voice connection interrupted."));
@@ -1336,7 +1351,7 @@ export class PublicCallClient {
       // Stop the failed attempt before scheduling another one; its leave can
       // finish independently of the next generation.
       void this.teardown(false);
-      this.scheduleReconnect();
+      this.scheduleReconnect("rejoin failed");
     }
   }
 

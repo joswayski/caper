@@ -26,6 +26,27 @@ export interface Microphone {
   stop(): void;
 }
 
+/**
+ * iPhone and iPad, where every browser (Brave and Chrome included) is WebKit.
+ * iPadOS reports itself as a Mac, so a touch-capable "Mac" counts too.
+ */
+export function appleMobileWebKit(nav: Pick<Navigator, "userAgent" | "platform" | "maxTouchPoints"> | undefined = globalThis.navigator) {
+  if (!nav) return false;
+  return /\b(iPhone|iPad|iPod)\b/.test(nav.userAgent ?? "") || (nav.platform === "MacIntel" && nav.maxTouchPoints > 1);
+}
+
+/** The rate iOS gives a default context: its current audio route's rate. */
+function audioRouteSampleRate() {
+  try {
+    const probe = new AudioContext();
+    const rate = probe.sampleRate;
+    void probe.close().catch(() => undefined);
+    return rate;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Owns both hardware capture and the processed track; never sends PCM over IPC. */
 export async function captureMicrophone(
   deviceId: string | undefined,
@@ -55,6 +76,7 @@ export async function captureMicrophone(
   if (!stream) throw new Error("Microphone access was not granted.");
   const raw = stream.getAudioTracks()[0];
   let context: AudioContext | undefined;
+  let routeSampleRate: number | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
   let gain: GainNode | undefined;
   let voiceInput: GainNode | undefined;
@@ -99,7 +121,7 @@ export async function captureMicrophone(
         requested: mode, status: microphone.status, stopped,
         rawTrack: { readyState: raw.readyState, muted: raw.muted, enabled: raw.enabled },
         processedTrack: microphone.track === raw ? undefined : { readyState: microphone.track.readyState, muted: microphone.track.muted, enabled: microphone.track.enabled },
-        context: context?.state, contextSampleRate: context?.sampleRate,
+        context: context?.state, contextSampleRate: context?.sampleRate, routeSampleRate,
         capture: { sampleRate, channelCount, echoCancellation, noiseSuppression, autoGainControl },
         dpdfnet: { profile: activeProfile, processedHops, meanProcessingMs: processedHops ? totalProcessingMs / processedHops : null, maxProcessingMs, hopBudgetMs: 10 },
       };
@@ -149,6 +171,21 @@ export async function captureMicrophone(
     microphone.status = raw.getSettings().noiseSuppression
       ? "Browser suppression active"
       : "Browser suppression unavailable - noise suppression off";
+    return microphone;
+  }
+  // The on-device models run in a 48 kHz graph. iOS delivered silence into that
+  // graph while its audio route ran at another rate (24 kHz, as a Bluetooth
+  // headset microphone does), so send the browser-processed capture instead.
+  routeSampleRate = appleMobileWebKit() ? audioRouteSampleRate() : undefined;
+  if (routeSampleRate !== undefined && routeSampleRate !== 48_000) {
+    dpdfnet.stop(); // Free the prepared model; the client prepares again after Leave.
+    if (!raw.getSettings().noiseSuppression) await raw.applyConstraints({ noiseSuppression: true }).catch(() => undefined);
+    signal.throwIfAborted();
+    const route = `${routeSampleRate / 1000} kHz audio route, on-device models need 48 kHz`;
+    microphone.status = raw.getSettings().noiseSuppression
+      ? `Browser suppression active · ${route}`
+      : `Browser suppression unavailable - noise suppression off · ${route}`;
+    ready();
     return microphone;
   }
   const engine = mode === "rnnoise" ? "rnnoise" : mode === "dpdfnet8" ? "dpdfnet8" : "deepfilter";

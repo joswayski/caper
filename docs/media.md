@@ -1139,6 +1139,10 @@ live ingestion into the user's dataset has not been verified.
 - A transient WebRTC `disconnected` state gets ten seconds to recover in place;
   `failed` or a sustained disconnect triggers up to three consecutive failed rejoin
   attempts retaining mute/deafen and device choice; success resets that budget.
+  The voice diagnostics report `lastReconnect`: the trigger (for example
+  `connection lost`, `receive connection lost` or `lease renewal failed: HTTP 401`),
+  its time, and both peer connections' states. It survives the rejoin and resets on
+  an explicit Join; it carries no token, credential or SDP.
   Permission/device failures are visible. All microphone subscriptions
   are automatic. Deafen mutes playback, not forwarding/bandwidth.
 - Mute disables the local track and detaches it from the sender. Opus is preferred;
@@ -1913,6 +1917,22 @@ The default model and runtime (~27 MB combined) are vendored and loaded from Cap
 versioned/cacheable and included by the existing web build/Docker COPY stages.
 License notices, source provenance, and checksums are in the adjacent README.
 No new environment variables or infrastructure configuration are required.
+
+### iPhone and iPad audio routes
+
+The models run in a 48 kHz Web Audio graph. On an iPhone whose audio route ran at
+24 kHz (the rate a default `AudioContext` reported, typical of a Bluetooth headset
+microphone), that graph sent silence: the phone showed a live, running capture and
+Opus sent only DTX packets (~0.6 kbps, audio level 0). On the same phone at a
+48 kHz route, DPDFNet-8 HR ran at 5.2 ms mean per 10 ms hop and was heard normally.
+On iPhone/iPad WebKit (every iOS browser, and iPadOS in desktop mode) capture now
+probes the route rate with a default context. If it is not 48 kHz, it sends the
+browser's voice-processed track with no Web Audio on the send path and releases the
+prepared model. The status names the route rate, and capture diagnostics include
+`routeSampleRate`. Other platforms are unchanged: they resample into the 48 kHz
+graph. A route change after joining (connecting a headset mid-call) is not
+detected until the microphone is reopened. This is unit-tested with mocks only:
+no physical-device check at a 24 kHz route has been made.
 
 ### Retained engine implementations (no user-facing selector)
 
