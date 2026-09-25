@@ -2055,6 +2055,18 @@ model and output matched input level; worklet-v2 loaded the real RNNoise and
 behaved as at 48 kHz. The sandbox cannot run DPDFNet in real time (25 ms per
 10 ms hop), and no iPhone check at a 24 kHz route has been made.
 
+### UI sounds on phones
+
+Join, leave, mute and other UI sounds play on touch devices too; the Caper sound
+effects switch still turns them off. Where the browser has the Audio Session API
+(Safari/iOS WebKit 17+), a UI sound played while nothing captures the microphone
+sets `navigator.audioSession.type = "ambient"`, so it mixes with other apps'
+audio instead of pausing their music, and follows the silent switch. Every
+microphone capture (a call or the mic test) sets `"auto"` before
+`getUserMedia`, and the type is never changed while a capture is live. A capture
+whose track ended without release stops counting. Unit-tested with mocks only:
+whether iOS keeps other apps' music playing has not been checked on a device.
+
 ### Retained engine implementations (no user-facing selector)
 
 | Mode | Purpose |

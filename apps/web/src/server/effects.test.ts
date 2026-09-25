@@ -137,6 +137,17 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
     playSliderTick(.5);
     await flush();
     assert.equal(sources.length, beforeTouch + 2, "touch devices play join/leave, toggle and slider feedback");
+    // On iOS a sound outside a call mixes with other apps' audio rather than pausing it.
+    const session = { type: "auto" };
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { audioSession: session } });
+    try {
+      playSound("toggle-on");
+      assert.equal(session.type, "ambient");
+    } finally {
+      if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+      else Reflect.deleteProperty(globalThis, "navigator");
+    }
   } finally {
     if (originalMatchMedia) Object.defineProperty(globalThis, "matchMedia", originalMatchMedia);
     else Reflect.deleteProperty(globalThis, "matchMedia");

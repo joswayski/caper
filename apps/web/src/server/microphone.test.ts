@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { appleMobileWebKit, captureMicrophone, type NoiseSuppression } from "../media/microphone.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
+import { mixWithOtherAudio, resetCapturesForTests } from "../audio/session.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
 
 class Track {
@@ -642,6 +643,21 @@ for (const mode of ["off", "browser"] as NoiseSuppression[]) test(`on an iPhone,
   assert.equal(microphone.track, raw);
   assert.equal(contexts.length, 0);
   microphone.stop();
+});
+
+test("capture uses the default audio session from before getUserMedia until it stops", async (t) => {
+  resetCapturesForTests();
+  const session = { type: "ambient" };
+  const seen: string[] = [];
+  const { install, raw } = setup(t);
+  install("navigator", { audioSession: session, mediaDevices: { getUserMedia: async () => { seen.push(session.type); return new Stream([raw]); } } });
+  const microphone = await captureMicrophone(undefined, "off", new AbortController().signal, () => undefined);
+  assert.deepEqual(seen, ["auto"]);
+  mixWithOtherAudio();
+  assert.equal(session.type, "auto", "no mixing session while capturing");
+  microphone.stop();
+  mixWithOtherAudio();
+  assert.equal(session.type, "ambient");
 });
 
 test("a missing capture stream reports a microphone access error", async (t) => {

@@ -1,5 +1,6 @@
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
+import { beginCapture } from "../audio/session.ts";
 import {
   clampVoiceProcessingStrength,
   connectVoiceProcessing,
@@ -65,16 +66,25 @@ export async function captureMicrophone(
   // DPDFNet in when it is, instead of holding the join for the compile.
   const interim = mode === "dpdfnet8" && !dpdfnet.isReady();
   const started = performance.now();
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+  // The default session (play-and-record while capturing), never "ambient".
+  const capture = beginCapture();
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: {
     deviceId: deviceId ? { exact: deviceId } : undefined,
     channelCount: 1,
     echoCancellation: audioSetup === "speakers",
     noiseSuppression: mode === "browser" || interim,
     autoGainControl: audioSetup === "speakers",
-  } });
+    } });
+  } catch (error) {
+    capture.end();
+    throw error;
+  }
   const deviceMs = performance.now() - started;
-  if (!stream) throw new Error("Microphone access was not granted.");
+  if (!stream) { capture.end(); throw new Error("Microphone access was not granted."); }
   const raw = stream.getAudioTracks()[0];
+  capture.track(raw);
   let context: AudioContext | undefined;
   let routeSampleRate: number | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
@@ -163,6 +173,7 @@ export async function captureMicrophone(
     stop() {
       if (stopped) return;
       stopped = true;
+      capture.end();
       fallbackController.abort();
       signal.removeEventListener("abort", microphone.stop);
       stream.getTracks().forEach((track) => track.stop());

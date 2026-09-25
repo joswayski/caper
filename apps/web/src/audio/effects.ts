@@ -9,6 +9,8 @@ export type SoundEffect =
   | "new-message"
   | "delete";
 
+import { mixWithOtherAudio } from "./session.ts";
+
 const MAX_VOICES = 4;
 const MAX_DEFERRED_PLAY_MS = 120;
 const effects: readonly SoundEffect[] = [
@@ -93,6 +95,7 @@ function start(audioContext: AudioContext, buffer: AudioBuffer, volume: number, 
 /** Fetch and decode all effects ahead of interaction. Safe to call during browser mount. */
 export async function preloadSoundEffects() {
   if (!getSystemSoundsEnabled()) return;
+  mixWithOtherAudio();
   const audioContext = getContext();
   if (!audioContext || typeof fetch === "undefined") return;
   await Promise.allSettled(effects.map((effect) => load(effect, audioContext)));
@@ -101,6 +104,7 @@ export async function preloadSoundEffects() {
 /** Play a short UI sound without allowing audio policy or decode failures to escape. */
 export function playSound(effect: SoundEffect, options: { volume?: number; playbackRate?: number } = {}) {
   if (!getSystemSoundsEnabled()) return;
+  mixWithOtherAudio();
   const audioContext = getContext();
   if (!audioContext || typeof fetch === "undefined") {
     if (typeof Audio === "undefined") return;
