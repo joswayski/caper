@@ -17,6 +17,8 @@ struct Mock {
     next_turn: AtomicUsize,
     provisioning: AtomicUsize,
     closes: Mutex<Vec<(String, String)>>,
+    /// (operation, provider session) for track and negotiation requests.
+    session_calls: std::sync::Mutex<Vec<(&'static str, String)>>,
     revocations: Mutex<Vec<String>>,
     remote_offer: AtomicBool,
     block_provision: AtomicBool,
@@ -35,6 +37,7 @@ impl Mock {
             next_turn: AtomicUsize::new(1),
             provisioning: AtomicUsize::new(0),
             closes: Mutex::new(vec![]),
+            session_calls: std::sync::Mutex::new(vec![]),
             revocations: Mutex::new(vec![]),
             remote_offer: AtomicBool::new(true),
             block_provision: AtomicBool::new(false),
@@ -84,16 +87,34 @@ impl Provider for Mock {
     async fn session_tracks(&self, _: &Config, _: &str) -> Result<Value, ProviderError> {
         Ok(json!({"tracks":[]}))
     }
-    async fn tracks_new(&self, _: &Config, _: &str, body: Value) -> Result<Value, ProviderError> {
+    async fn tracks_new(
+        &self,
+        _: &Config,
+        session: &str,
+        body: Value,
+    ) -> Result<Value, ProviderError> {
+        let operation = if body["tracks"][0]["location"] == "remote" {
+            "pull"
+        } else {
+            "publish"
+        };
+        self.session_calls
+            .lock()
+            .unwrap()
+            .push((operation, session.into()));
         if body["tracks"][0]["location"] == "remote" && body["tracks"].as_array().unwrap().len() > 1
         {
             // A batched pull allocates one receiving MID per requested track.
             let tracks = body["tracks"].as_array().unwrap().iter().enumerate()
                 .map(|(i, t)| json!({"location":"remote","sessionId":t["sessionId"],"trackName":t["trackName"],"mid":format!("remote-mid-{i}")}))
                 .collect::<Vec<_>>();
-            Ok(
-                json!({"requiresImmediateRenegotiation":true,"tracks":tracks,"sessionDescription":{"type":"offer","sdp":"offer"}}),
-            )
+            if self.remote_offer.load(Ordering::SeqCst) {
+                Ok(
+                    json!({"requiresImmediateRenegotiation":true,"tracks":tracks,"sessionDescription":{"type":"offer","sdp":"offer"}}),
+                )
+            } else {
+                Ok(json!({"requiresImmediateRenegotiation":false,"tracks":tracks}))
+            }
         } else if body["tracks"][0]["location"] == "remote" {
             if self.block_subscription.load(Ordering::SeqCst) {
                 self.subscription_started.notify_one();
@@ -131,7 +152,11 @@ impl Provider for Mock {
         }
         Ok(json!({"tracks":[],"sessionDescription":{"type":"answer","sdp":"answer"}}))
     }
-    async fn negotiate(&self, _: &Config, _: &str, _: Value) -> Result<Value, ProviderError> {
+    async fn negotiate(&self, _: &Config, session: &str, _: Value) -> Result<Value, ProviderError> {
+        self.session_calls
+            .lock()
+            .unwrap()
+            .push(("negotiate", session.into()));
         Ok(json!({}))
     }
     async fn close(&self, _: &Config, s: &str, m: &str) -> Result<Value, ProviderError> {
@@ -1019,6 +1044,434 @@ async fn join_can_publish_the_first_microphone_in_one_request() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let participants = s.read(|r| Ok(r.participants.len())).await.unwrap();
     assert_eq!(participants, 3);
+}
+
+#[tokio::test]
+async fn join_pulls_everyone_present_into_a_receive_session() {
+    let (s, mock) = state();
+    let offer = |mid: &str| json!({"mid":mid,"sessionDescription":{"type":"offer","sdp":"v=0"}});
+    let join = |name: &str, mid: &str, receive: bool| json!({"name":name,"publish":offer(mid),"receive":receive});
+
+    // An empty room needs no receive session.
+    let sessions = mock.next.load(Ordering::SeqCst);
+    let (status, first) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        join("first", "0", true),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert!(first.get("receive").is_none());
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions + 1);
+
+    // The listener's microphone MID deliberately equals the pull MID the mock allocates.
+    mock.session_calls.lock().unwrap().clear();
+    let (status, listener) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        join("listener", "remote-mid", true),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listener}");
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        sessions + 3,
+        "main and receive sessions"
+    );
+    let token = listener["token"].as_str().unwrap();
+    let id: Uuid = listener["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(listener["publish"]["sessionDescription"]["type"], "answer");
+    assert_eq!(listener["receive"]["sessionDescription"]["type"], "offer");
+    assert_eq!(
+        listener["receive"]["tracks"],
+        json!([{"trackId":first["publish"]["trackId"],"mid":"remote-mid"}])
+    );
+    let (main, receive) = {
+        let r = s.registry.lock().await;
+        let p = &r.participants[&id];
+        assert!(p.pending_offer && !p.operation);
+        (
+            p.session.clone(),
+            p.receive_session.clone().expect("receive session"),
+        )
+    };
+    assert_ne!(main, receive);
+    let mut calls = mock.session_calls.lock().unwrap().clone();
+    calls.sort();
+    assert_eq!(
+        calls,
+        vec![("publish", main.clone()), ("pull", receive.clone())]
+    );
+    mock.session_calls.lock().unwrap().clear();
+    let answer = json!({"sessionDescription":{"type":"answer","sdp":"v=0"}});
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/negotiate",
+            Some(token),
+            answer
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        *mock.session_calls.lock().unwrap(),
+        vec![("negotiate", receive.clone())]
+    );
+
+    // Equal MIDs in different sessions are closed independently.
+    let close = |subscription: bool| json!({"mid":"remote-mid","subscription":subscription});
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/close",
+            Some(token),
+            close(true)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    {
+        let r = s.registry.lock().await;
+        let p = &r.participants[&id];
+        assert!(p.subscriptions.is_empty());
+        assert!(
+            p.tracks.contains_key("remote-mid"),
+            "the microphone stays published"
+        );
+        assert!(r.cleanup.iter().any(|job| job.action
+            == CleanupAction::Close {
+                session: receive.clone(),
+                mid: "remote-mid".into()
+            }));
+        assert!(!r.cleanup.iter().any(|job| job.action
+            == CleanupAction::Close {
+                session: main.clone(),
+                mid: "remote-mid".into()
+            }));
+    }
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/close",
+            Some(token),
+            close(true)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Later pulls use the receive session.
+    mock.session_calls.lock().unwrap().clear();
+    let (status, _) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/subscribe",
+        Some(token),
+        json!({"trackIds":[first["publish"]["trackId"]]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        *mock.session_calls.lock().unwrap(),
+        vec![("pull", receive.clone())]
+    );
+
+    // Leaving cleans up each MID in its own session.
+    s.registry.lock().await.cleanup.clear();
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/leave",
+            Some(token),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    {
+        let r = s.registry.lock().await;
+        for session in [&main, &receive] {
+            assert!(
+                r.cleanup.iter().any(|job| job.action
+                    == CleanupAction::Close {
+                        session: session.clone(),
+                        mid: "remote-mid".into()
+                    }),
+                "{session}"
+            );
+        }
+    }
+
+    // Without the flag, joins are unchanged.
+    let before = mock.next.load(Ordering::SeqCst);
+    let plain = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        join("plain", "0", false),
+    )
+    .await
+    .1;
+    assert!(plain.get("receive").is_none());
+    assert_eq!(mock.next.load(Ordering::SeqCst), before + 1);
+
+    // An uncertain pull still joins; the listener pulls after connecting instead.
+    mock.remote_offer.store(false, Ordering::SeqCst);
+    let (status, degraded) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        join("degraded", "0", true),
+    )
+    .await;
+    mock.remote_offer.store(true, Ordering::SeqCst);
+    assert_eq!(status, StatusCode::OK, "{degraded}");
+    assert!(degraded.get("receive").is_none());
+    let degraded_id: Uuid = degraded["id"].as_str().unwrap().parse().unwrap();
+    {
+        let r = s.registry.lock().await;
+        let p = &r.participants[&degraded_id];
+        assert!(p.receive_session.is_none() && p.subscriptions.is_empty() && !p.pending_offer);
+        assert!(
+            r.cleanup
+                .iter()
+                .any(|job| matches!(&job.action, CleanupAction::Discover { .. }))
+        );
+    }
+
+    // Monitors never get a receive session.
+    let parent = self::joined(&s, "parent").await;
+    let (status, monitor) = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        parent["token"].as_str(),
+        json!({"name":"Microphone test","monitor":"sender","publish":offer("0"),"receive":true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{monitor}");
+    assert!(monitor.get("receive").is_none());
+}
+
+/// The same room, reached without an account (the speaker needs no preparation).
+fn public_speaker_room(s: &AppState) -> AppState {
+    let mut room = s.clone();
+    room.media_session = None;
+    room
+}
+
+#[tokio::test]
+async fn prepared_joins_skip_provider_setup_for_signed_in_members_only() {
+    let (public, _) = state();
+    assert_eq!(
+        call(app(public), "POST", "/api/media/prepare", None, json!({}))
+            .await
+            .0,
+        StatusCode::NOT_FOUND,
+        "the public demo creates sessions only on join"
+    );
+
+    let (mut s, mock) = state();
+    s.media_session = Some(b"member".to_vec());
+    let sessions = mock.next.load(Ordering::SeqCst);
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/prepare",
+            None,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions + 1);
+    let (prepared, username) = {
+        let r = s.registry.lock().await;
+        assert_eq!(r.prepared.len(), 1);
+        let username = r.prepared[0].usernames().next().unwrap().clone();
+        let job = r
+            .cleanup
+            .iter()
+            .find(|job| {
+                job.action
+                    == CleanupAction::Revoke {
+                        username: username.clone(),
+                    }
+            })
+            .expect("unused credentials are revoked on a schedule");
+        assert!(
+            job.not_before > Timestamp::now() + PREPARED_TTL,
+            "never before the prepared join expires"
+        );
+        (r.prepared[0].session.clone(), username)
+    };
+    // A fresh preparation is reused rather than replaced.
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/prepare",
+            None,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions + 1);
+
+    // Another account cannot take it; it provisions normally.
+    let mut other = s.clone();
+    other.media_session = Some(b"someone else".to_vec());
+    let stranger = call(
+        app(other),
+        "POST",
+        "/api/media/join",
+        None,
+        json!({"name":"stranger"}),
+    )
+    .await
+    .1;
+    assert_eq!(mock.next.load(Ordering::SeqCst), sessions + 2);
+    let stranger_id: Uuid = stranger["id"].as_str().unwrap().parse().unwrap();
+    assert_ne!(
+        s.registry.lock().await.participants[&stranger_id].session,
+        prepared
+    );
+
+    // The member's join takes the prepared session and keeps its credentials.
+    let (status, joined) = call(app(s.clone()), "POST", "/api/media/join", None,
+        json!({"name":"member","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}})).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        sessions + 2,
+        "no provider session created"
+    );
+    assert_eq!(joined["iceServers"][0]["username"], username.as_str());
+    {
+        let r = s.registry.lock().await;
+        let id: Uuid = joined["id"].as_str().unwrap().parse().unwrap();
+        assert_eq!(r.participants[&id].session, prepared);
+        assert!(r.prepared.is_empty());
+        assert!(
+            !r.cleanup.iter().any(|job| job.action
+                == CleanupAction::Revoke {
+                    username: username.clone()
+                }),
+            "a taken credential is no longer scheduled for revocation"
+        );
+    }
+    call(
+        app(s.clone()),
+        "POST",
+        "/api/media/leave",
+        joined["token"].as_str(),
+        json!({}),
+    )
+    .await;
+
+    // With someone already publishing, preparation also creates the receive
+    // session, and the join then creates none.
+    {
+        let mut other = s.clone();
+        other.media_session = Some(b"another member".to_vec());
+        let speaker = call(app(public_speaker_room(&other)), "POST", "/api/media/join", None,
+            json!({"name":"speaker","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}}})).await.1;
+        let before = mock.next.load(Ordering::SeqCst);
+        assert_eq!(
+            call(
+                app(other.clone()),
+                "POST",
+                "/api/media/prepare",
+                None,
+                json!({})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(mock.next.load(Ordering::SeqCst), before + 2);
+        let (status, joined) = call(app(other.clone()), "POST", "/api/media/join", None,
+            json!({"name":"member","publish":{"mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}},"receive":true})).await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        assert_eq!(
+            mock.next.load(Ordering::SeqCst),
+            before + 2,
+            "both sessions came from preparation"
+        );
+        assert_eq!(
+            joined["receive"]["tracks"][0]["trackId"],
+            speaker["publish"]["trackId"]
+        );
+        for person in [&joined, &speaker] {
+            call(
+                app(other.clone()),
+                "POST",
+                "/api/media/leave",
+                person["token"].as_str(),
+                json!({}),
+            )
+            .await;
+        }
+    }
+    // An expired preparation is ignored; its credentials stay scheduled for revocation.
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/prepare",
+            None,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let stale = {
+        let mut r = s.registry.lock().await;
+        r.prepared[0].issued = Timestamp::now() - PREPARED_TTL - Duration::from_secs(1);
+        r.prepared[0].usernames().next().unwrap().clone()
+    };
+    let before = mock.next.load(Ordering::SeqCst);
+    let late = call(
+        app(s.clone()),
+        "POST",
+        "/api/media/join",
+        None,
+        json!({"name":"member"}),
+    )
+    .await
+    .1;
+    assert!(late["token"].is_string());
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        before + 1,
+        "a new session, not a disconnected one"
+    );
+    let r = s.registry.lock().await;
+    assert!(r.prepared.is_empty());
+    assert!(r.cleanup.iter().any(|job| job.action
+        == CleanupAction::Revoke {
+            username: stale.clone()
+        }));
 }
 
 #[tokio::test]

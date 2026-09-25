@@ -11,7 +11,7 @@ import PresenceDot from "../components/PresenceDot";
 import Tooltip from "../components/Tooltip";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
-import { PublicCallClient } from "../media/client";
+import { PublicCallClient, prepareVoiceJoin } from "../media/client";
 import { watchPresence } from "../media/presence";
 import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
@@ -26,6 +26,9 @@ type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const MAX_WATCHED_CHANNELS = 24;
 const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { import: "default", query: "?url" });
+
+/** How close (px) the pointer must come to a Join button to start preparing the join. */
+const JOIN_PREPARE_RADIUS = 120;
 
 function formatBytes(bytes: number) {
   return `${(bytes / 1e6).toFixed(2)} MB`;
@@ -478,6 +481,41 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     setVoiceChannel(target);
     void clientRef.current!.join(identityName.trim(), deviceId);
   };
+  /** Signed-in members: create the provider session as the pointer or focus reaches Join. */
+  const prepareChannel = (channelId?: string) => {
+    const root = channelId === channel?.id ? mediaRoot : rootFor(channelId);
+    if (!signedIn || channel?.demo || joinBlocked || (!idle && clientRoot.current === root)) return;
+    prepareVoiceJoin(root);
+  };
+  const prepareRef = useRef(prepareChannel);
+  prepareRef.current = prepareChannel;
+  // Start preparing as the pointer approaches a Join button, not only on hover.
+  // One listener, at most one geometry check per frame, and only while signed in.
+  useEffect(() => {
+    if (!signedIn || channel?.demo) return;
+    let frame = 0, x = 0, y = 0;
+    const check = () => {
+      frame = 0;
+      for (const button of document.querySelectorAll<HTMLElement>(".channel-join[data-channel]")) {
+        const box = button.getBoundingClientRect();
+        if (!box.width || !box.height) continue;
+        const dx = Math.max(box.left - x, 0, x - box.right);
+        const dy = Math.max(box.top - y, 0, y - box.bottom);
+        if (dx * dx + dy * dy <= JOIN_PREPARE_RADIUS * JOIN_PREPARE_RADIUS) prepareRef.current(button.dataset.channel || undefined);
+      }
+    };
+    const move = (event: PointerEvent) => {
+      if (event.pointerType === "touch") return; // Touch has no approach; pointerdown covers it.
+      x = event.clientX;
+      y = event.clientY;
+      frame ||= requestAnimationFrame(check);
+    };
+    document.addEventListener("pointermove", move, { passive: true });
+    return () => {
+      document.removeEventListener("pointermove", move);
+      cancelAnimationFrame(frame);
+    };
+  }, [signedIn, channel?.demo]);
   const openMicTest = () => {
     setVoiceError(undefined);
     setAudioPanel("mic");
@@ -585,7 +623,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     // voice when you hover or focus their line (hidden on touch screens).
     const viewed = channelId === channel?.id;
     const join = !inVoiceHere(channelId) && (viewed || people.length > 0) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
-      <button className="voice-button channel-join" type="button" data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
+      <button className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
     return {

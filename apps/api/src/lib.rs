@@ -24,6 +24,11 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use uuid::Uuid;
 
 const LEASE: Duration = Duration::from_secs(45);
+// Cloudflare disconnects an unused session after 10-15 s (live-measured
+// September 25, 2026), so a prepared session is only offered for this long.
+const PREPARED_TTL: Duration = Duration::from_secs(8);
+// Revoke an unused prepared TURN credential once it can no longer be taken.
+const PREPARED_REVOKE_AFTER: Duration = Duration::from_secs(12);
 // Cloudflare's maximum credential lifetime, not an application call-age limit.
 // Revoke on leave/lease expiry. The browser renews halfway through this lifetime
 // using ICE restart; setConfiguration alone does not renew allocations.
@@ -211,6 +216,16 @@ pub trait Provider: Send + Sync {
         session: &str,
         body: Value,
     ) -> Result<Value, ProviderError>;
+    /// Remote pulls whose per-track results the caller classifies, however
+    /// many there are: per-track refusals are partial success, not errors.
+    async fn pull_batch(
+        &self,
+        config: &Config,
+        session: &str,
+        body: Value,
+    ) -> Result<Value, ProviderError> {
+        self.tracks_new(config, session, body).await
+    }
     async fn restart_ice(
         &self,
         config: &Config,
@@ -342,6 +357,16 @@ impl Provider for Cloudflare {
                 (Some("remote"), _) => "subscribe_batch",
                 _ => "publish",
             },
+            reqwest::Method::POST,
+            c,
+            &format!("apps/{}/sessions/{s}/tracks/new", required(&c.app_id)),
+            body,
+        )
+        .await
+    }
+    async fn pull_batch(&self, c: &Config, s: &str, body: Value) -> Result<Value, ProviderError> {
+        self.request(
+            "subscribe_batch",
             reqwest::Method::POST,
             c,
             &format!("apps/{}/sessions/{s}/tracks/new", required(&c.app_id)),
@@ -747,6 +772,27 @@ struct Registry {
     cleanup: VecDeque<CleanupJob>,
     reservations: HashMap<Uuid, JoinReservation>,
     revision: u64,
+    /// Provider sessions and TURN created shortly before a signed-in member joins.
+    #[serde(default)]
+    prepared: Vec<PreparedJoin>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct PreparedJoin {
+    /// The account session hash that may take it, in this room only.
+    account: Vec<u8>,
+    session: String,
+    ice_servers: Vec<IceServer>,
+    issued: Timestamp,
+    /// Created when others were publishing, for the join's receive-only pulls.
+    #[serde(default)]
+    receive_session: Option<String>,
+}
+impl PreparedJoin {
+    fn usernames(&self) -> impl Iterator<Item = &String> {
+        self.ice_servers
+            .iter()
+            .filter_map(|server| server.username.as_ref())
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct JoinReservation {
@@ -762,6 +808,15 @@ struct Participant {
     name: String,
     country_code: Option<String>,
     session: String,
+    /// A second, receive-only provider session holding every subscription once
+    /// created. Cloudflare answers a pull into a session with no negotiated
+    /// PeerConnection at once, but holds one into a negotiated, unconnected
+    /// session until it connects (then 425). A joining browser asks for this on
+    /// its first pull, so it can subscribe while its microphone transport is
+    /// still connecting. Created lazily because an unused provider session is
+    /// disconnected within 30 s. Absent for monitors, native and older clients.
+    #[serde(default)]
+    receive_session: Option<String>,
     turn_usernames: Vec<String>,
     #[serde(default)]
     turn: Option<TurnCache>,
@@ -789,6 +844,12 @@ struct Participant {
     operations: VecDeque<Timestamp>,
     monitor: Option<Monitor>,
     events: Option<Uuid>,
+}
+impl Participant {
+    /// The provider session that holds this participant's subscriptions.
+    fn pull_session(&self) -> &String {
+        self.receive_session.as_ref().unwrap_or(&self.session)
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Claim {
@@ -1008,6 +1069,7 @@ fn media_routes() -> Router<AppState> {
         .route("/api/media/presence", get(presence))
         .route("/api/media/presence/events", get(presence_events))
         .route("/api/media/join", post(join))
+        .route("/api/media/prepare", post(prepare))
         .route("/api/media/turn", post(turn))
         .route("/api/media/restart-ice", post(restart_ice))
         .route("/api/media/restart-ice-ack", post(restart_ice_ack))
@@ -1546,6 +1608,10 @@ struct Join {
     /// signaling round trip; the same handler state machine runs either way.
     #[serde(default)]
     publish: Option<InitialPublish>,
+    /// With `publish`: also pull everyone already publishing, into a separate
+    /// receive-only session, so both connections come up together.
+    #[serde(default)]
+    receive: bool,
 }
 
 #[derive(Deserialize)]
@@ -1590,7 +1656,7 @@ async fn join(
     }
     let country_code = country_code(&headers);
     let reservation = Uuid::new_v4();
-    let monitor = s
+    let (monitor, pulls) = s
         .update(|r| {
             let now = Timestamp::now();
             r.reservations
@@ -1644,16 +1710,57 @@ async fn join(
                     monitor,
                 },
             );
-            Ok(monitor)
+            let pulls = if input.receive && input.publish.is_some() && monitor.is_none() {
+                public_sources_locked(r)
+            } else {
+                vec![]
+            };
+            Ok((monitor, pulls))
         })
         .await?;
+    let wants_receive = !pulls.is_empty();
+    let prepared = match (&s.media_session, monitor) {
+        (Some(account), None) => s.update(|r| Ok(take_prepared_locked(r, account))).await?,
+        _ => None,
+    };
     // These independent provider requests run together. Session creation is intentionally
     // never retried: an ambiguous create could orphan a session.
-    let turn_issued = Timestamp::now();
-    let (session, ice) = tokio::join!(
-        s.provider.create_session(&s.config),
-        s.provider.turn(&s.config)
-    );
+    let receiving = async {
+        if wants_receive {
+            Some(s.provider.create_session(&s.config).await)
+        } else {
+            None
+        }
+    };
+    let provisioning = async {
+        if let Some(prepared) = prepared {
+            let receive = match prepared.receive_session {
+                Some(session) if wants_receive => Some(Ok(session)),
+                _ => receiving.await,
+            };
+            (
+                prepared.issued,
+                Ok(prepared.session),
+                Ok(prepared.ice_servers),
+                receive,
+            )
+        } else {
+            let issued = Timestamp::now();
+            let (session, ice, receive) = tokio::join!(
+                s.provider.create_session(&s.config),
+                s.provider.turn(&s.config),
+                receiving
+            );
+            (issued, session, ice, receive)
+        }
+    };
+    // The access re-check is independent of provisioning; its result is still
+    // applied before the participant is committed or any capability returned.
+    let ((turn_issued, session, ice, receive_session), access) =
+        tokio::join!(provisioning, s.check_media_access());
+    // Without a receive session, pulls simply happen after connecting, as
+    // before. An unused provider session holds nothing and needs no cleanup.
+    let receive_session = receive_session.and_then(Result::ok);
     let session = match session {
         Ok(session) => session,
         Err(error) => {
@@ -1692,6 +1799,7 @@ async fn join(
         name: name.into(),
         country_code,
         session,
+        receive_session: None,
         turn_usernames: ice
             .iter()
             .filter_map(|server| server.username.clone())
@@ -1722,7 +1830,7 @@ async fn join(
         monitor,
         events: None,
     };
-    if let Err(error) = s.check_media_access().await {
+    if let Err(error) = access {
         s.update(|r| {
             r.reservations.remove(&reservation);
             cleanup_participant_locked(r, &p);
@@ -1754,18 +1862,186 @@ async fn join(
     })
     .await??;
     let mut response = json!({"token":token,"id":id,"iceServers":ice,"turn":turn_metadata(p.turn.as_ref().unwrap())});
-    if let Some(publish) = input.publish {
-        // The capability was never returned, so nobody else can use this
-        // participant. Any failure removes it instead of leaving a half-join.
-        match publish_track(&s, &token, &publish.mid, &publish.session_description.sdp).await {
-            Ok(publication) => response["publish"] = publication,
-            Err(error) => {
-                remove_participant(&s, id).await;
-                return Err(error);
+    // The capability was never returned, so nobody else can use this
+    // participant yet: publication and the pulls run together without the
+    // per-participant operation lock, and are committed afterwards.
+    let publishing = async {
+        match &input.publish {
+            Some(publish) => Some(
+                publish_track(&s, &token, &publish.mid, &publish.session_description.sdp).await,
+            ),
+            None => None,
+        }
+    };
+    let pulling = async {
+        match &receive_session {
+            Some(session) => Some(pull_tracks(&s, session, &pulls).await),
+            None => None,
+        }
+    };
+    let (published, pulled) = tokio::join!(publishing, pulling);
+    let pulled = receive_session.zip(pulled);
+    match published {
+        Some(Ok(publication)) => response["publish"] = publication,
+        Some(Err(error)) => {
+            // Any failure removes the participant instead of leaving a half-join.
+            if let Some((session, pulled)) = pulled {
+                abandon_pull(&s, &session, pulled).await;
             }
+            remove_participant(&s, id).await;
+            return Err(error);
+        }
+        None => {}
+    }
+    if let Some((session, pulled)) = pulled {
+        match pulled {
+            // The browser needs an offer to build its receive connection; without
+            // one (nothing allocated, no renegotiation) pull after connecting.
+            Ok(outcome) if outcome.offer.is_none() => abandon_pull(&s, &session, Ok(outcome)).await,
+            Ok(outcome) => {
+                let committed = s
+                    .update(|r| {
+                        let Some(p) = r.participants.get_mut(&id) else {
+                            return Ok(false);
+                        };
+                        p.receive_session = Some(session.clone());
+                        for (mid, track_id) in &outcome.allocated {
+                            p.subscriptions.insert(mid.clone(), *track_id);
+                        }
+                        p.pending_offer = outcome.pending;
+                        Ok(true)
+                    })
+                    .await?;
+                if !committed {
+                    abandon_pull(&s, &session, Ok(outcome)).await;
+                    return Err(ApiError::new(StatusCode::UNAUTHORIZED, "session expired"));
+                }
+                response["receive"] = outcome.response([]);
+            }
+            // Uncertain: clean up whatever may exist and pull after connecting.
+            Err(error) => abandon_pull(&s, &session, Err(error)).await,
         }
     }
     Ok(Json(response))
+}
+
+/// Releases a join-time pull that will not be used, whatever it allocated.
+async fn abandon_pull(
+    s: &AppState,
+    session: &str,
+    pulled: Result<PullOutcome, (ProviderError, Vec<String>)>,
+) {
+    let (mids, uncertain) = match pulled {
+        Ok(outcome) => (
+            outcome.allocated.into_iter().map(|(mid, _)| mid).collect(),
+            false,
+        ),
+        Err((_, mids)) => (mids, true),
+    };
+    let _ = s
+        .update(|r| {
+            for mid in &mids {
+                enqueue_cleanup_locked(r, session.to_owned(), mid.clone());
+            }
+            if uncertain {
+                enqueue_action_locked(
+                    r,
+                    CleanupAction::Discover {
+                        session: session.to_owned(),
+                    },
+                );
+            }
+            Ok(())
+        })
+        .await;
+}
+
+/// Removes and returns this account's prepared join while it is still usable,
+/// cancelling the scheduled revocation of its TURN credentials.
+fn take_prepared_locked(r: &mut Registry, account: &[u8]) -> Option<PreparedJoin> {
+    r.prepared.retain(|p| p.issued.elapsed() < PREPARED_TTL);
+    let index = r.prepared.iter().position(|p| p.account == account)?;
+    let prepared = r.prepared.swap_remove(index);
+    let usernames: Vec<_> = prepared.usernames().cloned().collect();
+    r.cleanup.retain(|job| {
+        !matches!(&job.action, CleanupAction::Revoke { username } if usernames.contains(username))
+    });
+    Some(prepared)
+}
+
+/// Creates a provider session and TURN credentials moments before a signed-in
+/// member joins this channel, so their join skips both provider calls. An
+/// unused session is disconnected by Cloudflare within 10-15 s and needs no
+/// cleanup; its TURN credentials are revoked on a schedule set here.
+async fn prepare(State(s): State<AppState>, Json(_): Json<Empty>) -> Result<StatusCode, ApiError> {
+    ensure_enabled(&s)?;
+    // Signed-in account channels only (the channel route sets this after its
+    // membership check); the public demo stays create-on-join.
+    let Some(account) = s.media_session.clone() else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not available"));
+    };
+    let (wanted, others_publishing) = s
+        .update(|r| {
+            r.prepared.retain(|p| p.issued.elapsed() < PREPARED_TTL);
+            // A fresh one is still worth taking; this also bounds provider calls.
+            let fresh = r
+                .prepared
+                .iter()
+                .any(|p| p.account == account && p.issued.elapsed() < PREPARED_TTL / 2);
+            Ok((
+                !fresh && r.prepared.len() < MAX_PARTICIPANTS,
+                !public_sources_locked(r).is_empty(),
+            ))
+        })
+        .await?;
+    if !wanted {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let issued = Timestamp::now();
+    let (session, ice, receive_session) = tokio::join!(
+        s.provider.create_session(&s.config),
+        s.provider.turn(&s.config),
+        async {
+            if others_publishing {
+                s.provider.create_session(&s.config).await.ok()
+            } else {
+                None
+            }
+        }
+    );
+    // Preparation is best effort; join creates whatever is missing as usual.
+    let Ok(ice_servers) = ice else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let usernames: Vec<_> = ice_servers
+        .iter()
+        .filter_map(|server| server.username.clone())
+        .collect();
+    s.update(|r| {
+        // Even when session creation failed, these credentials exist until revoked.
+        for username in &usernames {
+            enqueue_action_at_locked(
+                r,
+                CleanupAction::Revoke {
+                    username: username.clone(),
+                },
+                issued + PREPARED_REVOKE_AFTER,
+            );
+        }
+        if let Ok(session) = &session {
+            r.prepared.retain(|p| p.account != account);
+            r.prepared.push(PreparedJoin {
+                account: account.clone(),
+                session: session.clone(),
+                ice_servers: ice_servers.clone(),
+                issued,
+                receive_session: receive_session.clone(),
+            });
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn turn_metadata(cache: &TurnCache) -> Value {
@@ -2502,7 +2778,7 @@ async fn subscribe_one(s: &AppState, token: &str, track_id: Uuid) -> Result<Json
                 p.operation = false;
                 return Err(ApiError::new(StatusCode::CONFLICT, "subscription limit"));
             }
-            Ok((me, p.session.clone(), source))
+            Ok((me, p.pull_session().clone(), source))
         })
         .await?;
     let result = s
@@ -2675,6 +2951,112 @@ async fn uncertain_pull(s: &AppState, me: Uuid, session: &str, allocated: Vec<St
     .await;
 }
 
+/// A classified batch pull: allocated (MID, track) pairs, refused tracks, and
+/// the provider offer to answer, if any.
+struct PullOutcome {
+    allocated: Vec<(String, Uuid)>,
+    refused: Vec<Uuid>,
+    offer: Option<Value>,
+    pending: bool,
+}
+
+/// Pulls `pulls` into `session` with one provider request and classifies the
+/// result. No registry state is touched. On error the outcome is uncertain:
+/// the provider may have allocated MIDs, which are returned for cleanup.
+async fn pull_tracks(
+    s: &AppState,
+    session: &str,
+    pulls: &[Pull],
+) -> Result<PullOutcome, (ProviderError, Vec<String>)> {
+    let tracks = pulls
+        .iter()
+        .map(|pull| json!({"location":"remote","sessionId":pull.session,"trackName":pull.name}))
+        .collect::<Vec<_>>();
+    let result = s
+        .provider
+        .pull_batch(&s.config, session, json!({ "tracks": tracks }))
+        .await;
+    let classified = result
+        .as_ref()
+        .ok()
+        .and_then(|value| classify_pulls(pulls, value));
+    let Some(classified) = classified else {
+        return Err((
+            result
+                .err()
+                .unwrap_or_else(|| ProviderError::invalid_response("subscribe")),
+            vec![],
+        ));
+    };
+    let result = result.unwrap();
+    let mut allocated = vec![];
+    let mut refused = vec![];
+    for (pull, outcome) in pulls.iter().zip(classified) {
+        match outcome {
+            PullResult::Allocated(mid) => allocated.push((mid, pull.track_id)),
+            PullResult::Refused => refused.push(pull.track_id),
+        }
+    }
+    let has_offer = result
+        .pointer("/sessionDescription/type")
+        .and_then(Value::as_str)
+        == Some("offer")
+        && result
+            .pointer("/sessionDescription/sdp")
+            .and_then(Value::as_str)
+            .is_some();
+    let pending = result
+        .get("requiresImmediateRenegotiation")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // Allocations need an offer. An offer without allocations is Cloudflare
+    // renegotiating anyway: a pull into a session with no negotiated
+    // PeerConnection returns an inactive placeholder m-line even when every
+    // source is refused (live-captured September 25, 2026). Answer it.
+    if pending != has_offer || (!allocated.is_empty() && !has_offer) {
+        return Err((
+            ProviderError::invalid_response("subscribe"),
+            allocated.into_iter().map(|(mid, _)| mid).collect(),
+        ));
+    }
+    Ok(PullOutcome {
+        allocated,
+        refused,
+        offer: has_offer.then(|| result["sessionDescription"].clone()),
+        pending,
+    })
+}
+
+impl PullOutcome {
+    fn response(&self, departed: impl IntoIterator<Item = Uuid>) -> Value {
+        let mut response = json!({
+            "tracks": self.allocated.iter().map(|(mid, track_id)| json!({"trackId":track_id,"mid":mid})).collect::<Vec<_>>(),
+            "gone": self.refused.iter().copied().chain(departed).collect::<Vec<_>>(),
+            "requiresImmediateRenegotiation": self.pending,
+        });
+        if let Some(offer) = &self.offer {
+            response["sessionDescription"] = offer.clone();
+        }
+        response
+    }
+}
+
+/// Every non-monitor publication in the room: what a public participant may pull.
+fn public_sources_locked(r: &Registry) -> Vec<Pull> {
+    r.participants
+        .values()
+        .filter(|p| p.monitor.is_none())
+        .flat_map(|p| {
+            p.tracks.values().map(|t| Pull {
+                track_id: t.id,
+                session: p.session.clone(),
+                name: t.provider_name.clone(),
+            })
+        })
+        .take(MAX_SUBSCRIPTIONS)
+        .collect()
+}
+
 async fn subscribe_many(
     s: &AppState,
     token: &str,
@@ -2747,63 +3129,19 @@ async fn subscribe_many(
                 p.operation = false;
                 return Err(ApiError::new(StatusCode::CONFLICT, "subscription limit"));
             }
-            Ok((me, p.session.clone(), pulls, departed))
+            Ok((me, p.pull_session().clone(), pulls, departed))
         })
         .await?;
-    let tracks = pulls
-        .iter()
-        .map(|pull| json!({"location":"remote","sessionId":pull.session,"trackName":pull.name}))
-        .collect::<Vec<_>>();
-    let result = s
-        .provider
-        .tracks_new(&s.config, &session, json!({ "tracks": tracks }))
-        .await;
-    let classified = result
-        .as_ref()
-        .ok()
-        .and_then(|value| classify_pulls(&pulls, value));
-    let Some(classified) = classified else {
-        uncertain_pull(s, me, &session, vec![]).await;
-        return Err(result
-            .err()
-            .unwrap_or_else(|| ProviderError::invalid_response("subscribe"))
-            .into());
+    let outcome = match pull_tracks(s, &session, &pulls).await {
+        Ok(outcome) => outcome,
+        Err((error, allocated)) => {
+            uncertain_pull(s, me, &session, allocated).await;
+            return Err(error.into());
+        }
     };
-    let result = result.unwrap();
-    let allocated = pulls
-        .iter()
-        .zip(&classified)
-        .filter_map(|(pull, result)| match result {
-            PullResult::Allocated(mid) => Some((mid.clone(), pull.track_id)),
-            PullResult::Refused => None,
-        })
-        .collect::<Vec<_>>();
-    let has_offer = result
-        .pointer("/sessionDescription/type")
-        .and_then(Value::as_str)
-        == Some("offer")
-        && result
-            .pointer("/sessionDescription/sdp")
-            .and_then(Value::as_str)
-            .is_some();
-    let pending = result
-        .get("requiresImmediateRenegotiation")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    // An offer must accompany exactly the batches that allocated something.
-    if pending != has_offer || has_offer == allocated.is_empty() {
-        uncertain_pull(
-            s,
-            me,
-            &session,
-            allocated.into_iter().map(|(mid, _)| mid).collect(),
-        )
-        .await;
-        return Err(ProviderError::invalid_response("subscribe").into());
-    }
     s.update(|r| {
         let Some(p) = r.participants.get_mut(&me) else {
-            for (mid, _) in &allocated {
+            for (mid, _) in &outcome.allocated {
                 enqueue_cleanup_locked(r, session.clone(), mid.clone());
             }
             return Ok(Err(ApiError::new(
@@ -2813,29 +3151,14 @@ async fn subscribe_many(
         };
         p.operation = false;
         p.operation_started = None;
-        for (mid, track_id) in &allocated {
+        for (mid, track_id) in &outcome.allocated {
             p.subscriptions.insert(mid.clone(), *track_id);
         }
-        p.pending_offer = pending;
+        p.pending_offer = outcome.pending;
         Ok(Ok(()))
     })
     .await??;
-    let gone = pulls
-        .iter()
-        .zip(&classified)
-        .filter(|(_, result)| matches!(result, PullResult::Refused))
-        .map(|(pull, _)| pull.track_id)
-        .chain(departed)
-        .collect::<Vec<_>>();
-    let mut response = json!({
-        "tracks": allocated.iter().map(|(mid, track_id)| json!({"trackId":track_id,"mid":mid})).collect::<Vec<_>>(),
-        "gone": gone,
-        "requiresImmediateRenegotiation": pending,
-    });
-    if has_offer {
-        response["sessionDescription"] = result["sessionDescription"].clone();
-    }
-    Ok(Json(response))
+    Ok(Json(outcome.response(departed)))
 }
 
 #[derive(Deserialize)]
@@ -2867,7 +3190,8 @@ async fn negotiate(
                     "no negotiation pending",
                 ));
             }
-            Ok((id, p.session.clone()))
+            // Only subscriptions leave a provider offer pending.
+            Ok((id, p.pull_session().clone()))
         })
         .await?;
     let result = s
@@ -2904,6 +3228,10 @@ async fn negotiate(
 #[serde(deny_unknown_fields)]
 struct Close {
     mid: String,
+    /// With a receive session, publication and subscription MIDs belong to
+    /// different provider sessions and may be equal; this names the latter.
+    #[serde(default)]
+    subscription: bool,
 }
 async fn close(
     State(s): State<AppState>,
@@ -2918,15 +3246,29 @@ async fn close(
     s.update(|r| {
         let id = authenticate(r, token)?;
         let p = r.participants.get_mut(&id).unwrap();
-        if !p.tracks.contains_key(&i.mid) && !p.subscriptions.contains_key(&i.mid) {
+        let separate = p.receive_session.is_some();
+        // Without a receive session one MID space holds both, as before.
+        let publication = !i.subscription && p.tracks.contains_key(&i.mid);
+        let subscription = (i.subscription || !separate) && p.subscriptions.contains_key(&i.mid);
+        if !publication && !subscription {
             return Err(ApiError::new(StatusCode::NOT_FOUND, "track not found"));
         }
         begin_operation(p)?;
         p.operation = false;
         p.operation_started = None;
-        let session = p.session.clone();
-        let source = p.tracks.remove(&i.mid).map(|t| t.id);
-        p.subscriptions.remove(&i.mid);
+        let session = if publication {
+            p.session.clone()
+        } else {
+            p.pull_session().clone()
+        };
+        let source = if publication {
+            p.tracks.remove(&i.mid).map(|t| t.id)
+        } else {
+            None
+        };
+        if subscription {
+            p.subscriptions.remove(&i.mid);
+        }
         // force:true stops only this MID's data flow, without changing SDP.
         // Commit removal and cleanup together; a provider timeout/rejection must
         // never revoke the caller's unrelated tracks or call capability.
@@ -3001,7 +3343,7 @@ fn close_dependents_locked(r: &mut Registry, source: Uuid) {
                 p.subscriptions.remove(m);
             }
             mids.into_iter()
-                .map(|m| (p.session.clone(), m))
+                .map(|m| (p.pull_session().clone(), m))
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
@@ -3053,8 +3395,11 @@ fn cleanup_participant_locked(r: &mut Registry, p: &Participant) {
             },
         );
     }
-    for mid in p.tracks.keys().chain(p.subscriptions.keys()) {
+    for mid in p.tracks.keys() {
         enqueue_cleanup_locked(r, p.session.clone(), mid.clone());
+    }
+    for mid in p.subscriptions.keys() {
+        enqueue_cleanup_locked(r, p.pull_session().clone(), mid.clone());
     }
     if p.operation {
         enqueue_action_locked(
@@ -3063,9 +3408,20 @@ fn cleanup_participant_locked(r: &mut Registry, p: &Participant) {
                 session: p.session.clone(),
             },
         );
+        if let Some(session) = &p.receive_session {
+            enqueue_action_locked(
+                r,
+                CleanupAction::Discover {
+                    session: session.clone(),
+                },
+            );
+        }
     }
 }
 fn enqueue_action_locked(r: &mut Registry, action: CleanupAction) {
+    enqueue_action_at_locked(r, action, Timestamp::now());
+}
+fn enqueue_action_at_locked(r: &mut Registry, action: CleanupAction, not_before: Timestamp) {
     if r.cleanup.iter().any(|job| job.action == action) {
         return;
     }
@@ -3079,7 +3435,7 @@ fn enqueue_action_locked(r: &mut Registry, action: CleanupAction) {
     r.cleanup.push_back(CleanupJob {
         action,
         attempts: 0,
-        not_before: Timestamp::now(),
+        not_before,
         claim: None,
     });
 }

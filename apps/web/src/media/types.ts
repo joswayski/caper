@@ -28,6 +28,8 @@ export interface JoinResponse {
   turn?: TurnGeneration;
   /** Present when the API published the join's microphone offer in the same request. */
   publish?: SessionDescriptionResponse;
+  /** Everyone already publishing, pulled into a receive-only session during join. */
+  receive?: BatchSubscribeResponse;
 }
 
 export interface TurnGeneration {

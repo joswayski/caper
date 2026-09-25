@@ -740,6 +740,7 @@ async fn execute(
             operation,
             Some(
                 "join"
+                    | "prepare"
                     | "leave"
                     | "state"
                     | "snapshot"

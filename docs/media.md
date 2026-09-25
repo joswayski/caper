@@ -1516,6 +1516,138 @@ the later-configured server. Live Cloudflare joins, multi-network TURN, Firefox,
 Safari and remote listening latency were **not** measured; compare the new
 diagnostics from real sessions before claiming a specific speedup.
 
+### Prepared joins for signed-in members
+
+`media.prepare` (account channels only, through the member-checked
+`/api/channels/{id}/media/prepare` route) creates the provider session and TURN
+credentials for a signed-in member moments before they join. Their join takes
+them instead of calling Cloudflare for both. The browser sends it when the
+pointer or keyboard focus reaches a Join button, at most every 4 seconds per
+channel, and also as a mouse or pen pointer comes within 120 px of a Join
+button (one document listener, at most one geometry check per animation frame,
+signed-in members only; touch relies on pointerdown). The public demo still
+creates on join, and `prepare` returns 404 there. Real Chromium with the UI
+fixture confirmed: no request from far away, one when approaching within 100 px
+without touching the button, and none again on the hover that follows.
+
+Live measurements (September 25, 2026, this sandbox, real Cloudflare) set the
+limits:
+
+- An unused Cloudflare session accepted a publication after 10 seconds and was
+  disconnected (410 `session_error`) at 15 seconds. A prepared join is therefore
+  kept for 8 seconds, one per account per room; preparing at login would not work.
+- Cloudflare bills only egress ($0.05/GB after a shared 1,000 GB monthly free
+  tier); creating sessions, issuing TURN credentials and idle sessions are not
+  charged ([pricing](https://developers.cloudflare.com/realtime/sfu/pricing/)).
+- Revocation of each prepared TURN credential is scheduled 12 seconds after it is
+  issued, so it happens even if the room goes quiet; a join that takes the
+  credentials cancels it. Registry state gains `prepared` with a serde default,
+  compatible in both directions.
+
+Across 12 warm joins per version against live Cloudflare, provider session plus
+TURN took a median 142-159 ms of each join (106-282 ms), which a prepared join
+skips; a cold join (first after idle, new TLS connection to Cloudflare through
+this sandbox's egress proxy) spent 616-657 ms there. Preparing also warms the
+API's connection before the join. Production cold-connection cost is expected to
+be lower than through that proxy; compare `Cloudflare operation succeeded`
+`elapsed_ms` for `create_session` and `publish` in production logs.
+
+Join also re-checks channel access concurrently with provider provisioning
+instead of after it; the result is still applied before the participant is
+committed or any capability returned.
+
+When several people leave at once, a listener now stops their audio locally and
+closes their MIDs with concurrent `close` requests (one round trip, not one per
+person). Each close is one atomic registry update with no SDP change, and the
+API already removed the listener's subscriptions server-side when the source
+left, so these calls only keep state consistent; a transient failure keeps that
+MID for the next reconciliation.
+
+Deploy API, then gateway (its allowlist gains `media.prepare`), then web. An
+older API or gateway rejects `prepare`; the browser ignores the failure and joins
+the ordinary way.
+
+### Join-time pulls on a receive-only connection
+
+A browser that publishes inside `media.join` also sends `receive: true`. When
+others are publishing, the API creates a second, receive-only provider session
+alongside the main session and TURN (or takes one from a prepared join), then
+publishes the microphone and pulls everyone present concurrently, and returns
+`receive: { tracks, gone, sessionDescription, requiresImmediateRenegotiation }`
+with the publication answer. The browser answers that offer on a second
+`RTCPeerConnection`, so both connections come up together. Subscriptions, their
+answers (`negotiate`) and closes then use the receive session; `close` takes
+`subscription: true` because MIDs may repeat across the two sessions, and cleanup
+closes each MID in its own session. The join completes only when both
+connections are connected; received audio stays withheld until then.
+
+Why a second session: Cloudflare answers a pull into a session with no
+negotiated PeerConnection at once (its documented receive pattern, also used
+live by this app's microphone monitor), but holds a pull into a negotiated,
+unconnected session for about 11 s and then answers 425. A single session cannot
+mix local and remote tracks in one `tracks/new`. An earlier prototype created the
+receive session on the browser's first pull after joining; that added a session
+creation and a late second handshake and was slower, so it was dropped. Pulling
+inside the join removes the post-connect pull instead.
+
+Live signaling check (September 25, 2026, this branch's API, real Cloudflare,
+Chromium SDP): a join into an occupied room returned the publication answer and a
+receive offer; Chromium answered it on a second connection and `negotiate`
+returned 200. Join latency into an occupied room was unchanged (median of 8:
+370 ms with the join-time pull, 375 ms without), because the pull runs in
+parallel with publication. The source could not connect from the sandbox, so the
+pull itself was a refusal answered with Cloudflare's inactive placeholder offer;
+that shape is covered through the real HTTP adapter in tests.
+
+Rules: without an offer or with an uncertain pull result, the API cleans up and
+the browser pulls after connecting as before; the join still succeeds. Media that
+arrives before the roster lists its owner is held and assigned when it does.
+Older APIs reject `receive` with 422 and the browser retries without it (then
+without publication). Monitors, native clients and empty rooms get no receive
+session. On relay-only networks the receive connection keeps its initial TURN
+credentials (valid 48 hours); only the microphone connection renews them, so a
+call longer than that on such a network rejoins once.
+
+### Join benchmark: before and after the join speedups
+
+Measured against live Cloudflare with headless Chromium SDP, local debug-build
+APIs, 12 warm runs per version, interleaved; time from Join to the publication
+answer applied in the browser (when ICE can start). Baseline is `a6bc4a1`, the
+commit before PR #162.
+
+| Version | Cold first join | Warm median (min-max) |
+| --- | ---: | ---: |
+| Baseline (`a6bc4a1`) | 938 ms | 417 ms (327-477) |
+| PR #162 (`4ee0ac7`) | 930 ms | 436 ms (310-504) |
+| Prepared join (derived: join minus logged session+TURN) | about 250-300 ms | about 290 ms |
+
+The API ran next to the benchmark, so PR #162's saved browser-to-API round trip
+(one gateway RTT in production) does not show here; Cloudflare's calls dominate.
+Pull requests measured directly (refused pulls; no source can connect here):
+one track 241 ms, three one at a time 661 ms, three in one batch 255 ms, and each
+answer (`renegotiate`) 180 ms. So joining a room with three people spends about
+435 ms instead of 1,201 ms on post-connect signaling (one batch and one answer
+instead of three of each); with one other person it is unchanged.
+
+Modelled full join (measured segments above, plus 345 ms transport and 31 ms
+roster from earlier production diagnostics; excludes microphone capture and
+gateway round trips, so absolute numbers are lower than real joins):
+
+| Version | Empty room | One other | Three others |
+| --- | ---: | ---: | ---: |
+| Baseline | 793 ms | 1,214 ms | 1,994 ms |
+| PR #162 | 781 ms | 1,202 ms | 1,216 ms |
+| Join-time pulls | 781 ms | about 960 ms | about 975 ms |
+| Join-time pulls + prepared join (signed in) | about 635 ms | about 815 ms | about 830 ms |
+
+With join-time pulls, audio from people already present needs the receive
+answer (180 ms) and the receive connection's own handshake (modelled as the same
+345 ms), in parallel with the microphone connection, instead of a pull (241 ms,
+255 ms for three) and answer after it.
+
+This is a model, not an end-to-end measurement: WebRTC transport cannot connect
+from the sandbox. Confirm with the connection diagnostics panel in real browsers.
+
 ### ICE-gathering follow-up: signal before every probe completes
 
 After the port-53 fix deployed, Jose measured 5,631 ms total, with 246 ms in

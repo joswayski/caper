@@ -66,7 +66,7 @@ async function fixture() {
       return Response.json({ token: 'fixture-voice', id: 'self', iceServers: [] });
     }
     if (path === '/api/media/publish') return Response.json({ sessionDescription: { type: 'answer', sdp: 'v=0' } });
-    if (['/api/media/state', '/api/media/leave', '/api/media/close'].includes(path)) return new Response(null, { status: 204 });
+    if (['/api/media/state', '/api/media/leave', '/api/media/close', '/api/media/prepare'].includes(path)) return new Response(null, { status: 204 });
     if (path.startsWith('/api/')) throw Error(`Unexpected fixture request: ${path}`);
     return originalFetch(input, options);
   };
