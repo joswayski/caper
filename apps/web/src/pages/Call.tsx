@@ -3,6 +3,8 @@ import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
+import { routeOutput } from "../audio/output";
+import { rosterChanges } from "../audio/roster";
 import { getSystemSoundsEnabled, playSound, preloadSoundEffects, setSystemSoundsEnabled, subscribeSystemSounds } from "../audio/effects";
 import Chat from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
@@ -207,11 +209,15 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
     else if (ref.current) ref.current.volume = Math.min(volume / 100, 1);
   }, [volume]);
   useEffect(() => {
-    if (ref.current?.setSinkId) void ref.current.setSinkId(output).then(() => setDeviceError(false)).catch(() => setDeviceError(true));
+    const element = ref.current;
+    if (!element) return;
+    let current = true;
+    void routeOutput(element, output).then((routed) => { if (current) setDeviceError(!routed); });
+    return () => { current = false; };
   }, [output]);
   return <><audio ref={ref} autoPlay muted={muted} />
     {blocked && <button onClick={() => void Promise.all([contextRef.current?.resume(), ref.current?.play()]).then(() => setBlocked(false)).catch(() => setBlocked(true))}>Play {name} audio</button>}
-    {deviceError && <p role="alert">Audio output unavailable; choose another device.</p>}</>;
+    {deviceError && <p className="call-error" role="alert">Audio output unavailable; choose another device.</p>}</>;
 }
 
 /** Voice occupants for one channel: a summary for its line and a list beneath it. */
@@ -346,7 +352,9 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     const previous = previousVoiceRoster.current;
     if (!connected || !state.selfId) { previousVoiceRoster.current = undefined; return; }
     const ids = new Set(state.participants.map((person) => person.id));
-    if (previous?.selfId === state.selfId && [...previous.ids].some((id) => id !== state.selfId && !ids.has(id))) playSound("channel-leave");
+    const { joined, left } = rosterChanges(previous?.selfId === state.selfId ? previous.ids : undefined, ids, state.selfId);
+    if (left) playSound("channel-leave");
+    else if (joined) playSound("channel-join");
     previousVoiceRoster.current = { selfId: state.selfId, ids };
   }, [connected, state.selfId, state.participants]);
 
