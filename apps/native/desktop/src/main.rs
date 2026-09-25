@@ -2397,13 +2397,6 @@ impl CaperApp {
                                             }
                                             egui::Popup::menu(&options).width(240.0).show(|ui| {
                                                 ui.label(bold(&participant.name));
-                                                ui.label(
-                                                    RichText::new(
-                                                        "These controls affect only what you hear.",
-                                                    )
-                                                    .size(11.0)
-                                                    .color(MUTED),
-                                                );
                                                 let volume = ui.add(
                                                     egui::Slider::new(
                                                         &mut playback.gain_percent,
@@ -2612,7 +2605,9 @@ impl CaperApp {
                             self.dialog = Some(Dialog::Audio);
                             ui.close();
                         }
-                        if ui.button("Connection details").clicked() {
+                        if self.voice.diagnostics.is_some()
+                            && ui.button("Connection details").clicked()
+                        {
                             self.dialog = Some(Dialog::Connection);
                             ui.close();
                         }
@@ -2740,13 +2735,6 @@ impl CaperApp {
                 f32::from(strength) / 100.0
             });
         }
-        ui.label(
-            RichText::new(
-                "Applies to your live microphone. 0% bypasses the contour, not noise suppression.",
-            )
-            .size(11.0)
-            .color(MUTED),
-        );
     }
 
     fn output_gain(&mut self, ui: &mut egui::Ui) {
@@ -2817,13 +2805,9 @@ impl CaperApp {
                     matches!(self.voice.microphone, MicrophoneState::Idle),
                     |ui| self.device_options(ui, input),
                 );
-                if !matches!(self.voice.microphone, MicrophoneState::Idle) {
-                    ui.label("End the microphone test to change devices.");
-                }
             });
             ui.add_space(12.0);
         }
-        ui.label(RichText::new("Devices, volume, and processing preferences are saved on this computer. Device changes apply to the current call without changing system settings.").size(11.0).color(MUTED));
         if let Some(error) = &self.voice.device_error {
             ui.label(RichText::new(error).color(ERROR));
         }
@@ -2831,11 +2815,7 @@ impl CaperApp {
         ui.separator();
         ui.add_space(12.0);
         ui.label(bold("Microphone test").size(14.0));
-        ui.label(RichText::new("Record up to 30 seconds, then compare natural and enhanced playback. Audio stays on this computer and is discarded when you close this panel.").size(12.0).color(MUTED));
         ui.add_space(10.0);
-        let idle = matches!(self.voice.microphone, MicrophoneState::Idle);
-        ui.label(RichText::new("Natural playback includes input gain and on-device noise suppression. Enhanced playback also applies the voice processing strength selected when recording starts.").size(11.0).color(MUTED));
-        ui.add_space(12.0);
         if !self.persist_preferences {
             ui.label(
                 RichText::new("TEST FIXTURE — no recording or playback.")
@@ -2896,9 +2876,6 @@ impl CaperApp {
                 }
             }
         });
-        if !idle && !matches!(self.voice.state.phase, Phase::Idle) {
-            ui.label(RichText::new("Your live-call microphone is paused until you discard the test or close this panel.").size(11.0).color(MUTED));
-        }
         if let Some(error) = &self.voice.microphone_error {
             ui.label(RichText::new(error).color(ERROR));
         }
@@ -2923,9 +2900,7 @@ impl CaperApp {
         ui.label("Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.");
         let processing = self.voice.audio_processing_report();
         if processing.is_none() {
-            ui.label(
-                "No live capture worker report. Join voice to start live processing counters.",
-            );
+            ui.label("No processing data.");
         }
         let report = serde_json::to_string_pretty(&serde_json::json!({
             "platform": std::env::consts::OS,
@@ -2949,7 +2924,7 @@ impl CaperApp {
         }
         let Some((stats, sampled)) = &self.voice.diagnostics else {
             ui.label(if matches!(self.voice.state.phase, Phase::Idle) {
-                "Join voice to see connection details."
+                "Not connected"
             } else {
                 "Waiting for connection statistics…"
             });
@@ -2989,7 +2964,11 @@ impl CaperApp {
                 }
             });
         ui.add_space(16.0);
-        ui.label(RichText::new(format!("Sampled {}s ago. Local estimates, not billing totals. Counters reset on reconnect.", sampled.elapsed().as_secs())).size(11.0).color(MUTED));
+        ui.label(
+            RichText::new(format!("Sampled {}s ago", sampled.elapsed().as_secs()))
+                .size(11.0)
+                .color(MUTED),
+        );
     }
 
     fn member_presence(&mut self, ui: &mut egui::Ui) {
@@ -3723,9 +3702,14 @@ impl CaperApp {
         }
         ui.label(
             RichText::new(if self.form_private {
-                "Only explicitly granted space members can open this channel."
+                "Only you and the people you add can view or join.".to_owned()
             } else {
-                "Everyone in the space can open this channel."
+                format!(
+                    "Anyone in {} can view or join this channel.",
+                    self.detail
+                        .as_ref()
+                        .map_or("this space", |detail| detail.space.name.as_str())
+                )
             })
             .size(11.0)
             .color(MUTED),
@@ -4738,10 +4722,25 @@ mod tests {
             &render(&mut app, &context, vec![]),
             "Copy diagnostics"
         ));
+        app.dialog = Some(Dialog::Audio);
+        render(&mut app, &context, vec![]);
+        let audio = render(&mut app, &context, vec![]);
+        assert!(contains(&audio, "Microphone test"));
+        for removed in [
+            "contour",
+            "noise suppression",
+            "Only you can hear",
+            "preferences are saved",
+        ] {
+            assert!(
+                !contains(&audio, removed),
+                "Unexpected explanatory copy: {removed}"
+            );
+        }
         app.dialog = Some(Dialog::Connection);
         assert!(contains(
             &render(&mut app, &context, vec![]),
-            "Join voice to see connection details."
+            "Not connected"
         ));
     }
 

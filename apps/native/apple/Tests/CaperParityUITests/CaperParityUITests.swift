@@ -189,9 +189,7 @@ final class CaperParityUITests: XCTestCase {
         let controls = app.scrollViews["audio-preferences-controls"]
         controls.scroll(byDeltaX: 0, deltaY: -600)
         XCTAssertTrue(controls.frame.contains(app.buttons["Play enhanced"].frame), "Replay controls must be reachable in the constrained window")
-        let explanation = staticTexts("Natural playback includes input gain and on-device noise suppression. Enhanced playback also applies live voice processing strength.", in: app).firstMatch
-        XCTAssertGreaterThan(explanation.frame.height, 15, "The recording explanation must wrap rather than truncate")
-        XCTAssertTrue(controls.frame.contains(explanation.frame))
+        XCTAssertFalse(staticTexts("Natural playback includes input gain and on-device noise suppression. Enhanced playback also applies live voice processing strength.", in: app).firstMatch.exists)
         capture("audio-recorded-scrolled-test-fixture", app: app)
         app.buttons["close-audio-preferences"].tap()
         let closed = XCTNSPredicateExpectation(
@@ -370,11 +368,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.sliders["Input gain"].exists)
         XCTAssertTrue(app.sliders["Live voice processing"].exists)
         XCTAssertTrue(app.buttons["local-mic-test"].exists)
-        assertStaticText("On-device noise suppression starts when you test or join.", in: app, timeout: 2)
         #else
         XCTAssertTrue(app.descendants(matching: .any)["audio-input-device"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["audio-output-device"].exists)
-        assertStaticText("Caper routes this call to the selected devices without changing macOS system defaults.", in: app, timeout: 2)
         XCTAssertTrue(app.sliders["Input gain"].exists)
         XCTAssertTrue(app.sliders["Live voice processing"].exists)
         // XCTest's normalized drag stops inside the track, and typeKey does
@@ -390,11 +386,22 @@ final class CaperParityUITests: XCTestCase {
         strength.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.1, thenDragTo: strength.coordinate(withNormalizedOffset: CGVector(dx: 1.1, dy: 0.5)))
         XCTAssertEqual(outputGain(of: app.sliders["Live voice processing"]), 100)
-        assertStaticText("The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.", in: app, timeout: 2)
-        assertStaticText("On-device noise suppression starts when you test or join.", in: app, timeout: 2)
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
-        assertStaticText("Record up to 30 seconds from the selected mic. In a call, Caper sends silence through recording and playback; closing this sheet restores your current mute state.", in: app, timeout: 2)
         #endif
+        let controls = app.scrollViews["audio-preferences-controls"]
+        XCTAssertTrue(controls.frame.contains(app.buttons["local-mic-test"].frame))
+        XCTAssertLessThanOrEqual(controls.frame.maxY - app.buttons["local-mic-test"].frame.maxY, 24,
+                                 "The sheet must not reserve space for removed explanations")
+        for removed in [
+            "The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.",
+            "On-device noise suppression starts when you test or join.",
+            "Caper routes this call to the selected devices without changing macOS system defaults.",
+            "Choose an audio route",
+            "Only you can hear this test."
+        ] {
+            XCTAssertFalse(staticTexts(removed, in: app).firstMatch.exists, "Normal settings must not expose extra explanatory copy")
+        }
+        XCTAssertFalse(staticTexts("Connection statistics", in: app).firstMatch.exists)
         capture("audio-preferences", app: app)
     }
 
