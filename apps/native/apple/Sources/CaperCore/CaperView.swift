@@ -1200,11 +1200,11 @@ private struct CaperPrimaryButton: ButtonStyle {
 private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     var debugEnabled = false
+    @State private var controlsHeight: CGFloat = 500
     #if os(macOS)
     @Bindable private var effects = CaperEffects.shared
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
-    @State private var controlsHeight: CGFloat = 500
     #else
     @State private var micTest = IOSMicrophoneTest()
     #endif
@@ -1224,19 +1224,20 @@ private struct AudioPreferencesView: View {
             }
             ScrollView {
                 controls.fixedSize(horizontal: false, vertical: true)
-                    #if os(macOS)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controlsHeight = $0 }
-                    #endif
             }
             .accessibilityIdentifier("audio-preferences-controls")
             #if os(macOS)
             .frame(width: 426, height: min(controlsHeight, 500))
             #else
-            .frame(maxHeight: 580)
+            .frame(height: min(controlsHeight, 580))
             #endif
         }.padding(22)
             .frame(minWidth: 360)
             .background(CaperTheme.surface)
+            #if os(iOS)
+            .presentationDetents([.height(min(controlsHeight, 580) + 90)])
+            #endif
             .task { await voice.refreshAudioDevices() }
             .onChange(of: voice.phase) { _, phase in
                 if phase != .idle && phase != .failed { micTest.close() }
@@ -1267,7 +1268,12 @@ private struct AudioPreferencesView: View {
             if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(.red) }
             #else
             AudioRouteRow(title: "Input", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
-            AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+            HStack {
+                AudioRouteRow(title: "Output", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
+                SystemAudioRoutePicker().frame(width: 44, height: 36)
+                    .accessibilityLabel("Choose system audio route")
+                    .accessibilityIdentifier("system-audio-route-picker")
+            }
             #endif
             VStack(alignment: .leading, spacing: 7) {
                 HStack { Text("Input gain"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12))
@@ -1287,15 +1293,6 @@ private struct AudioPreferencesView: View {
                     .accessibilityLabel("Output gain")
                     .accessibilityValue("\(voice.outputGain)%")
             }
-            #if os(iOS)
-            HStack {
-                Text("Choose an audio route").font(CaperTheme.font(13, weight: .bold))
-                Spacer()
-                SystemAudioRoutePicker().frame(width: 44, height: 36)
-                    .accessibilityLabel("Choose system audio route")
-                    .accessibilityIdentifier("system-audio-route-picker")
-            }
-            #endif
             Divider().overlay(CaperTheme.border)
             Text("Local microphone test").font(CaperTheme.font(14, weight: .bold))
             HStack {
