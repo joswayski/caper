@@ -60,22 +60,6 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   assert.ok(requests.includes("/audio/effects/disconnect.wav"));
   assert.ok(requests.includes("/audio/effects/channel-leave.wav"));
 
-  const originalMatchMedia = Object.getOwnPropertyDescriptor(globalThis, "matchMedia");
-  Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query === "(pointer: coarse)" }) });
-  try {
-    await preloadSoundEffects();
-    playSound("toggle-on");
-    playSound("channel-leave");
-    playSliderTick(.5);
-    await flush();
-    assert.equal(sources.length, 0, "mobile never starts a sound, including cached effects");
-    assert.equal(currentContext.resumeCalls, 0, "mobile never unlocks audio for decorative effects");
-    assert.equal(requests.length, 9, "mobile preloading makes no requests");
-  } finally {
-    if (originalMatchMedia) Object.defineProperty(globalThis, "matchMedia", originalMatchMedia);
-    else Reflect.deleteProperty(globalThis, "matchMedia");
-  }
-
   let now = 1_000;
   t.mock.method(performance, "now", () => now);
   playSound("channel-join", { volume: 2, playbackRate: 3 });
@@ -142,6 +126,21 @@ test("effects preload decoded buffers and bound immediate Web Audio playback", a
   await flush();
   assert.equal(sources.length, beforeDisable + 1);
   assert.equal(gains.at(-1)?.gain.value, 0.27, "default effect gain is also reduced by 40%");
+
+  // Phones play the same effects; the Caper sound effects switch still turns them off.
+  const originalMatchMedia = Object.getOwnPropertyDescriptor(globalThis, "matchMedia");
+  Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query === "(pointer: coarse)" }) });
+  try {
+    const beforeTouch = sources.length;
+    now += 1_000;
+    playSound("channel-leave");
+    playSliderTick(.5);
+    await flush();
+    assert.equal(sources.length, beforeTouch + 2, "touch devices play join/leave, toggle and slider feedback");
+  } finally {
+    if (originalMatchMedia) Object.defineProperty(globalThis, "matchMedia", originalMatchMedia);
+    else Reflect.deleteProperty(globalThis, "matchMedia");
+  }
 });
 
 test("effects remain best-effort when Web Audio is unavailable", () => {

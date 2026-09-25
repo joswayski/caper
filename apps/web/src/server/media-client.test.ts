@@ -1177,15 +1177,66 @@ test("join pulls everyone present onto a receive connection that comes up with t
   assert.equal(states.some((state) => state.remoteMedia.length > 0), false, "received audio is withheld while joining");
   main.connectionState = "connected";
   main.dispatchEvent(new Event("connectionstatechange"));
-  await tick();
-  assert.equal(states.at(-1)?.phase, "joining", "the join also waits for the receive connection");
+  await joining;
+  // Speaking needs only the microphone connection; hearing others follows.
+  assert.equal(states.at(-1)?.phase, "connected", "Join does not wait for the receive connection");
+  assert.equal(track.enabled, true);
+  const timing = () => (client as unknown as { joinTiming?: { hearingMs?: number } }).joinTiming;
+  assert.equal(timing()?.hearingMs, undefined);
   receiver.connectionState = "connected";
   receiver.dispatchEvent(new Event("connectionstatechange"));
-  await joining;
+  await tick();
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
-  assert.equal(track.enabled, true);
+  assert.equal(typeof timing()?.hearingMs, "number", "hearing others is timed separately");
   assert.equal(Peer.all.length, 2);
+});
+
+test("Join does not wait for the receive answer's round trip", async (t) => {
+  const { client, track, states, install } = setup(t);
+  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  const held = fetch;
+  let answered!: () => void;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/negotiate")
+    ? new Promise<Response>((resolve) => { answered = () => resolve(Response.json({})); })
+    : held(url, init));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const joining = client.join();
+  await tick();
+  const [main] = Peer.all;
+  assert.equal(typeof answered, "function", "the receive answer is in flight");
+  main.connectionState = "connected";
+  main.dispatchEvent(new Event("connectionstatechange"));
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected", "joined while the receive answer is pending");
+  assert.equal(track.enabled, true);
+  answered();
+  await joining;
+  await tick();
+  assert.equal(states.at(-1)?.phase, "connected");
+  client.leaveImmediately();
+});
+
+test("a receive connection that never comes up after Join reconnects the call", async (t) => {
+  const { client, states, install } = setup(t);
+  holdTransport(t, install, otherSpeaker, (op, body) => op === "join" && body.receive ? joinWithPulls(["remote"]) : undefined);
+  t.mock.method(Peer.prototype, "createAnswer", async function (this: Peer) {
+    this.connectionState = "connecting";
+    return { type: "answer", sdp: "v=0" };
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const joining = client.join();
+  await tick();
+  const [main] = Peer.all;
+  main.connectionState = "connected";
+  main.dispatchEvent(new Event("connectionstatechange"));
+  await joining;
+  assert.equal(states.at(-1)?.phase, "connected");
+  t.mock.timers.tick(15_000);
+  await tick();
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+  assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "hearing others failed: Error");
+  client.leaveImmediately(); // Cancel the scheduled rejoin.
 });
 
 test("later pulls and closes use the receive connection", async (t) => {

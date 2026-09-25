@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
@@ -59,6 +59,7 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
     ["Transport + state", `${Math.round(diagnostics.transportMs)} ms${diagnostics.iceMs === undefined ? "" : ` (ICE ${Math.round(diagnostics.iceMs)} ms)`}`],
     ["Connectivity checks", diagnostics.checks ?? "Not observed yet"],
     ["Roster", `${Math.round(diagnostics.rosterMs)} ms`],
+    ...(diagnostics.hearingMs === undefined ? [] : [["Hearing others", `${Math.round(diagnostics.hearingMs)} ms from Join`]]),
     ["Received", formatBytes(diagnostics.receivedBytes)],
     ["Live receive", formatBitrate(diagnostics.receiveBitrate)],
     ["Sent", formatBytes(diagnostics.sentBytes)],
@@ -556,6 +557,20 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       cancelAnimationFrame(frame);
     };
   }, [signedIn, channel?.demo]);
+  // Touch has no approach, and pointerdown lands too close to the tap to help. On a
+  // touch screen, prepare the viewed channel once when its Join button is shown;
+  // Cloudflare keeps an unused session for 10-15 s, so this covers a prompt tap.
+  const viewedJoin = useCallback((button: HTMLButtonElement | null) => {
+    if (!button || typeof IntersectionObserver === "undefined" || typeof matchMedia === "undefined" || !matchMedia("(pointer: coarse)").matches) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      prepareRef.current(button.dataset.channel || undefined);
+    });
+    observer.observe(button);
+    return () => observer.disconnect();
+    // A new identity re-attaches when the viewed channel changes and React reuses the button.
+  }, [channel?.id]);
   const openMicTest = () => {
     setVoiceError(undefined);
     setAudioPanel("mic");
@@ -665,7 +680,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     // voice when you hover or focus their line (hidden on touch screens).
     const viewed = channelId === channel?.id;
     const join = !inVoiceHere(channelId) && (viewed || people.length > 0) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
-      <button className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
+      <button ref={channelId === channel?.id ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
     return {

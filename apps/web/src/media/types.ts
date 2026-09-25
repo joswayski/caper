@@ -75,6 +75,8 @@ export interface ConnectionDiagnostics {
   transportMs: number;
   iceMs?: number;
   rosterMs: number;
+  /** From Join until audio from the people already present can play; set shortly after Joined. */
+  hearingMs?: number;
   /** Connectivity checks on the selected candidate pair, first sampled after joining. */
   checks?: string;
   receivedBytes: number;

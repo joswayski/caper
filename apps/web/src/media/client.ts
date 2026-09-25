@@ -408,12 +408,20 @@ export class PublicCallClient {
     };
     pc.addEventListener("iceconnectionstatechange", iceChanged);
     pc.setConfiguration({ ...pc.getConfiguration(), iceServers: joined.iceServers });
+    // Hearing the people already present needs the receive answer to reach
+    // Cloudflare and a second handshake. Speaking does not: the call is joined
+    // once the microphone's connection is up, and their audio follows (see
+    // watchJoinPulls). Both share one queue: the publication goes first, so it
+    // never waits on the receive answer's round trip.
     // Negotiate with a disabled track while the independent event stream opens.
     // All startup promises have rejection handlers before any can fail.
+    const opening = this.openEvents(generation);
+    const publishing = this.publishMicrophone(microphone, publication, joined.publish, generation);
+    const pulls = this.acceptJoinPulls(joined, generation);
+    pulls.catch(() => undefined);
     const [events] = await Promise.all([
-      this.openEvents(generation),
-      this.publishMicrophone(microphone, publication, joined.publish, generation),
-      this.acceptJoinPulls(joined, generation),
+      opening,
+      publishing,
       // Reconcile any intent changed during capture/join, without waiting for SDP.
       this.setState(),
     ]);
@@ -438,11 +446,8 @@ export class PublicCallClient {
     // negotiation restores connectivity instead of treating the transition as
     // a changed session.
     await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
-    const receiver = this.receivePc;
-    if (receiver) await waitFor(receiver, "connectionstatechange", CONNECT_TIMEOUT_MS, () => receiver.connectionState === "connected", signal);
     signal.throwIfAborted();
-    if (generation !== this.generation || !events.connected || pc.connectionState !== "connected"
-      || (receiver && (receiver !== this.receivePc || receiver.connectionState !== "connected")) || microphone.readyState !== "live") {
+    if (generation !== this.generation || !events.connected || pc.connectionState !== "connected" || microphone.readyState !== "live") {
       throw new Error("Voice setup changed before it was ready. Please join again.");
     }
     this.phase = "connected";
@@ -459,6 +464,7 @@ export class PublicCallClient {
       rosterMs: performance.now() - connected,
     };
     this.emit();
+    this.watchJoinPulls(pulls, generation, started);
     this.startPolling();
     if (joined.turn) {
       this.turnRenewal = new TurnRenewal(pc, joined.token, joined.turn,
@@ -979,6 +985,26 @@ export class PublicCallClient {
       if (generation !== this.generation) throw new Error("Call session changed.");
       await this.api("negotiate", { sessionDescription: await localDescription(pc, this.captureController.signal) }, this.token);
     }, generation);
+  }
+
+  /**
+   * Hearing the people present at join completes after Joined. Its time is
+   * reported separately; failing to finish it is a lost connection, as it was
+   * when Join waited for it.
+   */
+  private watchJoinPulls(pulls: Promise<void>, generation: number, started: number) {
+    void pulls.then(async () => {
+      const receiver = this.receivePc;
+      if (!receiver || generation !== this.generation) return;
+      await waitFor(receiver, "connectionstatechange", CONNECT_TIMEOUT_MS, () => receiver.connectionState === "connected", this.captureController.signal);
+      if (generation !== this.generation || receiver !== this.receivePc || !this.joinTiming) return;
+      this.joinTiming.hearingMs = performance.now() - started;
+      // Shown now, not only at the next stats sample.
+      if (this.diagnostics) this.diagnostics = { ...this.diagnostics, hearingMs: this.joinTiming.hearingMs };
+      this.emit();
+    }).catch((error) => {
+      if (generation === this.generation) this.scheduleReconnect(reconnectReason("hearing others", error));
+    });
   }
 
   /**

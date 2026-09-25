@@ -1546,7 +1546,13 @@ them instead of calling Cloudflare for both. The browser sends it when the
 pointer or keyboard focus reaches a Join button, at most every 4 seconds per
 channel, and also as a mouse or pen pointer comes within 120 px of a Join
 button (one document listener, at most one geometry check per animation frame,
-signed-in members only; touch relies on pointerdown). The public demo still
+signed-in members only). Touch has no approach, and pointerdown arrives too close
+to the tap to help, so on a coarse-pointer screen the viewed channel is prepared
+once when its Join button first becomes visible (an `IntersectionObserver` on
+that one button, not the sidebar's). Real Chromium with touch emulation and the
+UI fixture sent exactly one `prepare`, for the viewed channel; desktop sent none
+from visibility alone. A tap more than about 10 seconds after opening the channel
+joins the ordinary way. The public demo still
 creates on join, and `prepare` returns 404 there. Real Chromium with the UI
 fixture confirmed: no request from far away, one when approaching within 100 px
 without touching the button, and none again on the hover that follows.
@@ -1599,8 +1605,18 @@ with the publication answer. The browser answers that offer on a second
 `RTCPeerConnection`, so both connections come up together. Subscriptions, their
 answers (`negotiate`) and closes then use the receive session; `close` takes
 `subscription: true` because MIDs may repeat across the two sessions, and cleanup
-closes each MID in its own session. The join completes only when both
-connections are connected; received audio stays withheld until then.
+closes each MID in its own session.
+
+Join completes when the microphone connection is connected; it does not wait
+for the receive answer's round trip (`negotiate` through the API to Cloudflare)
+or the receive connection's handshake. The publication is queued ahead of that
+answer, so it never waits on it. Audio from the people present plays as soon as
+the receive connection is up, which the diagnostics report separately as
+"Hearing others" (`hearingMs`, from Join). If that answer fails, or the receive
+connection is not connected within 12 seconds of Join completing, the call
+rejoins with `lastReconnect` set to `hearing others failed`, as a failure would
+have failed the join before. An iPhone report attributed about 300 ms of a
+1,062 ms join to this step; the saving is not yet measured on a device.
 
 Why a second session: Cloudflare answers a pull into a session with no
 negotiated PeerConnection at once (its documented receive pattern, also used
