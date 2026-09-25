@@ -513,11 +513,10 @@ internal data class VoiceJoinIntent(
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
         else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
             items(shown, key = { it.id }) { member ->
-                val status = state.presence[member.id] ?: "unknown"
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
                         Avatar(member.displayName, 30.dp)
-                        Box(Modifier.size(9.dp).align(Alignment.BottomEnd).clip(CircleShape).background(when (status) { "online" -> CaperGreen; "idle" -> Idle; else -> Border }))
+                        PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, SurfaceSidebar, Modifier.align(Alignment.BottomEnd))
                     }
                     Spacer(Modifier.width(10.dp)); Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -531,16 +530,32 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun AccountAvatar(state: AppUiState) {
+@Composable private fun AccountAvatar(state: AppUiState, viewModel: CaperViewModel) {
     val name = state.account?.displayName ?: "Guest"
+    // Web: account spaces show the server's presence for you; General and guests show local presence.
+    val accountPresence = state.account != null && state.selectedSpace?.space?.demo == false
+    var local by remember { mutableStateOf("offline") }
+    if (!accountPresence) LaunchedEffect(state.gateway) {
+        while (true) { local = viewModel.localPresence(); kotlinx.coroutines.delay(1_000) }
+    }
     Box {
         Avatar(name, 30.dp)
-        state.account?.let { account ->
-            val status = state.presence[account.id]
-            Box(Modifier.size(9.dp).align(Alignment.BottomEnd).clip(CircleShape).background(when (status) { "online" -> CaperGreen; "idle" -> Idle; else -> Border }))
-        }
+        PresenceDot(if (accountPresence) state.presence[state.account?.id] else local,
+            live = !accountPresence || state.gateway == GatewayStatus.LIVE, SurfaceRaised, Modifier.align(Alignment.BottomEnd))
     }
 }
+
+/** Web's PresenceDot: 11px with a surface ring, labeled for assistive technology. */
+@Composable private fun PresenceDot(status: String?, live: Boolean, ring: Color, modifier: Modifier = Modifier) {
+    val label = presenceLabel(status, live)
+    Box(modifier.size(11.dp).clip(CircleShape).background(ring).padding(2.dp).clip(CircleShape)
+        .background(when (status) { "online" -> CaperGreen; "idle" -> Idle; "offline" -> Border; else -> ring })
+        .semantics { contentDescription = label })
+}
+
+internal fun presenceLabel(status: String?, live: Boolean): String =
+    if (status == null) "Status unavailable"
+    else status.replaceFirstChar { it.uppercase() } + if (live) "" else " (last known; reconnecting)"
 
 @Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit) {
     val context = LocalContext.current
@@ -548,7 +563,7 @@ internal data class VoiceJoinIntent(
         Row(Modifier.height(42.dp).padding(5.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
                 .semantics { contentDescription = if (state.account == null) "Sign in" else "Edit profile" }, verticalAlignment = Alignment.CenterVertically) {
-                AccountAvatar(state); Spacer(Modifier.width(7.dp))
+                AccountAvatar(state, viewModel); Spacer(Modifier.width(7.dp))
                 Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
             if (voice.phase == VoiceState.Phase.CONNECTED) {

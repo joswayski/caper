@@ -284,6 +284,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reportActivity() { gateway?.reportActivity() }
+    fun localPresence(): String = gateway?.localPresence() ?: "offline"
     fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
 
     internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
