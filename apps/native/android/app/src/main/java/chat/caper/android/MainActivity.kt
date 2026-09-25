@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +32,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -153,6 +156,7 @@ internal data class VoiceJoinIntent(
     show: (Overlay) -> Unit,
     viewModel: CaperViewModel,
 ) {
+    var channelsExpanded by rememberSaveable { mutableStateOf(true) }
     Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
@@ -166,12 +170,12 @@ internal data class VoiceJoinIntent(
                 if (narrow) Box {
                     if (navigationOpen) Row {
                         SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f)) { setNavigationOpen(false) }
+                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f), channelsExpanded, { channelsExpanded = it }) { setNavigationOpen(false) }
                     } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }) { setNavigationOpen(true) }
                     if (membersVisible && !navigationOpen) MemberPresencePanel(state, viewModel, Modifier.widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd))
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp))
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it })
                     if (medium) Column(Modifier.weight(1f)) {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.fillMaxWidth().heightIn(max = 240.dp), compact = true)
@@ -212,10 +216,15 @@ internal data class VoiceJoinIntent(
     viewModel: CaperViewModel,
     show: (Overlay) -> Unit,
     modifier: Modifier,
+    channelsExpanded: Boolean,
+    setChannelsExpanded: (Boolean) -> Unit,
     closeNavigation: (() -> Unit)? = null,
 ) {
     val detail = state.selectedSpace
-    val owner = state.account?.id == detail?.space?.ownerId
+    val owner = state.account != null && state.account.id == detail?.space?.ownerId
+    val channelCount = detail?.channels?.size ?: 0
+    val canCreateChannel = detail != null && state.limits?.let { channelCount < it.channelsPerSpace } == true
+    var channelMenuOpen by remember(detail?.space?.id) { mutableStateOf(false) }
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -225,10 +234,40 @@ internal data class VoiceJoinIntent(
             }
             HorizontalDivider(color = Border)
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("CHANNELS", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                if (owner) IconButton({ show(Overlay.CreateChannel) }, Modifier.size(30.dp)) { Icon(Icons.Default.Add, "Create channel", tint = TextMuted) }
+                Row(
+                    Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+                        .clickable(role = Role.Button) { setChannelsExpanded(!channelsExpanded) }
+                        .semantics {
+                            contentDescription = if (channelsExpanded) "Collapse channels" else "Expand channels"
+                            stateDescription = if (channelsExpanded) "Expanded" else "Collapsed"
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(if (channelsExpanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null, Modifier.size(18.dp), tint = TextMuted)
+                    Text("Channels", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(channelCount.toString(), color = TextMuted, fontSize = 10.sp)
+                }
+                if (owner) {
+                    IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel) { Icon(Icons.Default.Add, "Create channel", tint = if (canCreateChannel) TextMuted else TextMuted.copy(alpha = 0.4f)) }
+                    Box {
+                        IconButton({ channelMenuOpen = true }) { Icon(Icons.Default.MoreHoriz, "Channel options", tint = TextMuted) }
+                        DropdownMenu(channelMenuOpen, { channelMenuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                            DropdownMenuItem(
+                                text = { Text("Create channel", fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Default.Add, null) },
+                                enabled = canCreateChannel,
+                                onClick = { channelMenuOpen = false; show(Overlay.CreateChannel) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (channelsExpanded) "Collapse channels" else "Expand channels", fontSize = 13.sp) },
+                                onClick = { channelMenuOpen = false; setChannelsExpanded(!channelsExpanded) },
+                            )
+                        }
+                    }
+                }
             }
-            detail?.channels?.forEach { channel ->
+            if (channelsExpanded) detail?.channels?.forEach { channel ->
                 val selected = channel.id == state.selectedChannel?.id
                 Row(
                     Modifier.fillMaxWidth().height(38.dp).clip(MaterialTheme.shapes.small)
