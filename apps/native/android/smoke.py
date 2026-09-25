@@ -262,7 +262,7 @@ def main() -> None:
     wait_for(text="general")
     tap(text="Guest")
     login = capture("caper-android-login", "Come on in.")
-    for required in ("WELCOME TO CAPER", "Email address", "Email me a code", "Join general as a guest."):
+    for required in ("WELCOME TO CAPER", "Email address", "Email me a code", "Join #general as a guest."):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
 
     fixture({"failure": {"path": "/api/auth/email/request", "method": "POST", "status": 503}})
@@ -367,8 +367,11 @@ def main() -> None:
 
     tap(description="Manage planning")
     overview = capture("caper-android-channel-settings", "Overview")
-    for required in ("Private channel", "Only you and the people you add can view or join.", "Delete channel"):
+    for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Delete channel"):
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
+    assert find(overview, text="Add") is not None
+    for removed in ("Private channel access", "Existing username", "Grant"):
+        assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
     tap(description="Close")
 
     viewport(390, 844)

@@ -367,7 +367,16 @@ internal data class VoiceJoinIntent(
             Row(Modifier.fillMaxWidth().heightIn(min = 38.dp).padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(participant.name, 24.dp)
                 Spacer(Modifier.width(8.dp))
-                Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f)) {
+                    Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (participant.id != voice.selfId && participant.id in voice.locallyMutedParticipants) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.VolumeOff, null, Modifier.size(10.dp), tint = TerracottaBright)
+                            Spacer(Modifier.width(3.dp))
+                            Text("You muted ${participant.name}", color = TerracottaBright, fontSize = 10.sp)
+                        }
+                    }
+                }
                 if (if (participant.id == voice.selfId) voice.muted else participant.muted) Icon(Icons.Default.MicOff, "Muted", Modifier.size(15.dp), tint = TextMuted)
                 if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(Icons.Default.VolumeOff, "Deafened", Modifier.size(15.dp), tint = TextMuted)
                 if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) Box {
@@ -398,7 +407,7 @@ internal data class VoiceJoinIntent(
             Column(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable(role = Role.Button, onClick = openChannel)
                 .semantics { contentDescription = "Open voice channel" }) {
                 Text(if (voice.phase == VoiceState.Phase.CONNECTED) "Voice connected" else "Connecting voice…", color = CaperGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Text(listOfNotNull(voice.spaceName, voice.channelName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
+                Text(listOfNotNull(voice.channelName, voice.spaceName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
             }
             IconButton(leave, Modifier.size(40.dp)) {
                 Icon(Icons.Default.CallEnd, if (voice.phase == VoiceState.Phase.CONNECTED) "Leave voice" else "Cancel joining voice", Modifier.size(18.dp), tint = TextMuted)
@@ -632,7 +641,7 @@ internal data class VoiceJoinIntent(
             if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
         }
         Text("We only send a code when you ask. Prefer to look around first?", Modifier.padding(top = 10.dp), color = TextMuted, fontSize = 13.sp, lineHeight = 20.sp)
-        TextButton(back, contentPadding = PaddingValues(0.dp)) { Text("Join general as a guest.", color = Text) }
+        TextButton(back, contentPadding = PaddingValues(0.dp)) { Text("Join #general as a guest.", color = Text) }
     }
 }
 
@@ -653,16 +662,16 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun ProfileScreen(account: Account, busy: Boolean, error: String?, close: (() -> Unit)?, submit: (String, String) -> Unit) {
+@Composable internal fun ProfileScreen(account: Account, busy: Boolean, error: String?, close: (() -> Unit)?, submit: (String, String) -> Unit) {
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
     val form: @Composable ColumnScope.() -> Unit = {
-        if (close == null) Text("Create your profile", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        if (close == null) Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
-        Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text("Save profile") }
+        Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text(if (busy) "Saving…" else if (account.username.isNullOrEmpty()) "Finish account" else "Save profile") }
     }
     if (close == null) AuthFrame { form() } else CaperDialog("Edit profile", close) { form() }
 }
@@ -694,7 +703,7 @@ internal data class VoiceJoinIntent(
         HorizontalDivider(color = Border)
         Text("Members · ${detail.members.size}", fontWeight = FontWeight.Bold)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Existing username") }, modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
             Spacer(Modifier.width(8.dp)); Button({ viewModel.addSpaceMember(username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Add") }
         }
         detail.members.forEach { member -> MemberManagerRow(member, member.owner, { viewModel.removeSpaceMember(member) }) }
@@ -714,10 +723,10 @@ internal data class VoiceJoinIntent(
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
         val dirty = name.removeSuffix("-") != channel.name || private != channel.private
         if (channel.private) {
-            HorizontalDivider(color = Border); Text("Private channel access · ${state.channelGrants.size}", fontWeight = FontWeight.Bold)
+            HorizontalDivider(color = Border); Text("Members · ${state.channelGrants.size}", fontWeight = FontWeight.Bold)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Existing username") }, modifier = Modifier.weight(1f), singleLine = true)
-                Spacer(Modifier.width(8.dp)); Button({ viewModel.addChannelGrant(channel, username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Grant") }
+                OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
+                Spacer(Modifier.width(8.dp)); Button({ viewModel.addChannelGrant(channel, username); username = "" }, enabled = username.length >= 3 && !state.busy, shape = MaterialTheme.shapes.small) { Text("Add") }
             }
             state.channelGrants.forEach { member -> MemberManagerRow(member, member.owner) { viewModel.removeChannelGrant(channel, member) } }
         }

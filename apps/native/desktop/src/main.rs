@@ -1854,7 +1854,7 @@ impl CaperApp {
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        RichText::new("Join general as a guest.")
+                                        RichText::new("Join #general as a guest.")
                                             .size(14.0)
                                             .color(MUTED),
                                     )
@@ -2615,6 +2615,19 @@ impl CaperApp {
 
     fn voice_roster(&mut self, ui: &mut egui::Ui, people: Vec<model::VoiceOccupant>, own: bool) {
         for participant in people {
+            let is_self = own && participant.id == self.voice.self_id;
+            let muted = if is_self {
+                self.voice.state.audio.muted
+            } else {
+                participant.muted
+            };
+            let deafened = if is_self {
+                self.voice.state.audio.deafened
+            } else {
+                participant.deafened
+            };
+            let mut playback = self.voice.playback(&participant.id);
+            let local_muted = own && !is_self && playback.muted;
             ui.push_id(&participant.id, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 7.0;
@@ -2626,48 +2639,76 @@ impl CaperApp {
                                     80.0
                                 } else {
                                     23.0
-                                })
+                                }
+                                - if muted && deafened { 23.0 } else { 0.0 })
                             .max(0.0),
                             32.0,
                         ),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.add(
-                                egui::Label::new(
-                                    bold(if own && participant.id == self.voice.self_id {
-                                        format!("{} (you)", participant.name)
-                                    } else {
-                                        participant.name.clone()
-                                    })
-                                    .size(12.0),
-                                )
-                                .truncate(),
-                            );
+                            ui.vertical(|ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                ui.add(
+                                    egui::Label::new(
+                                        bold(if is_self {
+                                            format!("{} (you)", participant.name)
+                                        } else {
+                                            participant.name.clone()
+                                        })
+                                        .size(12.0),
+                                    )
+                                    .truncate(),
+                                );
+                                if local_muted {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        let (rect, _) = ui.allocate_exact_size(
+                                            egui::vec2(10.0, 10.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        paint_icon(
+                                            ui.painter(),
+                                            rect,
+                                            NavIcon::VolumeX,
+                                            TERRACOTTA_BRIGHT,
+                                        );
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(format!(
+                                                    "You muted {}",
+                                                    participant.name
+                                                ))
+                                                .size(10.0)
+                                                .color(TERRACOTTA_BRIGHT),
+                                            )
+                                            .truncate(),
+                                        );
+                                    });
+                                }
+                            });
                         },
                     );
-                    let mut playback = self.voice.playback(&participant.id);
-                    let local_muted = own && playback.muted;
-                    let (rect, response) =
+                    if !muted && !deafened {
                         ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                    if participant.deafened || participant.muted || local_muted {
-                        paint_icon(
-                            ui.painter(),
-                            rect,
-                            if participant.deafened || local_muted {
-                                NavIcon::VolumeX
-                            } else {
-                                NavIcon::MicOff
-                            },
-                            MUTED,
-                        );
-                        response.on_hover_text(if local_muted {
-                            "Muted for you"
-                        } else if participant.deafened {
-                            "Deafened"
-                        } else {
-                            "Microphone muted"
-                        });
+                    }
+                    for (active, icon, label) in [
+                        (muted, NavIcon::MicOff, "Muted"),
+                        (deafened, NavIcon::VolumeX, "Deafened"),
+                    ] {
+                        if active {
+                            let (rect, response) = ui
+                                .allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                            paint_icon(ui.painter(), rect, icon, MUTED);
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Image,
+                                    ui.is_enabled(),
+                                    format!("{}: {label}", participant.name),
+                                )
+                            });
+                            response.on_hover_text(label);
+                        }
                     }
                     if own && participant.id != self.voice.self_id {
                         let options = ui.add(
@@ -2725,7 +2766,7 @@ impl CaperApp {
         if let Phase::Joining(context) | Phase::Connected(context) | Phase::Reconnecting(context) =
             &self.voice.state.phase
         {
-            let label = format!("{} / {}", context.space_name, context.channel_name);
+            let label = format!("{} / {}", context.channel_name, context.space_name);
             let connected = matches!(self.voice.state.phase, Phase::Connected(_));
             let target = NavigationTarget {
                 space: self.voice.active_space.clone(),
@@ -4094,7 +4135,7 @@ impl CaperApp {
                 [(ui.available_width() - 80.0).max(1.0), 38.0],
                 egui::TextEdit::singleline(&mut self.member_username)
                     .vertical_align(egui::Align::Center)
-                    .hint_text("username"),
+                    .hint_text("Exact username"),
             );
             if ui
                 .add(egui::Button::new(bold("Add").size(12.0)).min_size(egui::vec2(64.0, 38.0)))
@@ -5007,6 +5048,55 @@ mod tests {
             !app.voice.state.audio.muted,
             "local listener control must not mute our microphone"
         );
+        let muted = render(&mut app, &context, vec![]);
+        position(&muted, "You muted Maya", true);
+        app.voice.set_participant_playback(
+            "fixture-maya",
+            crate::media::TrackPlayback {
+                gain_percent: 170,
+                muted: false,
+            },
+        );
+        let restored = render(&mut app, &context, vec![]);
+        assert!(!restored.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("You muted "))
+        }));
+    }
+
+    #[test]
+    fn own_roster_icons_use_local_intent_instead_of_stale_snapshot() {
+        for (snapshot, muted, deafened) in [
+            (true, false, false),
+            (false, true, false),
+            (false, true, true),
+        ] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-voice-connected"),
+            );
+            for participant in &mut app.voice.participants {
+                participant.muted = snapshot;
+                participant.deafened = snapshot;
+            }
+            app.voice.state.audio.set_muted(muted);
+            app.voice.state.audio.set_deafened(deafened);
+            // Inspect the initial full tree, not subsequent AccessKit deltas.
+            let labels = render(&mut app, &context, vec![])
+                .platform_output
+                .accesskit_update
+                .unwrap()
+                .nodes
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect::<Vec<_>>();
+            assert_eq!(labels.contains(&"Fixture Owner: Muted".into()), muted);
+            assert_eq!(labels.contains(&"Fixture Owner: Deafened".into()), deafened);
+            assert_eq!(labels.contains(&"Maya: Muted".into()), snapshot);
+            assert_eq!(labels.contains(&"Maya: Deafened".into()), snapshot);
+        }
     }
 
     #[test]
@@ -5039,7 +5129,7 @@ mod tests {
                 .shapes
                 .iter()
                 .find_map(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == "Voice Space / design" => {
+                    egui::Shape::Text(text) if text.galley.job.text == "design / Voice Space" => {
                         Some(text.pos + egui::vec2(4.0, 4.0))
                     }
                     _ => None,

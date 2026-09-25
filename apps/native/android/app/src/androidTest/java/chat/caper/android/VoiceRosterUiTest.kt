@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
@@ -43,18 +44,18 @@ class VoiceRosterUiTest {
     @get:Rule val compose = createComposeRule()
 
     @Test fun remoteControlsAreHiddenUntilAudioOpensAndSelfHasNoMenu() {
-        val voice = VoiceState(
+        val voice = mutableStateOf(VoiceState(
             phase = VoiceState.Phase.CONNECTED, channelId = "design", selfId = "self", muted = true,
             participants = listOf(
                 Participant("self", "Fixture Owner", muted = false, deafened = false, tracks = emptyList()),
-                Participant("remote", "Remote Voice", muted = false, deafened = true, tracks = emptyList()),
+                Participant("remote", "Remote Voice", muted = true, deafened = true, tracks = emptyList()),
             ),
             participantVolumes = mapOf("remote" to 170),
-        )
+        ))
         compose.setContent {
             CaperTheme {
                 Scaffold(containerColor = Blackout) { padding ->
-                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar).testTag("voice-roster")) { VoiceRoster(voice) }
+                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar).testTag("voice-roster")) { VoiceRoster(voice.value) }
                 }
             }
         }
@@ -66,9 +67,19 @@ class VoiceRosterUiTest {
         compose.onNodeWithText("IN VOICE", substring = true).assertDoesNotExist()
         compose.onNodeWithText("User volume").assertDoesNotExist()
         compose.onNodeWithText("Deafened").assertDoesNotExist()
-        compose.onAllNodesWithContentDescription("Muted").assertCountEquals(1)
+        compose.onNodeWithText("You muted Remote Voice").assertDoesNotExist()
+        compose.onNodeWithText("You muted Fixture Owner").assertDoesNotExist()
+        compose.onAllNodesWithContentDescription("Muted").assertCountEquals(2)
         compose.onAllNodesWithContentDescription("Deafened").assertCountEquals(1)
         capture("voice-roster-connected-closed.png", compose.onNodeWithTag("voice-roster"))
+
+        compose.runOnIdle { voice.value = voice.value.copy(locallyMutedParticipants = setOf("self", "remote")) }
+        compose.onNodeWithText("You muted Remote Voice").assertExists()
+        compose.onNodeWithText("You muted Fixture Owner").assertDoesNotExist()
+        capture("voice-roster-connected-locally-muted.png", compose.onNodeWithTag("voice-roster"))
+
+        compose.runOnIdle { voice.value = voice.value.copy(locallyMutedParticipants = emptySet()) }
+        compose.onNodeWithText("You muted Remote Voice").assertDoesNotExist()
 
         compose.onNodeWithContentDescription("Audio controls for Remote Voice").performClick()
         compose.onNodeWithText("User volume").assertExists()

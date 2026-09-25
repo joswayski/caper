@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -31,6 +32,7 @@ class VoiceNavigationUiTest {
             }
         }
 
+        compose.onNodeWithText("Planning / Fixture Studio").assertExists()
         compose.onNodeWithContentDescription("Open voice channel").performClick()
         compose.runOnIdle { assertEquals(1, opened); assertEquals(0, left) }
 

@@ -90,6 +90,18 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    private func dismissAudioMenu(in app: XCUIApplication) {
+        #if os(macOS)
+        app.typeKey(.escape, modifierFlags: [])
+        #else
+        // The popover blocks its anchor; tap outside it as a person would.
+        let outside = app.otherElements["PopoverDismissRegion"]
+        XCTAssertTrue(outside.exists)
+        outside.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: outside)], timeout: 3)
+        #endif
+    }
+
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }
@@ -175,6 +187,14 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let context = app.descendants(matching: .any)["active-voice-context"]
         XCTAssertTrue(context.waitForExistence(timeout: 10))
+        // macOS folds a button's child text into the button label, so check the
+        // combined label everywhere and the visible line itself where exposed.
+        let contextLabel = app.buttons.matching(identifier: "active-voice-context")
+            .matching(NSPredicate(format: "label == %@", "Voice connected, general / Fixture Studio"))
+        XCTAssertTrue(contextLabel.firstMatch.exists, "Dock context reads channel / space")
+        #if os(iOS)
+        assertStaticText("general / Fixture Studio", in: app)
+        #endif
         assertStaticText("TEST FIXTURE You (you)", in: app)
         assertStaticText("TEST FIXTURE Maya", in: app)
         XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
@@ -193,8 +213,31 @@ final class CaperParityUITests: XCTestCase {
         stack.tap()
         audio.tap()
         XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.descendants(matching: .any)["Mute"].exists)
+        #if os(macOS)
+        let mute = app.checkBoxes["Mute"]
+        #else
+        // The labelled row is a Switch; its centre is the label, so tap the inner control.
+        let mute = app.switches["Mute"].switches.firstMatch
+        #endif
+        XCTAssertTrue(mute.exists)
         capture("active-voice-audio-menu-test-fixture", app: app)
+        mute.tap()
+        #if os(iOS)
+        XCTAssertEqual(mute.value as? String, "1")
+        #endif
+        dismissAudioMenu(in: app)
+        let localMute = app.descendants(matching: .any)["participant-local-muted-fixture-remote"]
+        XCTAssertTrue(localMute.waitForExistence(timeout: 3))
+        assertStaticText("You muted TEST FIXTURE Maya", in: app)
+        capture("active-voice-locally-muted-test-fixture", app: app)
+        audio.tap()
+        XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
+        mute.tap()
+        #if os(iOS)
+        XCTAssertEqual(mute.value as? String, "0")
+        #endif
+        dismissAudioMenu(in: app)
+        XCTAssertFalse(localMute.waitForExistence(timeout: 1), "Local mute status disappears when remote playback is restored")
     }
 
     #if os(macOS)
@@ -298,8 +341,18 @@ final class CaperParityUITests: XCTestCase {
     func testLogin() {
         let app = launch(fixture: "login", signedIn: false)
         assertStaticText("Come on in.", in: app)
-        XCTAssertTrue(app.buttons["guest-general-button"].exists)
+        XCTAssertTrue(app.buttons["guest-general-button"].label.contains("Join #general as a guest."))
+        let email = app.textFields["Email address"]
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(app.buttons["guest-general-button"].frame))
         capture("login", app: app)
+        email.tap(); email.typeText("owner@example.test")
+        app.buttons["Email me a code"].tap()
+        XCTAssertTrue(app.textFields["Sign-in code"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(app.textFields["Sign-in code"].frame))
+        assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
+        XCTAssertTrue(app.buttons["Use a different email"].exists)
+        capture("login-code", app: app)
     }
 
     func testDeleteSpaceRequiresConfirmationAndCanCancel() {
@@ -535,6 +588,8 @@ final class CaperParityUITests: XCTestCase {
         let displayName = app.textFields["Display name"]
         let submit = app.buttons["profile-continue"]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
+        assertStaticText("Choose how you show up.", in: app)
+        XCTAssertEqual(submit.label, "Finish account")
         XCTAssertFalse(submit.isEnabled)
         username.tap(); username.typeText("ab")
         displayName.tap(); displayName.typeText("Fixture Name")
@@ -650,7 +705,7 @@ final class CaperParityUITests: XCTestCase {
 
     func testPrivateChannelOverview() {
         let app = launch(fixture: "manage-channel")
-        assertStaticText("Channel Overview", in: app)
+        assertStaticText("Overview", in: app)
         assertStaticText("Private channel", in: app, timeout: 2)
         capture("private-channel-overview", app: app)
     }
