@@ -875,10 +875,10 @@ internal data class VoiceJoinIntent(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input gain", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
-        Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input gain" }, valueRange = 0f..200f)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Processing strength", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
-        Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Processing strength" }, valueRange = 0f..100f)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
+        Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Voice processing", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
+        Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Voice processing" }, valueRange = 0f..100f)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$outputVolume%", color = TextMuted, fontSize = 11.sp) }
         Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) }, modifier = Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -887,13 +887,12 @@ internal data class VoiceJoinIntent(
                 permissionGeneration = generation
                 microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
             } },
-                enabled = !finishing && (testing || recording == null), shape = MaterialTheme.shapes.small) { Text(if (testing) "Stop mic test" else "Test microphone") }
+                enabled = !finishing && (testing || recording == null), shape = MaterialTheme.shapes.small) { Text(if (testing) "Stop Testing" else "Mic Test") }
             if (recording != null) TextButton(::teardownTest) { Text("Done") }
         }
         if (testing) Text("Recording your voice", color = TextMuted, fontSize = 11.sp)
         testError?.let { Text(it, color = ErrorText, fontSize = 11.sp) }
         recording?.let { clip ->
-            Text("Compare your microphone", fontWeight = FontWeight.Bold, fontSize = 12.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton({ playClip(clip, false) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Natural") }
                 OutlinedButton({ playClip(clip, true) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Enhanced") }
@@ -901,7 +900,6 @@ internal data class VoiceJoinIntent(
             }
         }
         if (voice.phase == VoiceState.Phase.CONNECTED) {
-            Text("Connected to #${voice.channelName}", color = CaperGreen, fontSize = 12.sp)
             if (state.account?.debugEnabled == true && voice.processing.size == 5) {
                 val report = voice.processing
                 DiagnosticRow("Microphone processing", when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" })
