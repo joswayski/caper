@@ -443,6 +443,7 @@ export class PublicCallClient {
     this.joinTiming = {
       join: `${label} in ${(performance.now() - started).toFixed(0)} ms`,
       microphoneMs,
+      microphoneDetail: this.microphoneDetail(microphone),
       sessionMs,
       signalingMs: signaled - prepared,
       transportMs: connected - signaled,
@@ -748,6 +749,14 @@ export class PublicCallClient {
     });
     this.statePromise = pending;
     return pending;
+  }
+
+  /** Splits microphone startup into hardware open and audio processing readiness. */
+  private microphoneDetail(track: MediaStreamTrack) {
+    const startup = this.captures.get(track)?.startup;
+    if (!startup) return undefined;
+    const device = `device ${Math.round(startup.deviceMs)} ms`;
+    return startup.interim ? `${device} · noise model still loading` : `${device} · processing ${Math.round(startup.processingMs)} ms`;
   }
 
   private async openMicrophone(deviceId?: string, signal = this.captureController.signal) {

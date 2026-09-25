@@ -53,7 +53,7 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
   const [copyStatus, setCopyStatus] = useState("");
   const values = [
     ["Joined", diagnostics.join],
-    ["Microphone", `${Math.round(diagnostics.microphoneMs)} ms`],
+    ["Microphone", `${Math.round(diagnostics.microphoneMs)} ms${diagnostics.microphoneDetail ? ` (${diagnostics.microphoneDetail})` : ""}`],
     ["Session + publish", `${Math.round(diagnostics.sessionMs)} ms`],
     ["Signaling + live updates", `${Math.round(diagnostics.signalingMs)} ms`],
     ["Transport + state", `${Math.round(diagnostics.transportMs)} ms${diagnostics.iceMs === undefined ? "" : ` (ICE ${Math.round(diagnostics.iceMs)} ms)`}`],

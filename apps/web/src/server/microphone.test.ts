@@ -771,3 +771,80 @@ test("DeepFilter setup only downloads same-origin public assets without bodies o
   }
   microphone.stop();
 });
+
+/** getUserMedia that honours the requested browser noise suppression, like a real browser. */
+function honourSuppression(raw: Track) {
+  const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getUserMedia = (async (constraints: MediaStreamConstraints) => {
+    raw.settings.noiseSuppression = (constraints.audio as MediaTrackConstraints).noiseSuppression === true;
+    return original(constraints);
+  }) as typeof navigator.mediaDevices.getUserMedia;
+}
+
+test("a compiling DPDFNet model does not hold Join: browser suppression carries audio until it swaps in", async (t) => {
+  const { preparation, workers, raw } = preparedDpdfnet(t);
+  honourSuppression(raw);
+  void preparation.prepare(); // Still compiling, as right after page load or a leave.
+  let changes = 0;
+  const microphone = await captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => { changes++; }, "speakers", undefined, preparation);
+  const context = Context.latest!;
+  const node = WorkletNode.latest!;
+  assert.match(microphone.status, /DPDFNet-8 HR loading · browser suppression active/);
+  assert.equal(microphone.startup.interim, true);
+  assert.equal(raw.getSettings().noiseSuppression, true, "never raw: the browser suppresses until DPDFNet is ready");
+  assert.equal(microphone.track, context.processed);
+  assert.deepEqual(context.source.connections, [context.gain]);
+  assert.ok(context.gain.connections.includes(context.naturalDestination) && context.gain.connections.includes(context.voiceInput));
+  assert.equal(node.connections.length, 0, "the model is not in the path yet");
+  assert.equal(workers.length, 1, "the prepared worker is taken, not duplicated");
+
+  workers[0].onmessage!({ data: { type: "ready" } });
+  await tick();
+  await tick();
+  assert.match(microphone.status, /DPDFNet-8 HR active/);
+  assert.equal(raw.getSettings().noiseSuppression, false, "browser suppression is released for DPDFNet");
+  assert.deepEqual(context.gain.connections, [node]);
+  assert.ok(node.connections.includes(context.naturalDestination) && node.connections.includes(context.voiceInput));
+  assert.equal(microphone.track, context.processed, "the published track never changes");
+  assert.equal(changes, 1);
+  assert.equal(workers.length, 1);
+  microphone.stop();
+  assert.equal(workers[0].terminateCalls, 1);
+});
+
+test("without browser suppression, a compiling model still holds startup rather than publish raw audio", async (t) => {
+  const { preparation, workers, raw } = preparedDpdfnet(t);
+  void preparation.prepare();
+  let ready = false;
+  const capturing = captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "speakers", undefined, preparation)
+    .then((microphone) => { ready = true; return microphone; });
+  await tick();
+  await tick();
+  assert.equal(ready, false);
+  assert.equal(raw.getSettings().noiseSuppression, false);
+  assert.equal(Context.latest!.source.connections.length, 0, "no audio path before the model is ready");
+  workers[0].onmessage!({ data: { type: "ready" } });
+  const microphone = await capturing;
+  assert.match(microphone.status, /DPDFNet-8 HR active/);
+  assert.equal(microphone.startup.interim, false);
+  microphone.stop();
+});
+
+test("a model that fails while loading hands over to the fallback chain on the same track", async (t) => {
+  const { preparation, workers, raw } = preparedDpdfnet(t);
+  honourSuppression(raw);
+  const preparing = preparation.prepare().catch(() => undefined); // This model fails.
+  const microphone = await captureMicrophone(undefined, "dpdfnet8", new AbortController().signal, () => undefined, "speakers", undefined, preparation);
+  const track = microphone.track;
+  workers[0].onmessage!({ data: { type: "failed" } });
+  await tick();
+  await tick();
+  assert.equal(microphone.track, track);
+  assert.equal(microphone.track.readyState, "live");
+  assert.match(microphone.status, /browser suppression active/);
+  assert.equal(raw.getSettings().noiseSuppression, true);
+  assert.equal(workers[0].terminateCalls, 1);
+  assert.equal(workers.length, 2, "one fresh DPDFNet-8 retry, as for startup errors");
+  microphone.stop();
+  await preparing;
+});
