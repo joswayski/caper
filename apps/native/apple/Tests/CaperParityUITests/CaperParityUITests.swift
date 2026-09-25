@@ -537,7 +537,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["local-mic-test"].exists, "Prejoin mic test must be a deliberate action")
         #endif
         let controls = app.scrollViews["audio-preferences-controls"]
+        #if os(iOS)
+        controls.swipeUp()
+        #else
         controls.scroll(byDeltaX: 0, deltaY: -600)
+        #endif
         XCTAssertTrue(controls.frame.contains(app.buttons["local-mic-test"].frame))
         for removed in [
             "The voice contour runs before the sender; 0% bypasses the contour, not noise suppression.",
@@ -730,14 +734,9 @@ final class CaperParityUITests: XCTestCase {
         let app = launch()
         let navigation = app.buttons["Browse"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 10))
-        XCTAssertFalse(app.staticTexts["Browse"].exists)
         assertStaticText("Fixture Owner", in: app)
-        let avatar = app.staticTexts["F"].firstMatch
-        let author = staticTexts("Fixture Owner", in: app).firstMatch
         let channel = app.descendants(matching: .any)["selected-channel-name"]
-        XCTAssertTrue(avatar.exists)
-        XCTAssertEqual(navigation.frame.midX, avatar.frame.midX, accuracy: 1, "Menu must center over the message avatars")
-        XCTAssertEqual(channel.frame.minX, author.frame.minX, accuracy: 1, "Channel title must align with message authors")
+        XCTAssertGreaterThan(channel.frame.minX, navigation.frame.maxX, "Web's labelled Browse toggle leads the channel title")
         XCTAssertGreaterThanOrEqual(navigation.frame.width, 44, "Keep the menu touch target accessible")
         let members = app.buttons["Show member list"]
         XCTAssertTrue(members.exists)

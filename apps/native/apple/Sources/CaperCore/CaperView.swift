@@ -958,15 +958,16 @@ private struct ChatView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            // Match the 34pt message-avatar column without shrinking the 44pt menu target.
             HStack(spacing: narrow ? 5 : 10) {
                 if narrow {
                     // Web's narrow toggle: the menu icon with a visible "Browse" label.
                     Button(action: browse) {
                         HStack(spacing: 6) {
-                            CaperIcon(name: "menu", size: 18)
-                            Text("Browse").font(CaperTheme.font(13, weight: .bold))
-                        }.frame(height: 44).padding(.horizontal, 4).contentShape(Rectangle())
+                            CaperIcon(name: "menu", size: 15)
+                            Text("Browse").font(CaperTheme.font(11, weight: .bold))
+                        }.foregroundStyle(CaperTheme.muted).padding(.horizontal, 9).frame(height: 34)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border, lineWidth: 1))
+                            .frame(minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityLabel("Browse")
                 }
                 Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
