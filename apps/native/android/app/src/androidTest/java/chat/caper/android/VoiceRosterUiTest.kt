@@ -3,22 +3,31 @@ package chat.caper.android
 import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import chat.caper.android.model.Participant
+import chat.caper.android.ui.Blackout
 import chat.caper.android.ui.CaperTheme
 import chat.caper.android.ui.SurfaceSidebar
+import chat.caper.android.ui.Text as TextColor
 import chat.caper.android.voice.VoiceState
 import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -36,7 +45,13 @@ class VoiceRosterUiTest {
             ),
             participantVolumes = mapOf("remote" to 170),
         )
-        compose.setContent { CaperTheme { Column(Modifier.width(280.dp).background(SurfaceSidebar)) { VoiceRoster(voice) } } }
+        compose.setContent {
+            CaperTheme {
+                Scaffold(containerColor = Blackout) { padding ->
+                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar)) { VoiceRoster(voice) }
+                }
+            }
+        }
 
         compose.onNodeWithText("Fixture Owner (you)").assertExists()
         compose.onNodeWithText("Remote Voice").assertExists()
@@ -55,6 +70,13 @@ class VoiceRosterUiTest {
         compose.onNodeWithText("Mute").assertExists()
         compose.onNodeWithContentDescription("Remote Voice volume").assertExists()
         compose.onNodeWithContentDescription("Mute Remote Voice for me").assertExists()
+        for (label in listOf("User volume", "Mute")) {
+            compose.onNodeWithText(label).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { getLayout ->
+                val layouts = mutableListOf<TextLayoutResult>()
+                assertTrue(getLayout(layouts))
+                assertEquals(TextColor, layouts.single().layoutInput.style.color)
+            }
+        }
         capture("voice-roster-connected-open.png")
     }
 
@@ -63,7 +85,13 @@ class VoiceRosterUiTest {
             phase = VoiceState.Phase.CONNECTING, channelId = "design", selfId = "self",
             participants = listOf(Participant("remote", "Remote Voice", muted = false, deafened = false, tracks = emptyList())),
         )
-        compose.setContent { CaperTheme { Column(Modifier.width(280.dp).background(SurfaceSidebar)) { VoiceRoster(voice) } } }
+        compose.setContent {
+            CaperTheme {
+                Scaffold(containerColor = Blackout) { padding ->
+                    Column(Modifier.padding(padding).width(280.dp).background(SurfaceSidebar)) { VoiceRoster(voice) }
+                }
+            }
+        }
         compose.onNodeWithText("Remote Voice").assertExists()
         compose.onNodeWithContentDescription("Audio controls for Remote Voice").assertDoesNotExist()
     }
