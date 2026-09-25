@@ -88,7 +88,7 @@ sealed interface SessionScreen {
     data object Loading : SessionScreen
     data object Home : SessionScreen
     data object SignedOut : SessionScreen
-    data class Verify(val challengeId: String, val email: String) : SessionScreen
+    data class Verify(val challengeId: String, val email: String, val attemptsRemaining: Int? = null) : SessionScreen
     data class Profile(val account: Account) : SessionScreen
     data class Spaces(val account: Account) : SessionScreen
 }

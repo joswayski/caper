@@ -86,7 +86,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun verify(challenge: String, code: String) = launchAccountAction { request ->
-        val result = api.verifyCode(challenge, code)
+        val result = try { api.verifyCode(challenge, code) } catch (error: ApiException) {
+            val screen = mutable.value.screen
+            if (request == accountGeneration && error.status == 401 && screen is SessionScreen.Verify && screen.challengeId == challenge)
+                mutable.value = mutable.value.copy(screen = screen.copy(attemptsRemaining = error.attemptsRemaining))
+            throw error
+        }
         if (request != accountGeneration) return@launchAccountAction
         tokens.write(result.token)
         accountToken = result.token
@@ -98,12 +103,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveProfile(username: String, displayName: String) = launchAccountAction { request ->
-        val account = api.profile(requireAccountToken(), username, displayName)
+        val account = profileRequest { api.profile(requireAccountToken(), username, displayName) }
         if (request == accountGeneration) loadHome()
     }
 
     fun updateProfile(username: String, displayName: String, onSuccess: () -> Unit) = launchAction { request ->
-        val account = api.profile(requireAccountToken(), username, displayName)
+        val account = profileRequest { api.profile(requireAccountToken(), username, displayName) }
         if (request != accountGeneration) return@launchAction
         mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
         chatToken = null
@@ -421,6 +426,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val messages = mutable.value.messages
         if (messages.none { it.id == message.id }) {
             mutable.value = mutable.value.copy(messages = (messages + message).sortedWith(compareBy { java.math.BigInteger(it.seq) }))
+            // Web chimes for someone else's new message in the open conversation.
+            if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
         confirmPending(message)
     }
@@ -601,15 +608,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() { gateway?.close(); super.onCleared() }
 
-    private fun accountMessage(error: Throwable): String = when ((error as? ApiException)?.status) {
+    /** Web's profile save copy (`account/ProfileForm.tsx`). */
+    private suspend fun <T> profileRequest(block: suspend () -> T): T = try { block() } catch (error: ApiException) {
+        throw ProfileSaveException(when (error.status) {
+            409 -> "That username is already taken."
+            400 -> "Check the username and display name requirements."
+            else -> "Your profile could not be saved. Please try again."
+        })
+    }
+
+    private fun accountMessage(error: Throwable): String = if (error is ProfileSaveException) error.message else when ((error as? ApiException)?.status) {
         400 -> "Enter a valid email address."
-        401 -> "That code is incorrect or expired. Request a new one if needed."
+        401 -> if ((error as ApiException).attemptsRemaining == 0) "That code can no longer be used. Request a new one."
+            else "That code is incorrect or expired. Request a new one if needed."
         503 -> "Sign-in is temporarily unavailable. Please try again later."
         else -> "Something went wrong. Please try again."
     }
 
     private companion object { const val PRESENCE_PAGE_SIZE = 25 }
 }
+
+internal class ProfileSaveException(override val message: String) : Exception(message)
 
 internal data class AdminMutationContext(val accountGeneration: Long, val spaceId: String? = null, val channelId: String? = null) {
     fun isCurrent(currentAccountGeneration: Long, selected: SpaceDetail?): Boolean =

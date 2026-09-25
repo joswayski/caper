@@ -18,7 +18,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
-class ApiException(val status: Int, override val message: String, val code: String? = null) : IOException(message)
+class ApiException(val status: Int, override val message: String, val code: String? = null, val attemptsRemaining: Int? = null) : IOException(message)
 
 class CaperApi(
     val client: OkHttpClient = OkHttpClient.Builder()
@@ -148,7 +148,7 @@ class CaperApi(
             val text = response.body.string()
             if (!response.isSuccessful) {
                 val detail = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
-                throw ApiException(response.code, detail?.error ?: "Request failed (${response.code}).", detail?.code)
+                throw ApiException(response.code, detail?.error ?: "Request failed (${response.code}).", detail?.code, detail?.attemptsRemaining)
             }
             if (T::class == Unit::class || response.code == 204 || text.isBlank()) Unit as T
             else json.decodeFromString(text)

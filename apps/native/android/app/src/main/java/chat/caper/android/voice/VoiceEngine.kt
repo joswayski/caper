@@ -303,6 +303,31 @@ class VoiceEngine(
         }
     }
 
+    /** Audio levels by participant: inbound-rtp through the subscription MID, media-source for this microphone. */
+    suspend fun audioLevels(): Map<String, Double> = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        resources.use {
+            val current = peer ?: error("Voice transport is unavailable.")
+            current.getStats { report ->
+                if (!resources.isOpen) return@getStats
+                val participantByMid = synchronized(remoteLock) {
+                    subscriptions.entries.mapNotNull { (track, mid) -> participantForTrack[track]?.let { mid to it } }.toMap()
+                }
+                val levels = mutableMapOf<String, Double>()
+                for (stat in report.statsMap.values) {
+                    if (stat.members["kind"] != "audio") continue
+                    val level = (stat.members["audioLevel"] as? Number)?.toDouble()?.takeIf { it.isFinite() } ?: continue
+                    val id = when (stat.type) {
+                        "inbound-rtp" -> participantByMid[stat.members["mid"] as? String]
+                        "media-source" -> selfId
+                        else -> null
+                    } ?: continue
+                    levels[id] = maxOf(levels[id] ?: 0.0, level)
+                }
+                if (continuation.isActive) continuation.resume(levels)
+            }
+        }
+    }
+
     suspend fun diagnostics(): VoiceDiagnostics = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
         resources.use {
             val current = peer ?: error("Voice transport is unavailable.")

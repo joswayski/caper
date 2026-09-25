@@ -10,7 +10,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -29,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -67,6 +70,7 @@ class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CaperEffects.init(applicationContext)
         setContent { CaperTheme { CaperApp(viewModel) } }
     }
 }
@@ -105,6 +109,7 @@ internal data class VoiceJoinIntent(
     val voice by VoiceCallService.state.collectAsStateWithLifecycle()
     var overlay by remember { mutableStateOf<Overlay?>(null) }
     var navigationOpen by remember { mutableStateOf(false) }
+    VoiceChimes(voice)
 
     val homeVisible = state.screen == SessionScreen.Home || state.screen is SessionScreen.Spaces
     Scaffold(containerColor = Blackout, snackbarHost = {
@@ -119,7 +124,7 @@ internal data class VoiceJoinIntent(
             when (val screen = state.screen) {
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::requestCode)
-                is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::verify)
+                is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::verify) { viewModel.requestCode(screen.email) }
                 is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
                 SessionScreen.Home, is SessionScreen.Spaces -> HomeScreen(
                     state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
@@ -134,7 +139,7 @@ internal data class VoiceJoinIntent(
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private -> viewModel.createChannel(name, private) { overlay = null } } }
         is Overlay.ManageChannel -> ManageChannelDialog(state, shown.channel, viewModel) { overlay = null }
-        Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and messages.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
+        Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
         Overlay.Audio -> AudioSettingsDialog(state, voice, { overlay = null }, viewModel::logout)
         null -> Unit
@@ -327,13 +332,16 @@ internal data class VoiceJoinIntent(
                             .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
                             Box(Modifier.width((24 + 16 * (people.size.coerceAtMost(3) - 1)).dp).height(24.dp)) {
                                 people.take(3).forEachIndexed { index, person ->
-                                    Avatar(person.name, 24.dp, Modifier.offset(x = (16 * index).dp).zIndex((3 - index).toFloat()))
+                                    Avatar(person.name, 24.dp, Modifier.offset(x = (16 * index).dp).zIndex((3 - index).toFloat()),
+                                        speaking = activeChannel == channel.id && person.id in voice.speakingParticipants)
                                 }
                             }
                             if (people.size > 3) Text("+${people.size - 3}", fontSize = 10.sp)
                             Icon(if (rosterOpen) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null, Modifier.size(15.dp))
                         } else Spacer(Modifier.weight(1f))
-                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }) {
+                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, modifier = Modifier.semantics {
+                            contentDescription = if (activeChannel != null) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
+                        }) {
                             Text("Join", fontSize = 11.sp)
                         }
                     }
@@ -353,7 +361,19 @@ internal data class VoiceJoinIntent(
             if (activeChannel != null && detail?.channels?.none { it.id == activeChannel } == true) VoiceRoster(voice)
         }
         if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED)
-            ConnectedVoiceContext(voice, { viewModel.openVoiceChannel(voice) { closeNavigation?.invoke() } }, { VoiceCallService.stop(context) })
+            ConnectedVoiceContext(voice, { viewModel.openVoiceChannel(voice) { closeNavigation?.invoke() } }, {
+                if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
+                VoiceCallService.stop(context)
+            })
+        // Web shows voice errors in the dock with a dismiss button.
+        voice.error?.let { error ->
+            Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
+                Row(Modifier.padding(start = 10.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(error, Modifier.weight(1f).padding(vertical = 8.dp), color = ErrorText, fontSize = 11.sp)
+                    IconButton({ VoiceCallService.clearError() }, Modifier.size(36.dp)) { Icon(Icons.Default.Close, "Dismiss voice error", Modifier.size(16.dp), tint = TextMuted) }
+                }
+            }
+        }
         AccountBar(state, voice, viewModel, show)
     }
 }
@@ -364,11 +384,18 @@ internal data class VoiceJoinIntent(
     voice.participants.forEach { participant ->
         key(participant.id) {
             var audioOpen by remember(voice.channelId) { mutableStateOf(false) }
-            Row(Modifier.fillMaxWidth().heightIn(min = 38.dp).padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(participant.name, 24.dp)
+            // Long-press opens the audio menu, like a browser's context menu on touch.
+            val menuAvailable = participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED
+            Row(Modifier.fillMaxWidth().heightIn(min = 38.dp)
+                .then(if (menuAvailable) Modifier.combinedClickable(onClick = {}, onLongClick = { audioOpen = true }, onLongClickLabel = "Audio controls for ${participant.name}") else Modifier)
+                .padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Avatar(participant.name, 24.dp, speaking = participant.id in voice.speakingParticipants)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", Modifier.weight(1f, fill = false), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        ParticipantCountry(participant.countryCode)
+                    }
                     if (participant.id != voice.selfId && participant.id in voice.locallyMutedParticipants) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.VolumeOff, null, Modifier.size(10.dp), tint = TerracottaBright)
@@ -378,7 +405,7 @@ internal data class VoiceJoinIntent(
                     }
                 }
                 if (if (participant.id == voice.selfId) voice.muted else participant.muted) Icon(Icons.Default.MicOff, "Muted", Modifier.size(15.dp), tint = TextMuted)
-                if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(Icons.Default.VolumeOff, "Deafened", Modifier.size(15.dp), tint = TextMuted)
+                if (if (participant.id == voice.selfId) voice.deafened else participant.deafened) Icon(Icons.Default.HeadsetOff, "Deafened", Modifier.size(15.dp), tint = TextMuted)
                 if (participant.id != voice.selfId && voice.phase == VoiceState.Phase.CONNECTED) Box {
                     TextButton({ audioOpen = !audioOpen }, modifier = Modifier.semantics { contentDescription = "Audio controls for ${participant.name}" }) { Text("Audio", fontSize = 10.sp) }
                     DropdownMenu(audioOpen, { audioOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
@@ -388,11 +415,12 @@ internal data class VoiceJoinIntent(
                                 Text("User volume", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 Text("$volume%", fontSize = 11.sp, color = TextMuted)
                             }
-                            Slider(volume.toFloat(), { VoiceCallService.setParticipantVolume(context, participant.id, it.toInt()) }, Modifier.semantics { contentDescription = "${participant.name} volume" }, valueRange = 0f..200f)
+                            Slider(volume.toFloat(), { CaperEffects.slider(it / 200f); VoiceCallService.setParticipantVolume(context, participant.id, it.toInt()) }, Modifier.semantics { contentDescription = "${participant.name} volume" }, valueRange = 0f..200f)
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                 Text("Mute", Modifier.weight(1f), fontSize = 12.sp)
-                                Switch(participant.id in voice.locallyMutedParticipants, { VoiceCallService.toggleParticipantMute(context, participant.id) }, modifier = Modifier.semantics { contentDescription = "Mute ${participant.name} for me" })
+                                Switch(participant.id in voice.locallyMutedParticipants, { CaperEffects.toggle(!it); VoiceCallService.toggleParticipantMute(context, participant.id) }, modifier = Modifier.semantics { contentDescription = "Mute ${participant.name} for me" })
                             }
+                            Text("Only changes what you hear.", color = TextMuted, fontSize = 10.sp)
                         }
                     }
                 }
@@ -401,12 +429,43 @@ internal data class VoiceJoinIntent(
     }
 }
 
+/** Web: channel-join when your call connects, and when someone else joins or leaves it. */
+@Composable private fun VoiceChimes(voice: VoiceState) {
+    var announced by remember { mutableStateOf(false) }
+    var previous by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
+    LaunchedEffect(voice.phase, voice.selfId, voice.participants) {
+        if (voice.phase != VoiceState.Phase.CONNECTED || voice.selfId == null) {
+            if (voice.phase == VoiceState.Phase.IDLE || voice.phase == VoiceState.Phase.FAILED || voice.phase == VoiceState.Phase.CONNECTING) announced = false
+            previous = null
+            return@LaunchedEffect
+        }
+        if (!announced) { announced = true; CaperEffects.play(CaperEffects.Effect.Join) }
+        val self = voice.selfId
+        val others = voice.participants.map { it.id }.filter { it != self }.toSet()
+        previous?.takeIf { it.first == self }?.second?.let { before ->
+            if ((before - others).isNotEmpty()) CaperEffects.play(CaperEffects.Effect.Leave)
+            else if ((others - before).isNotEmpty()) CaperEffects.play(CaperEffects.Effect.Join)
+        }
+        previous = self to others
+    }
+}
+
+/** Web shows the participant's flag with "From {region}"; the emoji flag is the native equivalent. */
+@Composable internal fun ParticipantCountry(code: String?) {
+    if (code == null || code.length != 2 || !code.all { it in 'A'..'Z' }) return
+    val region = java.util.Locale("", code).getDisplayCountry(java.util.Locale.US).ifEmpty { code }
+    val flag = code.map { String(Character.toChars(0x1F1E6 + (it - 'A'))) }.joinToString("")
+    Text(flag, Modifier.padding(start = 4.dp).semantics { contentDescription = "From $region" }, fontSize = 11.sp)
+}
+
 @Composable internal fun ConnectedVoiceContext(voice: VoiceState, openChannel: () -> Unit, leave: () -> Unit) {
     Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
         Row(Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).clip(MaterialTheme.shapes.small).clickable(role = Role.Button, onClick = openChannel)
                 .semantics { contentDescription = "Open voice channel" }) {
-                Text(if (voice.phase == VoiceState.Phase.CONNECTED) "Voice connected" else "Connecting voice…", color = CaperGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                // Web: green when connected, amber while connecting or reconnecting.
+                Text(when (voice.phase) { VoiceState.Phase.CONNECTED -> "Voice connected"; VoiceState.Phase.CONNECTING -> "Connecting…"; else -> "Reconnecting…" },
+                    color = if (voice.phase == VoiceState.Phase.CONNECTED) Color(0xFF8CB262) else Color(0xFFD9AB5C), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Text(listOfNotNull(voice.channelName, voice.spaceName).joinToString(" / ").ifEmpty { "General" }, color = TextMuted, fontSize = 10.sp)
             }
             IconButton(leave, Modifier.size(40.dp)) {
@@ -470,8 +529,8 @@ internal data class VoiceJoinIntent(
                 Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
             if (voice.phase == VoiceState.Phase.CONNECTED) {
-                IconButton({ VoiceCallService.toggleMute(context) }, Modifier.size(30.dp)) { Icon(if (voice.muted) Icons.Default.MicOff else Icons.Default.Mic, "Toggle mute", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
-                IconButton({ VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp)) { Icon(if (voice.deafened) Icons.Default.VolumeOff else Icons.Default.Headphones, "Toggle deafen", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(30.dp)) { Icon(if (voice.muted) Icons.Default.MicOff else Icons.Default.Mic, if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp)) { Icon(if (voice.deafened) Icons.Default.VolumeOff else Icons.Default.Headphones, if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
             }
             IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(Icons.Default.Settings, "Audio and account settings", Modifier.size(18.dp), tint = TextMuted) }
         }
@@ -516,7 +575,7 @@ internal data class VoiceJoinIntent(
             IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(Icons.Default.People, if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
-        (voicePermissionError ?: voice.error)?.let { error ->
+        voicePermissionError?.let { error ->
             Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
         }
         MessageTimeline(state, viewModel, Modifier.weight(1f))
@@ -602,7 +661,16 @@ internal data class VoiceJoinIntent(
     Text(label, Modifier.fillMaxWidth().height(20.dp).padding(horizontal = 18.dp), color = TextMuted, fontSize = 10.sp)
 }
 
-@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier) = Box(modifier.size(size).clip(CircleShape).background(if (size > 32.dp) SurfaceRaised else SurfaceComposer), contentAlignment = Alignment.Center) {
+@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, speaking: Boolean = false) = Box(
+    modifier
+        // Web: caper-green border with a soft outer ring while speaking.
+        .size(size)
+        .then(if (speaking) Modifier.drawBehind {
+            drawCircle(CaperGreen.copy(alpha = .2f), radius = this.size.minDimension / 2 + 1.5.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()))
+        } else Modifier).clip(CircleShape).background(if (size > 32.dp) SurfaceRaised else SurfaceComposer)
+        .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
+    contentAlignment = Alignment.Center,
+) {
     Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
 }
 
@@ -645,16 +713,21 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun VerifyScreen(screen: SessionScreen.Verify, busy: Boolean, error: String?, clearError: () -> Unit, back: () -> Unit, submit: (String, String) -> Unit) {
-    var code by remember { mutableStateOf("") }
+@Composable private fun VerifyScreen(screen: SessionScreen.Verify, busy: Boolean, error: String?, clearError: () -> Unit, back: () -> Unit, submit: (String, String) -> Unit, resend: () -> Unit) {
+    var code by remember(screen.challengeId) { mutableStateOf("") }
+    val exhausted = screen.attemptsRemaining == 0
     AuthFrame {
         Text("WELCOME TO CAPER", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         Text("Check your email.", Modifier.padding(vertical = 20.dp), fontSize = 49.sp, lineHeight = 53.sp, fontWeight = FontWeight.Bold, letterSpacing = (-2.5).sp)
         Text("Enter the six-character code sent to ${screen.email}. It expires in 10 minutes.", color = TextMuted, lineHeight = 26.sp)
         Text("Sign-in code", Modifier.padding(top = 24.dp, bottom = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
-        OutlinedTextField(code, { code = it.uppercase().filter { character -> character in "ABCDEFGHJKMNPQRSTWXYZ23456789" }.take(6); if (error != null) clearError() }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(code, { code = it.uppercase().filter { character -> character in "ABCDEFGHJKMNPQRSTWXYZ23456789" }.take(6); if (error != null) clearError() }, singleLine = true, enabled = !exhausted, modifier = Modifier.fillMaxWidth())
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) { Text(error, Modifier.padding(14.dp)) }
-        Button({ submit(screen.challengeId, code) }, enabled = code.length == 6 && !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+        if (screen.attemptsRemaining == 1) Text("One attempt left. Check the code carefully.", Modifier.padding(top = 12.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        if (exhausted) Button(resend, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+            Text(if (busy) "Sending…" else "Email me a new code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+            if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
+        } else Button({ submit(screen.challengeId, code) }, enabled = code.length == 6 && !busy, modifier = Modifier.fillMaxWidth().padding(top = 28.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
             Text(if (busy) "Checking…" else "Continue", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
             if (!busy) Icon(Icons.Default.ArrowForward, null, Modifier.size(20.dp))
         }
@@ -666,6 +739,7 @@ internal data class VoiceJoinIntent(
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
     val form: @Composable ColumnScope.() -> Unit = {
+        if (close == null) Text("ONE LAST THING", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         if (close == null) Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -711,7 +785,7 @@ internal data class VoiceJoinIntent(
         Text("Delete space", fontWeight = FontWeight.Bold); Text("Delete this space and all its channels for every member.", color = TextMuted, fontSize = 11.sp)
         OutlinedButton({ confirmingDelete = true }, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorText), border = BorderStroke(1.dp, Danger)) { Text("Delete space") }
     }
-    if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }) { viewModel.deleteCurrentSpace { close() } }
+    if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }, warn = true) { viewModel.deleteCurrentSpace { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
 }
 
 @Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {
@@ -739,7 +813,7 @@ internal data class VoiceJoinIntent(
             Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { Text("Save changes") }
         }
     }
-    if (confirmingDelete) ConfirmDialog("Delete channel", "Delete #${channel.name} for everyone? This channel and its messages will disappear from the space. This cannot be undone.", "Delete channel", state.busy, { confirmingDelete = false }) { viewModel.deleteChannel(channel) { close() } }
+    if (confirmingDelete) ConfirmDialog("Delete channel", "Delete #${channel.name} for everyone? This channel and its messages will disappear from the space. This cannot be undone.", "Delete channel", state.busy, { confirmingDelete = false }, warn = true) { viewModel.deleteChannel(channel) { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
 }
 
 @Composable private fun MemberManagerRow(member: Member, protected: Boolean, remove: () -> Unit) {
@@ -875,6 +949,11 @@ internal data class VoiceJoinIntent(
         if (dialogActive) teardownTest()
     } }
     CaperDialog("Audio settings", close) {
+        var soundEffects by remember { mutableStateOf(CaperEffects.enabled) }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Caper sound effects", Modifier.weight(1f), fontSize = 13.sp)
+            Switch(soundEffects, { soundEffects = it; CaperEffects.enabled = it; if (it) CaperEffects.play(CaperEffects.Effect.ToggleOn) })
+        }
         if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) {
             Text("Audio device", fontWeight = FontWeight.Bold)
             voice.routes.forEach { route ->
@@ -885,11 +964,11 @@ internal data class VoiceJoinIntent(
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
-        Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
+        Slider(inputGain.toFloat(), { inputGain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Voice processing", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
-        Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Voice processing" }, valueRange = 0f..100f)
+        Slider(strength.toFloat(), { strength = it.toInt(); CaperEffects.slider(it / 100f); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Voice processing" }, valueRange = 0f..100f)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$outputVolume%", color = TextMuted, fontSize = 11.sp) }
-        Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) }, modifier = Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
+        Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); CaperEffects.slider(it / 200f); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) }, modifier = Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton({ if (testing) stopTest() else {
                 finishing = true
@@ -946,11 +1025,13 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
 private fun formatBytes(value: Long) = when { value >= 1_000_000 -> "%.1f MB".format(value / 1_000_000.0); value >= 1_000 -> "%.1f KB".format(value / 1_000.0); else -> "$value B" }
 private fun formatBitrate(value: Long) = "${value / 1_000} kbps"
 
-@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, change: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { change(!value) }, verticalAlignment = Alignment.CenterVertically) {
-    Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, change)
+@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = Alignment.CenterVertically) {
+    Icon(Icons.Default.Lock, null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) })
 }
 
-@Composable private fun ConfirmDialog(title: String, body: String, action: String, busy: Boolean, close: () -> Unit, confirm: () -> Unit) = CaperDialog(title, close) {
+@Composable private fun ConfirmDialog(title: String, body: String, action: String, busy: Boolean, close: () -> Unit, warn: Boolean = false, confirm: () -> Unit) = CaperDialog(title, close) {
+    // Web plays its warning once when a delete confirmation opens.
+    if (warn) LaunchedEffect(Unit) { CaperEffects.play(CaperEffects.Effect.Warning) }
     Text(body, color = TextMuted); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(close) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(confirm, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger)) { Text(action) } }
 }
 
