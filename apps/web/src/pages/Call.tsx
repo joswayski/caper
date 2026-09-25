@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
 import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Speech, Settings, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
@@ -15,7 +15,7 @@ import { PublicCallClient, prepareVoiceJoin } from "../media/client";
 import { watchPresence } from "../media/presence";
 import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
-import MicPlayback from "./MicPlayback";
+import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
@@ -70,7 +70,7 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
   ];
   return <section className="call-diagnostics" aria-label="Connection statistics">
     <dl>{values.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
-    <p>Local estimates, not billing totals. Counters reset on reconnect.</p>
+    <p>Counters reset on reconnect.</p>
     <button type="button" className="voice-button" onClick={() => void navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2)).then(() => setCopyStatus("Copied connection details"), () => setCopyStatus("Copy failed; try again."))}>Copy connection details</button>
     <span role="status">{copyStatus}</span>
   </section>;
@@ -78,13 +78,53 @@ function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallV
 
 function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: { label: string; settings?: boolean; open: boolean; onOpenChange: (open: boolean) => void; menuRef?: RefObject<HTMLDivElement | null>; children: ReactNode }) {
   const panelId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const anchor = panel?.closest(".call-account");
+    if (!open || !panel || !anchor) return;
+    panel.showPopover();
+    const position = () => {
+      const viewport = window.visualViewport;
+      const x = viewport?.offsetLeft ?? 0;
+      const y = viewport?.offsetTop ?? 0;
+      const width = viewport?.width ?? window.innerWidth;
+      const height = viewport?.height ?? window.innerHeight;
+      const bounds = anchor.getBoundingClientRect();
+      const edge = 8;
+      const panelWidth = Math.min(settings ? bounds.width : 280, width - edge * 2);
+      panel.style.width = `${panelWidth}px`;
+      const above = Math.max(0, bounds.top - y - edge * 2);
+      const below = Math.max(0, y + height - bounds.bottom - edge * 2);
+      const down = panel.scrollHeight + 2 > above && below > above;
+      panel.style.maxHeight = `${Math.min(height - edge * 2, down ? below : above)}px`;
+      const panelHeight = panel.getBoundingClientRect().height;
+      panel.style.left = `${Math.max(x + edge, Math.min(settings ? bounds.left : bounds.right - panelWidth, x + width - panelWidth - edge))}px`;
+      panel.style.top = `${Math.max(y + edge, Math.min(down ? bounds.bottom + edge : bounds.top - panelHeight - edge, y + height - panelHeight - edge))}px`;
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(panel);
+    observer.observe(anchor);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    window.visualViewport?.addEventListener("resize", position);
+    window.visualViewport?.addEventListener("scroll", position);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+      window.visualViewport?.removeEventListener("resize", position);
+      window.visualViewport?.removeEventListener("scroll", position);
+    };
+  }, [open, settings]);
   return <div ref={menuRef} className={`call-settings ${settings ? "" : "device-menu"}`} onKeyDown={(event) => {
     // Let native device pickers handle Escape without also removing their panel.
     if (event.target instanceof HTMLSelectElement) return;
     if (event.key === "Escape" && open && !event.defaultPrevented) { onOpenChange(false); event.currentTarget.querySelector<HTMLButtonElement>(".call-settings-trigger")?.focus(); }
   }}>
     <button type="button" className="call-settings-trigger" title={label} aria-label={label} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => onOpenChange(!open)}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
-    {open && <div id={panelId} className="call-settings-panel" role="group" aria-label={`${label} panel`} tabIndex={-1}>{children}</div>}
+    {open && <div ref={panelRef} id={panelId} className="call-settings-panel" popover="manual" role="group" aria-label={`${label} panel`} tabIndex={-1}>{children}</div>}
   </div>;
 }
 
@@ -529,7 +569,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
 
   const isSpeaking = (participant: { id: string; muted: boolean }) => {
     const muted = participant.id === state.selfId ? state.muted : participant.muted;
-    return activeParticipants.has(participant.id) && !(muted && !state.monitoring);
+    return activeParticipants.has(participant.id) && !muted;
   };
   const renderRoster = (people: typeof roster, own: boolean, label: string) => (
     <ul className={own && volumeParticipant ? "volume-menu-open" : undefined} aria-label={`People in voice in ${label}`}>
@@ -539,13 +579,15 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
                 const participantMuted = self ? state.muted : participant.muted;
                 const participantDeafened = self ? state.deafened : participant.deafened;
                 const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
-                const activityMuted = participantMuted && !state.monitoring;
+                const activityMuted = participantMuted;
                 const speaking = isSpeaking(participant);
                 return <li ref={own && volumeParticipant === participant.id ? volumeMenuRef : undefined} className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={!own || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                   <span className="participant-avatar">
                     <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
                   </span>
-                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}</span>
+                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}
+                    {!self && mutedParticipants.has(participant.id) && <span className="participant-local-muted"><VolumeX aria-hidden="true" />You muted {participant.name}</span>}
+                  </span>
                   {own && <VoiceActivity
                     stream={stream}
                     muted={activityMuted}
@@ -665,7 +707,10 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
           <div className="voice-panel">
           {((!idle && !pendingJoin) || (voiceError && !audioPanel)) && <div className="voice-dock">
             {!idle && !pendingJoin && <div className="connected-channel" data-phase={state.phase} role="status">
-              <button type="button" className="voice-dock-channel" onClick={() => voiceChannel && onVoiceChannelOpen?.(voiceChannel.id, voiceChannel.spaceId)}>
+              <button type="button" className="voice-dock-channel" onClick={() => {
+                if (voiceChannel && onVoiceChannelOpen) onVoiceChannelOpen(voiceChannel.id, voiceChannel.spaceId);
+                else setAudioPanel("connection");
+              }}>
                 <AudioLines aria-hidden="true" />
                 <span>
                   <strong>{connected ? "Voice connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}</strong>
@@ -713,7 +758,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
               <fieldset className="device-options">
                 <label><input type="checkbox" role="switch" checked={systemSounds} onChange={(event) => { setSystemSoundsEnabled(event.target.checked); if (event.target.checked) { void preloadSoundEffects(); playSound("toggle-on"); } }} /><span>Caper sound effects</span></label>
               </fieldset>
-              <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Mic test</button>
+              <button disabled={!identityReady || controlsDisabled || state.phase === "leaving"} type="button" onClick={openMicTest}>Audio test</button>
               {state.diagnostics && <button type="button" onClick={() => setAudioPanel("connection")}>Connection details</button>}
               {account?.debugEnabled && <button type="button" onClick={() => setAudioPanel("debug")}>Audio diagnostics</button>}
               {identityReady && (account ? <button type="button" onClick={() => void logout().then(() => window.location.assign("/"))}>Log out</button> : <a href="/login">Sign in</a>)}
@@ -748,15 +793,44 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
         }
       }} onCancel={(event) => { event.preventDefault(); closeAudioPanel(); }}>
         <div className="audio-dialog-heading">
-          <h2 id="audio-dialog-title">{audioPanel === "mic" ? "Mic test" : audioPanel === "debug" ? "Audio diagnostics" : "Connection details"}</h2>
+          <h2 id="audio-dialog-title">{audioPanel === "mic" ? "Audio test" : audioPanel === "debug" ? "Audio diagnostics" : "Connection details"}</h2>
           <button type="button" className="voice-icon-button" aria-label="Close audio settings" onClick={closeAudioPanel}><X aria-hidden="true" /></button>
         </div>
         {audioPanel && (actionError || voiceError) && <p className="call-error" role="alert">{actionError || voiceError}</p>}
         {audioPanel === "mic" && <>
+          <p className="noise-status">Only you can hear these tests.</p>
+          <div className="audio-test-devices">
+            <div>
+              <label className="device-select">Microphone
+                <select aria-label="Test microphone device" value={deviceId} disabled={actionPending} onChange={(event) => {
+                  const id = event.target.value;
+                  void act(() => {
+                    if (connected) return clientRef.current!.changeMicrophone(id);
+                    clientRef.current!.stopLocalMicTest();
+                    return clientRef.current!.startLocalMicTest(id);
+                  }, () => setDeviceId(id));
+                }}>
+                  {deviceOptions(devices, "audioinput").map(({ device, label }) => <option key={device.deviceId} value={device.deviceId}>{label}</option>)}
+                  {!deviceOptions(devices, "audioinput").length && <option value="">System default</option>}
+                </select>
+              </label>
+              <div className="volume-control"><span>Microphone volume <output>{state.inputVolume}%</output></span><Slider label="Test microphone volume" value={state.inputVolume} max={200} onChange={(value) => clientRef.current?.setInputVolume(value)} /></div>
+            </div>
+            <div>
+              <label className="device-select">Speaker
+                <select aria-label="Test speaker device" value={output} disabled={!outputSelectable} onChange={(event) => setOutput(event.target.value)}>
+                  {deviceOptions(devices, "audiooutput").map(({ device, label }) => <option key={device.deviceId} value={device.deviceId}>{label}</option>)}
+                  {!deviceOptions(devices, "audiooutput").length && <option value="">System default</option>}
+                </select>
+              </label>
+              {!outputSelectable && <p className="noise-status">Choose speakers in system settings.</p>}
+              <div className="volume-control"><span>Speaker volume <output>{outputVolume}%</output></span><Slider label="Test speaker volume" value={outputVolume} max={200} onChange={setOutputVolume} /></div>
+              <SpeakerTest output={output} volume={outputVolume} />
+            </div>
+          </div>
           {actionPending && <p className="noise-status" role="status">Preparing microphone…</p>}
-          {actionPending && <p className="noise-status">Allow microphone access if your browser asks. You can close this window to cancel.</p>}
           {!actionPending && actionError && !state.monitorStream && <button type="button" className="voice-button" onClick={openMicTest}>Try again</button>}
-          {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} volume={outputVolume} noiseStatus={state.noiseSuppressionStatus} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />}
+          {state.monitorStream && !actionPending && <MicPlayback key={`${state.noiseSuppression}:${deviceId}`} stream={state.monitorStream} output={output} volume={outputVolume} processingStrength={state.voiceProcessingStrength ?? DEFAULT_VOICE_PROCESSING_STRENGTH} onProcessingStrengthChange={(strength) => clientRef.current?.setVoiceProcessingStrength(strength)} />}
           {account?.debugEnabled && <details><summary>Audio diagnostics</summary><AudioDiagnostics client={clientRef.current} /></details>}
         </>}
         {audioPanel === "debug" && account?.debugEnabled && <AudioDiagnostics client={clientRef.current} />}
