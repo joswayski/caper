@@ -1,15 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import Slider from "../components/Slider";
-import Tooltip from "../components/Tooltip";
 import { createVoiceComparison, MAX_RECORDING_SECONDS, recordReceivedAudio, type ReceivedRecording } from "../media/recording";
 
 const INPUT_METER_SEGMENTS = 40;
 
 function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }) {
-  const [level, setLevel] = useState(0);
+  const [levels, setLevels] = useState<number[]>(() => Array(INPUT_METER_SEGMENTS).fill(0));
 
   useEffect(() => {
-    if (!active || typeof AudioContext === "undefined") { setLevel(0); return; }
+    if (!active || typeof AudioContext === "undefined") { setLevels(Array(INPUT_METER_SEGMENTS).fill(0)); return; }
     const context = new AudioContext();
     const source = context.createMediaStreamSource(stream);
     const analyser = context.createAnalyser();
@@ -24,7 +23,7 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
         const rms = Math.sqrt(samples.reduce((sum, sample) => sum + ((sample - 128) / 128) ** 2, 0) / samples.length);
         // Browser microphone samples are quiet for normal speaking. Scale the
         // display independently from the recorded signal so speech is legible.
-        setLevel(Math.min(1, rms * 32));
+        setLevels((history) => [...history.slice(1), Math.min(1, Math.sqrt(rms) * 2.5)]);
         lastUpdate = now;
       }
       frame = requestAnimationFrame(read);
@@ -40,7 +39,7 @@ function InputMeter({ active, stream }: { active: boolean; stream: MediaStream }
   }, [active, stream]);
 
   return <div className="mic-meter" aria-label={active ? "Received microphone level" : "Microphone level inactive"}>
-    {Array.from({ length: INPUT_METER_SEGMENTS }, (_, index) => <i key={index} className={active && index / INPUT_METER_SEGMENTS < level ? "lit" : ""} />)}
+    {levels.map((level, index) => <i key={index} aria-hidden="true" className={active ? "lit" : ""} style={{ height: `${3 + Math.round(level * 8) * 4}px` }} />)}
   </div>;
 }
 
@@ -49,12 +48,13 @@ interface Clip {
   silent: boolean;
 }
 
-function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onPlay, onAudioElement, onDeviceError }: {
+function RecordingPlayback({ clip, label, output, volume, autoPlay, loop = false, onEnded, onPlay, onAudioElement, onDeviceError }: {
   clip: Clip;
   label: string;
   output: string;
   volume: number;
   autoPlay: boolean;
+  loop?: boolean;
   onEnded?(): void;
   onPlay?(): void;
   onAudioElement?(element: HTMLAudioElement | null): void;
@@ -63,6 +63,10 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
   const ref = useRef<HTMLAudioElement>(null);
   const contextRef = useRef<(AudioContext & { setSinkId(id: string): Promise<void> }) | null>(null);
   const gainRef = useRef<GainNode | null>(null);
+  useEffect(() => {
+    const element = ref.current;
+    return () => { element?.pause(); };
+  }, []);
   useEffect(() => {
     const element = ref.current;
     // Keep native playback (and its device picker) on browsers without
@@ -99,27 +103,29 @@ function RecordingPlayback({ clip, label, output, volume, autoPlay, onEnded, onP
         if (current) onDeviceError();
         return;
       }
-      if (autoPlay) void element.play().catch(() => undefined);
+      if (current && autoPlay) void element.play().catch(() => { if (current) onDeviceError(); });
     };
     void prepare();
     return () => { current = false; };
   }, [autoPlay, clip.url, output]);
-  return <audio ref={(element) => { ref.current = element; onAudioElement?.(element); }} aria-label={`${label} microphone sample`} controls src={clip.url} onEnded={onEnded} onPlay={() => { void contextRef.current?.resume(); onPlay?.(); }} />;
+  return <audio ref={(element) => { ref.current = element; onAudioElement?.(element); }} aria-label={`${label} audio sample`} controls loop={loop} src={clip.url} onEnded={onEnded} onError={onDeviceError} onPlay={() => { void contextRef.current?.resume(); onPlay?.(); }} />;
 }
 
-function ProcessingDetail({ label, id, children }: { label: string; id: string; children: string }) {
-  return <span className="processing-detail">
-    {label}
-    <Tooltip id={id} content={children} touch><button type="button" aria-label={`About ${label}`}>?</button></Tooltip>
-  </span>;
+export function SpeakerTest({ output, volume }: { output: string; volume: number }) {
+  const [playing, setPlaying] = useState(false);
+  const [error, setError] = useState(false);
+  return <div className="speaker-test">
+    <button type="button" className="voice-button" aria-pressed={playing} onClick={() => { setError(false); setPlaying(!playing); }}>{playing ? "Stop speaker test" : "Test speakers"}</button>
+    {playing && <span hidden><RecordingPlayback clip={{ url: "/audio/effects/channel-join.wav", silent: false }} label="Speaker test" output={output} volume={volume} autoPlay loop onDeviceError={() => { setPlaying(false); setError(true); }} /></span>}
+    {error && <p className="call-error" role="alert">Couldn’t play audio. Check your output and try again.</p>}
+  </div>;
 }
 
-export default function MicPlayback({ stream, output, volume = 100, processingStrength, noiseStatus, onProcessingStrengthChange }: {
+export default function MicPlayback({ stream, output, volume = 100, processingStrength, onProcessingStrengthChange }: {
   stream: MediaStream;
   output: string;
   volume?: number;
   processingStrength: number;
-  noiseStatus?: string;
   onProcessingStrengthChange(strength: number): void;
 }) {
   const urlsRef = useRef<{ natural?: string; processed?: string }>({});
@@ -228,21 +234,19 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
   return <section className="mic-test-card" aria-labelledby="mic-test-heading">
     <div className="mic-test-heading">
       <div>
-        <p className="eyebrow">Microphone test</p>
-        <h3 id="mic-test-heading">{recording ? "Recording your voice" : "Find your voice"}</h3>
+        <h3 id="mic-test-heading">{recording ? "Recording…" : "Try your microphone"}</h3>
       </div>
       {recording && <p className="recording-clock"><i aria-hidden="true" />{elapsed.toFixed(1)}s</p>}
     </div>
-    <p className="mic-test-copy">Both samples use the current noise cancellation. Enhanced adds voice EQ and compression, not extra noise removal.</p>
-    <p className="noise-status" role="status">{noiseStatus ?? "Noise cancellation status unavailable"}</p>
+    <p className="mic-test-copy">Less noise. Clearer voice.</p>
     <div className="voice-processing-control">
-      <div className="voice-processing-heading"><ProcessingDetail label="Voice processing" id="voice-processing-detail">Adds high-pass filtering, warmth and presence EQ, compression, makeup gain, and peak limiting. The slider controls the strength.</ProcessingDetail><output>{processingStrength}%</output></div>
+      <div className="voice-processing-heading"><span>Voice enhancement</span><output>{processingStrength}%</output></div>
       <Slider label="Voice processing" value={processingStrength} disabled={recording} onChange={onProcessingStrengthChange} />
       <div><small>Natural</small><small>Enhanced</small></div>
     </div>
     <div className="mic-test-action-row">
-      {!recording && <button type="button" className="mic-test-button" disabled={processing} onClick={startRecording}>{processing ? "Preparing…" : "Mic Test"}</button>}
-      {recording && <button type="button" className="mic-test-button" onClick={() => sessionRef.current?.finish()}>Stop Testing</button>}
+      {!recording && <button type="button" className="mic-test-button" disabled={processing} onClick={startRecording}>{processing ? "Preparing…" : "Test microphone"}</button>}
+      {recording && <button type="button" className="mic-test-button" onClick={() => sessionRef.current?.finish()}>Stop recording</button>}
       <div className="mic-level">
         <div className="mic-meter-label"><span>Input level</span></div>
         <InputMeter active={recording} stream={stream} />
@@ -250,24 +254,21 @@ export default function MicPlayback({ stream, output, volume = 100, processingSt
     </div>
     {error && <p className="call-error" role="alert">{error}</p>}
     {deviceError && <p className="call-error" role="alert">Audio output unavailable; choose another device.</p>}
-    <div className="mic-comparison" aria-label="Recorded samples">
+    {(clips.natural || clips.processed) && <div className="mic-comparison" aria-label="Recorded samples">
       <article>
         <div><strong>Natural</strong></div>
         {clips.natural
           ? <><RecordingPlayback clip={clips.natural} label="Natural" output={output} volume={volume} autoPlay onEnded={() => setNaturalPlaybackEnded(true)} onPlay={() => pauseSample("processed")} onAudioElement={(element) => { playbackRefs.current.natural = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
             {clips.natural.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
-          : <p>Your natural recording will appear here.</p>}
+          : <p>Record to listen back.</p>}
       </article>
       <article className={clips.processed ? "latest" : undefined}>
         <div><strong>Enhanced</strong></div>
         {clips.processed
           ? <><RecordingPlayback clip={clips.processed} label="Enhanced" output={output} volume={volume} autoPlay={naturalPlaybackEnded} onPlay={() => pauseSample("natural")} onAudioElement={(element) => { playbackRefs.current.processed = element ?? undefined; }} onDeviceError={() => setDeviceError(true)} />
             {clips.processed.silent && <p role="alert">No audible signal detected. Check your mic and try again.</p>}</>
-          : <p>{processing ? "Applying voice enhancement…" : "Your enhanced comparison will appear here."}</p>}
+          : <p>{processing ? "Preparing…" : "Record to compare."}</p>}
       </article>
-    </div>
-    <div className="processing-details" aria-label="Audio processing details">
-      <ProcessingDetail label="On-device noise cancellation" id="noise-cancellation-detail">Noise cancellation runs locally before recording either sample or sending your voice. If DPDFNet cannot keep up, RNNoise takes over. Check the status above for the active filter.</ProcessingDetail>
-    </div>
+    </div>}
   </section>;
 }
