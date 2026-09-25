@@ -890,7 +890,14 @@ async fn execute(
     let body = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).map_err(|_| chat::unavailable())?
+        match serde_json::from_slice(&bytes) {
+            Ok(body) => body,
+            // Extractor rejections (for example an unknown field) are plain text.
+            // Keep their 4xx status so clients can tell a refused request, which
+            // never ran, from an unavailable service.
+            Err(_) if (400..500).contains(&status) => json!({"error":"invalid request"}),
+            Err(_) => return Err(chat::unavailable()),
+        }
     };
     if let Some((key, fingerprint, mut broker)) = receipt {
         let saved = json!({"fingerprint":fingerprint,"status":status,"body":body}).to_string();

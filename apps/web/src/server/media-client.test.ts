@@ -32,12 +32,15 @@ class Peer extends EventTarget {
   onconnectionstatechange?: () => void;
   senders: Array<{ track: Track | null; replaceTrack(t: Track | null): Promise<void> }> = [];
   constructor() { super(); Peer.latest = this; Peer.all.push(this); }
-  addTransceiver(track: Track) {
-    const sender = { track: track as Track | null, async replaceTrack(t: Track | null) { this.track = t; } };
+  configuration: RTCConfiguration = {};
+  addTransceiver(track: Track | string) {
+    const sender = { track: typeof track === "string" ? null : track as Track | null, async replaceTrack(t: Track | null) { this.track = t; } };
     this.senders.push(sender);
     return { mid: "0", sender };
   }
-  async createOffer() { return { type: "offer", sdp: "v=0" }; }
+  getConfiguration() { return this.configuration; }
+  setConfiguration(configuration: RTCConfiguration) { this.configuration = configuration; }
+  async createOffer() { return { type: "offer", sdp: "v=0\r\na=mid:0\r\n" }; }
   async createAnswer() { return { type: "answer", sdp: "v=0" }; }
   async setLocalDescription(description: object) { this.localDescription = { toJSON: () => description }; }
   async setRemoteDescription(description: RTCSessionDescriptionInit) {
@@ -136,7 +139,11 @@ function setup(t: TestContext, config: { eventsReady?: boolean } = {}) {
       return Response.json({ token: role ?? "capability", id: role ?? "self", iceServers: [] });
     }
     if (op === "publish") return Response.json({ trackId: "private-track", sessionDescription: { type: "answer", sdp: providerSdp } });
-    if (op === "subscribe") return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
+    if (op === "subscribe") {
+      const { trackIds } = JSON.parse(options.body as string) as { trackIds?: string[] };
+      if (trackIds) return Response.json({ requiresImmediateRenegotiation: true, tracks: trackIds.map((trackId, index) => ({ trackId, mid: String(index + 1) })), gone: [], sessionDescription: { type: "offer", sdp: providerSdp } });
+      return Response.json({ requiresImmediateRenegotiation: true, tracks: [{ mid: "1" }], sessionDescription: { type: "offer", sdp: providerSdp } });
+    }
     if (op === "snapshot") return Response.json({ participants: [] });
     if (op === "state") {
       const { muted, deafened, sequence } = JSON.parse(options.body as string);
@@ -1106,19 +1113,34 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   assert.equal(track.enabled, true);
 });
 
-test("early state acknowledgement still waits for transport before roster negotiation or audio", async (t) => {
-  const { client, track, calls, states } = setup(t);
-  t.mock.method(Peer.prototype, "setRemoteDescription", async () => { Peer.latest.connectionState = "connecting"; });
+test("lease renewal overlaps transport setup, but pulls and audio wait for it", async (t) => {
+  const { client, track, calls, states, install } = setup(t);
+  const original = fetch;
+  install("fetch", (url: string, init: RequestInit) => url.endsWith("/snapshot")
+    ? (calls.push("snapshot"), Promise.resolve(Response.json({ participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }] })))
+    : original(url, init));
+  const applyRemote = Peer.prototype.setRemoteDescription;
+  let answers = 0;
+  t.mock.method(Peer.prototype, "setRemoteDescription", async function (this: Peer, description: RTCSessionDescriptionInit) {
+    // Only the publication answer starts transport; later offers renegotiate a connected peer.
+    if (answers++ === 0) { this.connectionState = "connecting"; return; }
+    return applyRemote.call(this, description);
+  });
   const joining = client.join();
   await tick();
   assert.equal(calls.includes("state"), true);
-  assert.equal(calls.includes("snapshot"), false);
+  assert.equal(calls.includes("snapshot"), true, "the lease renewal overlaps transport setup");
+  // Cloudflare holds a pull for an unconnected listener, then answers 425.
+  assert.equal(calls.includes("subscribe"), false, "pulls wait for the listener's transport");
+  assert.equal(calls.includes("negotiate"), false);
   assert.equal(track.enabled, false);
   assert.equal(states.at(-1)?.phase, "joining");
   Peer.latest.connectionState = "connected";
   Peer.latest.dispatchEvent(new Event("connectionstatechange"));
   await joining;
-  assert.equal(calls.includes("snapshot"), true);
+  assert.equal(calls.includes("subscribe"), true);
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "remote");
   assert.equal(track.enabled, true);
 });
 
@@ -1816,15 +1838,42 @@ test("a departure before subscribing skips only that track and retains the calle
   await client.join();
   const peer = Peer.latest;
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/subscribe") && JSON.parse(init.body as string).trackId === "gone"
-    ? Promise.resolve(Response.json({ error: "track not found", code: "track_gone" }, { status: 404 }))
-    : original(url, init));
+  const requests: unknown[] = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/subscribe")) return original(url, init);
+    requests.push(JSON.parse(init.body as string));
+    // One batched pull: the live source is allocated, the departed one is reported gone.
+    return Promise.resolve(Response.json({ requiresImmediateRenegotiation: true, tracks: [{ trackId: "live", mid: "1" }], gone: ["gone"], sessionDescription: { type: "offer", sdp: providerSdp } }));
+  });
   events[0].enqueue(snapshotEvent([{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "gone", kind: "microphone" }, { id: "live", kind: "microphone" }] }], 1));
   await tick();
+  assert.deepEqual(requests[0], { trackIds: ["gone", "live"] }, "several sources share one pull");
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(Peer.latest, peer);
   assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "live", "continue subscribing to unaffected tracks");
   assert.equal(calls.includes("leave"), false);
+});
+
+test("an API without batched pulls falls back to one pull per source and remembers it", async (t) => {
+  const { client, install, events, states } = setup(t);
+  await client.join();
+  const original = fetch;
+  const requests: Array<Record<string, unknown>> = [];
+  install("fetch", (url: string, init: RequestInit) => {
+    if (!url.endsWith("/subscribe")) return original(url, init);
+    const body = JSON.parse(init.body as string);
+    requests.push(body);
+    if (body.trackIds) return Promise.resolve(Response.json({ error: "unknown field `trackIds`" }, { status: 422 }));
+    return original(url, init);
+  });
+  const person = (id: string, tracks: string[]) => ({ id, name: id, muted: false, deafened: false, tracks: tracks.map((track) => ({ id: track, kind: "microphone" as const })) });
+  events[0].enqueue(snapshotEvent([person("a", ["a-mic"]), person("b", ["b-mic"])], 1));
+  await tick();
+  assert.deepEqual(requests, [{ trackIds: ["a-mic", "b-mic"] }, { trackId: "a-mic" }, { trackId: "b-mic" }]);
+  events[0].enqueue(snapshotEvent([person("a", ["a-mic"]), person("b", ["b-mic"]), person("c", ["c-mic"]), person("d", ["d-mic"])], 2));
+  await tick();
+  assert.deepEqual(requests.slice(3), [{ trackId: "c-mic" }, { trackId: "d-mic" }], "no repeated batch attempt");
+  assert.equal(states.at(-1)?.phase, "connected");
 });
 
 test("a source leaving during subscription completes negotiation then closes only that MID", async (t) => {
@@ -1991,7 +2040,10 @@ test("join carries current mute/deafen intent and synchronizes before slow publi
   const joining = client.join("Laptop");
   await tick();
   try {
-    assert.deepEqual(joinBody, { name: "Laptop", muted: true, deafened: true });
+    assert.deepEqual(joinBody, {
+      name: "Laptop", muted: true, deafened: true,
+      publish: { mid: "0", sessionDescription: { type: "offer", sdp: "v=0\r\na=mid:0\r\n" } },
+    });
     assert.deepEqual(stateUpdates, [{ muted: true, deafened: true }]);
   } finally { finish(); await joining; }
 });
@@ -2009,4 +2061,70 @@ test("connection event wait ignores intermediate states", async (t) => {
   target.dispatchEvent(new Event("change"));
   await waiting;
   assert.equal(resolved, true);
+});
+
+test("join publishes the microphone in the same request when the API answers it", async (t) => {
+  const { client, install, calls, track, states } = setup(t);
+  const original = fetch;
+  const iceServers = [{ urls: "turn:turn.example:3478", username: "u", credential: "c" }];
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (!url.endsWith("/join")) return original(url, init);
+    calls.push("join");
+    return Response.json({ token: "capability", id: "self", iceServers, publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } } });
+  });
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(calls.includes("publish"), false, "no second signaling request");
+  assert.deepEqual(Peer.latest.configuration.iceServers, iceServers, "TURN is configured before the offer is applied");
+  assert.equal(Peer.latest.remoteDescriptions[0]?.sdp, senderSdp);
+  assert.equal(Peer.latest.senders[0].track, track);
+  assert.equal(track.enabled, true);
+});
+
+test("an API without combined publication falls back to a separate publish", async (t) => {
+  const { client, install, calls, states } = setup(t);
+  const original = fetch;
+  const bodies: Array<Record<string, unknown>> = [];
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) {
+      const body = JSON.parse(init.body as string);
+      bodies.push(body);
+      if (body.publish) return Response.json({ error: "unknown field `publish`" }, { status: 422 });
+    }
+    return original(url, init);
+  });
+  await client.join();
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[1].publish, undefined);
+  assert.equal(calls.filter((op) => op === "publish").length, 1);
+  assert.equal(calls.includes("leave"), false);
+});
+
+test("a listed source that cannot be pulled yet is retried shortly", async (t) => {
+  const { client, install, events, states } = setup(t);
+  await client.join();
+  const original = fetch;
+  let refusals = 0;
+  const roster = [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "fresh", kind: "microphone" }] }];
+  install("fetch", (url: string, init: RequestInit) => {
+    // A newcomer is refused until its own transport sends media.
+    if (url.endsWith("/subscribe") && refusals++ < 2) {
+      return Promise.resolve(Response.json({ error: "track not found", code: "track_gone" }, { status: 404 }));
+    }
+    if (url.endsWith("/snapshot")) return Promise.resolve(Response.json({ participants: roster }));
+    return original(url, init);
+  });
+  events[0].enqueue(snapshotEvent(roster, 1));
+  await tick();
+  assert.equal(states.at(-1)?.remoteMedia.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 380));
+  await tick();
+  assert.equal(refusals, 2, "the first re-check follows within about 250 ms");
+  assert.equal(states.at(-1)?.remoteMedia.length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await tick();
+  assert.equal(refusals, 3, "and the next about 250 ms later");
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.remoteMedia[0]?.trackId, "fresh");
 });

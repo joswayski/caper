@@ -604,6 +604,177 @@ async fn provider_rejected_unavailable_track_preserves_listener_only_without_sdp
 }
 
 #[tokio::test]
+async fn batched_pulls_keep_partial_success_and_fail_closed_on_uncertain_results() {
+    // (per-track results for [first, second], offer?, pending?, expected outcome)
+    // Outcome: Some((allocated first?, allocated second?)) or None for uncertain.
+    let allocated = |i: usize| json!({"mid":format!("m{i}")});
+    let refused = |code: &str| json!({"errorCode":code,"errorDescription":"source unavailable"});
+    let live_refusal = json!({"mid":"","errorCode":"not_found_track_error","errorDescription":"Track not found on remote peer. Make sure the publisher peer is connected and sending packets for this track"});
+    type Case = (Vec<Value>, bool, bool, Option<(bool, bool)>);
+    let cases: Vec<Case> = vec![
+        (
+            vec![allocated(1), refused("not_found_track_error")],
+            true,
+            true,
+            Some((true, false)),
+        ),
+        (
+            vec![refused("empty_track_error"), allocated(2)],
+            true,
+            true,
+            Some((false, true)),
+        ),
+        (
+            vec![allocated(1), allocated(2)],
+            true,
+            true,
+            Some((true, true)),
+        ),
+        (
+            vec![refused("not_found_track_error"), refused("track_error")],
+            false,
+            false,
+            Some((false, false)),
+        ),
+        // Captured from live Cloudflare (September 24, 2026) for a session that
+        // already has SDP: refusals carry an empty MID, not a missing one.
+        (
+            vec![live_refusal.clone(), live_refusal.clone()],
+            false,
+            false,
+            Some((false, false)),
+        ),
+        (
+            vec![allocated(1), live_refusal.clone()],
+            true,
+            true,
+            Some((true, false)),
+        ),
+        // An offer without allocations, or allocations without one, is uncertain.
+        (
+            vec![
+                refused("not_found_track_error"),
+                refused("not_found_track_error"),
+            ],
+            true,
+            true,
+            None,
+        ),
+        (
+            vec![allocated(1), refused("not_found_track_error")],
+            false,
+            false,
+            None,
+        ),
+        // An error on an allocated MID, or an undocumented code, is uncertain.
+        (
+            vec![
+                json!({"mid":"m1","errorCode":"not_found_track_error"}),
+                allocated(2),
+            ],
+            true,
+            true,
+            None,
+        ),
+        (
+            vec![allocated(1), refused("session_error")],
+            true,
+            true,
+            None,
+        ),
+        // A missing result is uncertain.
+        (vec![allocated(1)], true, true, None),
+    ];
+    for (results, offer, pending, outcome) in cases {
+        let (s, _) = state();
+        let listener = joined(&s, "listener").await;
+        let token = listener["token"].as_str().unwrap();
+        let id: Uuid = listener["id"].as_str().unwrap().parse().unwrap();
+        let mut track_ids = vec![];
+        for name in ["first", "second"] {
+            let speaker = joined(&s, name).await;
+            let published = call(app(s.clone()), "POST", "/api/media/publish", speaker["token"].as_str(),
+                json!({"kind":"microphone","mid":"0","sessionDescription":{"type":"offer","sdp":"v=0"}})).await;
+            track_ids.push(published.1["trackId"].clone());
+        }
+        let departed = Uuid::new_v4();
+        let (config, server) = upstream(Router::new().fallback({
+            let results = results.clone();
+            move |Json(request): Json<Value>| {
+                let results = results.clone();
+                async move {
+                    // Echo each requested locator, as Cloudflare's result objects do.
+                    let tracks = request["tracks"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .zip(results)
+                        .map(|(requested, mut result)| {
+                            result["location"] = json!("remote");
+                            result["sessionId"] = requested["sessionId"].clone();
+                            result["trackName"] = requested["trackName"].clone();
+                            result
+                        })
+                        .collect::<Vec<_>>();
+                    let mut body =
+                        json!({"requiresImmediateRenegotiation":pending,"tracks":tracks});
+                    if offer {
+                        body["sessionDescription"] = json!({"type":"offer","sdp":"v=0"});
+                    }
+                    (StatusCode::OK, Json(body))
+                }
+            }
+        }))
+        .await;
+        let mut api = s.clone();
+        api.config = config;
+        api.provider = Arc::new(Cloudflare::new());
+        let (status, response) = call(
+            app(api),
+            "POST",
+            "/api/media/subscribe",
+            Some(token),
+            json!({"trackIds":[track_ids[0], track_ids[1], departed]}),
+        )
+        .await;
+        server.abort();
+        let Some((first, second)) = outcome else {
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{results:?}");
+            assert!(
+                !s.registry.lock().await.participants.contains_key(&id),
+                "uncertain pulls require recovery"
+            );
+            continue;
+        };
+        assert_eq!(status, StatusCode::OK, "{results:?}");
+        let subscribed = response["tracks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["trackId"].clone())
+            .collect::<Vec<_>>();
+        let gone = response["gone"].as_array().unwrap();
+        for (track, expected) in [(&track_ids[0], first), (&track_ids[1], second)] {
+            assert_eq!(subscribed.contains(track), expected);
+            assert_eq!(gone.contains(track), !expected);
+        }
+        assert!(gone.contains(&json!(departed)));
+        assert_eq!(
+            response.get("sessionDescription").is_some(),
+            first || second
+        );
+        let r = s.registry.lock().await;
+        let p = &r.participants[&id];
+        assert!(!p.operation);
+        assert_eq!(p.pending_offer, first || second);
+        assert_eq!(
+            p.subscriptions.len(),
+            usize::from(first) + usize::from(second)
+        );
+    }
+}
+
+#[tokio::test]
 async fn provider_failures_preserve_status_ray_code_and_never_replay_mutations() {
     let calls = Arc::new(AtomicUsize::new(0));
     let router = Router::new().fallback({

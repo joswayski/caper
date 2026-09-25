@@ -1412,6 +1412,110 @@ September 6, 2026 investigation (not a post-deployment performance guarantee):
   sender detached; leave ended the raw track. This is not live SFU, physical
   speech-quality, remote first-decoded-audio, or native desktop validation.
 
+### Combined join and publication
+
+Joining used to run four Cloudflare API calls back to back: `sessions/new` and
+TURN (in parallel), then `tracks/new` for publication, then per remote track
+`tracks/new` and `renegotiate` after transport. Two September 24, 2026 samples
+(one browser, direct route, 6–7 ms RTT) took 1,071 ms in an empty room and
+1,515 ms with one other listener. Their 31 ms roster phase in the empty room is
+one gateway round trip, so the remaining time is mostly provider calls and
+their ordering, not the SFU or AWS hop. These are two samples, not a benchmark.
+
+The browser now creates its sendonly audio transceiver and offer while the
+microphone opens, and sends that offer with `media.join`. The API creates the
+session and TURN credentials, commits the participant, then publishes the offer
+through the same `publish` state machine before returning `publish` (the answer
+and `trackId`) with the capability. A refused or failed publication removes the
+participant; the capability is never returned half-joined. TURN servers arrive
+with that response and are applied with `setConfiguration` before the offer is
+set locally, so relay gathering still uses them. The microphone is attached to
+the sender before the answer is applied, preserving the previous invariant that
+transport never connects without the (disabled) microphone. The authenticated
+roster/lease request overlaps ICE. Subscription negotiation (`tracks/new` pulls
+plus `renegotiate`) still waits for the listener's connected transport, because
+Cloudflare does not accept a pull into a session whose PeerConnection has been
+negotiated but has not connected. A live September 24, 2026 probe (real
+Cloudflare, Chromium offers, the publisher and listener each having applied
+their publication answer) found that `tracks/new` for the listener was held for
+10.9 s and then answered HTTP 425 `session_error`: "Session is not ready yet.
+Please ensure the PeerConnection is connected before making this request." The
+API's 10-second provider timeout fires first, so pulling early turned into a
+502 and removed the listener. A pull into an **empty** session (no negotiated
+PeerConnection, as in Cloudflare's
+[receive recipe](https://developers.cloudflare.com/realtime/sfu/get-started/connection-patterns/#receive-a-published-track))
+was answered in 275 ms, and a pull of a publisher that has not connected was
+answered at once with a per-track `not_found_track_error`. The probe could not
+connect WebRTC transport (no UDP and no TURN/TLS egress from that sandbox), so
+whether a held pull completes once the listener connects mid-wait is unknown;
+either way it would not start media sooner. Received audio remains withheld
+from playback, and the microphone stays disabled, until transport, live
+updates, roster and state have all completed.
+
+When several sources are missing, the browser sends `media.subscribe` with
+`trackIds` instead of one `trackId` per request. The API pulls them in one
+`tracks/new` (Cloudflare accepts up to 64 remote entries, from different
+publishers) and one SDP exchange, and returns
+`{ tracks: [{ trackId, mid }], gone: [trackId], sessionDescription?, requiresImmediateRenegotiation }`.
+Per Cloudflare's [batch operations](https://developers.cloudflare.com/realtime/sfu/api/#batch-resource-operations),
+partial success is reported per track. Each result is matched by its echoed
+`sessionId`/`trackName` and classified: a MID without an error is allocated;
+`not_found_track_error`, `empty_track_error` or `track_error` without a MID
+allocated nothing and is returned in `gone` (as are sources that already left),
+so the browser retries it with the bounded re-check above. Anything else is
+uncertain and takes the existing recovery path: enqueue cleanup of any allocated
+MIDs, discover orphans, and remove the listener. That includes a missing result,
+an error beside a MID, an undocumented code, or an offer that does not match the
+allocations. The single `trackId` request and its response are unchanged, so
+native clients are unaffected. An API that rejects `trackIds` with 422 makes
+the browser fall back to one pull per source for the rest of that call.
+
+When the provider refuses to pull a listed source that is not sending media yet
+(`track_gone` while the source is still in the roster), the listener re-checks
+after 0.25, 0.25, 0.5, 0.5, 1, 2, 4 and 8 seconds (about 16.5 s in total) instead
+of waiting for the next roster change or 15-second lease heartbeat. A newcomer's
+track is listed at publication but pullable only once its transport sends media,
+typically 0.3–3 s later, so the early checks are dense; a refused pull allocates
+nothing and needs no renegotiation (live-captured shape: empty MID,
+`not_found_track_error`, `requiresImmediateRenegotiation: false`, no offer). A
+successful reconciliation resets that budget.
+
+Diagnostics now separate microphone capture from session + publication (both
+measured from Join, since they overlap), report ICE time within transport, and
+show the selected candidate pair's connectivity checks (sent vs answered) to
+expose retransmitted checks. The API logs every successful Cloudflare call's
+`elapsed_ms` at info level (`Cloudflare operation succeeded`), not only failures.
+
+Compatibility: an API without this change rejects the `publish` field with 422
+before any mutation, and the browser then joins and publishes separately. Older
+gateways converted that plain-text 422 into a 503, so the fallback only covers
+the direct HTTP path. Deploy **API first, gateway second, web last**; no
+migration, secret, Valkey schema or configuration change. Native clients do not
+send the field and are unaffected. After merge:
+
+```bash
+MERGED_SHA=<full-merged-caper-commit>
+gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-api --timeout=15m
+gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+kubectl -n default rollout status deployment/caper-web --timeout=15m
+```
+
+Validation: the real Cloudflare HTTP adapter against a local stub returning
+documented batch results (partial success in both positions, all refused, and six
+uncertain shapes); Rust unit tests with a mocked provider (combined publication,
+invalid offers creating no session, refused publication leaving no participant,
+the 422 contract), the Valkey/Postgres gateway suite, and browser-client tests
+with mocked WebRTC (combined answer, 422 fallback, overlapped lease renewal with
+pulls held until transport connects, delayed pull retry, batched pull with a departed source, batch fallback after
+422). Real Chromium confirmed that an offer created before
+`setConfiguration` applies unchanged and that TURN allocation requests then reach
+the later-configured server. Live Cloudflare joins, multi-network TURN, Firefox,
+Safari and remote listening latency were **not** measured; compare the new
+diagnostics from real sessions before claiming a specific speedup.
+
 ### ICE-gathering follow-up: signal before every probe completes
 
 After the port-53 fix deployed, Jose measured 5,631 ms total, with 246 ms in
@@ -1487,8 +1591,8 @@ alone never renews the lease. There is no durable event log or second registry.
 Join/rejoin waits for the selected audio processor before publication. The SSE
 handshake and publication run concurrently; the published track stays disabled
 (silence). After both finish, mute/deafen state synchronization overlaps the
-transport handshake. Snapshot/subscription negotiation still waits for transport
-and the initial state acknowledgement. A newer dirty state is repaired before
+transport handshake, and so does the lease-renewing roster request (see
+"Combined join and publication"). Subscription negotiation still waits for transport. A newer dirty state is repaired before
 completion, and SSE invalidations during roster synchronization are drained.
 Only after actual SSE readiness, transport connection, initial roster/subscription
 negotiation, state synchronization and a final live-stream/track check does the client enable audio

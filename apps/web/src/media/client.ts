@@ -8,6 +8,7 @@ import { TurnRenewal } from "./turn-renewal.ts";
 import { clampVoiceProcessingStrength, DEFAULT_VOICE_PROCESSING_STRENGTH } from "./voice-processing.ts";
 export { waitFor } from "./rtc.ts";
 import type {
+  BatchSubscribeResponse,
   CallSnapshot,
   ConnectionDiagnostics,
   CallViewState,
@@ -18,12 +19,26 @@ import type {
   SessionDescriptionResponse,
 } from "./types";
 
+interface PreparedPublication {
+  pc: RTCPeerConnection;
+  transceiver: RTCRtpTransceiver;
+  offer: RTCSessionDescriptionInit;
+  mid: string;
+}
+
 const CONNECT_TIMEOUT_MS = 12_000;
 const MAX_REJOINS = 3;
 const FETCH_TIMEOUT_MS = 25_000;
 const SNAPSHOT_TIMEOUT_MS = 5_000;
 const CONTROL_RECOVERY_MS = 30_000;
 const DISCONNECT_GRACE_MS = 10_000;
+/**
+ * Re-checks for a listed source that cannot be pulled yet. A newcomer's track is
+ * listed at publication but pullable only once its transport sends media, which
+ * usually takes 0.3–3 s, so check densely early and back off to the same ~16 s
+ * window. A refused pull allocates nothing and needs no renegotiation.
+ */
+const PULL_RETRY_DELAYS_MS = [250, 250, 500, 500, 1_000, 2_000, 4_000, 8_000];
 
 class CallApiError extends Error {
   readonly status: number;
@@ -78,6 +93,9 @@ export class PublicCallClient {
   private disconnectTimer?: number;
   private turnRenewal?: TurnRenewal;
   private pollRetryTimer?: number;
+  private unavailableRetryTimer?: number;
+  private unavailableRetries = 0;
+  private batchUnsupported = false;
   private eventRetryTimer?: number;
   private eventRetryAttempts = 0;
   private eventDrainRetries = 0;
@@ -263,17 +281,46 @@ export class PublicCallClient {
     } finally { window.clearTimeout(timer); }
   }
 
-  private async prepareJoin() {
-    const capture = this.openMicrophone(this.microphoneDeviceId);
+  private async prepareJoin(started: number) {
+    let microphoneMs = 0;
+    const capture = this.openMicrophone(this.microphoneDeviceId).then((track) => {
+      microphoneMs = performance.now() - started;
+      return track;
+    });
     const issuedAt = performance.now();
-    const joining = this.api<JoinResponse>("join", { name: this.name, muted: this.muted, deafened: this.deafened }, undefined);
-    const [captureResult, joinResult] = await Promise.allSettled([capture, joining]);
+    // An offer needs a transceiver, not audio. Create it while the microphone
+    // opens so session creation and publication share one request. TURN servers
+    // arrive with that response and are configured before the offer is applied.
+    const pc = this.makePeerConnection([]);
+    const offering = (async () => {
+      const transceiver = pc.addTransceiver("audio", { direction: "sendonly", streams: [new MediaStream([])] });
+      preferOpus(transceiver);
+      const offer = await pc.createOffer();
+      const mid = /^a=mid:(\S+)/m.exec(offer.sdp ?? "")?.[1];
+      if (!mid) throw new Error("The browser did not assign a media identifier.");
+      const joined = await this.joinWithOffer(offer, mid);
+      return { joined, publication: { pc, transceiver, offer, mid }, sessionMs: performance.now() - started };
+    })();
+    const [captureResult, joinResult] = await Promise.allSettled([capture, offering]);
     if (captureResult.status === "rejected" || joinResult.status === "rejected") {
+      pc.close();
       if (captureResult.status === "fulfilled") this.stopMicrophone(captureResult.value);
-      if (joinResult.status === "fulfilled") void this.api("leave", {}, joinResult.value.token).catch(() => undefined);
+      if (joinResult.status === "fulfilled") void this.api("leave", {}, joinResult.value.joined.token).catch(() => undefined);
       throw captureResult.status === "rejected" ? captureResult.reason : joinResult.status === "rejected" ? joinResult.reason : new Error("Join preparation failed.");
     }
-    return { microphone: captureResult.value, joined: joinResult.value, issuedAt };
+    return { microphone: captureResult.value, ...joinResult.value, microphoneMs, issuedAt };
+  }
+
+  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string) {
+    const body = { name: this.name, muted: this.muted, deafened: this.deafened };
+    try {
+      return await this.api<JoinResponse>("join", { ...body, publish: { mid, sessionDescription: { type: "offer", sdp: offer.sdp } } }, undefined);
+    } catch (error) {
+      // An API without combined publication rejects the unknown field during
+      // deserialization, before any mutation. Join the original way instead.
+      if (!(error instanceof CallApiError && error.status === 422)) throw error;
+      return await this.api<JoinResponse>("join", body, undefined);
+    }
   }
 
   async join(name = "Guest", microphoneDeviceId?: string) {
@@ -287,14 +334,15 @@ export class PublicCallClient {
     const generation = ++this.generation;
     let capturedMicrophone: MediaStreamTrack | undefined;
     try {
-      const { microphone, joined, issuedAt } = await this.prepareJoin();
-      capturedMicrophone = microphone;
+      const prepared = await this.prepareJoin(started);
+      capturedMicrophone = prepared.microphone;
       if (generation !== this.generation || this.phase !== "joining") {
-        this.stopMicrophone(microphone);
-        void this.api("leave", {}, joined.token).catch(() => undefined);
+        prepared.publication.pc.close();
+        this.stopMicrophone(prepared.microphone);
+        void this.api("leave", {}, prepared.joined.token).catch(() => undefined);
         return;
       }
-      await this.connectPrepared(microphone, joined, generation, started, "Joined", issuedAt);
+      await this.connectPrepared(prepared, generation, started, "Joined");
       this.reconnects = 0;
     } catch (error) {
       if (capturedMicrophone && !this.senders.has("microphone")) this.stopMicrophone(capturedMicrophone);
@@ -308,27 +356,41 @@ export class PublicCallClient {
     }
   }
 
-  private async connectPrepared(microphone: MediaStreamTrack, joined: JoinResponse, generation: number, started: number, label: string, issuedAt: number) {
+  private async connectPrepared(
+    { microphone, joined, publication, issuedAt, microphoneMs, sessionMs }: Awaited<ReturnType<PublicCallClient["prepareJoin"]>>,
+    generation: number, started: number, label: string,
+  ) {
     const prepared = performance.now();
     const signal = this.captureController.signal;
     this.token = joined.token;
     this.selfId = joined.id;
-    const pc = this.pc = this.makePeerConnection(joined.iceServers);
+    const pc = this.pc = publication.pc;
+    let iceConnected: number | undefined;
+    const iceChanged = () => {
+      if (iceConnected === undefined && (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed")) iceConnected = performance.now();
+    };
+    pc.addEventListener("iceconnectionstatechange", iceChanged);
+    pc.setConfiguration({ ...pc.getConfiguration(), iceServers: joined.iceServers });
     // Negotiate with a disabled track while the independent event stream opens.
     // All startup promises have rejection handlers before any can fail.
     const [events] = await Promise.all([
       this.openEvents(generation),
-      this.publishTrack("microphone", microphone, generation),
+      this.publishMicrophone(microphone, publication, joined.publish, generation),
       // Reconcile any intent changed during capture/join, without waiting for SDP.
       this.setState(),
     ]);
     signal.throwIfAborted();
     const signaled = performance.now();
+    // The roster request renews the lease consumed by signaling. It needs no
+    // transport, so overlap it with ICE. Pulls must wait: Cloudflare holds
+    // tracks/new for a listener whose PeerConnection is not connected, then
+    // answers 425 "Session is not ready yet" (live-verified, about 11 s).
+    const leased = this.renewLease();
+    leased.catch(() => undefined);
     await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     const connected = performance.now();
-    // Subscription negotiation still waits for transport. Never open audio early.
-    // A pushed roster does not renew the lease consumed by signaling/transport setup.
-    await this.poll(true);
+    pc.removeEventListener("iceconnectionstatechange", iceChanged);
+    if (await leased) await this.poll();
     if (this.stateDirty) await this.setState();
     if (this.pollAgain) await this.poll();
     signal.throwIfAborted();
@@ -349,9 +411,11 @@ export class PublicCallClient {
     microphone.enabled = this.monitoring || !this.muted;
     this.joinTiming = {
       join: `${label} in ${(performance.now() - started).toFixed(0)} ms`,
-      microphoneSessionMs: prepared - started,
+      microphoneMs,
+      sessionMs,
       signalingMs: signaled - prepared,
       transportMs: connected - signaled,
+      iceMs: iceConnected === undefined ? undefined : Math.max(0, iceConnected - signaled),
       rosterMs: performance.now() - connected,
     };
     this.emit();
@@ -471,38 +535,37 @@ export class PublicCallClient {
     return pc;
   }
 
-  private async publishTrack(kind: MediaKind, track: MediaStreamTrack, generation = this.generation) {
+  private async publishMicrophone(
+    track: MediaStreamTrack,
+    { pc, transceiver, offer, mid }: PreparedPublication,
+    published: SessionDescriptionResponse | undefined,
+    generation = this.generation,
+  ) {
+    const kind: MediaKind = "microphone";
     return this.serialize(async () => {
-      const pc = this.requirePc();
+      if (pc !== this.pc) throw new Error("Call session changed.");
       const token = this.token;
-      if (kind === "microphone") {
-        track.enabled = this.readyToTalk && !this.muted;
-      }
-      const transceiver = pc.addTransceiver(track, { direction: "sendonly", streams: [new MediaStream([track])] });
-      if (track.kind === "audio") preferOpus(transceiver);
-      await pc.setLocalDescription(await pc.createOffer());
-      const mid = transceiver.mid;
-      if (!mid) throw new Error("The browser did not assign a media identifier.");
+      // Attach before the answer so the transport never connects without the
+      // (still disabled) microphone, exactly as when the track was added first.
+      track.enabled = this.readyToTalk && !this.muted;
+      await transceiver.sender.replaceTrack(this.muted || this.monitoring ? null : track);
+      await pc.setLocalDescription(offer);
       if (generation !== this.generation) throw new Error("Call session changed.");
       this.senders.set(kind, { sender: transceiver.sender, mid, track });
-      const response = await this.api<SessionDescriptionResponse>("publish", {
+      const response = published ?? await this.api<SessionDescriptionResponse>("publish", {
         kind, mid, sessionDescription: await localDescription(pc, this.captureController.signal),
       }, token);
       if (generation !== this.generation || pc !== this.pc) throw new Error("Call session changed.");
       if (!response.sessionDescription) throw new Error("The media service did not answer publication.");
       await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
       if (generation !== this.generation) throw new Error("Call session changed.");
-      this.senders.set(kind, { sender: transceiver.sender, mid, track });
-      if (kind === "microphone") this.localMedia = new MediaStream([track]);
+      this.localMedia = new MediaStream([track]);
       track.addEventListener("ended", () => {
         if (generation === this.generation && this.senders.get(kind)?.track === track) {
           void this.unpublish(kind).catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
         }
       }, { once: true });
-      if (kind === "microphone" && (this.muted || this.monitoring)) {
-        await transceiver.sender.replaceTrack(null);
-        track.enabled = this.readyToTalk && this.monitoring;
-      }
+      if (this.muted || this.monitoring) track.enabled = this.readyToTalk && this.monitoring;
     }, generation).catch((error) => {
       track.stop();
       if (generation === this.generation && this.phase === "connected") { this.pc?.close(); this.scheduleReconnect(); }
@@ -814,10 +877,11 @@ export class PublicCallClient {
     }, generation);
   }
 
+  /** Resolves false when the source exists but its track cannot be pulled yet. */
   private subscribe(trackId: string) {
     const generation = this.generation;
     return this.serialize(async () => {
-      if (this.subscriptions.has(trackId)) return;
+      if (this.subscriptions.has(trackId)) return true;
       const pc = this.requirePc();
       const token = this.token;
       let response: SessionDescriptionResponse;
@@ -825,10 +889,10 @@ export class PublicCallClient {
       catch (error) {
         // Ordinary departure between roster delivery and subscription. The API
         // authenticated us and rejected before touching the provider/SDP.
-        if (error instanceof CallApiError && error.status === 404 && error.code === "track_gone") return;
+        if (error instanceof CallApiError && error.status === 404 && error.code === "track_gone") return false;
         throw error;
       }
-      if (generation !== this.generation || pc !== this.pc) return;
+      if (generation !== this.generation || pc !== this.pc) return true;
       const mid = response.tracks?.[0]?.mid;
       if (!mid) throw new Error("The media service did not return a subscription identifier.");
       this.subscriptions.set(trackId, mid);
@@ -839,6 +903,40 @@ export class PublicCallClient {
       } else if (response.requiresImmediateRenegotiation) {
         throw new Error("The media service requested negotiation without an offer.");
       }
+      return true;
+    }, generation);
+  }
+
+  /** Resolves false when some sources cannot be pulled yet; "unsupported" for an API without batches. */
+  private subscribeMany(trackIds: string[]) {
+    const generation = this.generation;
+    return this.serialize(async (): Promise<boolean | "unsupported"> => {
+      const wanted = trackIds.filter((id) => !this.subscriptions.has(id));
+      if (!wanted.length) return true;
+      const pc = this.requirePc();
+      const token = this.token;
+      let response: BatchSubscribeResponse;
+      try { response = await this.api<BatchSubscribeResponse>("subscribe", { trackIds: wanted }, token); }
+      catch (error) {
+        if (error instanceof CallApiError && error.status === 404 && error.code === "track_gone") return false;
+        // An API without batches rejects the field during deserialization, before any mutation.
+        if (error instanceof CallApiError && error.status === 422) {
+          this.batchUnsupported = true;
+          return "unsupported";
+        }
+        throw error;
+      }
+      if (generation !== this.generation || pc !== this.pc) return true;
+      // Map every allocated MID before applying the offer; ontrack uses it.
+      for (const { trackId, mid } of response.tracks ?? []) this.subscriptions.set(trackId, mid);
+      if (response.sessionDescription) {
+        await pc.setRemoteDescription(withOpusDtx(response.sessionDescription));
+        await pc.setLocalDescription(await pc.createAnswer());
+        await this.api("negotiate", { sessionDescription: await localDescription(pc, this.captureController.signal) }, token);
+      } else if (response.requiresImmediateRenegotiation) {
+        throw new Error("The media service requested negotiation without an offer.");
+      }
+      return !response.gone?.length;
     }, generation);
   }
 
@@ -927,6 +1025,10 @@ export class PublicCallClient {
         }
         if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.nominated) {
           rtt = Math.max(rtt, stat.currentRoundTripTime ?? 0);
+          // Unanswered checks before connecting show retransmission delay in setup.
+          if (this.joinTiming && this.joinTiming.checks === undefined && typeof stat.requestsSent === "number") {
+            this.joinTiming.checks = `${stat.requestsSent} sent · ${stat.responsesReceived ?? 0} answered`;
+          }
           relay ||= report.get(stat.localCandidateId)?.candidateType === "relay";
         }
       });
@@ -1020,15 +1122,25 @@ export class PublicCallClient {
           if (pushedVersion !== this.pushedSnapshotVersion) break;
           if (!available.has(id)) await this.unsubscribe(id);
         }
-        for (const participant of snapshot.participants) {
-          if (participant.id === this.selfId) continue;
-          for (const track of participant.tracks) {
-            if (generation !== this.generation) return;
-            if (pushedVersion !== this.pushedSnapshotVersion) break;
-            if (!this.subscriptions.has(track.id)) await this.subscribe(track.id);
+        let unavailable = false;
+        const missing = snapshot.participants
+          .filter((participant) => participant.id !== this.selfId)
+          .flatMap((participant) => participant.tracks.map((track) => track.id))
+          .filter((id) => !this.subscriptions.has(id));
+        // Several sources share one provider request and one SDP exchange.
+        const batched = missing.length > 1 && !this.batchUnsupported ? await this.subscribeMany(missing) : "unsupported";
+        if (batched === "unsupported") {
+          for (const participant of snapshot.participants) {
+            if (participant.id === this.selfId) continue;
+            for (const track of participant.tracks) {
+              if (generation !== this.generation) return;
+              if (pushedVersion !== this.pushedSnapshotVersion) break;
+              if (!this.subscriptions.has(track.id) && !await this.subscribe(track.id)) unavailable = true;
+            }
           }
-        }
+        } else if (!batched) unavailable = true;
         if (pushedVersion !== this.pushedSnapshotVersion) continue;
+        this.retryUnavailable(unavailable, generation);
         if (generation === this.generation) {
           this.emit();
         }
@@ -1039,6 +1151,22 @@ export class PublicCallClient {
     });
     this.pollPromise = pending;
     return pending;
+  }
+
+  private retryUnavailable(unavailable: boolean, generation: number) {
+    // A newly published source can be listed before it sends media, and the
+    // provider refuses pulls until then. Re-check soon rather than waiting for
+    // the next roster change or lease heartbeat; a departed source drops out.
+    window.clearTimeout(this.unavailableRetryTimer);
+    if (!unavailable || this.unavailableRetries >= PULL_RETRY_DELAYS_MS.length) {
+      if (!unavailable) this.unavailableRetries = 0;
+      return;
+    }
+    const delay = PULL_RETRY_DELAYS_MS[this.unavailableRetries++];
+    this.unavailableRetryTimer = window.setTimeout(() => {
+      if (generation !== this.generation) return;
+      void this.poll().catch(() => { if (generation === this.generation) this.scheduleReconnect(); });
+    }, delay);
   }
 
   private scheduleReconnect() {
@@ -1070,10 +1198,15 @@ export class PublicCallClient {
     const started = performance.now();
     let captured: MediaStreamTrack | undefined;
     try {
-      const { microphone: track, joined, issuedAt } = await this.prepareJoin();
-      captured = track;
-      if (generation !== this.generation) { this.stopMicrophone(track); void this.api("leave", {}, joined.token).catch(() => undefined); return; }
-      await this.connectPrepared(track, joined, generation, started, "Rejoined", issuedAt);
+      const prepared = await this.prepareJoin(started);
+      captured = prepared.microphone;
+      if (generation !== this.generation) {
+        prepared.publication.pc.close();
+        this.stopMicrophone(prepared.microphone);
+        void this.api("leave", {}, prepared.joined.token).catch(() => undefined);
+        return;
+      }
+      await this.connectPrepared(prepared, generation, started, "Rejoined");
       this.reconnects = 0;
       if (this.monitoring) {
         const microphone = this.senders.get("microphone");
@@ -1124,6 +1257,8 @@ export class PublicCallClient {
     window.clearTimeout(this.disconnectTimer);
     this.disconnectTimer = undefined;
     window.clearTimeout(this.pollRetryTimer);
+    window.clearTimeout(this.unavailableRetryTimer);
+    this.unavailableRetries = 0;
     window.clearTimeout(this.eventRetryTimer);
     window.clearTimeout(this.stateRetryTimer);
     this.statePromise = undefined;
