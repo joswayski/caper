@@ -1419,8 +1419,8 @@ private struct AudioPreferencesView: View {
     @Bindable var voice: VoiceClient
     var debugEnabled = false
     @State private var controlsHeight: CGFloat = 500
-    #if os(macOS)
     @Bindable private var effects = CaperEffects.shared
+    #if os(macOS)
     @State private var micTest = MacMicrophoneTest()
     @State private var routeError: String?
     #else
@@ -1471,10 +1471,12 @@ private struct AudioPreferencesView: View {
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 18) {
-            #if os(macOS)
             Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
+                #if os(macOS)
                 .toggleStyle(.checkbox)
+                #endif
                 .accessibilityIdentifier("sound-effects")
+            #if os(macOS)
             Picker("Input", selection: inputRoute) {
                 Text("System default").tag("")
                 ForEach(voice.availableInputs) { route in Text(route.name).tag(route.id) }
