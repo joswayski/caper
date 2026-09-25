@@ -44,6 +44,17 @@ import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
+import chat.caper.android.voice.MicComparison
+import chat.caper.android.voice.MicComparisonBinding
+import chat.caper.android.voice.PrejoinMicTest
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -102,7 +113,7 @@ internal data class VoiceJoinIntent(
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::requestCode)
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::verify)
-                is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, null, viewModel::saveProfile)
+                is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
                 SessionScreen.Home, is SessionScreen.Spaces -> HomeScreen(
                     state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
                 )
@@ -117,7 +128,7 @@ internal data class VoiceJoinIntent(
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private -> viewModel.createChannel(name, private) { overlay = null } } }
         is Overlay.ManageChannel -> ManageChannelDialog(state, shown.channel, viewModel) { overlay = null }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and messages.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
-        Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, { overlay = null }) { username, display -> viewModel.updateProfile(username, display); overlay = null } }
+        Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
         Overlay.Audio -> AudioSettingsDialog(state, voice, { overlay = null }, viewModel::logout)
         null -> Unit
     }
@@ -328,7 +339,8 @@ internal data class VoiceJoinIntent(
     val context = LocalContext.current
     Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Row(Modifier.height(42.dp).padding(5.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
+                .semantics { contentDescription = if (state.account == null) "Sign in" else "Edit profile" }, verticalAlignment = Alignment.CenterVertically) {
                 AccountAvatar(state); Spacer(Modifier.width(7.dp))
                 Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
@@ -416,7 +428,13 @@ internal data class VoiceJoinIntent(
             state.pendingMessage?.error?.let { pending ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (state.pendingMessage.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
-                    TextButton({ if (state.pendingMessage.rejected) viewModel.discardPending()?.let { draft = it } else viewModel.send(state.pendingMessage.text) }) { Text(if (state.pendingMessage.rejected) "Edit" else "Retry send") }
+                    TextButton({
+                        if (state.pendingMessage.rejected) {
+                            if (canEditRejectedMessage(draft, state.pendingMessage.text)) viewModel.discardPending()?.let { draft = it }
+                        } else viewModel.send(state.pendingMessage.text)
+                    }, enabled = !state.pendingMessage.rejected || canEditRejectedMessage(draft, state.pendingMessage.text)) {
+                        Text(if (state.pendingMessage.rejected) "Edit" else "Retry send")
+                    }
                     if (state.pendingMessage.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
                 }
             }
@@ -425,11 +443,11 @@ internal data class VoiceJoinIntent(
                     draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
                     modifier = Modifier.weight(1f), placeholder = { Text("Message #${channel.name}") }, maxLines = 6,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } }),
+                    keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                 )
                 FilledIconButton(
-                    { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent) { if (draft == sent) draft = "" } } },
+                    { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } },
                     modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null,
                     shape = MaterialTheme.shapes.small,
                     colors = IconButtonDefaults.filledIconButtonColors(
@@ -546,7 +564,7 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun ProfileScreen(account: Account, busy: Boolean, close: (() -> Unit)?, submit: (String, String) -> Unit) {
+@Composable private fun ProfileScreen(account: Account, busy: Boolean, error: String?, close: (() -> Unit)?, submit: (String, String) -> Unit) {
     var username by remember(account.id) { mutableStateOf(account.username.orEmpty()) }
     var name by remember(account.id) { mutableStateOf(account.displayName.orEmpty()) }
     val form: @Composable ColumnScope.() -> Unit = {
@@ -554,7 +572,8 @@ internal data class VoiceJoinIntent(
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button({ submit(username, name) }, enabled = username.length >= 3 && name.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text("Save profile") }
+        error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text("Save profile") }
     }
     if (close == null) AuthFrame { form() } else CaperDialog("Edit profile", close) { form() }
 }
@@ -636,6 +655,129 @@ internal data class VoiceJoinIntent(
 
 @Composable private fun AudioSettingsDialog(state: AppUiState, voice: VoiceState, close: () -> Unit, logout: () -> Unit) {
     val context = LocalContext.current
+    val preferences = remember(context) { context.getSharedPreferences("audio", android.content.Context.MODE_PRIVATE) }
+    var inputGain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
+    var strength by remember { mutableIntStateOf(preferences.getInt("strength", 25)) }
+    var outputVolume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
+    // Preparation owns its scope until it can release the recorder, even when
+    // this dialog has already left composition.
+    val cleanupScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
+    var generation by remember { mutableLongStateOf(0L) }
+    var permissionGeneration by remember { mutableLongStateOf(0L) }
+    var testing by remember { mutableStateOf(false) }
+    var finishing by remember { mutableStateOf(false) }
+    var dialogActive by remember { mutableStateOf(true) }
+    var prejoin by remember { mutableStateOf<PrejoinMicTest?>(null) }
+    var binding by remember { mutableStateOf<MicComparisonBinding?>(null) }
+    var recording by remember { mutableStateOf<MicComparison?>(null) }
+    var playback by remember { mutableStateOf<Job?>(null) }
+    var playingEnhanced by remember { mutableStateOf<Boolean?>(null) }
+    var timeout by remember { mutableStateOf<Job?>(null) }
+    var testError by remember { mutableStateOf<String?>(null) }
+    fun stopPlayback() {
+        playback?.cancel()
+        recording?.stopPlayback() // Silence the AudioTrack before publication resumes.
+        playback = null
+        playingEnhanced = null
+    }
+    fun playClip(clip: MicComparison, enhanced: Boolean) {
+        stopPlayback()
+        val ticket = generation
+        val next = cleanupScope.launch(start = CoroutineStart.LAZY) {
+            if (!dialogActive || ticket != generation || recording !== clip) return@launch
+            playingEnhanced = enhanced
+            try { clip.play(enhanced, outputVolume) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Throwable) { testError = error.message ?: "Local playback failed." }
+            finally {
+                if (playback === coroutineContext[Job]) {
+                    playback = null
+                    playingEnhanced = null
+                }
+            }
+        }
+        playback = next
+        next.start()
+    }
+    fun teardownTest() {
+        generation++
+        timeout?.cancel(); timeout = null
+        testing = false
+        finishing = false
+        prejoin?.let { local ->
+            local.stopNow()
+            cleanupScope.launch { local.finish() }
+        }
+        prejoin = null
+        stopPlayback()
+        recording = null
+        binding?.let { VoiceCallService.resumeMicPublication(it) }
+        binding = null
+    }
+    fun stopTest() {
+        if (!testing) return
+        testing = false
+        finishing = true
+        timeout?.cancel(); timeout = null
+        val ticket = generation
+        val local = prejoin
+        prejoin = null
+        if (local != null) cleanupScope.launch {
+            try {
+                val result = local.finish()
+                if (ticket == generation && dialogActive) recording = result
+            } finally { if (ticket == generation && dialogActive) finishing = false }
+        } else {
+            recording = binding?.let { VoiceCallService.finishMicComparison(it) }
+            finishing = false
+        }
+    }
+    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!dialogActive || permissionGeneration != generation) Unit
+        else if (!granted) {
+            finishing = false
+            testError = "Microphone permission is required to test audio."
+        }
+        else {
+            testError = null
+            recording = null
+            val ticket = generation
+            val call = VoiceCallService.beginMicComparison()
+            if (call != null) {
+                binding = call
+                finishing = false
+                testing = true
+            } else if (!VoiceCallService.canPreparePrejoinMicTest()) {
+                finishing = false
+                testError = "Wait for the current call to connect or leave it before testing the microphone."
+            } else cleanupScope.launch {
+                try {
+                    val local = PrejoinMicTest.prepare(context)
+                    if (!dialogActive || ticket != generation || !VoiceCallService.canPreparePrejoinMicTest()) {
+                        local.stopNow(); local.finish()
+                    } else {
+                        prejoin = local
+                        finishing = false
+                        testing = true
+                        timeout = cleanupScope.launch { delay(30_000); if (ticket == generation) stopTest() }
+                    }
+                } catch (error: Throwable) {
+                    if (dialogActive && ticket == generation) {
+                        finishing = false
+                        testError = error.message ?: "Microphone test could not start."
+                    }
+                }
+            }
+            if (testing) timeout = cleanupScope.launch { delay(30_000); if (ticket == generation) stopTest() }
+        }
+    }
+    DisposableEffect(Unit) { onDispose {
+        dialogActive = false
+        teardownTest()
+    } }
+    DisposableEffect(voice.channelId, voice.phase, voice.selectedRouteId) { onDispose {
+        if (dialogActive) teardownTest()
+    } }
     CaperDialog("Audio settings", close) {
         Text("Input and output routing", fontWeight = FontWeight.Bold)
         if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
@@ -644,12 +786,44 @@ internal data class VoiceJoinIntent(
                 Spacer(Modifier.width(8.dp)); Text(route.name)
             }
         } else Text("Choose audio input and output in Android system settings. Available communication routes appear here during a call on Android 12 and newer.", color = TextMuted, fontSize = 12.sp)
+        Text("Android communication routes follow the selected system device; separate microphone and speaker hardware selectors are not available.", color = TextMuted, fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Input gain", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$inputGain%", color = TextMuted, fontSize = 11.sp) }
+        Slider(inputGain.toFloat(), { inputGain = it.toInt(); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) }, modifier = Modifier.semantics { contentDescription = "Input gain" }, valueRange = 0f..200f)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Processing strength", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp) }
+        Slider(strength.toFloat(), { strength = it.toInt(); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) }, modifier = Modifier.semantics { contentDescription = "Processing strength" }, valueRange = 0f..100f)
+        Text("DPDFNet-8 with RNNoise fallback, then voice EQ, compression and limiting. Defaults to 25%.", color = TextMuted, fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$outputVolume%", color = TextMuted, fontSize = 11.sp) }
+        Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) }, modifier = Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton({ if (testing) stopTest() else {
+                finishing = true
+                permissionGeneration = generation
+                microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+            } },
+                enabled = !finishing && (testing || recording == null), shape = MaterialTheme.shapes.small) { Text(if (testing) "Stop mic test" else "Test microphone") }
+            if (recording != null) TextButton(::teardownTest) { Text("Done") }
+        }
+        if (testing) Text("Recording locally for up to 30 seconds. Your test audio is not published.", color = TextMuted, fontSize = 11.sp)
+        testError?.let { Text(it, color = ErrorText, fontSize = 11.sp) }
+        recording?.let { clip ->
+            Text("Compare your microphone", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ playClip(clip, false) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Natural") }
+                OutlinedButton({ playClip(clip, true) }, enabled = clip.frames > 0, shape = MaterialTheme.shapes.small) { Text("Enhanced") }
+                if (playingEnhanced != null) TextButton(::stopPlayback) { Text("Stop playback") }
+            }
+        }
         if (voice.phase == VoiceState.Phase.CONNECTED) {
             Text("Connected to #${voice.channelName}", color = CaperGreen, fontSize = 12.sp)
             Text("Mute and deafen controls remain available in the account bar and ongoing notification.", color = TextMuted, fontSize = 12.sp)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Output volume", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("${voice.outputVolume}%", color = TextMuted, fontSize = 11.sp) }
-            Slider(voice.outputVolume.toFloat(), { VoiceCallService.setOutputVolume(context, it.toInt()) }, valueRange = 0f..200f)
-            Text("Android exposes communication routes rather than independent microphone and speaker selectors. Input gain and the natural/enhanced mic test require a native capture-processing path and are not enabled yet.", color = TextMuted, fontSize = 11.sp)
+            if (state.account?.debugEnabled == true && voice.processing.size == 5) {
+                val report = voice.processing
+                DiagnosticRow("Microphone processing", when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" })
+                DiagnosticRow("Processed frames", (report[1] * 480).toString())
+                DiagnosticRow("Mean processing", if (report[1] == 0L) "Not sampled" else "%.1f ms".format(report[2] / report[1] / 1000.0))
+                DiagnosticRow("Maximum processing", "%.1f ms".format(report[3] / 1000.0))
+                DiagnosticRow("Queued microphone", "%.1f ms".format(report[4] / 48.0))
+            }
             voice.diagnostics?.let { diagnostics ->
                 HorizontalDivider(color = Border)
                 Text("Connection details", fontWeight = FontWeight.Bold)
@@ -672,6 +846,9 @@ internal data class VoiceJoinIntent(
         }
     }
 }
+
+internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
+    draft.isBlank() || draft == rejectedText
 
 @Composable private fun DiagnosticRow(label: String, value: String) = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween) {
     Text(label, color = TextMuted, fontSize = 11.sp); Text(value, fontSize = 11.sp)
@@ -701,6 +878,9 @@ private fun formatBitrate(value: Long) = "${value / 1_000} kbps"
 }
 
 private fun normalizeUsername(value: String) = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(32)
+internal fun profileValid(username: String, displayName: String) =
+    Regex("^[a-z0-9_]{3,32}$").matches(username) && displayName.isNotBlank() &&
+        displayName.codePointCount(0, displayName.length) <= 64 && displayName.none { it.isISOControl() }
 private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\\s+"), "-").filter { it in 'a'..'z' || it == '-' }.replace(Regex("-+"), "-").removePrefix("-").take(80)
 private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))
 private fun String.codePointTake(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max))

@@ -10,6 +10,7 @@ Prerequisites:
 - Android SDK Platform 36
 - Android SDK Build Tools 36.0.0
 - Android platform-tools
+- Android NDK 27.2.12479018 and CMake 3.22.1 (for the native microphone DSP)
 - Python 3 and network access for the pinned Fontshare acquisition step
 
 One reproducible command-line SDK setup is:
@@ -20,7 +21,8 @@ mkdir -p "$ANDROID_HOME/cmdline-tools"
 # Install Google's command-line tools under $ANDROID_HOME/cmdline-tools/latest first.
 yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-  "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+  "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
+  "ndk;27.2.12479018" "cmake;3.22.1"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 ```
 
@@ -30,7 +32,7 @@ The checked-in wrapper pins Gradle 8.13 and verifies the official distribution w
 ./apps/native/android/build.sh
 ```
 
-The build first invokes `scripts/native_fonts.py`, which downloads and verifies the official, unmodified Satoshi Regular/Medium/Bold/Black OTF files and Fontshare license. Generated font inputs remain ignored; the original fonts and unchanged license are bundled into the APK. It then runs JVM unit tests, Android lint, and `assembleDebug`, asserts that the Satoshi and WebRTC notices are packaged, and writes `apps/native/android/dist/Caper-android-debug.apk`. The APK is installable and debug-signed by the Android toolchain for development only. It is not a production release.
+The build first invokes `scripts/native_fonts.py`, which downloads and verifies the official, unmodified Satoshi Regular/Medium/Bold/Black OTF files and Fontshare license. It also validates the checked-in DPDFNet-8 HR model and downloads SHA-256-pinned ONNX Runtime 1.23.2 Android and RNNoise source/model archives before compiling native microphone processing. Neither model nor native code is fetched at runtime. Generated inputs remain ignored. It then runs JVM unit tests, Android lint, and `assembleDebug` with bounded native compilation, asserts that the Satoshi and WebRTC notices are packaged, and writes `apps/native/android/dist/Caper-android-debug.apk`. The APK is installable and debug-signed by the Android toolchain for development only. It is not a production release.
 
 The API defaults to `https://caper.chat`. Override it at build time with `-PcaperApiBaseUrl=https://host.example` (HTTPS is required by the manifest).
 
@@ -43,13 +45,13 @@ Release tasks fail when signing is absent instead of producing an unsigned or de
 - Adaptive space rail, channel navigation, toggleable member panel, owner space/channel/member/private-grant management, paginated presence, typing, grouped messages, history pagination, and narrow-layout Browse navigation. Colors, dimensions, and bundled Satoshi typography follow the working web client.
 - Idempotent HTTP sends and multiplexed gateway chat with heartbeat watchdog, durable cursor replay, reconnect backoff, fresh-history resync, and visible connection/error state.
 - Access revocation and channel/logout generation guards clear prior messages and reject late results. HTTP send confirmation does not advance the gateway replay cursor. Unknown send outcomes retain their UUID and text; a matching gateway event confirms them, while definitive rejection unlocks a new operation.
-- Native WebRTC voice is available from the default Android UI after explicit microphone permission. It implements Cloudflare SFU join/publish/subscribe, roster snapshots, lease renewal, mute/deafen with prior intent restored, Android communication-route selection, global output gain and per-remote local mute/gain, connection statistics, TURN renewal, restart-ICE/ack recovery, call replacement, and an ongoing microphone foreground service. These mechanisms are not a claim of live or device-verified parity.
+- Native WebRTC voice is available from the default Android UI after explicit microphone permission. It implements Cloudflare SFU join/publish/subscribe, roster snapshots, lease renewal, mute/deafen with prior intent restored, Android communication-route selection, input/output gain, per-remote local mute/gain, bounded DPDFNet-8 HR with RNNoise fallback and voice shaping, prejoin/in-call local mic comparison, sanitized debug-gated processing diagnostics, connection statistics, TURN renewal, restart-ICE/ack recovery, call replacement, and an ongoing microphone foreground service. These mechanisms are not a claim of live or device-verified parity.
 
 ## Known voice gaps and validation boundary
 
-The voice implementation compiles against the pinned native WebRTC SDK, but this orb has no KVM or attached physical Android device. Microphone capture, remote playback, Bluetooth/wired routing, interruptions, network handoff, lock-screen longevity, OEM battery policies, and a live Cloudflare multi-party call are **not device-verified**. The foreground service and notification implement the Android mechanism needed for an ongoing locked-screen call; manifest declarations alone are not treated as proof. Native WebRTC callbacks and teardown still need physical-device stress testing before voice can be considered production-accepted.
+The voice implementation targets the pinned native WebRTC SDK, but this orb has no KVM or attached physical Android device. Microphone capture, remote playback, Bluetooth/wired routing, interruptions, network handoff, lock-screen longevity, OEM battery policies, and a live Cloudflare multi-party call are **not device-verified**. The foreground service and notification implement the Android mechanism needed for an ongoing locked-screen call; manifest declarations alone are not treated as proof. Native WebRTC callbacks and teardown still need physical-device stress testing before voice can be considered production-accepted.
 
-There is no incoming-call push, ringing, or invitation UI because the server has no push/incoming-call contract. Camera and screen sharing are not working web features and are not exposed. Android exposes a communication route rather than independent browser-style input/output device IDs. Global input gain, the prejoin/in-call natural-versus-enhanced mic test, and its 0–100 processing-strength pipeline remain parity gaps requiring a deliberate native capture/processing path. Detailed audio diagnostics remain unavailable; the implemented connection panel is limited to non-sensitive bitrate, loss, jitter, RTT, and direct-versus-relay statistics. None of the gaps are represented by inert controls.
+There is no incoming-call push, ringing, or invitation UI because the server has no push/incoming-call contract. Camera and screen sharing are not working web features and are not exposed. Android exposes a communication route rather than independent browser-style input/output device IDs. Web deliberately suppresses interaction sounds on coarse-pointer/mobile devices, so Android does not add a separate sounds setting. Connection diagnostics are non-sensitive bitrate, loss, jitter, RTT, and direct-versus-relay statistics; detailed microphone processing timing/mode is visible only for accounts with `debugEnabled`. Physical capture, processing fallback, actual route changes, and local comparison playback still need device acceptance.
 
 ## Explicit fixture and emulator smoke
 

@@ -43,6 +43,8 @@ class VoiceEngine(
     private lateinit var rtcConfiguration: PeerConnection.RTCConfiguration
     private var source: AudioSource? = null
     private var microphone: AudioTrack? = null
+    private var capture: AudioCapture? = null
+    private val audioPreferences = appContext.getSharedPreferences("audio", Context.MODE_PRIVATE)
     private var mediaToken: String? = null
     private var selfId: String? = null
     private val remoteLock = Any()
@@ -55,9 +57,12 @@ class VoiceEngine(
     private var peerDisposing = false // guarded by remoteLock
     private val participantVolumes = mutableMapOf<String, Int>()
     private val locallyMutedParticipants = mutableSetOf<String>()
-    private var outputVolume = 100
+    private var outputVolume = audioPreferences.getInt("outputVolume", 100).coerceIn(0, 200)
     private val localMute = VoiceLocalMute(lock, { syncStateLocked() }) { muted, _ ->
-        resources.use { microphone?.setEnabled(connected.get() && !muted) }
+        resources.use {
+            capture?.publication(connected.get() && !muted)
+            microphone?.setEnabled(connected.get() && !muted && capture?.isTesting != true)
+        }
         applyRemoteAudioPreferences()
     }
     private var previousStats: Triple<Long, Long, Long>? = null
@@ -68,21 +73,57 @@ class VoiceEngine(
     val muted get() = localMute.muted
     val deafened get() = localMute.deafened
 
+    internal fun copyAudioIntentFrom(previous: VoiceEngine) { localMute.copyFrom(previous.localMute) }
+    fun setInputGain(value: Int) { capture?.gain(value) }
+    fun setProcessingStrength(value: Int) { capture?.processingStrength(value) }
+    fun processingReport(): LongArray = capture?.report() ?: longArrayOf()
+    fun invalidateCapture() { localMute.withCurrent { muted ->
+        resources.use { capture?.publication(connected.get() && !muted) }
+    } }
+    fun beginMicComparison() { resources.use {
+        capture?.beginComparison()
+        microphone?.setEnabled(false)
+    } }
+    internal fun finishMicComparison(): MicComparison? = resources.use {
+        capture?.endComparison()
+    }
+    fun resumeAfterMicComparison() { localMute.withCurrent { muted ->
+        resources.use {
+            capture?.resumePublication()
+            capture?.publication(connected.get() && !muted)
+            microphone?.setEnabled(connected.get() && !muted)
+        }
+    } }
+
     suspend fun connect(onParticipants: (List<Participant>) -> Unit) = withContext(Dispatchers.IO) {
         try {
-            resources.use {
+            // Model copy/warmup can take seconds and must not hold the resource
+            // gate needed by synchronous stop on Main.
+            val processor = AudioCapture.prepare(appContext)
+            try { resources.use {
                 PeerConnectionFactory.initialize(
                     PeerConnectionFactory.InitializationOptions.builder(appContext).createInitializationOptions(),
                 )
-                val audioModule = JavaAudioDeviceModule.builder(appContext).createAudioDeviceModule()
+                processor.gain(audioPreferences.getInt("inputGain", 100))
+                processor.processingStrength(audioPreferences.getInt("strength", 25))
+                capture = processor
+                val audioModule = JavaAudioDeviceModule.builder(appContext)
+                    .setInputSampleRate(48000)
+                    .setAudioBufferCallback { buffer, format, channels, rate, read, time ->
+                        processor.onBuffer(buffer, format, channels, rate, read)
+                        time
+                    }.createAudioDeviceModule()
                 try { factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule).createPeerConnectionFactory() }
                 finally { audioModule.release() }
+            } } catch (error: Throwable) {
+                if (capture !== processor) processor.close()
+                throw error
             }
             // A canceled HTTP join can have committed at the server without
             // delivering its token. Wait for the bounded call to finish, then
             // either publish the token or leave it after a local stop.
             val joined: JoinResponse? = withContext(NonCancellable) {
-                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", true); put("deafened", false) })
+                val result: JoinResponse = media("join", buildJsonObject { put("name", displayName); put("muted", muted); put("deafened", deafened) })
                 if (resources.acceptToken(result.token) { mediaToken = it; selfId = result.id; turn = result.turn }) result
                 else {
                     // Stop preceded response: closeLocal never saw this token.
@@ -131,6 +172,7 @@ class VoiceEngine(
                 localMute.withCurrent { currentMute ->
                     resources.use {
                         connected.set(true)
+                        capture?.publication(!currentMute)
                         microphone?.setEnabled(!currentMute)
                     }
                 }
@@ -220,11 +262,9 @@ class VoiceEngine(
 
     suspend fun setDeafened(value: Boolean, onLocalApplied: () -> Unit = {}) = localMute.setDeafened(value, onLocalApplied)
 
-    suspend fun setOutputVolume(value: Int) = lock.withLock {
-        synchronized(remoteLock) {
-            outputVolume = value.coerceIn(0, 200)
-            applyRemoteAudioPreferencesLocked()
-        }
+    fun setOutputVolume(value: Int) = synchronized(remoteLock) {
+        outputVolume = value.coerceIn(0, 200)
+        applyRemoteAudioPreferencesLocked()
     }
 
     suspend fun setParticipantVolume(id: String, value: Int) = lock.withLock {
@@ -377,6 +417,7 @@ class VoiceEngine(
         var token: String? = null
         resources.close {
             connected.set(false)
+            capture?.publication(false)
             token = mediaToken
             mediaToken = null
             // An invalidated native wrapper must not strand the microphone or
@@ -398,6 +439,7 @@ class VoiceEngine(
             synchronized(remoteLock) { peerDisposing = true }
             runCatching { peer?.dispose() }; peer = null
             runCatching { factory?.dispose() }; factory = null
+            runCatching { capture?.close() }; capture = null
         }
         return token
     }
@@ -525,9 +567,17 @@ internal class VoiceMuteIntent(initiallyMuted: Boolean = true) {
         private set
     private var beforeDeafen = initiallyMuted
 
+    fun copy() = VoiceMuteIntent(muted).also {
+        it.deafened = deafened
+        it.beforeDeafen = beforeDeafen
+    }
+
     fun setMuted(value: Boolean) {
-        beforeDeafen = value
-        if (!deafened) muted = value
+        muted = value
+        if (!value) {
+            deafened = false
+            beforeDeafen = false
+        }
     }
 
     fun setDeafened(value: Boolean) {
@@ -543,16 +593,28 @@ internal class VoiceLocalMute(
     private val sync: suspend () -> Unit,
     private val apply: (Boolean, Boolean) -> Unit,
 ) {
-    private val intent = VoiceMuteIntent()
+    private var intent = VoiceMuteIntent()
     @Volatile var muted = true
         private set
     @Volatile var deafened = false
         private set
 
+    // Used before the replacement engine connects. Do not share mutable intent
+    // or carry any old peer, media capability, PCM, or comparison state.
+    fun copyFrom(previous: VoiceLocalMute) {
+        val snapshot = synchronized(previous) { previous.intent.copy() }
+        synchronized(this) {
+            intent = snapshot
+            muted = intent.muted
+            deafened = intent.deafened
+        }
+    }
+
     suspend fun setMuted(value: Boolean, onLocalApplied: () -> Unit = {}) {
         synchronized(this) {
             intent.setMuted(value)
             muted = intent.muted
+            deafened = intent.deafened
             apply(muted, deafened)
         }
         onLocalApplied()

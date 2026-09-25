@@ -274,6 +274,45 @@ def main() -> None:
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
 
+    # Inspect prejoin audio controls without starting capture or playback.
+    tap(description="Audio and account settings")
+    audio = capture("caper-android-audio-prejoin", "Processing strength")
+    for label in ("Input gain", "Processing strength", "Output volume"):
+        assert find(audio, description=label) is not None, f"Missing labeled slider: {label}"
+    assert find(audio, text="25%") is not None
+    output = find(audio, description="Output volume")
+    left, top, right, bottom = map(int, re.findall(r"\d+", output.attrib["bounds"]))
+    # Compose's accessibility bounds include padding outside the touch track.
+    # Drag the current 100% thumb past the minimum instead of tapping padding;
+    # sampled motion events may stop short of the final pointer-up coordinate.
+    adb("shell", "input", "swipe", str((left + right) // 2), str((top + bottom) // 2),
+        str(left - (right - left) // 4), str((top + bottom) // 2), "500")
+    wait_for(text="0%")
+    tap(description="Close")
+    tap(description="Audio and account settings")
+    zero = capture("caper-android-audio-prejoin-zero-output", "0%")
+    assert find(zero, text="Test microphone") is not None
+    tap(description="Close")
+
+    tap(description="Edit profile")
+    enter_first_field("ab")
+    invalid = hierarchy()
+    # Compose exposes the label separately; disabled belongs to its action node.
+    parents = {child: parent for parent in invalid.iter() for child in parent}
+    submit = find(invalid, text="Save profile")
+    while submit is not None and submit.get("clickable") != "true":
+        submit = parents.get(submit)
+    assert submit is not None and submit.get("enabled") == "false"
+    enter_first_field("fixture_owner")
+    fixture({"failure": {"path": "/api/account/profile", "method": "POST", "status": 503,
+                         "error": "TEST FIXTURE: profile save temporarily unavailable."}})
+    tap(text="Save profile")
+    profile_error = capture("caper-android-profile-error", "temporarily unavailable")
+    assert find(profile_error, text="fixture_owner") is not None, "Rejected save must retain the edit"
+    assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
+    tap(text="Save profile")
+    wait_for(description="Manage planning")
+
     tap(description="Manage planning")
     overview = capture("caper-android-channel-settings", "Overview")
     for required in ("Private channel", "Only you and the people you add can view or join.", "Delete channel"):
@@ -303,6 +342,10 @@ def main() -> None:
     wait_for(text="Fixture Studio")
     browse = capture("caper-android-browse", "Fixture Studio")
     assert find(browse, text="CHANNELS") is not None
+    tap(description="Audio and account settings")
+    audio_narrow = capture("caper-android-audio-prejoin-narrow", "Processing strength")
+    assert find(audio_narrow, description="Input gain") is not None
+    tap(description="Close")
 
     # Run after parity captures so the stable seeded reference conversation is
     # unchanged. This crosses the real Compose input -> HTTP send -> gateway UI

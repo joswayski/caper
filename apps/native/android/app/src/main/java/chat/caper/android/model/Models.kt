@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
-@Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null)
+@Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false)
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
 @Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false)

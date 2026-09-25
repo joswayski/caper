@@ -38,14 +38,19 @@ data class VoiceState(
     val selfId: String? = null,
     val muted: Boolean = false,
     val deafened: Boolean = false,
+    val inputGain: Int = 100,
+    val processingStrength: Int = 25,
     val outputVolume: Int = 100,
     val participantVolumes: Map<String, Int> = emptyMap(),
     val locallyMutedParticipants: Set<String> = emptySet(),
     val diagnostics: VoiceDiagnostics? = null,
+    val processing: List<Long> = emptyList(),
     val routes: List<AudioRoute> = emptyList(),
     val selectedRouteId: Int? = null,
     val error: String? = null,
 ) { enum class Phase { IDLE, CONNECTING, CONNECTED, RECONNECTING, FAILED } }
+
+internal data class MicComparisonBinding(val service: VoiceCallService, val attempt: Long)
 
 class VoiceCallService : Service() {
     // Android service lifecycle and explicit stop run on Main. Resume all
@@ -64,8 +69,8 @@ class VoiceCallService : Service() {
     private lateinit var audio: AudioManager
     private var focus: AudioFocusRequest? = null
     private val deviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { scope.launch { updateRoutes() } }
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { scope.launch { updateRoutes() } }
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { scope.launch { engine?.invalidateCapture(); updateRoutes() } }
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { scope.launch { engine?.invalidateCapture(); updateRoutes() } }
     }
 
     override fun onCreate() {
@@ -93,9 +98,9 @@ class VoiceCallService : Service() {
             ACTION_MUTE -> scope.launch {
                 val (current, attempt) = currentCall() ?: return@launch
                 runCatching { current.setMuted(!current.muted) {
-                    commitCallResult(current, attempt) { it.copy(muted = current.muted) }
+                    commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened) }
                 } }
-                    .onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted, error = null) } }
+                    .onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened, error = null) } }
                     .onFailure { localControlFailed(current, attempt, it, "Mute is local; voice status will retry.") }
             }
             ACTION_DEAFEN -> scope.launch {
@@ -108,12 +113,7 @@ class VoiceCallService : Service() {
             }
             ACTION_STOP -> stopCall()
             ACTION_ROUTE -> selectRoute(intent.getIntExtra(EXTRA_ROUTE_ID, -1))
-            ACTION_OUTPUT_VOLUME -> scope.launch {
-                val value = intent.getIntExtra(EXTRA_VOLUME, 100).coerceIn(0, 200)
-                val (current, attempt) = currentCall() ?: return@launch
-                current.setOutputVolume(value)
-                commitCallResult(current, attempt) { it.copy(outputVolume = value) }
-            }
+            ACTION_OUTPUT_VOLUME -> setOutputVolume(this, intent.getIntExtra(EXTRA_VOLUME, 100))
             ACTION_PARTICIPANT_VOLUME -> scope.launch {
                 val id = intent.getStringExtra(EXTRA_PARTICIPANT_ID) ?: return@launch
                 val value = intent.getIntExtra(EXTRA_VOLUME, 100).coerceIn(0, 200)
@@ -132,13 +132,17 @@ class VoiceCallService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean) {
+    private fun startCall(channelId: String, spaceId: String, channelName: String, spaceName: String, displayName: String, demo: Boolean, previous: VoiceEngine? = null) {
         if (engine != null) return
         val token = TokenStore(this).read()
         if (!demo && token == null) return stopSelf()
         val attempt = attempts.begin()
         activeAttempt = attempt
-        update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName, muted = true) }
+        val preferences = getSharedPreferences("audio", MODE_PRIVATE)
+        update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName,
+            muted = previous?.muted ?: true, deafened = previous?.deafened ?: false,
+            inputGain = preferences.getInt("inputGain", 100), processingStrength = preferences.getInt("strength", 25),
+            outputVolume = preferences.getInt("outputVolume", 100)) }
         val current = try {
             startForegroundNotification()
             acquireAudio()
@@ -146,6 +150,7 @@ class VoiceCallService : Service() {
             created = VoiceEngine(this, CaperApi(), token, channelId, displayName, demo) { transport ->
                 scope.launch { transportState(created, attempt, transport) }
             }
+            previous?.let { created.copyAudioIntentFrom(it) }
             created.also { engine = it }
         } catch (error: Throwable) {
             attempts.end()
@@ -178,7 +183,9 @@ class VoiceCallService : Service() {
                             if (state.value.phase != VoiceState.Phase.RECONNECTING) {
                                 heartbeatWithRecovery(current, attempt)
                                 runCatching { withTimeout(3_000) { current.diagnostics() } }
-                                    .onSuccess { diagnostics -> commitCallResult(current, attempt) { it.copy(diagnostics = diagnostics) } }
+                                    .onSuccess { diagnostics -> commitCallResult(current, attempt) {
+                                        it.copy(diagnostics = diagnostics, processing = current.processingReport().toList())
+                                    } }
                             }
                         }
                     } catch (error: Throwable) {
@@ -254,6 +261,7 @@ class VoiceCallService : Service() {
 
     private fun failCall(current: VoiceEngine, error: Throwable) {
         if (engine !== current) return
+        if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         engine = null
         activeAttempt = null
         heartbeat?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
@@ -278,13 +286,14 @@ class VoiceCallService : Service() {
         attempts.end()
         activeAttempt = null
         val current = engine
+        if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         engine = null
         val joining = connectJob
         connectJob = null
         heartbeat?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         joining?.cancel()
         val token = current?.closeLocal()
-        update { VoiceState() }
+        update { VoiceState(inputGain = it.inputGain, processingStrength = it.processingStrength, outputVolume = it.outputVolume) }
         releaseAudio()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         if (stopService) stopSelf()
@@ -321,6 +330,7 @@ class VoiceCallService : Service() {
     private fun selectRoute(id: Int) {
         if (Build.VERSION.SDK_INT < 31 || id < 0) return
         val device = audio.availableCommunicationDevices.firstOrNull { it.id == id } ?: return
+        engine?.invalidateCapture()
         if (!audio.setCommunicationDevice(device)) {
             update { it.copy(error = "That audio route is unavailable.") }
         }
@@ -373,6 +383,7 @@ class VoiceCallService : Service() {
         attempts.end()
         connectJob?.cancel(); heartbeat?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); mediaEvents?.close(); mediaEvents = null
         val current = engine; engine = null
+        if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         activeAttempt = null
         val token = current?.closeLocal() // synchronous safety: mic and peer are closed before cancellation
         if (current != null && token != null) CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { current.leave(token) }
@@ -423,8 +434,9 @@ class VoiceCallService : Service() {
             if (!BuildConfig.ENABLE_NATIVE_VOICE) return
             val current = active
             if (current != null && state.value.channelId != channelId) {
+                val previous = current.engine
                 current.stopCall(stopService = false)
-                current.startCall(channelId, spaceId, channelName, spaceName, displayName, demo)
+                current.startCall(channelId, spaceId, channelName, spaceName, displayName, demo, previous)
                 return
             }
             val intent = Intent(context, VoiceCallService::class.java).setAction(ACTION_START)
@@ -443,7 +455,46 @@ class VoiceCallService : Service() {
         fun toggleMute(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_MUTE)) }
         fun toggleDeafen(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_DEAFEN)) }
         fun selectRoute(context: Context, id: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_ROUTE).putExtra(EXTRA_ROUTE_ID, id)) }
-        fun setOutputVolume(context: Context, value: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_OUTPUT_VOLUME).putExtra(EXTRA_VOLUME, value)) }
+        fun setOutputVolume(context: Context, value: Int) {
+            val next = value.coerceIn(0, 200)
+            context.getSharedPreferences("audio", Context.MODE_PRIVATE).edit().putInt("outputVolume", next).apply()
+            active?.engine?.setOutputVolume(next)
+            update { it.copy(outputVolume = next) }
+        }
+        fun setInputGain(context: Context, value: Int) {
+            val next = value.coerceIn(0, 200)
+            context.getSharedPreferences("audio", Context.MODE_PRIVATE).edit().putInt("inputGain", next).apply()
+            active?.engine?.setInputGain(next)
+            update { it.copy(inputGain = next) }
+        }
+        fun setProcessingStrength(context: Context, value: Int) {
+            val next = value.coerceIn(0, 100)
+            context.getSharedPreferences("audio", Context.MODE_PRIVATE).edit().putInt("strength", next).apply()
+            active?.engine?.setProcessingStrength(next)
+            update { it.copy(processingStrength = next) }
+        }
+        private var comparisonEngine: VoiceEngine? = null
+        private var comparisonAttempt: Long? = null
+        internal fun canPreparePrejoinMicTest(): Boolean = state.value.phase == VoiceState.Phase.IDLE && active?.engine == null
+        internal fun beginMicComparison(): MicComparisonBinding? {
+            val service = active ?: return null
+            val (current, attempt) = service.currentCall() ?: return null
+            if (state.value.phase != VoiceState.Phase.CONNECTED || comparisonEngine != null) return null
+            current.beginMicComparison()
+            comparisonEngine = current
+            comparisonAttempt = attempt
+            return MicComparisonBinding(service, attempt)
+        }
+        internal fun finishMicComparison(binding: MicComparisonBinding): MicComparison? =
+            if (comparisonContextMatches(binding.service, binding.attempt, active, comparisonAttempt) &&
+                active?.engine === comparisonEngine) comparisonEngine?.finishMicComparison() else null
+        internal fun resumeMicPublication(binding: MicComparisonBinding) {
+            if (!comparisonContextMatches(binding.service, binding.attempt, active, comparisonAttempt)) return
+            val current = comparisonEngine
+            comparisonEngine = null
+            comparisonAttempt = null
+            if (active?.engine === current && active?.activeAttempt == binding.attempt) current?.resumeAfterMicComparison()
+        }
         fun setParticipantVolume(context: Context, id: String, value: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_PARTICIPANT_VOLUME).putExtra(EXTRA_PARTICIPANT_ID, id).putExtra(EXTRA_VOLUME, value)) }
         fun toggleParticipantMute(context: Context, id: String) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_PARTICIPANT_MUTE).putExtra(EXTRA_PARTICIPANT_ID, id)) }
     }
@@ -451,6 +502,8 @@ class VoiceCallService : Service() {
 
 internal fun VoiceState.belongsToChannel(id: String) = channelId == id && phase != VoiceState.Phase.IDLE
 internal fun VoiceState.belongsToSpace(id: String) = spaceId == id && phase != VoiceState.Phase.IDLE
+internal fun comparisonContextMatches(expectedService: Any, expectedAttempt: Long, service: Any?, attempt: Long?): Boolean =
+    service === expectedService && attempt == expectedAttempt
 internal fun callResultIsCurrent(expected: Any, current: Any?, attempt: Long, attempts: CallAttemptGate) =
     expected === current && attempts.isCurrent(attempt)
 internal inline fun applyCurrentCallResult(expected: Any, current: Any?, attempt: Long, attempts: CallAttemptGate, block: () -> Unit) {
