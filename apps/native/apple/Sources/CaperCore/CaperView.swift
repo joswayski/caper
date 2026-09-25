@@ -587,7 +587,6 @@ private struct VoiceRoster: View {
                             }
                     }
                 }.foregroundStyle(CaperTheme.muted).padding(.vertical, 4)
-                    .accessibilityIdentifier("active-participant-\(participant.id)")
             }
         }
     }

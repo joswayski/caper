@@ -71,7 +71,8 @@ class VoiceRosterUiTest {
     private fun capture(name: String) {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val directory = requireNotNull(instrumentation.targetContext.getExternalFilesDir("ui"))
+        val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
+        check(directory.mkdirs() || directory.isDirectory)
         val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
         try {
             File(directory, name).outputStream().use { output ->

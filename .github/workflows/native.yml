@@ -250,8 +250,8 @@ jobs:
           script: |
             CMAKE_BUILD_PARALLEL_LEVEL=1 apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 -PcaperFixtureMode=true -PcaperApiBaseUrl=http://localhost:3001 connectedDebugAndroidTest
             mkdir -p apps/native/android/dist/ui
-            adb pull /sdcard/Android/data/chat.caper.android.debug/files/ui/voice-roster-connected-closed.png apps/native/android/dist/ui/
-            adb pull /sdcard/Android/data/chat.caper.android.debug/files/ui/voice-roster-connected-open.png apps/native/android/dist/ui/
+            find apps/native/android/app/build/outputs/connected_android_test_additional_output -type f -name 'voice-roster-connected-*.png' -exec cp {} apps/native/android/dist/ui/ \;
+            test -s apps/native/android/dist/ui/voice-roster-connected-closed.png && test -s apps/native/android/dist/ui/voice-roster-connected-open.png
             python apps/native/android/smoke.py
       - uses: actions/upload-artifact@v4
         if: always()
