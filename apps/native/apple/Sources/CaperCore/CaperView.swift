@@ -328,7 +328,8 @@ private struct SpaceRail: View {
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border, style: StrokeStyle(lineWidth: 1, dash: [4])))
                 }
                 .buttonStyle(.plain).disabled(model.account != nil && !model.canCreateSpace)
-                .help(model.account == nil ? "Sign in to create a space" : "Create space")
+                .help(model.account == nil ? "Sign in to create a space" : model.canCreateSpace ? "Create space"
+                      : "Space limit reached (\(model.limits?.ownedSpaces ?? 20) owned, \(model.limits?.totalSpaces ?? 100) total)")
             }.padding(.vertical, 14).frame(maxWidth: .infinity)
         }
         .background(CaperTheme.blackout)
@@ -368,12 +369,21 @@ private struct ChannelSidebar: View {
                             HStack(spacing: 6) {
                                 CaperIcon(name: channelsExpanded ? "chevron-down" : "chevron-right")
                                 Text("Channels")
+                                Text("\(model.detail?.channels.count ?? 0)").font(CaperTheme.font(10, weight: .bold))
                             }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         }.buttonStyle(.plain)
                         Spacer()
                         if model.isOwner {
+                            let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
                             Button { sheet = .createChannel } label: { CaperIcon(name: "plus") }
-                                .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).accessibilityLabel("Create channel")
+                                .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).help(createHelp).accessibilityLabel("Create channel")
+                            // Web's owner-only Channel options menu.
+                            Menu {
+                                Button("Create channel") { sheet = .createChannel }.disabled(!model.canCreateChannel)
+                                Button("\(channelsExpanded ? "Collapse" : "Expand") channels") { channelsExpanded.toggle() }
+                            } label: { CaperIcon(name: "ellipsis") }
+                                .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28, height: 28)
+                                .help("Channel options").accessibilityLabel("Channel options")
                         }
                     }.frame(height: 44)
 
