@@ -934,20 +934,25 @@ internal fun counterTone(count: Int): Color = when {
 
 @Composable private fun CreateSpaceDialog(busy: Boolean, close: () -> Unit, create: (String) -> Unit) {
     var name by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
     CaperDialog("Create a space", close) {
-        OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        DialogActions(close, "Create space", busy || name.isBlank()) { create(name.trim()) }
+        OutlinedTextField(name, { name = it.codePointTake(80); error = null }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        // Web validates on submit and says why (spaces/client.ts spaceNameError).
+        DialogActions(close, "Create space", busy) { spaceNameError(name)?.let { error = it } ?: create(name.trim()) }
     }
 }
 
 @Composable private fun CreateChannelDialog(detail: SpaceDetail, busy: Boolean, close: () -> Unit, create: (String, Boolean) -> Unit) {
     var name by remember { mutableStateOf("") }; var private by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     CaperDialog("Create a channel", close) {
-        OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, placeholder = { Text("project-updates") },
+        OutlinedTextField(name, { name = normalizeChannel(it); error = null }, label = { Text("Channel name") }, placeholder = { Text("project-updates") },
             leadingIcon = { Icon(painterResource(if (private) R.drawable.lucide_lock_keyhole else R.drawable.lucide_hash), null, Modifier.size(18.dp)) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         Text("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.", color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp)
         PrivacyToggle(private, detail.space.name) { private = it }
-        DialogActions(close, "Create channel", busy || channelInvalid(name)) { create(name.removeSuffix("-"), private) }
+        error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        DialogActions(close, "Create channel", busy) { channelNameError(name.removeSuffix("-"))?.let { error = it } ?: create(name.removeSuffix("-"), private) }
     }
 }
 
@@ -1033,7 +1038,13 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
 @Composable private fun ConfirmDialog(title: String, body: String, action: String, busy: Boolean, close: () -> Unit, warn: Boolean = false, confirm: () -> Unit) = CaperDialog(title, close) {
     // Web plays its warning once when a delete confirmation opens.
     if (warn) LaunchedEffect(Unit) { CaperEffects.play(CaperEffects.Effect.Warning) }
-    Text(body, color = TextMuted); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { TextButton(close) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(confirm, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger)) { Text(action) } }
+    Text(body, color = TextMuted); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        // Web: Cancel waits for the action; the action shows its progress.
+        TextButton(close, enabled = !busy) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
+        Button(confirm, enabled = !busy, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger)) {
+            Text(if (busy) { if (action.startsWith("Delete")) "Deleting…" else "Saving…" } else action)
+        }
+    }
 }
 
 @Composable internal fun CaperDialog(
@@ -1061,8 +1072,26 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     } }
 }
 
-@Composable private fun DialogActions(close: () -> Unit, label: String, disabled: Boolean, action: () -> Unit) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-    TextButton(close) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(action, enabled = !disabled, shape = MaterialTheme.shapes.small) { Text(label) }
+@Composable private fun DialogActions(close: () -> Unit, label: String, busy: Boolean, action: () -> Unit) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+    TextButton(close, enabled = !busy) { Text("Cancel") }; Spacer(Modifier.width(8.dp)); Button(action, enabled = !busy, shape = MaterialTheme.shapes.small) { Text(if (busy) "Saving…" else label) }
+}
+
+/** Web's spaces/client.ts validation copy. */
+internal fun spaceNameError(name: String): String? {
+    val trimmed = name.trim()
+    return when {
+        trimmed.isEmpty() -> "Enter a space name."
+        trimmed.codePointCount(0, trimmed.length) > 80 -> "Space names can be at most 80 characters."
+        trimmed.any { it.isISOControl() } -> "Space names cannot contain control characters."
+        else -> null
+    }
+}
+
+internal fun channelNameError(name: String): String? = when {
+    name.isEmpty() -> "Enter a channel name."
+    name.codePointCount(0, name.length) > 80 -> "Channel names can be at most 80 characters."
+    channelInvalid(name) -> "Use lowercase letters separated by single dashes."
+    else -> null
 }
 
 private fun normalizeUsername(value: String) = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(32)

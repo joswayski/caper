@@ -49,6 +49,11 @@ pub enum Command {
         name: String,
         general: bool,
     },
+    CreateSession {
+        generation: u64,
+        token: Option<String>,
+        name: String,
+    },
     LoadOlder {
         generation: u64,
         token: Option<String>,
@@ -217,7 +222,12 @@ pub enum Event {
         generation: u64,
         channel: String,
         general: bool,
-        result: Result<(History, ChatSession), LoadError>,
+        result: Result<(History, SessionResult), LoadError>,
+    },
+    /// Web's Retry session.
+    SessionCreated {
+        generation: u64,
+        result: SessionResult,
     },
     OlderLoaded {
         generation: u64,
@@ -282,7 +292,26 @@ impl From<crate::api::ApiError> for LoadError {
 
 pub struct PreparedNavigation {
     pub detail: Option<SpaceDetail>,
-    pub conversation: Option<(History, ChatSession)>,
+    pub conversation: Option<(History, SessionResult)>,
+}
+
+/// Web keeps a loaded conversation when only its chat session fails, with Retry session.
+pub type SessionResult = Result<ChatSession, String>;
+
+fn session_result(
+    result: Result<ChatSession, crate::api::ApiError>,
+) -> Result<SessionResult, crate::api::ApiError> {
+    match result {
+        Ok(session) => Ok(Ok(session)),
+        Err(error)
+            if error
+                .status
+                .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)) =>
+        {
+            Err(error)
+        }
+        Err(error) => Ok(Err(error.to_string())),
+    }
 }
 
 fn prepare_navigation(
@@ -380,8 +409,7 @@ fn prepare_navigation(
     }
     let conversation = history
         .map(|history| {
-            api.chat_session(token, name)
-                .map(|session| (history, session))
+            session_result(api.chat_session(token, name)).map(|session| (history, session))
         })
         .transpose()?;
     Ok(PreparedNavigation {
@@ -678,6 +706,16 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             space,
             channel,
         },
+        Command::CreateSession {
+            generation,
+            token,
+            name,
+        } => Event::SessionCreated {
+            generation,
+            result: api
+                .chat_session(token.as_deref(), &name)
+                .map_err(|error| error.to_string()),
+        },
         Command::LoadChannel {
             generation,
             token,
@@ -691,7 +729,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 api.history(token.as_deref(), &channel, None)
             })
             .and_then(|history| {
-                api.chat_session(token.as_deref(), &name)
+                session_result(api.chat_session(token.as_deref(), &name))
                     .map(|session| (history, session))
             })
             .map_err(LoadError::from);
