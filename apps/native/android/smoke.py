@@ -160,6 +160,15 @@ def enter_first_field(value: str) -> None:
     adb("shell", "input", "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A")
     adb("shell", "input", "keyevent", "KEYCODE_DEL")
     time.sleep(0.5)
+    # The select-all chord can be dropped while the IME connects; delete
+    # whatever text is left one character at a time.
+    for _ in range(3):
+        editor = next((node for node in nodes(hierarchy()) if node.get("class") == "android.widget.EditText" and node.get("focused") == "true"), None)
+        remaining = len(editor.get("text", "")) if editor is not None else 0
+        if remaining == 0:
+            break
+        adb("shell", "input", "keyevent", "KEYCODE_MOVE_END", *["KEYCODE_DEL"] * remaining)
+        time.sleep(0.3)
     # adb input uses %s as its space escape. Arguments are passed without a
     # shell, so characters such as @ must remain literal.
     adb("shell", "input", "text", value.replace(" ", "%s"))
