@@ -75,6 +75,44 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     else MenuButton("Sign in") { close(); signIn() }
 }
 
+/** Web's Input Options / Output Options menus beside mute and deafen. */
+@Composable internal fun AudioOptionsMenu(input: Boolean, voice: VoiceState) {
+    val context = LocalContext.current
+    val preferences = remember(context) { context.getSharedPreferences("audio", android.content.Context.MODE_PRIVATE) }
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton({ open = true }, Modifier.size(width = 18.dp, height = 30.dp)) {
+            Icon(painterResource(R.drawable.lucide_chevron_down), if (input) "Input Options" else "Output Options", Modifier.size(12.dp), tint = TextMuted)
+        }
+        DropdownMenu(open, { open = false }, Modifier.width(280.dp), containerColor = SurfaceRaised) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (input) {
+                    // Android records from the system's communication microphone.
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Microphone", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("System default", color = TextMuted, fontSize = 12.sp)
+                    }
+                    var gain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
+                    VolumeRow("Input volume", gain)
+                    Slider(gain.toFloat(), { gain = it.toInt(); VoiceCallService.setInputGain(context, gain) },
+                        Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
+                } else {
+                    Text("Audio output", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
+                        Row(Modifier.fillMaxWidth().clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
+                            Spacer(Modifier.width(8.dp)); Text(route.name, fontSize = 13.sp)
+                        }
+                    } else Text("Choose audio output in system settings.", color = TextMuted, fontSize = 11.sp)
+                    var volume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
+                    VolumeRow("Output volume", volume)
+                    Slider(volume.toFloat(), { volume = it.toInt(); VoiceCallService.setOutputVolume(context, volume) },
+                        Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
+                }
+            }
+        }
+    }
+}
+
 @Composable private fun MenuButton(label: String, enabled: Boolean = true, action: () -> Unit) =
     OutlinedButton(action, Modifier.fillMaxWidth(), enabled = enabled, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Text(label, Modifier.fillMaxWidth(), color = if (enabled) Text else TextMuted)
@@ -346,14 +384,26 @@ private const val MAX_RECORDING_SECONDS = 30
 
 /** Debug accounts only: the native processing report of the connected call. */
 @Composable internal fun AudioDiagnosticsDialog(voice: VoiceState, close: () -> Unit) = CaperDialog("Audio diagnostics", close) {
+    val clipboard = LocalClipboardManager.current
+    var copyStatus by remember { mutableStateOf("") }
+    Text("Local diagnostics only. No audio, device identifiers, or credentials are included. Nothing is uploaded.", color = TextMuted, fontSize = 11.sp)
     val report = voice.processing
     if (report.size == 5) {
-        DiagnosticRow("Microphone processing", when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" })
-        DiagnosticRow("Processed frames", (report[1] * 480).toString())
-        DiagnosticRow("Mean processing", if (report[1] == 0L) "Not sampled" else "%.1f ms".format(report[2] / report[1] / 1000.0))
-        DiagnosticRow("Maximum processing", "%.1f ms".format(report[3] / 1000.0))
-        DiagnosticRow("Queued microphone", "%.1f ms".format(report[4] / 48.0))
-    }
+        val rows = listOf(
+            "Microphone processing" to when (report[0]) { 1L -> "DPDFNet-8"; 2L -> "RNNoise fallback"; else -> "Unavailable" },
+            "Processed frames" to (report[1] * 480).toString(),
+            "Mean processing" to if (report[1] == 0L) "Not sampled" else "%.1f ms".format(report[2] / report[1] / 1000.0),
+            "Maximum processing" to "%.1f ms".format(report[3] / 1000.0),
+            "Queued microphone" to "%.1f ms".format(report[4] / 48.0),
+        )
+        rows.forEach { (label, value) -> DiagnosticRow(label, value) }
+        // Web's Copy diagnostics, with only what Android measures.
+        OutlinedButton({
+            val json = detailsJson.encodeToString(JsonObject.serializer(), buildJsonObject { rows.forEach { (label, value) -> put(label, value) } })
+            copyStatus = try { clipboard.setText(AnnotatedString(json)); "Copied diagnostics" } catch (_: Throwable) { "Copy failed; try again." }
+        }, shape = MaterialTheme.shapes.small) { Text("Copy diagnostics") }
+        if (copyStatus.isNotEmpty()) Text(copyStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 11.sp)
+    } else Text("No microphone capture started. Open Mic Test or join voice first.", color = TextMuted, fontSize = 12.sp)
 }
 
 /** Web's ConnectionDiagnostics, limited to the join phases Android measures. */

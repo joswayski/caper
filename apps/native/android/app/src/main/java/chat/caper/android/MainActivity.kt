@@ -21,7 +21,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -289,9 +288,25 @@ internal data class VoiceJoinIntent(
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(detail?.space?.name ?: "Caper", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (detail != null && !detail.space.demo) Box(Modifier.weight(1f)) {
+                    // Web: the space name opens a menu with Space settings (owners) or Leave space….
+                    var spaceMenuOpen by remember(detail.space.id) { mutableStateOf(false) }
+                    Row(Modifier.fillMaxWidth().heightIn(min = 42.dp).clip(MaterialTheme.shapes.small)
+                        .clickable(role = Role.Button) { spaceMenuOpen = true }
+                        .semantics(mergeDescendants = true) { contentDescription = "${detail.space.name} actions" },
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text(detail.space.name, Modifier.weight(1f, fill = false), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.width(6.dp))
+                        Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(16.dp), tint = TextMuted)
+                    }
+                    DropdownMenu(spaceMenuOpen, { spaceMenuOpen = false }, containerColor = SurfaceRaised) {
+                        if (owner) DropdownMenuItem({ Text("Space settings") }, { spaceMenuOpen = false; show(Overlay.ManageSpace) },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
+                        else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { spaceMenuOpen = false; show(Overlay.LeaveSpace) },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
+                    }
+                } else Text(detail?.space?.name ?: "Caper", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (closeNavigation != null) IconButton(closeNavigation) { Icon(painterResource(R.drawable.lucide_x), "Close navigation", tint = TextMuted) }
-                if (detail != null && !detail.space.demo) IconButton({ show(if (owner) Overlay.ManageSpace else Overlay.LeaveSpace) }) { Icon(if (owner) painterResource(R.drawable.lucide_settings) else painterResource(R.drawable.lucide_log_out), "Space actions", tint = TextMuted) }
             }
             HorizontalDivider(color = Border)
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -386,6 +401,12 @@ internal data class VoiceJoinIntent(
                 }
             }
             if (activeChannel != null && detail?.channels?.none { it.id == activeChannel } == true) VoiceRoster(voice)
+            state.openError?.let { error ->
+                Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                    TextButton(viewModel::retryOpening) { Text("Retry opening", fontSize = 12.sp) }
+                }
+            }
         }
         if (voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED)
             ConnectedVoiceContext(voice, { viewModel.openVoiceChannel(voice) { closeNavigation?.invoke() } }, {
@@ -571,7 +592,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
         Row(Modifier.height(42.dp).padding(5.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
-                .semantics { contentDescription = if (state.account == null) "Sign in" else "Edit profile" }, verticalAlignment = Alignment.CenterVertically) {
+                .semantics { contentDescription = if (state.account == null) "Sign in to edit your profile" else "Edit profile for ${state.account.displayName ?: "Guest"}" }, verticalAlignment = Alignment.CenterVertically) {
                 AccountAvatar(state, viewModel); Spacer(Modifier.width(7.dp))
                 Text(state.account?.displayName ?: "Guest", maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
@@ -580,9 +601,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 // Web: mute and deafen wait while the Audio test holds the microphone.
                 val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
                 IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(30.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                AudioOptionsMenu(input = true, voice = voice)
                 IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+                AudioOptionsMenu(input = false, voice = voice)
             }
-            IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Audio and account settings", Modifier.size(18.dp), tint = TextMuted) }
+            IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(painterResource(R.drawable.lucide_settings), "User Settings", Modifier.size(18.dp), tint = TextMuted) }
         }
     }
 }
@@ -627,30 +650,41 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error ->
             Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
         }
-        MessageTimeline(state, viewModel, Modifier.weight(1f))
-        TypingLine(state.typingAuthors)
-        HorizontalDivider(color = Border)
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+        // Web shows a pending message's status inline, under the message itself.
+        MessageTimeline(state, viewModel, Modifier.weight(1f)) {
             state.pendingMessage?.error?.let { pending ->
+                val editable = canEditRejectedMessage(draft, state.pendingMessage.text)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(if (state.pendingMessage.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                     TextButton({
                         if (state.pendingMessage.rejected) {
-                            if (canEditRejectedMessage(draft, state.pendingMessage.text)) viewModel.discardPending()?.let { draft = it }
+                            if (editable) viewModel.discardPending()?.let { draft = it }
                         } else viewModel.send(state.pendingMessage.text)
-                    }, enabled = !state.pendingMessage.rejected || canEditRejectedMessage(draft, state.pendingMessage.text)) {
+                    }, Modifier.semantics { if (state.pendingMessage.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
+                        enabled = !state.pendingMessage.rejected || editable) {
                         Text(if (state.pendingMessage.rejected) "Edit" else "Retry send")
                     }
                     if (state.pendingMessage.rejected) TextButton({ viewModel.discardPending() }) { Text("Dismiss") }
                 }
+                if (state.pendingMessage.rejected && !editable)
+                    Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
             }
+        }
+        TypingLine(state.typingAuthors)
+        HorizontalDivider(color = Border)
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
                     modifier = Modifier.weight(1f), placeholder = { Text("Message #${channel.name}") }, maxLines = 6,
                     enabled = !state.messagesLoading && state.messagesError == null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } }),
+                    keyboardActions = KeyboardActions(onSend = {
+                        val pending = state.pendingMessage
+                        // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
+                        if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
+                        else if (draft.isNotBlank()) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" }
+                    }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                 )
                 FilledIconButton(
@@ -696,7 +730,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier) {
+@Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, pendingStatus: @Composable () -> Unit = {}) {
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Text("Loading messages…", color = TextMuted, fontSize = 13.sp)
@@ -724,12 +758,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        itemsIndexed(state.messages, key = { _, message -> message.id }) { index, message ->
-            val previous = state.messages.getOrNull(index - 1)
-            MessageRow(message, grouped = previous?.author?.id == message.author.id && minutesBetween(previous.createdAt, message.createdAt) <= 5)
-        }
+        // Web gives every message its avatar, name and time.
+        items(state.messages, key = { message -> message.id }) { message -> MessageRow(message) }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
-            MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true)
+            Column {
+                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true)
+                Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
+            }
         } }
         if (state.messages.isEmpty() && state.pendingMessage == null) item { Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -740,13 +775,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageRow(message: ChatMessage, grouped: Boolean = false) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, grouped)
-@Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, grouped: Boolean = false) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = if (grouped) 2.dp else 10.dp)) {
-        if (grouped) Spacer(Modifier.width(34.dp)) else Avatar(author, 34.dp)
+@Composable private fun MessageRow(message: ChatMessage) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false)
+@Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
+        Avatar(author, 34.dp)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            if (!grouped) Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(author, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
@@ -880,8 +915,11 @@ internal fun counterTone(count: Int): Color = when {
         if (close == null) Text("ONE LAST THING", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         if (close == null) Text("Choose how you show up.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
-        OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        // Web's field hints (account/ProfileForm.tsx).
+        OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            supportingText = { Text("3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
+        OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            supportingText = { Text("Shown to other people. It does not need to be unique.", color = TextMuted) })
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text(if (busy) "Saving…" else if (account.username.isNullOrEmpty()) "Finish account" else "Save profile") }
     }
@@ -1029,6 +1067,3 @@ private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\
 private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))
 private fun String.codePointTake(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max))
 private fun timeLabel(value: String): String = runCatching { DateTimeFormatter.ofPattern("h:mm a").format(Instant.parse(value).atZone(ZoneId.systemDefault())) }.getOrDefault("")
-private fun minutesBetween(first: String, second: String): Long = runCatching {
-    java.time.Duration.between(Instant.parse(first), Instant.parse(second)).abs().toMinutes()
-}.getOrDefault(Long.MAX_VALUE)
