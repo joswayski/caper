@@ -1,0 +1,199 @@
+name: Native release
+
+# Signed builds friends can install from stable links:
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
+# Signing material comes from AWS Secrets Manager (joswayski/infrastructure,
+# docs/release-signing.md); none is stored in this repository.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  RELEASE_SIGNER_ROLE: arn:aws:iam::395451633568:role/production-caper-release-signer
+  RELEASE_TAG: native-latest
+
+jobs:
+  macos:
+    name: macOS / ${{ matrix.label }}
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            label: Apple-Silicon
+          - os: macos-15-intel
+            label: Intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Import the Developer ID identity and notary key
+        run: |
+          set -euo pipefail
+          secret="$RUNNER_TEMP/apple.json"
+          aws secretsmanager get-secret-value --secret-id production/signing/apple \
+            --query SecretString --output text >"$secret"
+          chmod 0600 "$secret"
+          for key in developer_id_p12_base64 developer_id_p12_password; do
+            echo "::add-mask::$(jq -r ".$key" "$secret")"
+          done
+          jq -r .developer_id_p12_base64 "$secret" | base64 --decode >"$RUNNER_TEMP/developer-id.p12"
+          jq -r .app_store_connect_private_key "$secret" >"$RUNNER_TEMP/notary.p8"
+          chmod 0600 "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/notary.p8"
+          keychain_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$keychain_password"
+          keychain="$RUNNER_TEMP/caper-signing.keychain-db"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -t 3600 -u "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" \
+            -P "$(jq -r .developer_id_p12_password "$secret")" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -F\" '/Developer ID Application/{print $2; exit}')"
+          [[ -n "$identity" ]] || { echo "No Developer ID Application identity in the stored .p12." >&2; exit 1; }
+          {
+            echo "APPLE_SIGNING_IDENTITY=$identity"
+            echo "NOTARY_KEY_PATH=$RUNNER_TEMP/notary.p8"
+            echo "NOTARY_KEY_ID=$(jq -r .app_store_connect_key_id "$secret")"
+            echo "NOTARY_ISSUER=$(jq -r .app_store_connect_issuer_id "$secret")"
+            echo "CAPER_SIGNING_KEYCHAIN=$keychain"
+          } >>"$GITHUB_ENV"
+          rm -f "$secret" "$RUNNER_TEMP/developer-id.p12"
+      - name: Build and test
+        run: bash apps/native/apple/build.sh macos
+      - name: Sign with Developer ID, notarize and staple
+        run: bash apps/native/apple/sign-and-notarize.sh "${{ matrix.label }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.label }}
+          path: apps/native/apple/dist/Caper-macOS-${{ matrix.label }}.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove signing material
+        if: always()
+        run: |
+          [[ -z "${CAPER_SIGNING_KEYCHAIN:-}" ]] || security delete-keychain "$CAPER_SIGNING_KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/apple.json"
+
+  android:
+    name: Android / release APK
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '13114758'
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1'
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Load the upload keystore
+        run: |
+          set -euo pipefail
+          secret="$RUNNER_TEMP/android.json"
+          aws secretsmanager get-secret-value --secret-id production/signing/android \
+            --query SecretString --output text >"$secret"
+          chmod 0600 "$secret"
+          for key in keystore_password key_password; do
+            echo "::add-mask::$(jq -r ".$key" "$secret")"
+          done
+          jq -r .keystore_base64 "$secret" | base64 --decode >"$RUNNER_TEMP/caper-release.jks"
+          chmod 0600 "$RUNNER_TEMP/caper-release.jks"
+          {
+            echo "CAPER_ANDROID_KEYSTORE=$RUNNER_TEMP/caper-release.jks"
+            echo "CAPER_ANDROID_KEYSTORE_PASSWORD=$(jq -r .keystore_password "$secret")"
+            echo "CAPER_ANDROID_KEY_ALIAS=$(jq -r .key_alias "$secret")"
+            echo "CAPER_ANDROID_KEY_PASSWORD=$(jq -r .key_password "$secret")"
+          } >>"$GITHUB_ENV"
+          rm -f "$secret"
+      - name: Test and build the signed release APK
+        working-directory: apps/native/android
+        run: |
+          set -euo pipefail
+          ./prepare-fonts.sh
+          bash prepare-audio.sh
+          CMAKE_BUILD_PARALLEL_LEVEL=1 ./gradlew --no-daemon --max-workers=1 testDebugUnitTest assembleRelease
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/Caper-Android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: apps/native/android/dist/Caper-Android.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/caper-release.jks" "$RUNNER_TEMP/android.json"
+
+  publish:
+    name: Publish native-latest
+    needs: [macos, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Replace the native-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd release
+          test -s Caper-macOS-Apple-Silicon.zip
+          test -s Caper-macOS-Intel.zip
+          test -s Caper-Android.apk
+          sha256sum Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk >SHA256SUMS
+          cat >notes.md <<EOF
+          Signed test builds of the Caper apps, from \`${GITHUB_SHA::7}\`. They use your caper.chat account.
+
+          **Mac:** download [Apple Silicon](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Apple-Silicon.zip) (M1 or newer) or [Intel](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Intel.zip), unzip, and drag Caper into Applications. It is signed and notarized by Apple.
+
+          **Android:** open [Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk) on the phone and allow installing from your browser when asked. Later versions install over it.
+          EOF
+          gh release delete "$RELEASE_TAG" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$RELEASE_TAG" --prerelease --target "$GITHUB_SHA" \
+            --title "Caper apps (latest)" --notes-file notes.md \
+            Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk SHA256SUMS
