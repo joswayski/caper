@@ -356,9 +356,13 @@ final class CaperParityUITests: XCTestCase {
         capture("login-code", app: app)
         let code = app.textFields["Sign-in code"]
         // Separate bursts: the field rewrites itself between keystrokes, as it does for a person typing.
-        code.tap(); code.typeText("ZZZ"); code.typeText("o-")
-        let filtered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "ZZZ"), object: code)
-        XCTAssertEqual(XCTWaiter.wait(for: [filtered], timeout: 3), .completed, "Letters outside the code alphabet are dropped")
+        code.tap(); code.typeText("ZZZ")
+        // One rejected keystroke at a time, as a person types: macOS applies the rewrite on the next turn.
+        for rejected in ["o", "-"] {
+            code.typeText(rejected)
+            let filtered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "ZZZ"), object: code)
+            XCTAssertEqual(XCTWaiter.wait(for: [filtered], timeout: 3), .completed, "Letters outside the code alphabet are dropped")
+        }
         code.typeText("ZZ9")
         let complete = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "ZZZZZ9"), object: code)
         XCTAssertEqual(XCTWaiter.wait(for: [complete], timeout: 3), .completed, "Code input keeps web's six-character alphabet")
@@ -679,7 +683,7 @@ final class CaperParityUITests: XCTestCase {
         let (_, response) = try await URLSession.shared.data(for: control)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         app.buttons["channel-chan00000002"].tap()
-        let retry = app.buttons["Retry opening conversation"]
+        let retry = app.buttons["Retry opening"]
         XCTAssertTrue(retry.waitForExistence(timeout: 5))
         assertElement("selected-channel-name", label: "# general", in: app)
         XCTAssertEqual(composer.value as? String, "Keep this draft")

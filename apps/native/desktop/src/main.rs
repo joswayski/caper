@@ -213,6 +213,7 @@ struct CaperApp {
     managed_channel: Option<String>,
     persist_preferences: bool,
     connection_copy_status: &'static str,
+    diagnostics_copied: bool,
 }
 
 impl CaperApp {
@@ -294,6 +295,7 @@ impl CaperApp {
             managed_channel: None,
             persist_preferences: fixture.is_none(),
             connection_copy_status: "",
+            diagnostics_copied: false,
         };
         match fixture {
             Some("error" | "login-error") => {
@@ -2294,7 +2296,7 @@ impl CaperApp {
                         }
                         if let Some(error) = &self.navigation_error {
                             ui.colored_label(ERROR, error);
-                            if ui.button("Retry opening conversation").clicked()
+                            if ui.button("Retry opening").clicked()
                                 && let Some(target) = self.navigation_target.clone()
                             {
                                 self.navigate(target);
@@ -3362,7 +3364,11 @@ impl CaperApp {
         );
         if ui
             .interact(profile, ui.id().with("profile"), egui::Sense::click())
-            .on_hover_text("Edit profile")
+            .on_hover_text(if self.account.is_some() {
+                format!("Edit profile for {}", self.identity_name())
+            } else {
+                "Sign in to edit your profile".into()
+            })
             .clicked()
         {
             self.dialog = Some(if self.account.is_some() {
@@ -3963,7 +3969,7 @@ impl CaperApp {
         }
     }
 
-    fn audio_diagnostics(&self, ui: &mut egui::Ui) {
+    fn audio_diagnostics(&mut self, ui: &mut egui::Ui) {
         if !self
             .account
             .as_ref()
@@ -3983,6 +3989,10 @@ impl CaperApp {
         .expect("numeric diagnostics serialize");
         if ui.button("Copy diagnostics").clicked() {
             ui.ctx().copy_text(report.clone());
+            self.diagnostics_copied = true;
+        }
+        if self.diagnostics_copied {
+            ui.label(RichText::new("Copied diagnostics").color(MUTED));
         }
         ui.add(egui::Label::new(RichText::new(report).monospace()).selectable(true));
         ui.ctx().request_repaint_after(Duration::from_secs(1));
@@ -4065,6 +4075,13 @@ impl CaperApp {
             .take(MEMBER_PAGE_SIZE)
             .cloned()
             .collect();
+        if members.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                ui.label(RichText::new("No members to show.").size(11.0).color(MUTED));
+            });
+        }
         for member in members {
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
@@ -4192,6 +4209,13 @@ impl CaperApp {
                             ui.label(
                                 RichText::new(format!("# {}", self.channel_name())).size(13.76),
                             );
+                            // Web: a failed refresh keeps the conversation and offers Retry in the header.
+                            if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
+                                ui.add(egui::Label::new(RichText::new(error).size(11.2).color(ERROR)).truncate());
+                                if ui.small_button("Retry").clicked() {
+                                    self.reload_channel();
+                                }
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -7087,6 +7111,33 @@ mod tests {
             1,
             "only one divider above the composer: {dividers:?}"
         );
+    }
+
+    #[test]
+    fn failed_refresh_keeps_messages_and_offers_retry_in_the_header() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        render(&mut app, &context, vec![]);
+        app.load_error = Some("Could not reach Caper.".into());
+        let output = render(&mut app, &context, vec![]);
+        let contains = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(label))
+            })
+        };
+        assert!(contains(&output, "Could not reach Caper.") && contains(&output, "Retry"));
+        assert!(
+            !contains(&output, "Try again"),
+            "Try again is only for a failed first load"
+        );
+        assert!(contains(
+            &output,
+            "TEST FIXTURE — local sample data, not a live conversation."
+        ));
     }
 
     #[test]

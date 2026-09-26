@@ -83,7 +83,7 @@ private struct LoadingView: View {
         VStack(spacing: 14) {
             Wordmark()
             ProgressView().controlSize(.small)
-            Text("Loading your conversations…").font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
+            Text("Loading your spaces…").font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
         }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
     }
 }
@@ -151,7 +151,7 @@ private struct WorkspaceView: View {
                     HStack {
                         Text(error).font(CaperTheme.font(12)).foregroundStyle(.red)
                         Spacer()
-                        Button("Retry opening conversation") { Task { await model.retryNavigation() } }
+                        Button("Retry opening") { Task { await model.retryNavigation() } }
                             .disabled(model.openingSpaceID != nil)
                     }.padding(12).background(CaperTheme.surface)
                 }
@@ -756,6 +756,8 @@ private struct AccountBar: View {
     @State private var audioDiagnostics = false
     #endif
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
+    /// Web's identityName: the account's display name, else the chat identity's.
+    private var identityName: String { model.account?.displayName ?? model.chat.currentAuthor?.name ?? "Guest" }
     /// Your own status in the space's presence, else the live chat connection (web's localPresence).
     private var ownPresence: PresenceStatus? {
         if let id = model.account?.id, let status = model.presence.statuses[id], status != .unknown { return status }
@@ -797,12 +799,14 @@ private struct AccountBar: View {
             HStack(spacing: 5) {
             Button { sheet = model.account == nil ? .login : .profile } label: {
                 HStack(spacing: 7) {
-                    Avatar(name: model.account?.displayName ?? "Guest", size: 30)
+                    Avatar(name: identityName, size: 30)
                         .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
-                    Text(model.account?.displayName ?? "Sign in").font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
+                    Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
                     Spacer()
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
+                // Web: the account's name, else the guest chat identity, with its profile label.
+                .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
                 .accessibilityIdentifier("account-profile")
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
@@ -1001,7 +1005,7 @@ private struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        HStack(spacing: 6) {
+                        if !chat.loadFailed { HStack(spacing: 6) {
                             if chat.olderError != nil {
                                 Text("Couldn’t load older messages.")
                                 Button("Retry") { Task { await chat.loadOlder() } }.disabled(chat.loadingOlder)
@@ -1013,7 +1017,7 @@ private struct ChatView: View {
                                     .accessibilityIdentifier("load-older-messages")
                             }
                             else { Text("Beginning of conversation") }
-                        }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44)
+                        }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
                         if chat.loading && chat.messages.isEmpty {
                             Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                         }
@@ -1026,7 +1030,14 @@ private struct ChatView: View {
                                               dismiss: { _ = chat.discardRejected() })
                                 .id("pending-\(pending.id)")
                         }
-                        if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
+                        if chat.loadFailed, let error = chat.error {
+                            // Web's failed first load: the error with Try again, in place of the conversation.
+                            VStack(spacing: 10) {
+                                Text(error).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).multilineTextAlignment(.center)
+                                Button("Try again") { Task { await chat.retryLoad() } }.buttonStyle(VoiceJoinButton())
+                                    .accessibilityIdentifier("chat-try-again")
+                            }.padding(.top, 80).padding(.horizontal, 24)
+                        } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
                                 Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
                                 Text("Start the conversation in #\(chat.channelName.lowercased()).").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -1049,7 +1060,7 @@ private struct ChatView: View {
                 Spacer()
             }.padding(.horizontal, 18).frame(height: 20)
 
-            if let error = chat.error, chat.pendingMessage == nil {
+            if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed {
                 Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
             }
             HStack(alignment: .bottom, spacing: 8) {
@@ -1244,14 +1255,14 @@ private struct WorkspaceSheetView: View {
 }
 
 private struct SheetHeader: View {
-    let title: String; var detail: String?; let close: () -> Void
+    let title: String; var detail: String?; var closeLabel = "Close"; let close: () -> Void
     var body: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title).font(CaperTheme.font(20, weight: .bold))
                 if let detail { Text(detail).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
             }
-            Spacer(); Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Close")
+            Spacer(); Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel(closeLabel)
         }.padding(22).overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
     }
 }
@@ -1374,12 +1385,15 @@ private struct ProfileSheet: View {
     @State private var displayName = ""
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: "Account", detail: model.account?.username.map { "@\($0)" }, close: close)
+            // Web's Edit profile dialog; Log out lives in User Settings.
+            SheetHeader(title: "Edit profile", detail: "Your username is unique. Your display name is what people see in conversations.",
+                        closeLabel: "Close profile", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Avatar(name: model.account?.displayName ?? "Caper", size: 42); Text(model.account?.displayName ?? "Caper").font(CaperTheme.font(16, weight: .bold)) }
                     CaperField(title: "Username", text: $username)
+                    Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     CaperField(title: "Display name", text: $displayName)
+                    Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
                     Button(model.busy ? "Saving…" : "Save profile") {
                         Task {
@@ -1389,7 +1403,6 @@ private struct ProfileSheet: View {
                     }.buttonStyle(CaperPrimaryButton())
                         .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
                         .accessibilityIdentifier("profile-save")
-                    Button("Log out", role: .destructive) { Task { await model.logout(); close() } }.buttonStyle(.bordered)
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
             }.frame(maxHeight: 500).scrollDismissesKeyboard(.interactively)
         }.background(CaperTheme.surface)
@@ -1562,7 +1575,7 @@ private struct ChannelEditor: View {
 private struct ConfirmationSheet: View {
     let title: String; let detail: String; let action: String; let close: () -> Void; let perform: () async throws -> Void
     @State private var pending = false; @State private var error: String?
-    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? "Working…" : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) }.background(CaperTheme.surface).interactiveDismissDisabled(pending) }
+    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? (action.hasPrefix("Delete") ? "Deleting…" : "Working…") : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) }.background(CaperTheme.surface).interactiveDismissDisabled(pending) }
 }
 
 private struct CaperField: View {
