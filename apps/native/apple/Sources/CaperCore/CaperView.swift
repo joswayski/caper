@@ -512,6 +512,7 @@ private struct ChannelVoiceSlot: View {
                             .accessibilityLabel(model.voice.phase == .idle || model.voice.phase == .failed
                                 ? "Join voice in #\(channel.name)" : "Switch voice to #\(channel.name)")
                             .accessibilityIdentifier("join-voice-\(channel.id)")
+                            .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
                     }
                 }
                 if active {
@@ -719,6 +720,19 @@ private struct VoiceRoster: View {
             get: { voice.locallyMutedParticipants.contains(id) },
             set: { voice.setParticipantMuted($0, participantID: id); CaperEffects.shared.toggle(!$0) }
         )
+    }
+}
+
+/// Web prepares a join as the pointer nears Join, or on touch-down.
+private struct PrepareVoiceOnApproach: ViewModifier {
+    let prepare: () -> Void
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        // Hovering Join itself: a wider hover region would take clicks from neighboring rows.
+        content.onHover { if $0 { prepare() } }
+        #else
+        content.simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in prepare() })
+        #endif
     }
 }
 
@@ -974,7 +988,6 @@ private struct ChatView: View {
                     .accessibilityLabel("# \(chat.channelName.lowercased())")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
-                VoiceHeaderButton(model: model, voice: voice)
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -1110,42 +1123,6 @@ private struct TypingDots: View {
     case true?: return nil
     case false?: return "Joining is not available at this time."
     case nil: return "Checking voice availability…"
-    }
-}
-
-private struct VoiceHeaderButton: View {
-    let model: AppModel
-    @Bindable var voice: VoiceClient
-    var body: some View {
-        if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
-            Button { model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Cancel") } }.buttonStyle(VoiceJoinButton())
-        } else if sameChannel, voice.phase == .connected {
-            Button { CaperEffects.shared.play(.disconnect); model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
-        } else if voice.phase == .leaving {
-            ProgressView().controlSize(.small)
-        } else {
-            Button(action: joinSelectedChannel) { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Join") } }
-                .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil || model.voiceAvailable != true)
-                .help(voiceAvailabilityHelp(model) ?? "Join voice")
-                .accessibilityIdentifier("join-voice-button")
-        }
-    }
-
-    private var selectedContext: VoiceContext? {
-        guard let detail = model.detail,
-              let channelID = model.selectedChannelID,
-              let channel = detail.channels.first(where: { $0.id == channelID }) else { return nil }
-        return VoiceContext(channelID: channel.id, channelName: channel.name, spaceID: detail.space.id, spaceName: detail.space.name)
-    }
-
-    private var sameChannel: Bool {
-        guard let selectedContext else { return false }
-        return voice.context?.channelID == selectedContext.channelID
-    }
-
-    private func joinSelectedChannel() {
-        guard let channel = model.detail?.channels.first(where: { $0.id == model.selectedChannelID }) else { return }
-        Task { await model.joinVoice(channel: channel) }
     }
 }
 
@@ -1334,7 +1311,13 @@ private struct LoginPage: View {
                             // Web accepts the unambiguous code alphabet only, uppercased, six characters.
                             let allowed = Set("ABCDEFGHJKMNPQRSTWXYZ23456789")
                             let filtered = String(value.uppercased().filter { allowed.contains($0) }.prefix(6))
-                            if filtered != value { code = filtered }
+                            guard filtered != value else { return }
+                            #if os(macOS)
+                            // AppKit's field editor ignores a rewrite inside its own edit; apply it next turn.
+                            DispatchQueue.main.async { code = filtered }
+                            #else
+                            code = filtered
+                            #endif
                         }
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     if model.loginAttemptsRemaining == 1 {
@@ -1851,7 +1834,15 @@ private struct ConnectionDetailsView: View {
         func megabytes(_ bytes: Int64) -> String { String(format: "%.2f MB", Double(bytes) / 1e6) }
         func kbps(_ bits: Int?) -> String { bits.map { "\(Int((Double($0) / 1_000).rounded())) kbps" } ?? "Not observed yet" }
         func ms(_ value: Int?) -> String { value.map { "\($0) ms" } ?? "Not observed yet" }
-        return [
+        // Join stages appear only after this client measured a join, as on Android and desktop.
+        let timing: [(String, String)] = stats.timing.map { timing in [
+            ("Joined", "Joined in \(timing.joinedMs) ms"),
+            ("Session + publish", "\(timing.sessionMs) ms"),
+            ("Transport + state", "\(timing.transportMs) ms"),
+            ("Connectivity checks", stats.checks ?? "Not observed yet"),
+            ("Roster", "\(timing.rosterMs) ms"),
+        ] } ?? []
+        return timing + [
             ("Received", megabytes(stats.receivedBytes)),
             ("Live receive", kbps(stats.receiveBitrate)),
             ("Sent", megabytes(stats.sentBytes)),
@@ -1864,12 +1855,17 @@ private struct ConnectionDetailsView: View {
     }
 
     private func copy(_ stats: VoiceDiagnostics) {
-        let object: [String: Any] = [
+        var object: [String: Any] = [
             "receivedBytes": stats.receivedBytes, "sentBytes": stats.sentBytes,
             "receiveBitrate": stats.receiveBitrate ?? 0, "sendBitrate": stats.sendBitrate ?? 0,
             "packetsLost": stats.packetsLost, "maxJitterMs": stats.maxJitterMs ?? 0,
             "roundTripMs": stats.roundTripMs ?? 0, "route": stats.route,
         ]
+        if let timing = stats.timing {
+            object["join"] = "Joined in \(timing.joinedMs) ms"
+            object["sessionMs"] = timing.sessionMs; object["transportMs"] = timing.transportMs; object["rosterMs"] = timing.rosterMs
+            if let checks = stats.checks { object["checks"] = checks }
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
               let text = String(data: data, encoding: .utf8) else { copyStatus = "Copy failed; try again."; return }
         #if os(macOS)
@@ -1885,7 +1881,9 @@ private struct ConnectionDetailsView: View {
     private var previewStatistics: VoiceDiagnostics {
         VoiceDiagnostics(receivedBytes: 65_432, sentBytes: 12_345,
                          receiveBitrate: 12_800, sendBitrate: 24_000,
-                         packetsLost: 3, maxJitterMs: 17, roundTripMs: 42, route: "relay")
+                         packetsLost: 3, maxJitterMs: 17, roundTripMs: 42, route: "relay",
+                         checks: "4 sent · 4 answered",
+                         timing: VoiceJoinTiming(joinedMs: 812, sessionMs: 214, transportMs: 391, rosterMs: 88))
     }
 }
 

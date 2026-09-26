@@ -590,6 +590,21 @@ public final class AppModel {
         voiceAvailability[root] = enabled
     }
 
+    private var preparedVoice: [String: ContinuousClock.Instant] = [:]
+
+    /// Web's `media.prepare` when a signed-in member approaches Join: the API
+    /// keeps the session 8 s, so reissue at most every 4 s. The public demo
+    /// creates on join; failures only mean an ordinary join.
+    public func prepareVoiceJoin(channel: Channel) {
+        guard account != nil, let detail, detail.space.demo != true, voiceAvailable == true,
+              detail.channels.contains(where: { $0.id == channel.id }),
+              voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
+        let now = ContinuousClock.now
+        if let sent = preparedVoice[channel.id], sent.duration(to: now) < .seconds(4) { return }
+        preparedVoice[channel.id] = now
+        Task { try? await api.media(channelID: channel.id, operation: "prepare", body: [String: String]()) }
+    }
+
     public func joinVoice(channel: Channel) async {
         guard let detail, detail.channels.contains(where: { $0.id == channel.id }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }

@@ -316,6 +316,14 @@ impl Api {
             .is_ok_and(|status| status["enabled"].as_bool() == Some(true))
     }
 
+    /// Asks the API to create this member's provider session and TURN
+    /// credentials before Join (web's `media.prepare`). Failures only mean an
+    /// ordinary join.
+    pub fn prepare_voice(&self, token: &str, channel: &str) {
+        let path = format!("api/channels/{channel}/media/prepare");
+        let _ = self.raw(Method::POST, &path, Some(token), None, Some(json!({})));
+    }
+
     pub fn logout(&self, token: &str) -> Result<(), ApiError> {
         let response = self.raw(Method::POST, "api/auth/logout", Some(token), None, None)?;
         checked(response).map(|_| ())

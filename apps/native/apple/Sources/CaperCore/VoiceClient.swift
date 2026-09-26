@@ -133,6 +133,9 @@ public final class VoiceClient {
     private var signalingOwner: Int?
     private var generation = 0
     private var previousStatistics: VoiceStatisticsSample?
+    /// Measured once per join; checks are web's first sample after joining.
+    private var joinTiming: VoiceJoinTiming?
+    private var joinChecks: String?
     private var delegate: PeerDelegate?
     private let factory: RTCPeerConnectionFactory?
     private let gateway: Gateway
@@ -203,6 +206,13 @@ public final class VoiceClient {
         joinName = name
         self.context = context
         phase = .joining; error = nil; self.channelID = channelID
+        joinTiming = nil; joinChecks = nil
+        let clock = ContinuousClock()
+        let started = clock.now
+        func elapsed(_ from: ContinuousClock.Instant, _ to: ContinuousClock.Instant) -> Int {
+            let duration = from.duration(to: to)
+            return Int(duration.components.seconds * 1_000 + duration.components.attoseconds / 1_000_000_000_000_000)
+        }
         do {
             guard let factory else { throw VoiceError.setup }
             guard await requestMicrophonePermission() else { throw VoiceError.permission }
@@ -211,6 +221,7 @@ public final class VoiceClient {
             try activateAudioSession()
             installAudioObservers(generation: attempt)
             #endif
+            let sessionStarted = clock.now
             let joined: JoinResponse = try await api.media(channelID: channelID, operation: "join", body: JoinBody(name: name, muted: muted, deafened: deafened))
             guard generation == attempt, phase == .joining else {
                 try? await api.media(channelID: channelID, operation: "leave", token: joined.token, body: EmptyBody())
@@ -281,10 +292,13 @@ public final class VoiceClient {
                 try? await api.media(channelID: channelID, operation: "leave", token: joined.token, body: EmptyBody())
                 return
             }
+            let signaled = clock.now
             try await Self.waitForConnected(peer)
             try checkCurrentAttempt(attempt, peer: peer)
+            let transportConnected = clock.now
             await refreshRoster(expectedGeneration: attempt, expectedPeer: peer)
             guard generation == attempt, self.peer === peer, error == nil else { throw VoiceError.setup }
+            let rostered = clock.now
             let subscriptionID = await gateway.subscribeMedia(channelID: channelID, token: joined.token) { [weak self] event in
                 self?.receiveMedia(event, generation: attempt, peer: peer)
             }
@@ -294,6 +308,8 @@ public final class VoiceClient {
             }
             mediaSubscriptionID = subscriptionID
             publishedMID = mid
+            joinTiming = VoiceJoinTiming(joinedMs: elapsed(started, clock.now), sessionMs: elapsed(sessionStarted, signaled),
+                                         transportMs: elapsed(signaled, transportConnected), rosterMs: elapsed(transportConnected, rostered))
             phase = .connected
             #if os(macOS) || os(iOS)
             audioDevice.publicationEnabled = !muted
@@ -543,7 +559,7 @@ public final class VoiceClient {
         _ = audioDevice.endComparison()
         comparisonPeer = nil; comparisonGeneration = nil
         #endif
-        diagnostics = nil; previousStatistics = nil
+        diagnostics = nil; previousStatistics = nil; joinTiming = nil; joinChecks = nil
         pollTask?.cancel(); pollTask = nil
         turnTask?.cancel(); turnTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
@@ -866,7 +882,10 @@ public final class VoiceClient {
         }
         guard generation == attempt, self.peer === peer, phase == .connected else { return }
         let stats = report.statistics.mapValues { VoiceStatistic(type: $0.type, values: $0.values) }
-        let (current, sample) = VoiceDiagnostics.read(stats, timestampUs: report.timestamp_us, previous: previousStatistics)
+        let (read, sample) = VoiceDiagnostics.read(stats, timestampUs: report.timestamp_us, previous: previousStatistics)
+        var current = read
+        if joinTiming != nil, joinChecks == nil { joinChecks = current.checks }
+        current.checks = joinChecks; current.timing = joinTiming
         diagnostics = current
         previousStatistics = sample
     }

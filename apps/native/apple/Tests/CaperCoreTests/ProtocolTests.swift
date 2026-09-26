@@ -97,7 +97,8 @@ final class ProtocolTests: XCTestCase {
             "out": VoiceStatistic(type: "outbound-rtp", values: ["kind": "audio", "bytesSent": 5_000]),
             "video": VoiceStatistic(type: "inbound-rtp", values: ["kind": "video", "bytesReceived": 900_000, "packetsLost": 300]),
             "transport": VoiceStatistic(type: "transport", values: ["selectedCandidatePairId": "selected"]),
-            "selected": VoiceStatistic(type: "candidate-pair", values: ["localCandidateId": "relay", "currentRoundTripTime": 0.042]),
+            "selected": VoiceStatistic(type: "candidate-pair", values: ["localCandidateId": "relay", "currentRoundTripTime": 0.042,
+                                                                           "requestsSent": 5, "responsesReceived": 4]),
             "old": VoiceStatistic(type: "candidate-pair", values: ["localCandidateId": "direct", "currentRoundTripTime": 3]),
             "relay": VoiceStatistic(type: "local-candidate", values: ["candidateType": "relay", "address": "192.0.2.1"]),
             "direct": VoiceStatistic(type: "local-candidate", values: ["candidateType": "host"])
@@ -113,6 +114,8 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(current.maxJitterMs, 17)
         XCTAssertEqual(current.roundTripMs, 42)
         XCTAssertEqual(current.route, "relay", "Only the selected pair determines the route")
+        XCTAssertEqual(current.checks, "5 sent · 4 answered", "Web's connectivity checks on the selected pair")
+        XCTAssertNil(current.timing, "The parser never invents join timing")
         let (reset, _) = VoiceDiagnostics.read(stats, timestampUs: 4_000_000,
             previous: VoiceStatisticsSample(timestampUs: 3_000_000, receivedBytes: 5_000, sentBytes: 6_000))
         XCTAssertNil(reset.receiveBitrate, "A counter reset is not a negative bitrate")

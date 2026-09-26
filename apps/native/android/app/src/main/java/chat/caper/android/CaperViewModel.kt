@@ -283,6 +283,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val preparedVoice = mutableMapOf<String, Long>()
+
+    /**
+     * Web's `media.prepare` when a signed-in member reaches for Join: the API
+     * keeps the session 8 s, so reissue at most every 4 s. The public demo
+     * creates on join; failures only mean an ordinary join.
+     */
+    fun prepareVoiceJoin(channel: Channel) {
+        val current = mutable.value
+        val token = accountToken ?: return
+        if (current.selectedSpace?.space?.demo != false || current.voiceAvailable != true ||
+            current.selectedSpace.channels.none { it.id == channel.id } || channel.id in current.deniedVoiceChannels) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (preparedVoice[channel.id]?.let { now - it < 4_000 } == true) return
+        preparedVoice[channel.id] = now
+        viewModelScope.launch {
+            runCatching { api.media<Unit>(token, channel.id, "prepare") }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+        }
+    }
+
     fun reportActivity() { gateway?.reportActivity() }
     fun localPresence(): String = gateway?.localPresence() ?: "offline"
     fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }

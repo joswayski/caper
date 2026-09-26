@@ -193,6 +193,8 @@ struct CaperApp {
     /// Web's `/status` answers by media root; absent while checking.
     media_availability: BTreeMap<String, bool>,
     media_status_root: Option<String>,
+    /// When web's `media.prepare` was last sent per channel.
+    prepared_voice: BTreeMap<String, Instant>,
     collapsed_rosters: BTreeSet<String>,
     sidebar_width: f32,
     navigation_open: bool,
@@ -273,6 +275,7 @@ impl CaperApp {
             unavailable_rosters: BTreeSet::new(),
             media_availability: BTreeMap::new(),
             media_status_root: None,
+            prepared_voice: BTreeMap::new(),
             collapsed_rosters: BTreeSet::new(),
             sidebar_width: 280.0,
             navigation_open: false,
@@ -1267,13 +1270,6 @@ impl CaperApp {
             .unwrap_or_else(|| "Guest".into())
     }
 
-    fn join_voice(&mut self) {
-        let Some(channel) = self.selected_channel.clone() else {
-            return;
-        };
-        self.join_voice_channel(&channel);
-    }
-
     fn voice_target(&self, channel: &str) -> Option<(CallContext, Option<String>)> {
         let detail = self.detail.as_ref()?;
         let target = detail.channels.iter().find(|item| item.id == channel)?;
@@ -1292,6 +1288,32 @@ impl CaperApp {
             context,
             (!detail.space.demo).then(|| detail.space.id.clone()),
         ))
+    }
+
+    /// Web prepares a signed-in member's join when the pointer nears Join:
+    /// the API keeps the session 8 s, so reissue at most every 4 s. The public
+    /// demo creates on join.
+    fn prepare_voice_join(&mut self, channel: &str) {
+        let Some((_, Some(_))) = self.voice_target(channel) else {
+            return;
+        };
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        if !self.persist_preferences
+            || self.voice.state.active_channel() == Some(channel)
+            || self
+                .prepared_voice
+                .get(channel)
+                .is_some_and(|sent| sent.elapsed() < Duration::from_secs(4))
+        {
+            return;
+        }
+        self.prepared_voice.insert(channel.into(), Instant::now());
+        self.worker.send(Command::PrepareVoice {
+            token,
+            channel: channel.into(),
+        });
     }
 
     fn join_voice_channel(&mut self, channel: &str) {
@@ -2992,6 +3014,14 @@ impl CaperApp {
             if !own {
                 ui.add_enabled_ui(self.voice_target(id).is_some(), |ui| {
                     let button = voice_join_button(ui, "Join");
+                    // Web's 120 px approach radius around Join.
+                    if ui.is_enabled()
+                        && ui.ctx().pointer_hover_pos().is_some_and(|pointer| {
+                            button.rect.distance_sq_to_pos(pointer) <= 120.0 * 120.0
+                        })
+                    {
+                        self.prepare_voice_join(id);
+                    }
                     let switching =
                         !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_));
                     let label = if switching {
@@ -4174,36 +4204,6 @@ impl CaperApp {
                                         if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
                                         else { self.members_visible = !self.members_visible; }
                                         self.effects.toggle(if narrow { self.narrow_members_visible } else { self.members_visible });
-                                    }
-                                    let already_here =
-                                        self.voice.state.active_channel().is_some_and(|channel| {
-                                            Some(channel) == self.selected_channel.as_deref()
-                                        });
-                                    let label = if already_here {
-                                        if matches!(self.voice.state.phase, Phase::Connected(_)) {
-                                            "Leave"
-                                        } else {
-                                            "Cancel"
-                                        }
-                                    } else {
-                                        "Join"
-                                    };
-                                    let unavailable = (!already_here).then(|| self.join_unavailable()).flatten();
-                                    if self.selected_channel.is_some()
-                                        && ui.add_enabled_ui(unavailable.is_none(), |ui| {
-                                            let button = voice_join_button(ui, label);
-                                            match unavailable {
-                                                Some(reason) => button.on_disabled_hover_text(reason),
-                                                None => button,
-                                            }
-                                        }).inner.clicked()
-                                    {
-                                        if already_here {
-                                            if matches!(self.voice.state.phase, Phase::Connected(_)) { self.effects.play(Effect::Disconnect); }
-                                            self.voice.leave();
-                                        } else {
-                                            self.join_voice();
-                                        }
                                     }
                                 },
                             );
@@ -7045,17 +7045,20 @@ mod tests {
         let text = |label: &str| {
             *texts
                 .iter()
-                .find(|text| {
-                    text.galley.job.text == label && (label != "Join" || text.pos.x > 340.0)
-                })
+                .find(|text| text.galley.job.text == label)
                 .unwrap_or_else(|| panic!("missing {label}"))
         };
+        assert!(
+            !texts.iter().any(|text| text.galley.job.text == "Join"
+                && text.pos.x > 340.0
+                && text.pos.y < 54.0),
+            "web joins voice from the channel list, not the chat header"
+        );
         // Independent values from the current web CSS: 54px header, 44px history.
         for (label, center) in [
             ("Fixture Studio", 27.0),
             ("# general", 27.0),
             ("Members", 27.0),
-            ("Join", 27.0),
             ("Beginning of conversation", 76.0),
         ] {
             let shape = text(label);
@@ -7083,6 +7086,47 @@ mod tests {
             dividers.len(),
             1,
             "only one divider above the composer: {dividers:?}"
+        );
+    }
+
+    #[test]
+    fn approaching_join_prepares_signed_in_voice_at_most_every_four_seconds() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.persist_preferences = true;
+        app.token = Some("account-token".into());
+        let root = app.media_root().0;
+        app.media_availability.insert(root, true);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let join = text_position(&render(&mut app, &context, vec![]), "Join");
+        // Outside the 120 px radius nothing is prepared.
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(join + egui::vec2(0.0, 200.0))],
+        );
+        assert!(app.prepared_voice.is_empty());
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(join + egui::vec2(0.0, 90.0))],
+        );
+        let first = *app
+            .prepared_voice
+            .values()
+            .next()
+            .expect("approach prepares the join");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(join)]);
+        assert_eq!(app.prepared_voice.len(), 1);
+        assert_eq!(
+            *app.prepared_voice.values().next().unwrap(),
+            first,
+            "reissued within 4 s"
         );
     }
 
@@ -7160,7 +7204,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_controls_and_voice_header_act_on_current_intent() {
+    fn audio_controls_and_voice_dock_act_on_current_intent() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -7195,15 +7239,38 @@ mod tests {
             text_position(&output, "Caper sound effects"),
         );
         assert!(app.sound_effects);
-        for fixture in ["parity-voice-joining", "parity-voice-connected"] {
+        for (fixture, label) in [
+            ("parity-voice-joining", "Cancel joining voice"),
+            ("parity-voice-connected", "Leave voice"),
+        ] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
                 &context,
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
                 Some(fixture),
             );
+            // Panels settle on the second frame; AccessKit's first update is
+            // the full tree, so enable it for that frame.
             render(&mut app, &context, vec![]);
-            click(&mut app, &context, egui::pos2(1110.0, 27.0));
+            context.enable_accesskit();
+            // The dock's hang-up; web has no chat-header Leave.
+            let bounds = render(&mut app, &context, vec![])
+                .platform_output
+                .accesskit_update
+                .unwrap()
+                .nodes
+                .into_iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .unwrap_or_else(|| panic!("missing {label}"));
+            let center = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            click(&mut app, &context, center);
             assert!(
                 matches!(app.voice.state.phase, crate::state::Phase::Idle),
                 "Cancel/Leave must end the current call"

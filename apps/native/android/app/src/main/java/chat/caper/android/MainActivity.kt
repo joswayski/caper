@@ -10,6 +10,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -214,17 +218,17 @@ internal data class VoiceJoinIntent(
                 if (narrow) Box {
                     if (navigationOpen) Row {
                         SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f), channelsExpanded, { channelsExpanded = it }, joinVoice) { setNavigationOpen(false) }
-                    } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, joinVoice, voicePermissionError) { setNavigationOpen(true) }
+                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f), channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError, { voicePermissionError = null }) { setNavigationOpen(false) }
+                    } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
                     if (membersVisible && !navigationOpen) MemberPresencePanel(state, viewModel, Modifier.widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd))
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice)
+                    ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError, { voicePermissionError = null })
                     if (medium) Column(Modifier.weight(1f)) {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, joinVoice, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.fillMaxWidth().heightIn(max = 240.dp), compact = true)
                     } else {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, joinVoice, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
                     }
                 }
@@ -271,6 +275,8 @@ internal data class VoiceJoinIntent(
     channelsExpanded: Boolean,
     setChannelsExpanded: (Boolean) -> Unit,
     joinVoice: (Channel) -> Unit,
+    voicePermissionError: String?,
+    dismissVoicePermissionError: () -> Unit,
     closeNavigation: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -352,7 +358,10 @@ internal data class VoiceJoinIntent(
                             if (people.size > 3) Text("+${people.size - 3}", fontSize = 10.sp)
                             Icon(if (rosterOpen) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(15.dp))
                         } else Spacer(Modifier.weight(1f))
-                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, modifier = Modifier.semantics {
+                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, modifier = Modifier
+                            // Web prepares the join on touch-down, before the tap completes.
+                            .pointerInput(channel.id) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); viewModel.prepareVoiceJoin(channel) } }
+                            .semantics {
                             contentDescription = voiceJoinUnavailableLabel(state.voiceAvailable)
                                 ?: if (activeChannel != null) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
                         }) {
@@ -384,11 +393,11 @@ internal data class VoiceJoinIntent(
                 VoiceCallService.stop(context)
             })
         // Web shows voice errors in the dock with a dismiss button.
-        voice.error?.let { error ->
+        (voicePermissionError ?: voice.error)?.let { error ->
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), color = SurfaceRaised, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.small) {
                 Row(Modifier.padding(start = 10.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f).padding(vertical = 8.dp), color = ErrorText, fontSize = 11.sp)
-                    IconButton({ VoiceCallService.clearError() }, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_x), "Dismiss voice error", Modifier.size(16.dp), tint = TextMuted) }
+                    IconButton({ dismissVoicePermissionError(); VoiceCallService.clearError() }, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_x), "Dismiss voice error", Modifier.size(16.dp), tint = TextMuted) }
                 }
             }
         }
@@ -585,16 +594,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     narrow: Boolean,
     membersVisible: Boolean,
     toggleMembers: () -> Unit,
-    joinVoice: (Channel) -> Unit,
     voicePermissionError: String?,
     modifier: Modifier = Modifier,
     openNavigation: () -> Unit,
 ) {
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
-    val context = LocalContext.current
     var draft by remember(channel.id) { mutableStateOf("") }
-    val inCall = voice.channelId == channel.id && voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
         // Web waits a second before announcing a lost connection.
         val live = state.gateway == GatewayStatus.LIVE
@@ -605,13 +611,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (narrow) BrowseButton("Browse", R.drawable.lucide_menu, openNavigation)
             Text("# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            if (BuildConfig.ENABLE_NATIVE_VOICE) Button({
-                if (inCall) VoiceCallService.stop(context) else joinVoice(channel)
-            }, enabled = inCall || (channel.id !in state.deniedVoiceChannels && state.voiceAvailable == true),
-                modifier = Modifier.semantics { if (!inCall) voiceJoinUnavailableLabel(state.voiceAvailable)?.let { contentDescription = it } },
-                shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = TerracottaWash, contentColor = TerracottaBright), border = BorderStroke(1.dp, TerracottaBorder), contentPadding = PaddingValues(horizontal = 12.dp)) {
-                Icon(if (inCall) painterResource(R.drawable.lucide_phone_off) else painterResource(R.drawable.lucide_speech), null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text(if (inCall) "Leave" else "Join")
-            }
             IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
@@ -624,7 +623,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             }
         }
         // The dock (and its voice error row) is hidden behind Browse on phones.
-        (voicePermissionError ?: voice.error?.takeIf { narrow })?.let { error ->
+        (voicePermissionError ?: voice.error)?.takeIf { narrow }?.let { error ->
             Text(error, Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText, fontSize = 12.sp)
         }
         MessageTimeline(state, viewModel, Modifier.weight(1f))
