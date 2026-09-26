@@ -159,7 +159,7 @@ class VoiceCallService : Service() {
         activeAttempt = attempt
         val preferences = getSharedPreferences("audio", MODE_PRIVATE)
         update { VoiceState(VoiceState.Phase.CONNECTING, channelId, spaceId, channelName, spaceName,
-            muted = previous?.muted ?: true, deafened = previous?.deafened ?: false,
+            muted = previous?.muted ?: prejoin.muted, deafened = previous?.deafened ?: prejoin.deafened,
             inputGain = preferences.getInt("inputGain", 100), processingStrength = preferences.getInt("strength", 25),
             outputVolume = preferences.getInt("outputVolume", 100)) }
         val current = try {
@@ -169,7 +169,7 @@ class VoiceCallService : Service() {
             created = VoiceEngine(this, CaperApi(), token, channelId, displayName, demo) { transport ->
                 scope.launch { transportState(created, attempt, transport) }
             }
-            previous?.let { created.copyAudioIntentFrom(it) }
+            if (previous != null) created.copyAudioIntentFrom(previous) else created.presetAudioIntent(prejoin)
             created.also { engine = it }
         } catch (error: Throwable) {
             attempts.end()
@@ -330,7 +330,10 @@ class VoiceCallService : Service() {
         heartbeat?.cancel(); speaking?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         joining?.cancel()
         val token = current?.closeLocal()
-        update { VoiceState(inputGain = it.inputGain, processingStrength = it.processingStrength, outputVolume = it.outputVolume) }
+        // Web keeps mute and deafen after leaving; the next join starts from them.
+        if (current != null) prejoin = current.audioIntent()
+        update { VoiceState(inputGain = it.inputGain, processingStrength = it.processingStrength, outputVolume = it.outputVolume,
+            muted = prejoin.muted, deafened = prejoin.deafened) }
         releaseAudio()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         if (stopService) stopSelf()
@@ -467,6 +470,8 @@ class VoiceCallService : Service() {
         private val mutableState = MutableStateFlow(VoiceState())
         private val controlEpoch = CallAttemptGate()
         @Volatile private var active: VoiceCallService? = null
+        /** Mute and deafen while no call exists; web joins unmuted by default. */
+        @Volatile private var prejoin = VoiceMuteIntent(initiallyMuted = false)
         val state: StateFlow<VoiceState> = mutableState
         private fun update(block: (VoiceState) -> VoiceState) { mutableState.update(block) }
         internal fun beginJoinAuthorization(): Long = controlEpoch.begin()
@@ -507,8 +512,19 @@ class VoiceCallService : Service() {
                 if (state.value.phase == VoiceState.Phase.CONNECTED) service.sampleDiagnostics(current, attempt)
             }
         }
-        fun toggleMute(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_MUTE)) }
-        fun toggleDeafen(context: Context) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_DEAFEN)) }
+        fun toggleMute(context: Context) {
+            if (active?.engine == null && state.value.phase.let { it == VoiceState.Phase.IDLE || it == VoiceState.Phase.FAILED }) return updatePrejoin { it.setMuted(!it.muted) }
+            context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_MUTE))
+        }
+        fun toggleDeafen(context: Context) {
+            if (active?.engine == null && state.value.phase.let { it == VoiceState.Phase.IDLE || it == VoiceState.Phase.FAILED }) return updatePrejoin { it.setDeafened(!it.deafened) }
+            context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_DEAFEN))
+        }
+        private fun updatePrejoin(change: (VoiceMuteIntent) -> Unit) {
+            val next = prejoin.copy().also(change)
+            prejoin = next
+            update { it.copy(muted = next.muted, deafened = next.deafened) }
+        }
         fun selectRoute(context: Context, id: Int) { context.startService(Intent(context, VoiceCallService::class.java).setAction(ACTION_ROUTE).putExtra(EXTRA_ROUTE_ID, id)) }
         fun setOutputVolume(context: Context, value: Int) {
             val next = value.coerceIn(0, 200)
