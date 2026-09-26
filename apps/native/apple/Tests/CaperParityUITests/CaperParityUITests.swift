@@ -330,7 +330,8 @@ final class CaperParityUITests: XCTestCase {
         app.descendants(matching: .any)["Connection details"].tap()
         assertStaticText("TEST FIXTURE — synthetic statistics layout; no voice connection.", in: app)
         // Web's ConnectionDiagnostics formatting.
-        for value in ["0.07 MB", "13 kbps", "0.01 MB", "24 kbps", "17 ms", "42 ms", "TURN relay", "Counters reset on reconnect."] {
+        for value in ["Joined in 812 ms", "214 ms", "391 ms", "4 sent · 4 answered", "88 ms",
+                      "0.07 MB", "13 kbps", "0.01 MB", "24 kbps", "17 ms", "42 ms", "TURN relay", "Counters reset on reconnect."] {
             assertStaticText(value, in: app)
         }
         XCTAssertTrue(app.buttons["Copy connection details"].exists)
@@ -354,18 +355,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)
         let code = app.textFields["Sign-in code"]
-        #if os(iOS)
         // Separate bursts: the field rewrites itself between keystrokes, as it does for a person typing.
         code.tap(); code.typeText("ZZZ"); code.typeText("o-")
         let filtered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "ZZZ"), object: code)
         XCTAssertEqual(XCTWaiter.wait(for: [filtered], timeout: 3), .completed, "Letters outside the code alphabet are dropped")
         code.typeText("ZZ9")
-        XCTAssertEqual(code.value as? String, "ZZZZZ9", "Code input keeps web's six-character alphabet")
-        #else
-        // AppKit's field editor does not redisplay a binding rewritten mid-edit,
-        // so macOS checks the rejected-code path with a valid-alphabet code.
-        code.tap(); code.typeText("ZZZZZ9")
-        #endif
+        let complete = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "ZZZZZ9"), object: code)
+        XCTAssertEqual(XCTWaiter.wait(for: [complete], timeout: 3), .completed, "Code input keeps web's six-character alphabet")
         app.buttons["Continue"].tap()
         assertStaticText("That code is incorrect or expired. Request a new one if needed.", in: app, timeout: 5)
     }

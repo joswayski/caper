@@ -13,6 +13,14 @@ struct VoiceStatisticsSample {
     let sentBytes: Int64
 }
 
+/// One join's measured stages, as web's ConnectionDiagnostics rows.
+public struct VoiceJoinTiming: Equatable {
+    public let joinedMs: Int
+    public let sessionMs: Int
+    public let transportMs: Int
+    public let rosterMs: Int
+}
+
 public struct VoiceDiagnostics {
     public let receivedBytes: Int64
     public let sentBytes: Int64
@@ -22,6 +30,9 @@ public struct VoiceDiagnostics {
     public let maxJitterMs: Int?
     public let roundTripMs: Int?
     public let route: String
+    /// Connectivity checks on the selected pair, e.g. "4 sent · 4 answered".
+    public var checks: String? = nil
+    public var timing: VoiceJoinTiming? = nil
 
     static func read(_ stats: [String: VoiceStatistic], timestampUs: Double, previous: VoiceStatisticsSample?) -> (VoiceDiagnostics, VoiceStatisticsSample) {
         var received: Int64 = 0, sent: Int64 = 0, lost: Int64 = 0
@@ -39,7 +50,7 @@ public struct VoiceDiagnostics {
             default: break
             }
         }
-        var route = "unknown"
+        var route = "unknown", checks: String?
         for stat in stats.values where stat.type == "transport" {
             guard let pairID = stat.values["selectedCandidatePairId"] as? String,
                   let pair = stats[pairID], pair.type == "candidate-pair",
@@ -47,6 +58,9 @@ public struct VoiceDiagnostics {
                   let local = stats[localID], local.type == "local-candidate",
                   let kind = local.values["candidateType"] as? String else { continue }
             route = kind == "relay" ? "relay" : "direct"
+            if let sentChecks = (pair.values["requestsSent"] as? NSNumber)?.int64Value {
+                checks = "\(sentChecks) sent · \((pair.values["responsesReceived"] as? NSNumber)?.int64Value ?? 0) answered"
+            }
             if let value = (pair.values["currentRoundTripTime"] as? NSNumber)?.doubleValue, value.isFinite, value >= 0 {
                 rtt = value
             }
@@ -62,6 +76,6 @@ public struct VoiceDiagnostics {
                                  receiveBitrate: bitrate(received, previous?.receivedBytes),
                                  sendBitrate: bitrate(sent, previous?.sentBytes), packetsLost: lost,
                                  maxJitterMs: jitter.map { Int($0 * 1_000) },
-                                 roundTripMs: rtt.map { Int($0 * 1_000) }, route: route), sample)
+                                 roundTripMs: rtt.map { Int($0 * 1_000) }, route: route, checks: checks), sample)
     }
 }
