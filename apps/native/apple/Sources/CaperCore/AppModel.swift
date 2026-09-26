@@ -687,6 +687,8 @@ public final class ChatModel {
     public var hasMore = false
     public var typingNames: [String] = []
     public var currentAuthor: ChatAuthor? { session?.author }
+    /// Web's failed first load: no conversation or session to show, only the error.
+    public var loadFailed: Bool { !loading && session == nil && messages.isEmpty && error != nil }
     public var pendingMessage: PendingMessage? { delivery.pending }
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
@@ -739,7 +741,16 @@ public final class ChatModel {
         await open(channelID: history.channel?.id, displayName: displayName, preservingPending: false, prepared: history)
     }
 
+    private var lastOpen: (channelID: String?, displayName: String)?
+
+    /// Web's "Try again" after a failed first load.
+    public func retryLoad() async {
+        guard let lastOpen else { return }
+        await open(channelID: lastOpen.channelID, displayName: lastOpen.displayName, preservingPending: false, prepared: nil)
+    }
+
     private func open(channelID: String?, displayName: String, preservingPending: Bool, prepared: ChatHistory?) async {
+        lastOpen = (channelID, displayName)
         generation += 1
         let requestGeneration = generation
         let oldSubscription = subscriptionID

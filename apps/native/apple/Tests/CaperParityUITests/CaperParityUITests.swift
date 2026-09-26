@@ -679,7 +679,7 @@ final class CaperParityUITests: XCTestCase {
         let (_, response) = try await URLSession.shared.data(for: control)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         app.buttons["channel-chan00000002"].tap()
-        let retry = app.buttons["Retry opening conversation"]
+        let retry = app.buttons["Retry opening"]
         XCTAssertTrue(retry.waitForExistence(timeout: 5))
         assertElement("selected-channel-name", label: "# general", in: app)
         XCTAssertEqual(composer.value as? String, "Keep this draft")
