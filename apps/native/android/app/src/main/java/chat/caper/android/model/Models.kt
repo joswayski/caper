@@ -118,6 +118,8 @@ data class AppUiState(
     /** Web's chat phases: first history page loading, or failed with no messages to show. */
     val messagesLoading: Boolean = false,
     val messagesError: String? = null,
+    /** Web's sidebar error for a space that failed to open, with Retry opening. */
+    val openError: String? = null,
     /** A resync that failed while earlier messages stay visible. */
     val refreshError: String? = null,
     val typingAuthors: List<ChatAuthor> = emptyList(),

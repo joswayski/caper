@@ -331,7 +331,7 @@ def main() -> None:
     assert find(hierarchy(), text="Collapse channels") is None, "Opening a dialog must close the menu"
 
     # Inspect prejoin audio controls without starting capture or playback.
-    tap(description="Audio and account settings")
+    tap(description="User Settings")
     settings = capture("caper-android-audio-settings", "Audio test")
     for label in ("Caper sound effects", "Audio test", "Log out"):
         assert find(settings, text=label) is not None, f"Missing audio settings entry: {label}"
@@ -356,13 +356,13 @@ def main() -> None:
         str(left - (right - left) // 4), str((top + bottom) // 2), "500")
     wait_for(text="0%")
     tap(description="Close")
-    tap(description="Audio and account settings")
+    tap(description="User Settings")
     tap(text="Audio test")
     zero = capture("caper-android-audio-prejoin-zero-output", "0%")
     assert find(zero, text="Test microphone") is not None
     tap(description="Close")
 
-    tap(description="Edit profile")
+    tap(description="Edit profile for Fixture Owner")
     enter_first_field("ab")
     invalid = hierarchy()
     # Compose exposes the label separately; disabled belongs to its action node.
@@ -421,7 +421,7 @@ def main() -> None:
     assert find(hierarchy(), text="Expand channels") is None, "Back must dismiss the options menu"
     tap(description="Expand channels")
     wait_for(text="planning")
-    tap(description="Audio and account settings")
+    tap(description="User Settings")
     tap(text="Audio test")
     audio_narrow = capture("caper-android-audio-prejoin-narrow", "Only you can hear these tests.")
     assert find(audio_narrow, description="Test microphone volume") is not None
@@ -503,6 +503,17 @@ def main() -> None:
     join = "Join voice in #general"
     voice_ready = capture("caper-android-voice-ready", join)
     assert find(voice_ready, description=join) is not None
+    # Web's mute and deafen work before joining, without starting a call.
+    tap(description="Mute microphone")
+    muted = wait_for(description="Unmute microphone")
+    assert find(muted, description="Leave voice") is None, "Pre-join mute must not start voice"
+    tap(description="Deafen audio")
+    wait_for(description="Undeafen audio")
+    tap(description="Undeafen audio")
+    restored = wait_for(description="Deafen audio")
+    assert find(restored, description="Unmute microphone") is not None, "Undeafen keeps an explicit mute"
+    tap(description="Unmute microphone")
+    wait_for(description="Mute microphone")
     adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
     tap(description=join)
     deny = "com.android.permissioncontroller:id/permission_deny_button"

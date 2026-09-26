@@ -139,14 +139,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null)
+        mutable.value = mutable.value.copy(busy = true, error = null, openError = null)
         viewModelScope.launch {
             try {
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
                 mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
                 detail.channels.firstOrNull()?.let(::selectChannel)
-            } catch (error: Throwable) { if (request == generation) fail(error) }
+            } catch (error: Throwable) {
+                if (request == generation) { retryOpen = { selectSpace(id) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+            }
         }
     }
 
@@ -155,7 +157,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null)
+        mutable.value = mutable.value.copy(busy = true, error = null, openError = null)
         viewModelScope.launch {
             try {
                 val history = api.general()
@@ -169,9 +171,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     messages = history.messages, hasMoreMessages = history.hasMore, busy = false,
                 )
                 openGateway(channel.id, history.cursor, request)
-            } catch (error: Throwable) { if (request == generation) fail(error) }
+            } catch (error: Throwable) {
+                if (request == generation) { retryOpen = { selectDemo() }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+            }
         }
     }
+
+    private var retryOpen: (() -> Unit)? = null
+
+    /** Web's Retry opening: repeats the space selection that failed. */
+    fun retryOpening() { retryOpen?.invoke() }
 
     fun selectChannel(channel: Channel) {
         val request = ++generation

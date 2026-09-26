@@ -78,6 +78,9 @@ class VoiceEngine(
     val deafened get() = localMute.deafened
 
     internal fun copyAudioIntentFrom(previous: VoiceEngine) { localMute.copyFrom(previous.localMute) }
+    /** The mute and deafen chosen before joining, as web carries them into the call. */
+    internal fun presetAudioIntent(intent: VoiceMuteIntent) { localMute.preset(intent) }
+    internal fun audioIntent(): VoiceMuteIntent = localMute.snapshot()
     fun setInputGain(value: Int) { capture?.gain(value) }
     fun setProcessingStrength(value: Int) { capture?.processingStrength(value) }
     fun processingReport(): LongArray = capture?.report() ?: longArrayOf()
@@ -695,6 +698,17 @@ internal class VoiceLocalMute(
         onLocalApplied()
         signaling.withLock { sync() }
     }
+
+    fun preset(value: VoiceMuteIntent) {
+        val snapshot = value.copy()
+        synchronized(this) {
+            intent = snapshot
+            muted = intent.muted
+            deafened = intent.deafened
+        }
+    }
+
+    fun snapshot(): VoiceMuteIntent = synchronized(this) { intent.copy() }
 
     fun withCurrent(block: (Boolean) -> Unit) = synchronized(this) { block(muted) }
 }
