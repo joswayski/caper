@@ -974,7 +974,6 @@ private struct ChatView: View {
                     .accessibilityLabel("# \(chat.channelName.lowercased())")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
-                VoiceHeaderButton(model: model, voice: voice)
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -1110,42 +1109,6 @@ private struct TypingDots: View {
     case true?: return nil
     case false?: return "Joining is not available at this time."
     case nil: return "Checking voice availability…"
-    }
-}
-
-private struct VoiceHeaderButton: View {
-    let model: AppModel
-    @Bindable var voice: VoiceClient
-    var body: some View {
-        if sameChannel, voice.phase == .joining || voice.phase == .reconnecting {
-            Button { model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Cancel") } }.buttonStyle(VoiceJoinButton())
-        } else if sameChannel, voice.phase == .connected {
-            Button { CaperEffects.shared.play(.disconnect); model.leaveVoice() } label: { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Leave") } }.buttonStyle(VoiceJoinButton())
-        } else if voice.phase == .leaving {
-            ProgressView().controlSize(.small)
-        } else {
-            Button(action: joinSelectedChannel) { HStack(spacing: 7) { CaperIcon(name: "speech"); Text("Join") } }
-                .buttonStyle(VoiceJoinButton()).disabled(selectedContext == nil || model.voiceAvailable != true)
-                .help(voiceAvailabilityHelp(model) ?? "Join voice")
-                .accessibilityIdentifier("join-voice-button")
-        }
-    }
-
-    private var selectedContext: VoiceContext? {
-        guard let detail = model.detail,
-              let channelID = model.selectedChannelID,
-              let channel = detail.channels.first(where: { $0.id == channelID }) else { return nil }
-        return VoiceContext(channelID: channel.id, channelName: channel.name, spaceID: detail.space.id, spaceName: detail.space.name)
-    }
-
-    private var sameChannel: Bool {
-        guard let selectedContext else { return false }
-        return voice.context?.channelID == selectedContext.channelID
-    }
-
-    private func joinSelectedChannel() {
-        guard let channel = model.detail?.channels.first(where: { $0.id == model.selectedChannelID }) else { return }
-        Task { await model.joinVoice(channel: channel) }
     }
 }
 

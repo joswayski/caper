@@ -488,22 +488,30 @@ def main() -> None:
     # Exercise the actual default voice entry and Android permission controller.
     # Only notifications are pre-granted; microphone denial and approval happen
     # through the system UI. The loopback fixture rejects join, never fakes audio.
-    voice_ready = capture("caper-android-voice-ready", "Join")
-    assert find(voice_ready, text="Join") is not None
+    # Web joins voice from the channel list only; the chat header has no Join.
+    assert find(delivered, text="Join") is None, "Chat header must not duplicate the channel-list Join"
+    tap(text="Browse")
+    join = "Join voice in #general"
+    voice_ready = capture("caper-android-voice-ready", join)
+    assert find(voice_ready, description=join) is not None
     adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
-    tap(text="Join")
+    tap(description=join)
     deny = "com.android.permissioncontroller:id/permission_deny_button"
     wait_for(resource_id=deny)
     capture("caper-android-voice-permission", "Caper")
     tap(resource_id=deny)
     denied = capture("caper-android-voice-permission-denied", "Microphone permission is required")
-    assert find(denied, text="Join") is not None and find(denied, text="Leave") is None
-    tap(text="Join")
+    assert find(denied, description=join) is not None and find(denied, description="Leave voice") is None
+    tap(description=join)
     tap(resource_id="com.android.permissioncontroller:id/permission_allow_foreground_only_button")
     failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
-    assert find(failed, text="Join") is not None and find(failed, text="Leave") is None
+    assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
-    assert find(failed, contains="Message #general") is not None, "Failed voice must leave chat usable"
+    assert find(failed, description="Dismiss voice error") is not None, "Web shows voice errors in the dock"
+    tap(description="Close navigation")
+    chat = wait_for(contains="Message #general")
+    assert find(chat, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, \
+        "Phones keep the voice error visible outside Browse"
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 

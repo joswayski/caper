@@ -439,13 +439,14 @@ final class CaperParityUITests: XCTestCase {
     func testVoiceEntryAndAudioPreferencesWithoutFeatureFlag() {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
-        let join = app.buttons["join-voice-button"]
-        XCTAssertTrue(join.waitForExistence(timeout: 5))
-        XCTAssertTrue(join.isEnabled, "Normal launches must expose voice without a test-only environment flag")
-        capture("voice-ready", app: app)
+        XCTAssertFalse(app.buttons["join-voice-button"].exists, "Web joins voice from the channel list, not the chat header")
         #if os(iOS)
         app.buttons["Browse"].tap()
         #endif
+        let join = app.buttons["join-voice-chan00000001"]
+        XCTAssertTrue(join.waitForExistence(timeout: 5))
+        XCTAssertTrue(join.isEnabled, "Normal launches must expose voice without a test-only environment flag")
+        capture("voice-ready", app: app)
         let microphone = app.buttons["microphone-toggle"]
         let headphones = app.buttons["deafen-toggle"]
         XCTAssertTrue(microphone.waitForExistence(timeout: 5))
