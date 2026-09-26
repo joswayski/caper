@@ -1046,6 +1046,15 @@ private struct ChatView: View {
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")
+                #if os(macOS)
+                // Web: End in the message list jumps to the latest message.
+                .focusable().focusEffectDisabled()
+                .onKeyPress(.end) {
+                    guard let id = chat.messages.last?.id else { return .ignored }
+                    proxy.scrollTo(id, anchor: .bottom)
+                    return .handled
+                }
+                #endif
                 .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
                 .onChange(of: chat.pendingMessage?.id, initial: true) { _, id in
                     if let id { proxy.scrollTo("pending-\(id)", anchor: .bottom) }
@@ -1060,6 +1069,14 @@ private struct ChatView: View {
                 Spacer()
             }.padding(.horizontal, 18).frame(height: 20)
 
+            if let sessionError = chat.sessionError {
+                HStack(spacing: 8) {
+                    Text(sessionError).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+                    Button("Retry session") { Task { await chat.retrySession() } }.buttonStyle(.plain)
+                        .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.text)
+                    Spacer()
+                }.padding(.horizontal, 18)
+            }
             if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed {
                 Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
             }
@@ -1186,6 +1203,7 @@ private struct PendingMessageRow: View {
                         HStack(spacing: 12) {
                             if rejected {
                                 Button("Edit", action: edit).disabled(!canEdit)
+                                    .help(canEdit ? "" : "Clear your current draft to edit this message.")
                                 Button("Dismiss", action: dismiss)
                             } else { Button("Retry send", action: retry) }
                         }
@@ -1242,7 +1260,7 @@ private struct WorkspaceSheetView: View {
     var body: some View {
         Group {
             switch item {
-            case .login: LoginSheet(model: model, close: close)
+            case .login: EmptyView() // Presented full-screen by LoginPresentation.
             case .profile: ProfileSheet(model: model, close: close)
             case .createSpace: SpaceEditor(model: model, close: close, managing: false)
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
@@ -1267,27 +1285,6 @@ private struct SheetHeader: View {
     }
 }
 
-private struct LoginSheet: View {
-    @Bindable var model: AppModel; let close: () -> Void
-    @State private var email = ""; @State private var code = ""
-    var body: some View {
-        VStack(spacing: 0) {
-            SheetHeader(title: "Sign in to Caper", detail: model.challengeID == nil ? "We’ll email you a short verification code." : "Enter the code from your email.", close: close)
-            VStack(spacing: 16) {
-                if model.challengeID == nil {
-                    CaperField(title: "Email", text: $email)
-                    Button("Email me a code") { Task { await model.requestCode(email: email) } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || email.isEmpty)
-                } else {
-                    CaperField(title: "Verification code", text: $code)
-                    Button("Verify") { Task { await model.verify(code: code); if model.account != nil && model.phase != .onboarding { close() } } }.buttonStyle(CaperPrimaryButton()).disabled(model.busy || code.isEmpty)
-                    Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted)
-                }
-                if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
-            }.padding(22)
-        }.background(CaperTheme.surface)
-    }
-}
-
 private struct LoginPage: View {
     @Bindable var model: AppModel
     let close: () -> Void
@@ -1303,7 +1300,7 @@ private struct LoginPage: View {
                 Text(model.challengeID == nil ? "Use your email to create an account or return to one. No password needed." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 30)
                 if model.challengeID == nil {
-                    CaperField(title: "Email address", text: $email)
+                    CaperField(title: "Email address", text: $email, placeholder: "you@example.com")
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     Button { Task { await model.requestCode(email: email) } } label: {
                         HStack { Text(model.busy ? "Sending…" : "Email me a code"); Spacer(); Image(systemName: "arrow.right") }
@@ -1423,7 +1420,7 @@ private struct SpaceEditor: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     CaperField(title: "Space name", text: $name)
-                    Button(managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
+                    Button(pending ? "Saving…" : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton()).disabled(pending)
                     if managing {
                         Divider().overlay(CaperTheme.border)
                         Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
@@ -1485,7 +1482,7 @@ private struct ChannelEditor: View {
                         HStack {
                             Spacer()
                             Button("Cancel", action: close).buttonStyle(.bordered).keyboardShortcut(.cancelAction)
-                            Button(pending ? "Creating…" : "Create channel", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 160)
+                            Button(pending ? "Saving…" : "Create channel", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 160)
                                 .disabled(pending).keyboardShortcut(.defaultAction)
                         }
                     }
@@ -1575,12 +1572,12 @@ private struct ChannelEditor: View {
 private struct ConfirmationSheet: View {
     let title: String; let detail: String; let action: String; let close: () -> Void; let perform: () async throws -> Void
     @State private var pending = false; @State private var error: String?
-    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? (action.hasPrefix("Delete") ? "Deleting…" : "Working…") : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) }.background(CaperTheme.surface).interactiveDismissDisabled(pending) }
+    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? (action.hasPrefix("Delete") ? "Deleting…" : "Saving…") : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) }.background(CaperTheme.surface).interactiveDismissDisabled(pending) }
 }
 
 private struct CaperField: View {
-    let title: String; @Binding var text: String
-    var body: some View { VStack(alignment: .leading, spacing: 7) { Text(title).font(CaperTheme.font(12, weight: .bold)); TextField(title, text: $text).textFieldStyle(CaperTextFieldStyle()) } }
+    let title: String; @Binding var text: String; var placeholder: String?
+    var body: some View { VStack(alignment: .leading, spacing: 7) { Text(title).font(CaperTheme.font(12, weight: .bold)); TextField(placeholder ?? title, text: $text).textFieldStyle(CaperTextFieldStyle()).accessibilityLabel(title) } }
 }
 
 private struct CaperTextFieldStyle: TextFieldStyle {
@@ -1910,6 +1907,10 @@ private struct AudioDiagnosticsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.")
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                if voice.phase != .connected {
+                    Text("No microphone capture started. Open Mic Test or join voice first.")
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
                 Text(voice.noiseSuppressionStatus).font(CaperTheme.font(12))
                 HStack {
                     Button("Copy diagnostics") {

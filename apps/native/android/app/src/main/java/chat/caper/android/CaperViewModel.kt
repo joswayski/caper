@@ -407,12 +407,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (account != null) require(session.author.id == account.id && !session.author.isGuest) { "Chat identity mismatch." }
             chatToken = session.token
             chatAuthor = session.author
+            mutable.value = mutable.value.copy(sessionError = null)
             session.token
         } catch (error: Throwable) {
-            if (requestAccountGeneration == accountGeneration) mutable.value = mutable.value.copy(error = message(error))
+            if (requestAccountGeneration == accountGeneration) mutable.value = mutable.value.copy(sessionError = message(error))
             null
         }
     }
+
+    /** Web's Retry session. */
+    fun retrySession() { viewModelScope.launch { createChatSession(accountGeneration) } }
 
     private fun openGateway(channel: String, cursor: String, request: Long) {
         val connection = GatewayClient(

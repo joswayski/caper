@@ -318,6 +318,8 @@ def main() -> None:
     tap(description="Create space")
     create_space = capture("caper-android-create-space", "Space name")
     assert find(create_space, contains="A space keeps") is None
+    tap(text="Create space")
+    wait_for(text="Enter a space name.")  # Web validates on submit and says why.
     tap(description="Close")
     tap(description="Create channel")
     create_channel = capture("caper-android-create-channel", "Channel name")

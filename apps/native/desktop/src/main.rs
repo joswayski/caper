@@ -167,6 +167,7 @@ struct CaperApp {
     detail: Option<SpaceDetail>,
     selected_channel: Option<String>,
     session: Option<ChatSession>,
+    session_error: Option<String>,
     timeline: Timeline,
     live: String,
     email: String,
@@ -251,6 +252,7 @@ impl CaperApp {
             detail: None,
             selected_channel: None,
             session: None,
+            session_error: None,
             timeline: Timeline::default(),
             live: "Connecting…".into(),
             email: String::new(),
@@ -814,6 +816,15 @@ impl CaperApp {
                         Err(error) => self.load_error = Some(error.message),
                     }
                 }
+                Event::SessionCreated { generation, result } if generation == self.generation => {
+                    match result {
+                        Ok(session) => {
+                            self.session = Some(session);
+                            self.session_error = None;
+                        }
+                        Err(error) => self.session_error = Some(error),
+                    }
+                }
                 Event::OlderLoaded {
                     generation,
                     channel,
@@ -932,7 +943,7 @@ impl CaperApp {
     fn accept_channel(
         &mut self,
         history: model::History,
-        session: ChatSession,
+        session: crate::worker::SessionResult,
         general: bool,
         requested_channel: &str,
     ) {
@@ -978,7 +989,8 @@ impl CaperApp {
                 members: vec![],
             });
         }
-        self.session = Some(session);
+        self.session_error = session.as_ref().err().cloned();
+        self.session = session.ok();
         self.live = "Connecting…".into();
         self.connect_gateway();
     }
@@ -1241,6 +1253,7 @@ impl CaperApp {
         self.generation += 1;
         self.selected_channel = Some(id.clone());
         self.session = None;
+        self.session_error = None;
         self.loading_older = false;
         self.older_error = None;
         self.has_more = false;
@@ -1642,6 +1655,7 @@ impl CaperApp {
         self.unavailable_rosters.clear();
         self.selected_channel = None;
         self.session = None;
+        self.session_error = None;
         self.loading_older = false;
         self.older_error = None;
         self.has_more = false;
@@ -3980,7 +3994,7 @@ impl CaperApp {
         ui.label("Local diagnostics only. No audio, device identifiers, or credentials. Nothing is uploaded.");
         let processing = self.voice.audio_processing_report();
         if processing.is_none() {
-            ui.label("No processing data.");
+            ui.label("No microphone capture started. Open Mic Test or join voice first.");
         }
         let report = serde_json::to_string_pretty(&serde_json::json!({
             "platform": std::env::consts::OS,
@@ -4008,7 +4022,7 @@ impl CaperApp {
         }
         let Some((stats, _)) = &self.voice.diagnostics else {
             ui.label(if matches!(self.voice.state.phase, Phase::Idle) {
-                "Not connected"
+                "Join voice to see connection details."
             } else {
                 "Waiting for connection statistics…"
             });
@@ -4246,8 +4260,9 @@ impl CaperApp {
                 (ui.available_width() - 36.0 - 22.0).max(1.0),
             ).size().y);
             let editor_height = (draft_height + 20.0).clamp(42.0, (ui.ctx().viewport_rect().height() * 0.4).min(320.0));
+            let session_row = if self.session_error.is_some() { 24.0 } else { 0.0 };
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(editor_height + 24.0)
+                .min_height(editor_height + 24.0 + session_row)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
@@ -4260,6 +4275,19 @@ impl CaperApp {
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(6);
                     if let Some(error) = &self.error {
                         ui.colored_label(ERROR, error);
+                    }
+                    // Web: the conversation stays; only sending waits on a new session.
+                    if let Some(error) = self.session_error.clone() {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(ERROR, error);
+                            if ui.small_button("Retry session").clicked() {
+                                self.worker.send(Command::CreateSession {
+                                    generation: self.generation,
+                                    token: self.token.clone(),
+                                    name: self.identity_name(),
+                                });
+                            }
+                        });
                     }
                     let before = self.draft.clone();
                     let channel_name = self.channel_name().to_owned();
@@ -4925,15 +4953,20 @@ impl CaperApp {
                 } else {
                     "Create space"
                 },
-                !self.loading && !self.form_name.trim().is_empty(),
+                !self.loading,
             );
             if cancel {
                 self.dialog = None;
                 self.error = None;
             } else if submit {
-                self.admin(AdminOperation::CreateSpace {
-                    name: self.form_name.clone(),
-                });
+                // Web validates on submit and says why (spaces/client.ts).
+                if let Some(error) = space_name_error(&self.form_name) {
+                    self.error = Some(error.into());
+                } else {
+                    self.admin(AdminOperation::CreateSpace {
+                        name: self.form_name.clone(),
+                    });
+                }
             }
         }
         if manage {
@@ -5067,11 +5100,15 @@ impl CaperApp {
                 } else {
                     "Create channel"
                 },
-                !self.loading && !self.form_name.trim_end_matches('-').is_empty(),
+                !self.loading,
             );
             if cancel {
                 self.dialog = None;
                 self.error = None;
+            } else if submit
+                && let Some(error) = channel_name_error(self.form_name.trim_end_matches('-'))
+            {
+                self.error = Some(error.into());
             } else if submit && let Some(space) = self.selected_space.clone() {
                 self.admin(AdminOperation::CreateChannel {
                     space,
@@ -5441,6 +5478,35 @@ fn audio_icon_button(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response
+}
+
+/// Web's spaces/client.ts validation copy.
+fn space_name_error(name: &str) -> Option<&'static str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        Some("Enter a space name.")
+    } else if trimmed.chars().count() > 80 {
+        Some("Space names can be at most 80 characters.")
+    } else if trimmed.chars().any(char::is_control) {
+        Some("Space names cannot contain control characters.")
+    } else {
+        None
+    }
+}
+
+fn channel_name_error(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        Some("Enter a channel name.")
+    } else if name.chars().count() > 80 {
+        Some("Channel names can be at most 80 characters.")
+    } else if !name
+        .split('-')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase()))
+    {
+        Some("Use lowercase letters separated by single dashes.")
+    } else {
+        None
+    }
 }
 
 fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
@@ -6652,7 +6718,7 @@ mod tests {
                 history.space.id = space.unwrap_or("general").into();
                 crate::worker::PreparedNavigation {
                     detail: space.map(|_| detail),
-                    conversation: Some((history, session())),
+                    conversation: Some((history, Ok(session()))),
                 }
             };
             app.accept_navigation(app.generation + 1, app.navigation, Ok(prepared()));
@@ -6875,7 +6941,7 @@ mod tests {
         app.dialog = Some(Dialog::Connection);
         assert!(contains(
             &render(&mut app, &context, vec![]),
-            "Not connected"
+            "Join voice to see connection details."
         ));
     }
 
@@ -7111,6 +7177,55 @@ mod tests {
             1,
             "only one divider above the composer: {dividers:?}"
         );
+    }
+
+    #[test]
+    fn space_and_channel_names_use_webs_validation_copy() {
+        assert_eq!(crate::space_name_error("  "), Some("Enter a space name."));
+        assert_eq!(crate::space_name_error("Studio"), None);
+        assert_eq!(crate::channel_name_error(""), Some("Enter a channel name."));
+        assert_eq!(
+            crate::channel_name_error("a--b"),
+            Some("Use lowercase letters separated by single dashes.")
+        );
+        assert_eq!(crate::channel_name_error("project-updates"), None);
+    }
+
+    #[test]
+    fn session_failure_keeps_history_and_offers_retry_session() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let channel = app.selected_channel.clone().unwrap();
+        let history = crate::model::History {
+            space: crate::model::HistoryPlace {
+                id: "space0000001".into(),
+                name: "Fixture Studio".into(),
+            },
+            channel: crate::model::HistoryPlace {
+                id: channel.clone(),
+                name: "general".into(),
+            },
+            messages: app.timeline.messages().cloned().collect(),
+            cursor: "0".into(),
+            has_more: false,
+        };
+        app.accept_channel(history, Err("Chat is unavailable.".into()), false, &channel);
+        let output = render(&mut app, &context, vec![]);
+        let contains = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(label))
+            })
+        };
+        assert!(app.session.is_none());
+        assert!(contains(&output, "Chat is unavailable.") && contains(&output, "Retry session"));
+        assert!(contains(
+            &output,
+            "TEST FIXTURE — local sample data, not a live conversation."
+        ));
     }
 
     #[test]
@@ -7708,7 +7823,7 @@ mod tests {
         app.session = Some(session());
         app.draft = "private draft".into();
 
-        app.accept_channel(history("different"), session(), false, "requested");
+        app.accept_channel(history("different"), Ok(session()), false, "requested");
         assert!(app.selected_channel.is_none());
         assert!(app.session.is_none());
         assert!(app.draft.is_empty());
@@ -7817,7 +7932,7 @@ mod tests {
             old_request,
             Ok(crate::worker::PreparedNavigation {
                 detail: None,
-                conversation: Some((history("stale"), session())),
+                conversation: Some((history("stale"), Ok(session()))),
             }),
         );
         assert!(app.opening);
@@ -7827,7 +7942,7 @@ mod tests {
             app.navigation,
             Ok(crate::worker::PreparedNavigation {
                 detail: None,
-                conversation: Some((history("next"), session())),
+                conversation: Some((history("next"), Ok(session()))),
             }),
         );
         assert_eq!(app.selected_channel.as_deref(), Some("next"));
@@ -7852,7 +7967,7 @@ mod tests {
             pending,
             Ok(crate::worker::PreparedNavigation {
                 detail: None,
-                conversation: Some((history("next"), session())),
+                conversation: Some((history("next"), Ok(session()))),
             }),
         );
         assert!(app.selected_channel.is_none());
@@ -7928,7 +8043,7 @@ mod tests {
             app.navigation,
             Ok(crate::worker::PreparedNavigation {
                 detail: None,
-                conversation: Some((history("two"), session())),
+                conversation: Some((history("two"), Ok(session()))),
             }),
         );
         assert!(app.pending.is_none());

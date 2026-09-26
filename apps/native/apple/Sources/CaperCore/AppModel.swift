@@ -687,8 +687,10 @@ public final class ChatModel {
     public var hasMore = false
     public var typingNames: [String] = []
     public var currentAuthor: ChatAuthor? { session?.author }
-    /// Web's failed first load: no conversation or session to show, only the error.
-    public var loadFailed: Bool { !loading && session == nil && messages.isEmpty && error != nil }
+    /// Web's failed first load: no conversation to show, only the error.
+    public private(set) var loadFailed = false
+    /// Web's session error: history loaded but sending needs a new chat session.
+    public private(set) var sessionError: String?
     public var pendingMessage: PendingMessage? { delivery.pending }
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
@@ -761,13 +763,19 @@ public final class ChatModel {
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
         guard generation == requestGeneration else { return }
         self.channelID = channelID
-        loading = true; error = nil
+        loading = true; error = nil; loadFailed = false; sessionError = nil
         do {
             async let sessionRequest = api.chatSession(name: displayName)
             let history: ChatHistory
             if let prepared { history = prepared }
             else { history = try await api.history(channelID: channelID) }
-            let chatSession = try await sessionRequest
+            // Web keeps the conversation when only the session fails, with Retry session.
+            let chatSession: ChatSession?
+            do { chatSession = try await sessionRequest } catch {
+                if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) { throw error }
+                chatSession = nil
+                sessionError = error.localizedDescription
+            }
             guard self.channelID == channelID, generation == requestGeneration else { return }
             let resolvedChannelID = history.channel?.id
             spaceID = history.space?.id
@@ -799,8 +807,23 @@ public final class ChatModel {
                 onAccessRevoked?(channelID)
             }
             self.error = error.localizedDescription
+            loadFailed = messages.isEmpty
         }
         if generation == requestGeneration { loading = false }
+    }
+
+    /// Web's Retry session.
+    public func retrySession() async {
+        guard let lastOpen, session == nil else { return }
+        let requestGeneration = generation
+        do {
+            let chatSession = try await api.chatSession(name: lastOpen.displayName)
+            guard generation == requestGeneration else { return }
+            session = chatSession; sessionError = nil
+        } catch {
+            guard generation == requestGeneration else { return }
+            sessionError = error.localizedDescription
+        }
     }
 
     public func loadOlder() async {
