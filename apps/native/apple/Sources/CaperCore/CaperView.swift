@@ -1046,6 +1046,15 @@ private struct ChatView: View {
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")
+                #if os(macOS)
+                // Web: End in the message list jumps to the latest message.
+                .focusable().focusEffectDisabled()
+                .onKeyPress(.end) {
+                    guard let id = chat.messages.last?.id else { return .ignored }
+                    proxy.scrollTo(id, anchor: .bottom)
+                    return .handled
+                }
+                #endif
                 .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
                 .onChange(of: chat.pendingMessage?.id, initial: true) { _, id in
                     if let id { proxy.scrollTo("pending-\(id)", anchor: .bottom) }

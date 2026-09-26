@@ -673,6 +673,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         TypingLine(state.typingAuthors)
         HorizontalDivider(color = Border)
         Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+            state.sessionError?.let { error ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+                    TextButton(viewModel::retrySession) { Text("Retry session", fontSize = 12.sp) }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },

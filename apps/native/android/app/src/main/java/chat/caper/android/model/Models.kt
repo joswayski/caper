@@ -120,6 +120,8 @@ data class AppUiState(
     val messagesError: String? = null,
     /** Web's sidebar error for a space that failed to open, with Retry opening. */
     val openError: String? = null,
+    /** Web's chat session error above the composer, with Retry session. */
+    val sessionError: String? = null,
     /** A resync that failed while earlier messages stay visible. */
     val refreshError: String? = null,
     val typingAuthors: List<ChatAuthor> = emptyList(),
