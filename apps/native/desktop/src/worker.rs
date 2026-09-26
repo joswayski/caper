@@ -60,6 +60,11 @@ pub enum Command {
         token: Option<String>,
         channel: Option<String>,
     },
+    /// Web's `media.prepare`: best effort, no event.
+    PrepareVoice {
+        token: String,
+        channel: String,
+    },
     CheckVoice {
         request: u64,
         voice_generation: u64,
@@ -534,6 +539,10 @@ fn advance_generation(current: &mut u64, candidate: u64) -> bool {
 
 fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::Context) {
     let event = match command {
+        Command::PrepareVoice { token, channel } => {
+            api.prepare_voice(&token, &channel);
+            return;
+        }
         Command::MediaStatus {
             root,
             token,

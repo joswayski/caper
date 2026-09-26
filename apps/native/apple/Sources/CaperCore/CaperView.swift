@@ -512,6 +512,7 @@ private struct ChannelVoiceSlot: View {
                             .accessibilityLabel(model.voice.phase == .idle || model.voice.phase == .failed
                                 ? "Join voice in #\(channel.name)" : "Switch voice to #\(channel.name)")
                             .accessibilityIdentifier("join-voice-\(channel.id)")
+                            .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
                     }
                 }
                 if active {
@@ -719,6 +720,19 @@ private struct VoiceRoster: View {
             get: { voice.locallyMutedParticipants.contains(id) },
             set: { voice.setParticipantMuted($0, participantID: id); CaperEffects.shared.toggle(!$0) }
         )
+    }
+}
+
+/// Web prepares a join as the pointer nears Join, or on touch-down.
+private struct PrepareVoiceOnApproach: ViewModifier {
+    let prepare: () -> Void
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        // Hovering Join itself: a wider hover region would take clicks from neighboring rows.
+        content.onHover { if $0 { prepare() } }
+        #else
+        content.simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in prepare() })
+        #endif
     }
 }
 

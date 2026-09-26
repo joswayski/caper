@@ -10,6 +10,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -354,7 +358,10 @@ internal data class VoiceJoinIntent(
                             if (people.size > 3) Text("+${people.size - 3}", fontSize = 10.sp)
                             Icon(if (rosterOpen) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(15.dp))
                         } else Spacer(Modifier.weight(1f))
-                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, modifier = Modifier.semantics {
+                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, modifier = Modifier
+                            // Web prepares the join on touch-down, before the tap completes.
+                            .pointerInput(channel.id) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); viewModel.prepareVoiceJoin(channel) } }
+                            .semantics {
                             contentDescription = voiceJoinUnavailableLabel(state.voiceAvailable)
                                 ?: if (activeChannel != null) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
                         }) {

@@ -193,6 +193,8 @@ struct CaperApp {
     /// Web's `/status` answers by media root; absent while checking.
     media_availability: BTreeMap<String, bool>,
     media_status_root: Option<String>,
+    /// When web's `media.prepare` was last sent per channel.
+    prepared_voice: BTreeMap<String, Instant>,
     collapsed_rosters: BTreeSet<String>,
     sidebar_width: f32,
     navigation_open: bool,
@@ -273,6 +275,7 @@ impl CaperApp {
             unavailable_rosters: BTreeSet::new(),
             media_availability: BTreeMap::new(),
             media_status_root: None,
+            prepared_voice: BTreeMap::new(),
             collapsed_rosters: BTreeSet::new(),
             sidebar_width: 280.0,
             navigation_open: false,
@@ -1285,6 +1288,32 @@ impl CaperApp {
             context,
             (!detail.space.demo).then(|| detail.space.id.clone()),
         ))
+    }
+
+    /// Web prepares a signed-in member's join when the pointer nears Join:
+    /// the API keeps the session 8 s, so reissue at most every 4 s. The public
+    /// demo creates on join.
+    fn prepare_voice_join(&mut self, channel: &str) {
+        let Some((_, Some(_))) = self.voice_target(channel) else {
+            return;
+        };
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        if !self.persist_preferences
+            || self.voice.state.active_channel() == Some(channel)
+            || self
+                .prepared_voice
+                .get(channel)
+                .is_some_and(|sent| sent.elapsed() < Duration::from_secs(4))
+        {
+            return;
+        }
+        self.prepared_voice.insert(channel.into(), Instant::now());
+        self.worker.send(Command::PrepareVoice {
+            token,
+            channel: channel.into(),
+        });
     }
 
     fn join_voice_channel(&mut self, channel: &str) {
@@ -2985,6 +3014,14 @@ impl CaperApp {
             if !own {
                 ui.add_enabled_ui(self.voice_target(id).is_some(), |ui| {
                     let button = voice_join_button(ui, "Join");
+                    // Web's 120 px approach radius around Join.
+                    if ui.is_enabled()
+                        && ui.ctx().pointer_hover_pos().is_some_and(|pointer| {
+                            button.rect.distance_sq_to_pos(pointer) <= 120.0 * 120.0
+                        })
+                    {
+                        self.prepare_voice_join(id);
+                    }
                     let switching =
                         !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_));
                     let label = if switching {
@@ -7049,6 +7086,47 @@ mod tests {
             dividers.len(),
             1,
             "only one divider above the composer: {dividers:?}"
+        );
+    }
+
+    #[test]
+    fn approaching_join_prepares_signed_in_voice_at_most_every_four_seconds() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.persist_preferences = true;
+        app.token = Some("account-token".into());
+        let root = app.media_root().0;
+        app.media_availability.insert(root, true);
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        let join = text_position(&render(&mut app, &context, vec![]), "Join");
+        // Outside the 120 px radius nothing is prepared.
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(join + egui::vec2(0.0, 200.0))],
+        );
+        assert!(app.prepared_voice.is_empty());
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(join + egui::vec2(0.0, 90.0))],
+        );
+        let first = *app
+            .prepared_voice
+            .values()
+            .next()
+            .expect("approach prepares the join");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(join)]);
+        assert_eq!(app.prepared_voice.len(), 1);
+        assert_eq!(
+            *app.prepared_voice.values().next().unwrap(),
+            first,
+            "reissued within 4 s"
         );
     }
 
