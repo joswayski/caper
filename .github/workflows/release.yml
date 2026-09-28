@@ -4,11 +4,34 @@ name: Native release
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64.zip
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.tar.gz
 # and uploads the iPhone app to TestFlight.
+#
+# Started from the "Deploy Caper apps" button that native-ready.yml posts to
+# Discord (Godis dispatches this workflow with the exact commit and message), or
+# by hand from the Actions tab.
 # Signing material comes from AWS Secrets Manager (joswayski/infrastructure,
 # docs/release-signing.md); none is stored in this repository.
 on:
   workflow_dispatch:
+    inputs:
+      git_sha:
+        description: Commit to release. Leave blank for the newest main commit.
+        required: false
+        type: string
+        default: ""
+      discord_message_id:
+        description: Discord notification to update with the result (set by Godis).
+        required: false
+        type: string
+        default: ""
+      discord_started_at:
+        description: Unix time the Discord release started (set by Godis).
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -23,9 +46,31 @@ env:
   RELEASE_TAG: native-latest
 
 jobs:
+  resolve:
+    name: Resolve release commit
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: sha
+        env:
+          REQUESTED_SHA: ${{ inputs.git_sha }}
+        run: |
+          set -euo pipefail
+          sha="${REQUESTED_SHA:-$GITHUB_SHA}"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "git_sha must be a full lowercase 40-character SHA." >&2; exit 1; }
+          # Only commits already on main are released.
+          git merge-base --is-ancestor "$sha" "$GITHUB_SHA" || { echo "$sha is not on main." >&2; exit 1; }
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+          echo "Releasing $sha"
+
   macos:
     name: macOS / ${{ matrix.label }}
-    if: github.ref == 'refs/heads/main'
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +86,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -102,7 +149,7 @@ jobs:
 
   testflight:
     name: iOS / TestFlight
-    if: github.ref == 'refs/heads/main'
+    needs: resolve
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -110,6 +157,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -152,7 +201,7 @@ jobs:
 
   android:
     name: Android / release APK
-    if: github.ref == 'refs/heads/main'
+    needs: resolve
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -160,6 +209,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -214,9 +265,76 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/caper-release.jks" "$RUNNER_TEMP/android.json"
 
+  desktop:
+    name: Desktop / ${{ matrix.target }}
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: windows-2025
+            target: windows-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.94.0
+          components: rustfmt, clippy
+          cache-workspaces: apps/native/desktop
+      - name: Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 3 \
+            https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /usr/share/keyrings/caper-llvm.asc >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/caper-llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' \
+            | sudo tee /etc/apt/sources.list.d/caper-llvm.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang-21 lld-21 libglib2.0-dev libpulse0 libasound2t64 libasound2-dev \
+            pkg-config libssl-dev libdbus-1-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev libegl1-mesa-dev
+      - name: Windows C++ compiler and SDK environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build and package Linux
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          bash apps/native/desktop/build.sh
+          mkdir -p release
+          cp apps/native/desktop/dist/Caper-linux-x64.deb release/Caper-Linux-x64.deb
+          cp apps/native/desktop/dist/Caper-linux-x64.tar.gz release/Caper-Linux-x64.tar.gz
+      - name: Build and package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./apps/native/desktop/build.ps1
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item apps/native/desktop/dist/Caper-windows-x64.zip release/Caper-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-${{ matrix.target }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish native-latest
-    needs: [macos, android]
+    needs: [resolve, macos, android, desktop]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -230,21 +348,63 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
           cd release
-          test -s Caper-macOS-Apple-Silicon.zip
-          test -s Caper-macOS-Intel.zip
-          test -s Caper-Android.apk
-          sha256sum Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk >SHA256SUMS
+          assets=(Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk
+            Caper-Windows-x64.zip Caper-Linux-x64.deb Caper-Linux-x64.tar.gz)
+          for asset in "${assets[@]}"; do test -s "$asset"; done
+          sha256sum "${assets[@]}" >SHA256SUMS
           cat >notes.md <<EOF
-          Signed test builds of the Caper apps, from \`${GITHUB_SHA::7}\`. They use your caper.chat account.
+          Test builds of the Caper apps, from \`${RELEASE_SHA::7}\`. They use your caper.chat account.
 
           **Mac:** download [Apple Silicon](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Apple-Silicon.zip) (M1 or newer) or [Intel](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Intel.zip), unzip, and drag Caper into Applications. It is signed and notarized by Apple.
 
           **Android:** open [Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk) on the phone and allow installing from your browser when asked. Later versions install over it.
+
+          **Windows:** download [Caper-Windows-x64.zip](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Windows-x64.zip), unzip, and run Caper.exe. It is not code-signed yet, so Windows may warn first: choose **More info → Run anyway**.
+
+          **Linux:** install [Caper-Linux-x64.deb](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Linux-x64.deb) on Ubuntu/Debian, or use the [tarball](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Linux-x64.tar.gz).
+
+          **iPhone:** join through the TestFlight link.
           EOF
           gh release delete "$RELEASE_TAG" --cleanup-tag --yes 2>/dev/null || true
-          gh release create "$RELEASE_TAG" --prerelease --target "$GITHUB_SHA" \
+          gh release create "$RELEASE_TAG" --prerelease --target "$RELEASE_SHA" \
             --title "Caper apps (latest)" --notes-file notes.md \
-            Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk SHA256SUMS
+            "${assets[@]}" SHA256SUMS
+
+  notify-discord:
+    name: Update Discord status
+    needs: [resolve, macos, testflight, android, desktop, publish]
+    if: ${{ always() && inputs.discord_message_id != '' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report the release result on the Discord notification
+        env:
+          DEPLOY_NOTIFICATION_WEBHOOK_URL: ${{ secrets.DEPLOY_NOTIFICATION_WEBHOOK_URL }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha || inputs.git_sha || github.sha }}
+          DISCORD_MESSAGE_ID: ${{ inputs.discord_message_id }}
+          DISCORD_STARTED_AT: ${{ inputs.discord_started_at }}
+        run: |
+          set -euo pipefail
+          # Every job must succeed; any failure wins over a cancellation.
+          result=success
+          for job_result in $RESULTS; do
+            case "$job_result" in
+              success) ;;
+              failure) result=failure ;;
+              *) [[ "$result" == failure ]] || result=cancelled ;;
+            esac
+          done
+          bash scripts/update-discord-release.sh \
+            --git-sha "$RELEASE_SHA" \
+            --message-id "$DISCORD_MESSAGE_ID" \
+            --result "$result" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --started-at "$DISCORD_STARTED_AT" \
+            --finished-at "$(date +%s)"
