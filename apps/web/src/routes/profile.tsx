@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { getAccount, getRememberedAccount, logout, type Account } from "../account/client";
 import ProfileForm from "../account/ProfileForm";
+import Wordmark from "../components/Wordmark";
 
 export const Route = createFileRoute("/profile")({ component: Profile });
 
@@ -21,7 +22,7 @@ function Profile() {
 
   return <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
     <section className="w-full max-w-[440px]">
-      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
+      <Wordmark />
       <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">{account.username ? "YOUR ACCOUNT" : "ONE LAST THING"}</p>
       <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em]">{account.username ? "Make it yours." : "Choose how you show up."}</h1>
       <p className="leading-[1.65] text-content-muted">Your username is unique. Your display name is what people see in conversations.</p>

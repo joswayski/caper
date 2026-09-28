@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
+import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
 import type { GeneralChatHistory } from "../chat/types";
 
@@ -32,7 +33,7 @@ export default function Home({ account, history, initialNow, latestChanges }: Ho
   return (
     <main className="page">
       <header className="site-header shell">
-        <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
+        <Wordmark />
         <div className="site-header-actions">
           <a className="header-github" href={repositoryUrl} target="_blank" rel="noreferrer" aria-label="Caper on GitHub"><GitHubIcon /></a>
           <AccountNav account={account} />

@@ -63,8 +63,9 @@ body {
 .login-button { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 700; text-decoration: none; }
 .login-button:hover { border-color: var(--terracotta); }
 .login-button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
-.wordmark { color: var(--text); font-size: 1.9rem; font-weight: 900; letter-spacing: -.075em; text-decoration: none; }
-.wordmark-dot { color: var(--terracotta); }
+.wordmark { display: inline-flex; align-items: center; width: 148px; }
+.wordmark img { display: block; width: 100%; height: auto; }
+.wordmark:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
 /* The live window is the page: copy takes a narrow column, the window the rest.
    Opening the window expands it over this whole box (see LiveWindow). */
 .hero { position: relative; height: max(640px, calc(100dvh - 88px)); display: grid; grid-template-columns: minmax(340px, 410px) minmax(0, 1fr); column-gap: clamp(24px, 3vw, 48px); padding-block: 4px 32px; }
