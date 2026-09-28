@@ -60,9 +60,9 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
       scale: Math.min(stageBox.width * 0.93 / width, stageBox.height * 0.93 / height), dx: 0, dy: 0,
     };
   }
-  // Keep the resting card mostly square to the page so its edges stay aligned
-  // with the hero while retaining a subtle 3D angle toward the copy.
-  const rest = mode === "expand" ? { x: 6, y: 9, z: -0.5 } : { x: 5, y: 3, z: -0.4 };
+  // The window intentionally turns toward the hero copy; compensate for the
+  // resulting projected bounds below so the visible card remains centered.
+  const rest = mode === "expand" ? { x: 11, y: 16, z: -1.6 } : { x: 8, y: 5, z: -0.8 };
   scene.dataset.mode = mode;
   scene.dataset.size = geometry.width >= 700 ? "wide" : "narrow";
   scene.style.setProperty("--scene-width", `${geometry.width}px`);
@@ -72,9 +72,28 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
   // Lets resting-state labels stay a readable size on the shrunken window.
   scene.style.setProperty("--counter-scale", (1 / geometry.scale).toFixed(4));
   scene.style.setProperty("--depth", "1");
-  scene.style.transform = `translate3d(${geometry.dx.toFixed(2)}px, ${geometry.dy.toFixed(2)}px, 0) `
-    + `scale3d(${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}) `
-    + `rotateX(${rest.x.toFixed(3)}deg) rotateY(${rest.y.toFixed(3)}deg) rotateZ(${rest.z.toFixed(3)}deg)`;
+  const applyRestTransform = () => {
+    scene.style.transform = `translate3d(${geometry.dx.toFixed(2)}px, ${geometry.dy.toFixed(2)}px, 0) `
+      + `scale3d(${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}, ${geometry.scale.toFixed(4)}) `
+      + `rotateX(${rest.x.toFixed(3)}deg) rotateY(${rest.y.toFixed(3)}deg) rotateZ(${rest.z.toFixed(3)}deg)`;
+  };
+  applyRestTransform();
+  // The homepage's arrival animation temporarily translates the whole scene.
+  // Exclude that transient translate from the resting measurement during React
+  // hydration or resize, then restore it before the browser can paint.
+  const inlineTranslate = scene.style.getPropertyValue("translate");
+  const inlineTranslatePriority = scene.style.getPropertyPriority("translate");
+  scene.style.setProperty("translate", "none", "important");
+  let projected: DOMRect;
+  try {
+    projected = scene.getBoundingClientRect();
+  } finally {
+    if (inlineTranslate) scene.style.setProperty("translate", inlineTranslate, inlineTranslatePriority);
+    else scene.style.removeProperty("translate");
+  }
+  geometry.dx += stageBox.left + stageBox.width / 2 - (projected.left + projected.width / 2);
+  geometry.dy += stageBox.top + stageBox.height / 2 - (projected.top + projected.height / 2);
+  applyRestTransform();
   return { mode, geometry, rest };
 }
 
