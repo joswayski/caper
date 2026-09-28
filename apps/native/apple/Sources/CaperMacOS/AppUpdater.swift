@@ -5,18 +5,15 @@ import Foundation
 /// builds carry in Contents/MacOS. It checks the signed release manifest shortly
 /// after launch and every six hours; when the user accepts, the updater waits
 /// for Caper to quit, swaps in the new notarized app and reopens it.
-@MainActor final class AppUpdater: ObservableObject {
+///
+/// Prompts are AppKit alerts rather than SwiftUI `.alert` modifiers, so they
+/// never compete with the confirmation dialogs inside the Caper window.
+@MainActor final class AppUpdater {
     struct Update: Equatable {
         let version: String
         let notes: String
         let canApply: Bool
     }
-
-    /// The update to offer; cleared when the user chooses Later.
-    @Published var prompt: Update?
-    /// Set after a manual check finds nothing.
-    @Published var upToDate = false
-    @Published var failure: String?
 
     private let updater: URL?
     private let build: Int
@@ -62,22 +59,45 @@ import Foundation
         switch result {
         case let .success(data):
             guard let update = Self.parse(data) else {
-                if manual { upToDate = true }
+                if manual { inform("Caper is up to date", "") }
                 return
             }
-            if manual || !declined.contains(update.version) { prompt = update }
+            if manual || !declined.contains(update.version) { offer(update) }
         case let .failure(error):
-            if manual { failure = error.localizedDescription }
+            if manual { inform("Update failed", error.localizedDescription) }
         }
     }
 
-    func later() {
-        if let prompt { declined.insert(prompt.version) }
-        prompt = nil
+    private func offer(_ update: Update) {
+        let alert = NSAlert()
+        alert.messageText = "Caper \(update.version) is available"
+        let detail = update.canApply
+            ? "Caper restarts to install it and leaves any voice call."
+            : "Caper can't update this copy in place. Download the new version, or move Caper to Applications so updates install automatically."
+        alert.informativeText = update.notes.isEmpty ? detail : "\(update.notes)\n\n\(detail)"
+        alert.addButton(withTitle: update.canApply ? "Restart to Update" : "Download")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            declined.insert(update.version)
+            return
+        }
+        if update.canApply {
+            restart()
+        } else {
+            NSWorkspace.shared.open(Self.downloadPage)
+        }
+    }
+
+    private func inform(_ title: String, _ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.runModal()
     }
 
     /// Starts the updater, which waits for this process to exit, then quits.
-    func restart() {
+    private func restart() {
         guard let updater else { return }
         let process = Process()
         process.executableURL = updater
@@ -90,7 +110,7 @@ import Foundation
             try process.run()
             NSApp.terminate(nil)
         } catch {
-            failure = "Could not start the update: \(error.localizedDescription)"
+            inform("Update failed", "Could not start the update: \(error.localizedDescription)")
         }
     }
 
