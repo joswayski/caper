@@ -60,8 +60,9 @@ export function layoutLiveScene(stage: HTMLElement, scene: HTMLElement) {
       scale: Math.min(stageBox.width * 0.93 / width, stageBox.height * 0.93 / height), dx: 0, dy: 0,
     };
   }
-  // Resting pose in degrees. The window turns toward the hero copy on its left.
-  const rest = mode === "expand" ? { x: 11, y: 16, z: -1.6 } : { x: 8, y: 5, z: -0.8 };
+  // Keep the resting card mostly square to the page so its edges stay aligned
+  // with the hero while retaining a subtle 3D angle toward the copy.
+  const rest = mode === "expand" ? { x: 6, y: 9, z: -0.5 } : { x: 5, y: 3, z: -0.4 };
   scene.dataset.mode = mode;
   scene.dataset.size = geometry.width >= 700 ? "wide" : "narrow";
   scene.style.setProperty("--scene-width", `${geometry.width}px`);
