@@ -112,6 +112,20 @@ through the App Store Connect API key, so no distribution certificate or profile
 stored. Each run's build number is `<run number>.<attempt>`. Testers who join the
 TestFlight public link get new builds automatically.
 
+**Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
+`caper-updater` (`apps/native/updater`) and the run number as their build number.
+About 20 seconds after launch and every six hours they read `latest.json` from
+`native-latest`. That file is signed with the Ed25519 key in
+`production/signing/updates`, and each app only trusts the public key compiled
+into it. When a newer build exists, the Mac app shows an alert (and has
+**Caper › Check for Updates…**), and the Windows and Linux app shows a banner.
+**Restart to update** hands off to the updater, which verifies the download's
+SHA-256 (and, on Mac, its Developer ID team), waits for Caper to quit, swaps in
+the new copy and reopens it. A copy it cannot replace, such as the Linux `.deb`
+or a Mac app outside a writable folder, gets a **Download** link instead.
+Releases made before the key is stored skip `latest.json`, and apps from before
+this change need one manual reinstall. Android APKs do not self-update yet.
+
 ## Comparing native screens with the web
 
 Use the existing web UI as the reference, not platform-default widgets with
@@ -168,8 +182,8 @@ Passing a build or mock protocol test does **not** establish any of these gates:
   native resource use and battery measurements. Compiled UI alone proves no
   performance improvement over the web implementation.
 - Signed package installation/upgrade, platform trust checks, app-store policy,
-  privacy disclosures, rollback and a supported update path. No auto-updater is
-  installed by the development workflow.
+  privacy disclosures and rollback. Development builds carry no build number, so
+  they never self-update; release self-updates are described above.
 
 Native voice and background-call acceptance are required work, not optional
 product cuts. Do not advertise these development apps as supporting them until
