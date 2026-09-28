@@ -4,6 +4,7 @@ name: Native release
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
+# and uploads the iPhone app to TestFlight.
 # Signing material comes from AWS Secrets Manager (joswayski/infrastructure,
 # docs/release-signing.md); none is stored in this repository.
 on:
@@ -98,6 +99,48 @@ jobs:
         run: |
           [[ -z "${CAPER_SIGNING_KEYCHAIN:-}" ]] || security delete-keychain "$CAPER_SIGNING_KEYCHAIN" || true
           rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/apple.json"
+
+  testflight:
+    name: iOS / TestFlight
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Load the App Store Connect API key
+        run: |
+          set -euo pipefail
+          secret="$RUNNER_TEMP/apple.json"
+          aws secretsmanager get-secret-value --secret-id production/signing/apple \
+            --query SecretString --output text >"$secret"
+          chmod 0600 "$secret"
+          jq -r .app_store_connect_private_key "$secret" >"$RUNNER_TEMP/asc.p8"
+          chmod 0600 "$RUNNER_TEMP/asc.p8"
+          {
+            echo "NOTARY_KEY_PATH=$RUNNER_TEMP/asc.p8"
+            echo "NOTARY_KEY_ID=$(jq -r .app_store_connect_key_id "$secret")"
+            echo "NOTARY_ISSUER=$(jq -r .app_store_connect_issuer_id "$secret")"
+            echo "APPLE_TEAM_ID=$(jq -r .team_id "$secret")"
+          } >>"$GITHUB_ENV"
+          rm -f "$secret"
+      - name: Archive and upload to TestFlight
+        env:
+          # Unique and increasing across runs and re-runs, e.g. 12.1 then 12.2.
+          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+        run: bash apps/native/apple/upload-testflight.sh
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/asc.p8" "$RUNNER_TEMP/apple.json"
 
   android:
     name: Android / release APK

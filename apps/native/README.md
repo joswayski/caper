@@ -88,7 +88,13 @@ these links always point at the newest build:
 Signing material is read from AWS Secrets Manager through GitHub OIDC; see
 `docs/release-signing.md` in joswayski/infrastructure. Android testers allow
 installs from their browser once; updates install over the previous APK because
-every release uses the same upload key. iPhone builds will ship through TestFlight.
+every release uses the same upload key.
+
+The same run archives the iPhone app (`chat.caper.ios`) and uploads it to
+TestFlight with `apps/native/apple/upload-testflight.sh`. Signing is cloud-managed
+through the App Store Connect API key, so no distribution certificate or profile is
+stored. Each run's build number is `<run number>.<attempt>`. Testers who join the
+TestFlight public link get new builds automatically.
 
 ## Comparing native screens with the web
 
