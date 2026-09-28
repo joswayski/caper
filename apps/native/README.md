@@ -116,7 +116,7 @@ TestFlight public link get new builds automatically.
 `caper-updater` (`apps/native/updater`) and the run number as their build number.
 About 20 seconds after launch and every six hours they read `latest.json` from
 `native-latest`. That file is signed with the Ed25519 key in
-`production/signing/updates`, and each app only trusts the public key compiled
+the `caper_update` section of `production/signing/release`, and each app only trusts the public key compiled
 into it. When a newer build exists, the Mac app shows an alert (and has
 **Caper › Check for Updates…**), and the Windows and Linux app shows a banner.
 **Restart to update** hands off to the updater, which verifies the download's
