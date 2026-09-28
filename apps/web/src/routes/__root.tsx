@@ -22,7 +22,7 @@ export const Route = createRootRoute({
       { title: "Caper - A place for your people" },
     ],
     links: [
-      { rel: "icon", type: "image/svg+xml", href: "/caper-icon.svg" },
+      { rel: "icon", type: "image/svg+xml", href: "/caper-face.svg" },
       {
         rel: "preload",
         href: "/fonts/satoshi-400.woff2",
