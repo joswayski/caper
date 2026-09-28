@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -154,10 +155,11 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun Wordmark(modifier: Modifier = Modifier) = Row(modifier) {
-    Text("caper", color = Text, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.25).sp)
-    Text(".", color = TerracottaBright, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.25).sp)
-}
+@Composable private fun Wordmark(modifier: Modifier = Modifier) = Image(
+    painter = painterResource(R.drawable.caper_wordmark),
+    contentDescription = "Caper",
+    modifier = modifier.size(width = 132.dp, height = 35.dp),
+)
 
 @Composable private fun HomeScreen(
     state: AppUiState,
