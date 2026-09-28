@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useEffect, useState } from "react";
 import { AccountApiError, getAccount, requestEmailCode, verifyEmailCode } from "../account/client";
+import Wordmark from "../components/Wordmark";
 
 export const Route = createFileRoute("/login")({ component: Login });
 
@@ -70,7 +71,7 @@ function Login() {
 
   return <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
     <section className="w-full max-w-[440px]">
-      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
+      <Wordmark />
       <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">WELCOME TO CAPER</p>
       <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em]">{challengeId ? "Check your email." : "Come on in."}</h1>
       {challengeId ? <>

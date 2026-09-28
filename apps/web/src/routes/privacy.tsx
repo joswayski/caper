@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import Wordmark from "../components/Wordmark";
 
 // Mailbox that answers privacy and account-deletion requests.
 const CONTACT = "privacy@caper.chat";
@@ -13,7 +14,7 @@ export const Route = createFileRoute("/privacy")({
 function Privacy() {
   return <main className="grid min-h-dvh justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-16 max-[480px]:px-5 max-[480px]:pt-8">
     <article className="w-full max-w-[640px] leading-[1.7] text-content-muted">
-      <a className="wordmark" href="/" aria-label="Caper home">caper<span className="wordmark-dot">.</span></a>
+      <Wordmark />
       <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] max-[480px]:mt-[42px]">UPDATED {UPDATED.toUpperCase()}</p>
       <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] text-content">Privacy</h1>
       <p>Caper is a place to text and talk with your people. This page explains what we collect to run it, and what we don't. It applies to caper.chat and the Caper apps for Mac, Windows, Linux, iPhone and Android.</p>

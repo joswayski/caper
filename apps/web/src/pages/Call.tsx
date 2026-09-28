@@ -11,6 +11,7 @@ import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
 import Tooltip from "../components/Tooltip";
+import Wordmark from "../components/Wordmark";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
 import { acquireAudioContext, releaseAudioContext, setPlaybackBlocked } from "../media/audio-context";
 import { PublicCallClient, prepareVoiceJoin } from "../media/client";
@@ -727,7 +728,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   return (
     <Root className={`call-page${embedded ? " call-embedded" : ""}`}>
       {!embedded && <header className="call-header">
-        <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
+        <Wordmark />
       </header>}
       <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}>
         {spaceRail}

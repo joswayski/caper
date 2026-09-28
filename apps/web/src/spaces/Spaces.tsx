@@ -20,6 +20,7 @@ import {
 import { getAccount, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
+import Wordmark from "../components/Wordmark";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
@@ -713,7 +714,7 @@ function ManageChannelDialog({
 function SpacesLoading() {
   return <main className="call-page" aria-busy="true">
     <header className="call-header">
-      <a className="wordmark" href="/">caper<span className="wordmark-dot">.</span></a>
+      <Wordmark />
     </header>
     <section className="call-room spaces-room spaces-loading">
       <div className="space-rail" aria-hidden="true" />
@@ -893,9 +894,7 @@ export default function Spaces() {
   if (error && !spaces.length)
     return (
       <main className="spaces-state">
-        <a className="wordmark" href="/">
-          caper<span className="wordmark-dot">.</span>
-        </a>
+        <Wordmark />
         <h1>Spaces are unavailable.</h1>
         <p role="alert">{error}</p>
         <button type="button" onClick={() => window.location.reload()}>
@@ -906,9 +905,7 @@ export default function Spaces() {
   if (!spaces.length)
     return (
       <main className="spaces-empty">
-        <a className="wordmark" href="/">
-          caper<span className="wordmark-dot">.</span>
-        </a>
+        <Wordmark />
         <section>
           <p className="eyebrow">YOUR SPACES</p>
           <h1>Start a conversation.</h1>
@@ -941,9 +938,7 @@ export default function Spaces() {
   if (!detail)
     return (
       <main className="spaces-state">
-        <a className="wordmark" href="/">
-          caper<span className="wordmark-dot">.</span>
-        </a>
+        <Wordmark />
         <p role="alert">{error}</p>
         <button type="button" onClick={() => setSelected({ ...selected })}>Try again</button>
       </main>
@@ -1132,9 +1127,7 @@ export default function Spaces() {
       <>
         <main className="call-page">
           <header className="call-header">
-            <a className="wordmark" href="/">
-              caper<span className="wordmark-dot">.</span>
-            </a>
+            <Wordmark />
           </header>
           <section
             className={`call-room spaces-room empty-channel-room${navigationOpen ? " navigation-open" : ""}`}
