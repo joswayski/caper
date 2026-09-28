@@ -227,6 +227,9 @@ targets:
         # WebRTC links camera APIs, so App Store processing (ITMS-90683) requires
         # a purpose string even though Caper never opens the camera.
         NSCameraUsageDescription: "Caper doesn't use your camera. Its voice calls are built on WebRTC, which includes camera support."
+        # Only standard protocols (HTTPS/TLS and WebRTC's DTLS-SRTP), no proprietary
+        # crypto: declare exempt so each TestFlight build skips the compliance prompt.
+        ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
         UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
         UIBackgroundModes: [audio]
