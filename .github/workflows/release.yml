@@ -133,6 +133,14 @@ jobs:
             echo "APPLE_TEAM_ID=$(jq -r .team_id "$secret")"
           } >>"$GITHUB_ENV"
           rm -f "$secret"
+      - name: Use Xcode 26
+        # App Store Connect only accepts iOS builds made with the iOS 26 SDK or later.
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -1 || true)"
+          [[ -n "$xcode" ]] || { echo "No Xcode 26 on this runner:" >&2; ls -d /Applications/Xcode* >&2; exit 1; }
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
       - name: Archive and upload to TestFlight
         env:
           # Unique and increasing across runs and re-runs, e.g. 12.1 then 12.2.

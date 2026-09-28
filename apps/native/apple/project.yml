@@ -11,6 +11,10 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    # Every bundle, including embedded frameworks, needs both versions for App
+    # Store validation; release.yml overrides CURRENT_PROJECT_VERSION per upload.
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 targets:
   CaperRTCBridge:
@@ -218,18 +222,20 @@ targets:
       path: Configuration/iOS-Info.plist
       properties:
         CFBundleDisplayName: Caper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
         UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # iPad multitasking requires all four orientations.
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(CAPER_IOS_BUNDLE_ID)
         PRODUCT_NAME: Caper
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # TestFlight needs a new build number per upload; release.yml overrides it.
-        CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
   CaperCoreTests:
