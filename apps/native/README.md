@@ -76,14 +76,30 @@ do not require `npm install`; the website build is not an app-bundling step.
 
 ## Signed builds for testers
 
-The **Native release** workflow (`.github/workflows/release.yml`, run manually from
-`main`) builds a Developer ID-signed, notarized Mac app for Apple Silicon and Intel
-and a release-signed Android APK. It replaces the `native-latest` pre-release, so
-these links always point at the newest build:
+The **Native release** workflow (`.github/workflows/release.yml`) builds every
+app from one `main` commit:
+- a Developer ID-signed, notarized Mac app for Apple Silicon and Intel,
+- a release-signed Android APK,
+- Windows and Linux desktop packages (not code-signed yet).
+
+It replaces the `native-latest` pre-release, so these links always point at the
+newest build:
 
 - Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
 - Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
 - Android: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
+- Windows: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64.zip
+- Linux: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
+  (or `Caper-Linux-x64.tar.gz`)
+
+**Releasing from Discord.** When **Native development builds** passes on `main`,
+`native-ready.yml` posts a "Caper apps build is ready" notification with a
+**Deploy Caper apps** button to the production deploys channel. This is the same
+channel and webhook the web app, API and gateway notifications use. Godis
+dispatches `release.yml` for that exact commit, and the run edits the same
+message with the result (`scripts/update-discord-release.sh`). Deploy any server
+changes the apps depend on first. The workflow can also be run by hand from the
+Actions tab; a blank `git_sha` releases the newest `main` commit.
 
 Signing material is read from AWS Secrets Manager through GitHub OIDC; see
 `docs/release-signing.md` in joswayski/infrastructure. Android testers allow
