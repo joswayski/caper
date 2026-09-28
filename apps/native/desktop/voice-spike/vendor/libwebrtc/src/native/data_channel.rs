@@ -61,7 +61,10 @@ pub struct DataChannel {
 impl DataChannel {
     pub fn configure(sys_handle: SharedPtr<sys_dc::ffi::DataChannel>) -> Self {
         let observer = Arc::new(DataChannelObserver::default());
-        let dc = Self { sys_handle: sys_handle.clone(), observer: observer.clone() };
+        let dc = Self {
+            sys_handle: sys_handle.clone(),
+            observer: observer.clone(),
+        };
 
         dc.sys_handle
             .register_observer(Box::new(sys_dc::DataChannelObserverWrapper::new(observer)));
@@ -73,9 +76,16 @@ impl DataChannel {
             str::from_utf8(data)?;
         }
 
-        let buffer = sys_dc::ffi::DataBuffer { ptr: data.as_ptr(), len: data.len(), binary };
+        let buffer = sys_dc::ffi::DataBuffer {
+            ptr: data.as_ptr(),
+            len: data.len(),
+            binary,
+        };
 
-        self.sys_handle.send(&buffer).then_some(()).ok_or(DataChannelError::Send)
+        self.sys_handle
+            .send(&buffer)
+            .then_some(())
+            .ok_or(DataChannelError::Send)
     }
 
     pub fn id(&self) -> i32 {

@@ -87,7 +87,9 @@ impl PeerConnectionFactory {
     /// Creates a native peer connection factory that renders received video as soon as possible.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_zero_playout_delay() -> Self {
-        Self { handle: imp_pcf::PeerConnectionFactory::with_zero_playout_delay() }
+        Self {
+            handle: imp_pcf::PeerConnectionFactory::with_zero_playout_delay(),
+        }
     }
 
     /// Creates a native peer connection factory with the given runtime options.

@@ -50,6 +50,8 @@ impl ToString for IceCandidate {
 
 impl Debug for IceCandidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IceCandidate").field("candidate", &self.to_string()).finish()
+        f.debug_struct("IceCandidate")
+            .field("candidate", &self.to_string())
+            .finish()
     }
 }

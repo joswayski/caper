@@ -318,7 +318,9 @@ mod tests {
             alice_dc_tx.send(dc).unwrap();
         })));
 
-        let bob_dc = bob.create_data_channel("test_dc", DataChannelInit::default()).unwrap();
+        let bob_dc = bob
+            .create_data_channel("test_dc", DataChannelInit::default())
+            .unwrap();
 
         let offer = bob.create_offer(OfferOptions::default()).await.unwrap();
         trace!("Bob offer: {:?}", offer);
@@ -339,7 +341,9 @@ mod tests {
         let (data_tx, mut data_rx) = mpsc::unbounded_channel::<String>();
         let alice_dc = alice_dc_rx.recv().await.unwrap();
         alice_dc.on_message(Some(Box::new(move |buffer| {
-            data_tx.send(String::from_utf8_lossy(buffer.data).to_string()).unwrap();
+            data_tx
+                .send(String::from_utf8_lossy(buffer.data).to_string())
+                .unwrap();
         })));
 
         bob_dc.send(b"This is a test", true).unwrap();

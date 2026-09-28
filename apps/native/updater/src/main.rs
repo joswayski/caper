@@ -141,7 +141,9 @@ fn check(options: &Options) -> Result<()> {
         });
     };
     let manifest = fetch_manifest(key)?;
-    let can_apply = options.install.as_deref().map(install::can_replace);
+    let can_apply = options.install.as_deref().map(|install| {
+        Layout::for_platform(platform).is_some_and(|layout| install::can_replace(layout, install))
+    });
     match manifest.update_for(platform, current) {
         Some(_) => print_json(&CheckResult {
             update: true,
@@ -174,6 +176,13 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     let key = PUBLIC_KEY.ok_or("this build has no update key")?;
     let platform = manifest::current_platform().ok_or("unsupported platform")?;
     let layout = Layout::for_platform(platform).ok_or("unsupported platform")?;
+    if !install::is_self_contained(layout, &install) {
+        return Err(format!(
+            "{} is not a self-contained Caper install; update it with its package manager",
+            install.display()
+        )
+        .into());
+    }
 
     // Windows cannot rename a folder while a program inside it runs, so run the
     // update from a copy outside the install.

@@ -81,7 +81,9 @@ pub struct KeyProvider {
 
 impl KeyProvider {
     pub fn new(options: KeyProviderOptions) -> Self {
-        Self { sys_handle: sys_fc::ffi::new_key_provider(options.into()) }
+        Self {
+            sys_handle: sys_fc::ffi::new_key_provider(options.into()),
+        }
     }
 
     pub fn set_shared_key(&self, key_index: i32, key: Vec<u8>) -> bool {
@@ -135,9 +137,14 @@ impl FrameCryptor {
             key_provider.sys_handle,
             sender.handle.sys_handle,
         );
-        let fc = Self { observer: observer.clone(), sys_handle: sys_handle.clone() };
+        let fc = Self {
+            observer: observer.clone(),
+            sys_handle: sys_handle.clone(),
+        };
         fc.sys_handle
-            .register_observer(Box::new(sys_fc::RtcFrameCryptorObserverWrapper::new(observer)));
+            .register_observer(Box::new(sys_fc::RtcFrameCryptorObserverWrapper::new(
+                observer,
+            )));
         fc
     }
 
@@ -156,9 +163,14 @@ impl FrameCryptor {
             key_provider.sys_handle,
             receiver.handle.sys_handle,
         );
-        let fc = Self { observer: observer.clone(), sys_handle: sys_handle.clone() };
+        let fc = Self {
+            observer: observer.clone(),
+            sys_handle: sys_handle.clone(),
+        };
         fc.sys_handle
-            .register_observer(Box::new(sys_fc::RtcFrameCryptorObserverWrapper::new(observer)));
+            .register_observer(Box::new(sys_fc::RtcFrameCryptorObserverWrapper::new(
+                observer,
+            )));
         fc
     }
 
@@ -187,7 +199,8 @@ impl FrameCryptor {
     }
 
     pub fn set_packet_trailer_handler(&self, handler: &PacketTrailerHandler) {
-        self.sys_handle.set_packet_trailer_handler(handler.sys_handle());
+        self.sys_handle
+            .set_packet_trailer_handler(handler.sys_handle());
     }
 }
 
@@ -213,7 +226,10 @@ impl DataPacketCryptor {
         data: &[u8],
     ) -> Result<EncryptedPacket, Box<dyn std::error::Error>> {
         let data_vec: Vec<u8> = data.to_vec();
-        match self.sys_handle.encrypt_data_packet(participant_id.to_string(), key_index, data_vec) {
+        match self
+            .sys_handle
+            .encrypt_data_packet(participant_id.to_string(), key_index, data_vec)
+        {
             Ok(packet) => Ok(packet.into()),
             Err(e) => Err(format!("Encryption failed: {}", e).into()),
         }
@@ -311,6 +327,10 @@ impl From<sys_fc::ffi::EncryptedPacket> for EncryptedPacket {
 
 impl From<EncryptedPacket> for sys_fc::ffi::EncryptedPacket {
     fn from(value: EncryptedPacket) -> Self {
-        Self { data: value.data, iv: value.iv, key_index: value.key_index }
+        Self {
+            data: value.data,
+            iv: value.iv,
+            key_index: value.key_index,
+        }
     }
 }

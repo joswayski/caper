@@ -52,7 +52,10 @@ impl NativeAudioSource {
         num_channels: u32,
         queue_size_ms: u32,
     ) -> NativeAudioSource {
-        assert!(queue_size_ms % 10 == 0, "queue_size_ms must be a multiple of 10");
+        assert!(
+            queue_size_ms % 10 == 0,
+            "queue_size_ms must be a multiple of 10"
+        );
 
         let sys_handle = sys_at::ffi::new_audio_track_source(
             options.into(),
@@ -62,7 +65,12 @@ impl NativeAudioSource {
         );
 
         let queue_size_samples = (queue_size_ms * sample_rate * num_channels) / 1000;
-        Self { sys_handle, sample_rate, num_channels, queue_size_samples }
+        Self {
+            sys_handle,
+            sample_rate,
+            num_channels,
+            queue_size_samples,
+        }
     }
 
     pub fn sys_handle(&self) -> SharedPtr<sys_at::ffi::AudioTrackSource> {
@@ -70,7 +78,8 @@ impl NativeAudioSource {
     }
 
     pub fn set_audio_options(&self, options: AudioSourceOptions) {
-        self.sys_handle.set_audio_options(&sys_at::ffi::AudioSourceOptions::from(options))
+        self.sys_handle
+            .set_audio_options(&sys_at::ffi::AudioSourceOptions::from(options))
     }
 
     pub fn audio_options(&self) -> AudioSourceOptions {
@@ -141,12 +150,21 @@ impl NativeAudioSource {
     /// Complete a 10 ms frame synchronously on a zero-buffer source. Enables
     /// callers to hold a local publication gate through the native sink write.
     pub fn capture_frame_direct(&self, frame: &AudioFrame<'_>) -> Result<(), RtcError> {
-        if self.queue_size_samples != 0 || self.sample_rate != frame.sample_rate || self.num_channels != frame.num_channels {
-            return Err(RtcError { error_type: RtcErrorType::InvalidState, message: "direct capture requires a matching zero-buffer source".to_owned() });
+        if self.queue_size_samples != 0
+            || self.sample_rate != frame.sample_rate
+            || self.num_channels != frame.num_channels
+        {
+            return Err(RtcError {
+                error_type: RtcErrorType::InvalidState,
+                message: "direct capture requires a matching zero-buffer source".to_owned(),
+            });
         }
         let expected = (self.sample_rate / 100) as usize * self.num_channels as usize;
         if frame.data.len() != expected {
-            return Err(RtcError { error_type: RtcErrorType::InvalidState, message: "direct capture requires a 10 ms frame".to_owned() });
+            return Err(RtcError {
+                error_type: RtcErrorType::InvalidState,
+                message: "direct capture requires a 10 ms frame".to_owned(),
+            });
         }
         extern "C" fn noop_complete_callback(_ctx: *const sys_at::SourceContext) {}
         let ok = unsafe {
@@ -162,7 +180,10 @@ impl NativeAudioSource {
         if ok {
             Ok(())
         } else {
-            Err(RtcError { error_type: RtcErrorType::InvalidState, message: "failed to capture frame without buffering".to_owned() })
+            Err(RtcError {
+                error_type: RtcErrorType::InvalidState,
+                message: "failed to capture frame without buffering".to_owned(),
+            })
         }
     }
 }

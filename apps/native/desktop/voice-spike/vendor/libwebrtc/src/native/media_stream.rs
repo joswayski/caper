@@ -35,7 +35,9 @@ impl MediaStream {
         self.sys_handle
             .get_audio_tracks()
             .into_iter()
-            .map(|t| audio_track::RtcAudioTrack { handle: RtcAudioTrack { sys_handle: t.ptr } })
+            .map(|t| audio_track::RtcAudioTrack {
+                handle: RtcAudioTrack { sys_handle: t.ptr },
+            })
             .collect()
     }
 
@@ -43,7 +45,9 @@ impl MediaStream {
         self.sys_handle
             .get_video_tracks()
             .into_iter()
-            .map(|t| video_track::RtcVideoTrack { handle: RtcVideoTrack::new(t.ptr) })
+            .map(|t| video_track::RtcVideoTrack {
+                handle: RtcVideoTrack::new(t.ptr),
+            })
             .collect()
     }
 }

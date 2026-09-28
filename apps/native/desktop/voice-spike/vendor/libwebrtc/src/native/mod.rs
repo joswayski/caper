@@ -56,7 +56,10 @@ impl From<sys_err::ffi::RtcErrorType> for RtcErrorType {
 
 impl From<sys_err::ffi::RtcError> for RtcError {
     fn from(value: sys_err::ffi::RtcError) -> Self {
-        Self { error_type: value.error_type.into(), message: value.message }
+        Self {
+            error_type: value.error_type.into(),
+            message: value.message,
+        }
     }
 }
 

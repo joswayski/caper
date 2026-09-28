@@ -99,7 +99,10 @@ pub fn prebuilt_dir() -> path::PathBuf {
 }
 
 pub fn download_url() -> String {
-    format!("https://github.com/livekit/rust-sdks/releases/download/{WEBRTC_TAG}/webrtc-{}.zip", webrtc_triple())
+    format!(
+        "https://github.com/livekit/rust-sdks/releases/download/{WEBRTC_TAG}/webrtc-{}.zip",
+        webrtc_triple()
+    )
 }
 
 /// Used location of libwebrtc depending on whether it's a custom build or not
@@ -129,7 +132,9 @@ pub fn webrtc_defines() -> Vec<(String, Option<String>)> {
             .unwrap_or_else(|e| panic!("Could not open ninja file: {path:?}\n{e:?}"));
 
         let mut defines_line = String::default();
-        io::BufReader::new(gni).read_line(&mut defines_line).unwrap();
+        io::BufReader::new(gni)
+            .read_line(&mut defines_line)
+            .unwrap();
         for cap in defines_re.captures_iter(&defines_line) {
             let define_name = &cap[1];
             let define_value = cap.get(2).map(|m| m.as_str());
@@ -167,8 +172,10 @@ pub fn configure_jni_symbols() -> Result<()> {
 
     let jni_regex = Regex::new(r"(Java_livekit_org_webrtc.*)").unwrap();
     let content = String::from_utf8_lossy(&readelf_output.stdout);
-    let jni_symbols: Vec<&str> =
-        jni_regex.captures_iter(&content).map(|cap| cap.get(1).unwrap().as_str()).collect();
+    let jni_symbols: Vec<&str> = jni_regex
+        .captures_iter(&content)
+        .map(|cap| cap.get(1).unwrap().as_str())
+        .collect();
 
     if jni_symbols.is_empty() {
         return Err(anyhow!("No JNI symbols found")); // Shouldn't happen
@@ -187,7 +194,10 @@ pub fn configure_jni_symbols() -> Result<()> {
     write!(vs_file, "JNI_WEBRTC {{\n\tglobal: {}; \n}};", jni_symbols)
         .context("Failed to write version script")?;
 
-    println!("cargo:rustc-link-arg=-Wl,--version-script={}", vs_path.display());
+    println!(
+        "cargo:rustc-link-arg=-Wl,--version-script={}",
+        vs_path.display()
+    );
 
     Ok(())
 }
@@ -198,7 +208,9 @@ pub fn download_webrtc() -> Result<()> {
     fs::create_dir_all(&dir).context("Failed to create scratch_path")?;
     let flock = File::create(dir.join(".lock"))
         .context("Failed to create lock file for WebRTC download")?;
-    flock.lock_exclusive().context("Failed to acquire exclusive lock for WebRTC download")?;
+    flock
+        .lock_exclusive()
+        .context("Failed to acquire exclusive lock for WebRTC download")?;
 
     let webrtc_dir = webrtc_dir();
     if webrtc_dir.exists() {
@@ -216,7 +228,10 @@ pub fn download_webrtc() -> Result<()> {
         if !transient {
             break;
         }
-        println!("cargo:warning=webrtc download attempt {} failed, retrying in 5s...", attempt);
+        println!(
+            "cargo:warning=webrtc download attempt {} failed, retrying in 5s...",
+            attempt
+        );
         std::thread::sleep(std::time::Duration::from_secs(5));
         resp = reqwest::blocking::get(download_url());
     }
@@ -234,17 +249,23 @@ pub fn download_webrtc() -> Result<()> {
         .truncate(true)
         .open(&tmp_path)
         .context("Failed to create temporary file for WebRTC download")?;
-    resp.copy_to(&mut file).context("Failed to write WebRTC download to temporary file")?;
+    resp.copy_to(&mut file)
+        .context("Failed to write WebRTC download to temporary file")?;
 
     // Extract into a sibling temp dir, then atomically rename into place so concurrent
     // observers see either no `webrtc_dir` or a fully-populated one — never the partially-
     // extracted state that made `fs::copy(webrtc_dir/LICENSE.md, …)` in callers flaky.
-    let tmp_extract = webrtc_dir.parent().unwrap().join(format!(".{}.tmp", webrtc_triple()));
+    let tmp_extract = webrtc_dir
+        .parent()
+        .unwrap()
+        .join(format!(".{}.tmp", webrtc_triple()));
     let _ = fs::remove_dir_all(&tmp_extract); // clean up leftover from a crashed build
     fs::create_dir_all(&tmp_extract).context("Failed to create temp extraction dir")?;
 
     let mut archive = zip::ZipArchive::new(file).context("Failed to open WebRTC zip archive")?;
-    archive.extract(&tmp_extract).context("Failed to extract WebRTC archive")?;
+    archive
+        .extract(&tmp_extract)
+        .context("Failed to extract WebRTC archive")?;
     drop(archive);
 
     // The zip root is `{triple}/`, so extracted content sits at `tmp_extract/{triple}/`.
@@ -350,7 +371,9 @@ pub fn android_ndk_toolchain() -> Result<path::PathBuf> {
 
         Ok(ndk_dir.join(format!("toolchains/llvm/prebuilt/{}", llvm_dir)))
     } else {
-        Err(anyhow!("Android NDK not found, please set ANDROID_NDK_HOME to your NDK path"))
+        Err(anyhow!(
+            "Android NDK not found, please set ANDROID_NDK_HOME to your NDK path"
+        ))
     }
 }
 

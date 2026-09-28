@@ -42,7 +42,10 @@ impl From<SdpType> for sys_jsep::ffi::SdpType {
 
 impl From<sys_jsep::ffi::SdpParseError> for SdpParseError {
     fn from(e: sys_jsep::ffi::SdpParseError) -> Self {
-        Self { line: e.line, description: e.description }
+        Self {
+            line: e.line,
+            description: e.description,
+        }
     }
 }
 
@@ -77,6 +80,8 @@ impl ToString for SessionDescription {
 
 impl Clone for SessionDescription {
     fn clone(&self) -> Self {
-        SessionDescription { sys_handle: self.sys_handle.clone() }
+        SessionDescription {
+            sys_handle: self.sys_handle.clone(),
+        }
     }
 }

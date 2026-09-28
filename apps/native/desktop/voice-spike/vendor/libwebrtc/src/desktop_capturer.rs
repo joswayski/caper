@@ -58,7 +58,9 @@ impl DesktopCapturerOptions {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             DesktopCaptureSourceType::Generic => imp_dc::SourceType::Generic,
         };
-        Self { sys_handle: imp_dc::DesktopCapturerOptions::new(source_type) }
+        Self {
+            sys_handle: imp_dc::DesktopCapturerOptions::new(source_type),
+        }
     }
 
     /// Sets whether to include the cursor in captured frames.
@@ -74,7 +76,9 @@ impl DesktopCapturerOptions {
     /// via a different way as [`DesktopCapturer::get_source_list`] returns an empty vector.
     #[cfg(target_os = "macos")]
     pub fn set_sck_system_picker(&mut self, allow_sck_system_picker: bool) {
-        self.sys_handle = self.sys_handle.with_sck_system_picker(allow_sck_system_picker);
+        self.sys_handle = self
+            .sys_handle
+            .with_sck_system_picker(allow_sck_system_picker);
     }
 }
 
@@ -99,7 +103,9 @@ impl DesktopCapturer {
         if desktop_capturer.is_none() {
             return None;
         }
-        Some(Self { handle: desktop_capturer.unwrap() })
+        Some(Self {
+            handle: desktop_capturer.unwrap(),
+        })
     }
 
     /// Starts capturing from the specified source.
@@ -146,7 +152,10 @@ impl DesktopCapturer {
     /// A vector of [`CaptureSource`] objects representing available capture sources.
     pub fn get_source_list(&self) -> Vec<CaptureSource> {
         let source_list = self.handle.get_source_list();
-        source_list.into_iter().map(|source| CaptureSource { sys_handle: source }).collect()
+        source_list
+            .into_iter()
+            .map(|source| CaptureSource { sys_handle: source })
+            .collect()
     }
 }
 

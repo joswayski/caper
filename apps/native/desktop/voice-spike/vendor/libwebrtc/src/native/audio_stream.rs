@@ -44,7 +44,9 @@ impl NativeAudioStream {
         queue_size_frames: Option<usize>,
     ) -> Self {
         let frame_queue = Arc::new(AudioFrameQueue::new(queue_size_frames));
-        let observer = Arc::new(AudioTrackObserver { frame_queue: frame_queue.clone() });
+        let observer = Arc::new(AudioTrackObserver {
+            frame_queue: frame_queue.clone(),
+        });
         let native_sink = sys_at::ffi::new_native_audio_sink(
             Box::new(sys_at::AudioSinkWrapper::new(observer.clone())),
             sample_rate,
@@ -54,7 +56,11 @@ impl NativeAudioStream {
         let audio = unsafe { sys_at::ffi::media_to_audio(audio_track.sys_handle()) };
         audio.add_sink(&native_sink);
 
-        Self { native_sink, audio_track, frame_queue }
+        Self {
+            native_sink,
+            audio_track,
+            frame_queue,
+        }
     }
 
     pub fn track(&self) -> RtcAudioTrack {

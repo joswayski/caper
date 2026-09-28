@@ -47,7 +47,10 @@ impl<T: AudioMixerSource> sys::AudioMixerSource for AudioMixerSourceImpl<T> {
         target_sample_rate: i32,
         native_frame: sys::NativeAudioFrame,
     ) -> AudioFrameInfo {
-        if let Some(frame) = self.inner.get_audio_frame_with_info(target_sample_rate as u32) {
+        if let Some(frame) = self
+            .inner
+            .get_audio_frame_with_info(target_sample_rate as u32)
+        {
             let samples_count = (frame.sample_rate as usize / 100) as usize;
             assert_eq!(
                 frame.sample_rate, target_sample_rate as u32,

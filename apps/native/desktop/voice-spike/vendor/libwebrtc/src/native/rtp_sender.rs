@@ -42,7 +42,10 @@ impl RtpSender {
         let ctx = Box::new(sys_rs::SenderContext(Box::new(tx)));
 
         self.sys_handle.get_stats(ctx, |ctx, stats| {
-            let tx = ctx.0.downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>().unwrap();
+            let tx = ctx
+                .0
+                .downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>()
+                .unwrap();
 
             if stats.is_empty() {
                 let _ = tx.send(Ok(vec![]));
@@ -61,7 +64,10 @@ impl RtpSender {
     }
 
     pub fn set_track(&self, track: Option<MediaStreamTrack>) -> Result<(), RtcError> {
-        if !self.sys_handle.set_track(track.map_or(SharedPtr::null(), |t| t.sys_handle())) {
+        if !self
+            .sys_handle
+            .set_track(track.map_or(SharedPtr::null(), |t| t.sys_handle()))
+        {
             return Err(RtcError {
                 error_type: RtcErrorType::InvalidState,
                 message: "Failed to set track".to_string(),
@@ -116,7 +122,10 @@ impl From<sys_webrtc::ffi::VideoEncoderBackend> for VideoEncoderBackend {
 }
 
 pub fn video_encoder_backend_list() -> Vec<VideoEncoderBackend> {
-    sys_webrtc::ffi::video_encoder_backend_list().into_iter().map(Into::into).collect()
+    sys_webrtc::ffi::video_encoder_backend_list()
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 #[cfg(test)]
@@ -126,17 +135,41 @@ mod tests {
     #[test]
     fn video_encoder_backend_maps_to_native_enum() {
         let cases = [
-            (VideoEncoderBackend::Auto, sys_webrtc::ffi::VideoEncoderBackend::Auto),
-            (VideoEncoderBackend::Software, sys_webrtc::ffi::VideoEncoderBackend::Software),
-            (VideoEncoderBackend::Hardware, sys_webrtc::ffi::VideoEncoderBackend::Hardware),
-            (VideoEncoderBackend::Nvenc, sys_webrtc::ffi::VideoEncoderBackend::Nvenc),
-            (VideoEncoderBackend::Vaapi, sys_webrtc::ffi::VideoEncoderBackend::Vaapi),
-            (VideoEncoderBackend::VideoToolbox, sys_webrtc::ffi::VideoEncoderBackend::VideoToolbox),
-            (VideoEncoderBackend::PreEncoded, sys_webrtc::ffi::VideoEncoderBackend::PreEncoded),
+            (
+                VideoEncoderBackend::Auto,
+                sys_webrtc::ffi::VideoEncoderBackend::Auto,
+            ),
+            (
+                VideoEncoderBackend::Software,
+                sys_webrtc::ffi::VideoEncoderBackend::Software,
+            ),
+            (
+                VideoEncoderBackend::Hardware,
+                sys_webrtc::ffi::VideoEncoderBackend::Hardware,
+            ),
+            (
+                VideoEncoderBackend::Nvenc,
+                sys_webrtc::ffi::VideoEncoderBackend::Nvenc,
+            ),
+            (
+                VideoEncoderBackend::Vaapi,
+                sys_webrtc::ffi::VideoEncoderBackend::Vaapi,
+            ),
+            (
+                VideoEncoderBackend::VideoToolbox,
+                sys_webrtc::ffi::VideoEncoderBackend::VideoToolbox,
+            ),
+            (
+                VideoEncoderBackend::PreEncoded,
+                sys_webrtc::ffi::VideoEncoderBackend::PreEncoded,
+            ),
         ];
 
         for (backend, expected) in cases {
-            assert_eq!(sys_webrtc::ffi::VideoEncoderBackend::from(backend), expected);
+            assert_eq!(
+                sys_webrtc::ffi::VideoEncoderBackend::from(backend),
+                expected
+            );
             assert_eq!(VideoEncoderBackend::from(expected), backend);
         }
     }

@@ -42,6 +42,23 @@ impl Layout {
     }
 }
 
+/// Whether `install` is a self-contained Caper install this updater may replace:
+/// it holds both the app and the updater, as every archive does. A package
+/// manager's layout (the .deb puts `caper-desktop` in `/usr/bin` and the updater
+/// in `/usr/lib/caper-desktop`) fails this, so `/usr/bin` is never swapped.
+pub fn is_self_contained(layout: Layout, install: &Path) -> bool {
+    let updater = match layout {
+        Layout::MacBundle => install.join("Contents/MacOS/caper-updater"),
+        Layout::WindowsFolder => install.join("caper-updater.exe"),
+        Layout::LinuxTarball => install.join("caper-updater"),
+    };
+    let app = match layout {
+        Layout::MacBundle => install.join("Contents/Info.plist"),
+        _ => layout.launch_target(install),
+    };
+    updater.is_file() && app.is_file()
+}
+
 /// `<parent>/.<name>.<suffix>`: a sibling on the same filesystem, hidden on Unix.
 pub fn sibling(install: &Path, suffix: &str) -> io::Result<PathBuf> {
     let parent = install
@@ -55,14 +72,17 @@ pub fn sibling(install: &Path, suffix: &str) -> io::Result<PathBuf> {
 }
 
 /// Whether the updater can replace `install` without elevated rights.
-pub fn can_replace(install: &Path) -> bool {
+pub fn can_replace(layout: Layout, install: &Path) -> bool {
+    if !is_self_contained(layout, install) {
+        return false;
+    }
     let Some(parent) = install.parent() else {
         return false;
     };
     let probe = parent.join(format!(".caper-update-probe-{}", std::process::id()));
     let writable = fs::write(&probe, b"").is_ok();
     let _ = fs::remove_file(&probe);
-    writable && install.exists()
+    writable
 }
 
 /// Unpacks `archive` into a fresh `stage` folder and returns the new app root
@@ -363,7 +383,29 @@ mod tests {
             sibling(&root.path().join("Caper.app"), "old").unwrap(),
             root.path().join(".Caper.app.old")
         );
-        assert!(can_replace(&file));
-        assert!(!can_replace(&root.path().join("missing")));
+    }
+
+    #[test]
+    fn only_replaces_folders_that_hold_both_the_app_and_the_updater() {
+        let root = tempfile::tempdir().unwrap();
+        let tarball = root.path().join("Caper-linux-x64");
+        fs::create_dir_all(&tarball).unwrap();
+        fs::write(tarball.join("caper-desktop"), "app").unwrap();
+        // Like /usr/bin from the .deb: the app is there, the updater is not.
+        assert!(!can_replace(Layout::LinuxTarball, &tarball));
+        fs::write(tarball.join("caper-updater"), "updater").unwrap();
+        assert!(can_replace(Layout::LinuxTarball, &tarball));
+        assert!(!can_replace(Layout::WindowsFolder, &tarball));
+        assert!(!can_replace(
+            Layout::LinuxTarball,
+            &root.path().join("missing")
+        ));
+
+        let bundle = root.path().join("Caper.app");
+        fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        fs::write(bundle.join("Contents/Info.plist"), "plist").unwrap();
+        assert!(!is_self_contained(Layout::MacBundle, &bundle));
+        fs::write(bundle.join("Contents/MacOS/caper-updater"), "updater").unwrap();
+        assert!(is_self_contained(Layout::MacBundle, &bundle));
     }
 }

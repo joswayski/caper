@@ -54,7 +54,9 @@ pub mod native {
 
     impl Debug for NativeAudioStream {
         fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-            f.debug_struct("NativeAudioStream").field("track", &self.track()).finish()
+            f.debug_struct("NativeAudioStream")
+                .field("track", &self.track())
+                .finish()
         }
     }
 

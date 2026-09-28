@@ -11,6 +11,7 @@ mod navigation;
 mod regions;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
+mod updates;
 mod voice;
 mod worker;
 
@@ -215,6 +216,7 @@ struct CaperApp {
     persist_preferences: bool,
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
+    updates: updates::Updates,
 }
 
 impl CaperApp {
@@ -298,7 +300,15 @@ impl CaperApp {
             persist_preferences: fixture.is_none(),
             connection_copy_status: "",
             diagnostics_copied: false,
+            updates: updates::Updates::start(context, fixture.is_none()),
         };
+        if let Some(name @ ("parity-update" | "parity-update-download")) = fixture {
+            app.updates = updates::Updates::preview(updates::Available {
+                version: "0.1.42".into(),
+                notes: "Screen sharing in voice channels".into(),
+                can_apply: name == "parity-update",
+            });
+        }
         match fixture {
             Some("error" | "login-error") => {
                 app.dialog = Some(Dialog::SignIn);
@@ -1978,6 +1988,7 @@ impl eframe::App for CaperApp {
         self.receive();
         self.refresh_media_status();
         self.periodic(context);
+        self.update_banner(context);
         if matches!(self.dialog, Some(Dialog::SignIn)) {
             self.login_page(context);
         } else if self.onboarding() {
@@ -1998,6 +2009,51 @@ impl eframe::App for CaperApp {
 }
 
 impl CaperApp {
+    /// A full-width strip above everything when a newer release is ready.
+    fn update_banner(&mut self, context: &egui::Context) {
+        let Some(update) = self.updates.available() else {
+            return;
+        };
+        egui::TopBottomPanel::top("app-update")
+            .frame(
+                egui::Frame::new()
+                    .fill(RAISED)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(egui::Margin::symmetric(16, 8)),
+            )
+            .show(context, |ui| {
+                ui.horizontal(|ui| {
+                    // Button height up front, so the text centers on the buttons.
+                    ui.set_min_height(36.0);
+                    let wide = ui.available_width() > 640.0;
+                    ui.label(bold(format!("Caper {} is available", update.version)).size(13.0));
+                    if wide && !update.notes.is_empty() {
+                        ui.label(RichText::new(&update.notes).color(MUTED).size(13.0));
+                    }
+                    if let Some(error) = &self.updates.error {
+                        ui.colored_label(ERROR, error);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if update.can_apply {
+                            let label = if !matches!(self.voice.state.phase, Phase::Idle) {
+                                "Restart and leave call"
+                            } else {
+                                "Restart to update"
+                            };
+                            if primary_button(ui, label, true).clicked() && self.updates.apply() {
+                                context.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        } else if primary_button(ui, "Download", true).clicked() {
+                            context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_PAGE));
+                        }
+                        if secondary_button(ui, "Later", true).clicked() {
+                            self.updates.dismissed = true;
+                        }
+                    });
+                });
+            });
+    }
+
     /// A signed-in account without a profile finishes it on its own page, as on web.
     fn onboarding(&self) -> bool {
         matches!(self.dialog, Some(Dialog::Profile))
@@ -6323,7 +6379,10 @@ fn main() -> eframe::Result {
     let viewport_size = if fixture.as_deref().is_some_and(|name| {
         matches!(
             name,
-            "parity-narrow" | "parity-browse" | "parity-voice-rosters-narrow"
+            "parity-narrow"
+                | "parity-browse"
+                | "parity-voice-rosters-narrow"
+                | "parity-update-download"
         )
     }) {
         [390.0, 844.0]

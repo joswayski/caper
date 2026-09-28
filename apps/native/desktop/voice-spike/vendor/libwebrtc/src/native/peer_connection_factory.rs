@@ -39,7 +39,10 @@ fn ensure_log_sink() {
     let mut log_sink = LOG_SINK.lock();
     if log_sink.is_none() {
         *log_sink = Some(sys_rtc::ffi::new_log_sink(|msg, _| {
-            let msg = msg.strip_suffix("\r\n").or(msg.strip_suffix('\n')).unwrap_or(&msg);
+            let msg = msg
+                .strip_suffix("\r\n")
+                .or(msg.strip_suffix('\n'))
+                .unwrap_or(&msg);
             log::debug!(target: "libwebrtc", "{}", msg);
         }));
     }
@@ -92,7 +95,9 @@ impl PeerConnectionFactory {
         let observer = Arc::new(imp_pc::PeerObserver::default());
         let res = self.sys_handle.create_peer_connection(
             config.into(),
-            Box::new(sys_pcf::PeerConnectionObserverWrapper::new(observer.clone())),
+            Box::new(sys_pcf::PeerConnectionObserverWrapper::new(
+                observer.clone(),
+            )),
         );
 
         match res {
@@ -106,7 +111,8 @@ impl PeerConnectionFactory {
     pub fn create_video_track(&self, label: &str, source: NativeVideoSource) -> RtcVideoTrack {
         RtcVideoTrack {
             handle: imp_vt::RtcVideoTrack::new(
-                self.sys_handle.create_video_track(label.to_string(), source.handle.sys_handle()),
+                self.sys_handle
+                    .create_video_track(label.to_string(), source.handle.sys_handle()),
             ),
         }
     }
@@ -134,11 +140,15 @@ impl PeerConnectionFactory {
     }
 
     pub fn get_rtp_sender_capabilities(&self, media_type: MediaType) -> RtpCapabilities {
-        self.sys_handle.rtp_sender_capabilities(media_type.into()).into()
+        self.sys_handle
+            .rtp_sender_capabilities(media_type.into())
+            .into()
     }
 
     pub fn get_rtp_receiver_capabilities(&self, media_type: MediaType) -> RtpCapabilities {
-        self.sys_handle.rtp_receiver_capabilities(media_type.into()).into()
+        self.sys_handle
+            .rtp_receiver_capabilities(media_type.into())
+            .into()
     }
 
     // ===== Device Management Methods =====
@@ -188,21 +198,29 @@ impl PeerConnectionFactory {
     /// Set the playout device by GUID
     /// This is preferred over index as GUIDs are stable across device hot-plug events.
     pub fn set_playout_device_by_guid(&self, guid: &str) -> bool {
-        self.sys_handle.audio_device().set_playout_device_by_guid(guid.to_string())
+        self.sys_handle
+            .audio_device()
+            .set_playout_device_by_guid(guid.to_string())
     }
 
     /// Set the recording device by GUID
     /// This is preferred over index as GUIDs are stable across device hot-plug events.
     pub fn set_recording_device_by_guid(&self, guid: &str) -> bool {
-        self.sys_handle.audio_device().set_recording_device_by_guid(guid.to_string())
+        self.sys_handle
+            .audio_device()
+            .set_recording_device_by_guid(guid.to_string())
     }
 
     pub fn select_default_playout_device(&self) -> bool {
-        self.sys_handle.audio_device().select_default_playout_device()
+        self.sys_handle
+            .audio_device()
+            .select_default_playout_device()
     }
 
     pub fn select_default_recording_device(&self) -> bool {
-        self.sys_handle.audio_device().select_default_recording_device()
+        self.sys_handle
+            .audio_device()
+            .select_default_recording_device()
     }
 
     /// Stop recording (clears initialized state, allowing device switch)
@@ -302,7 +320,9 @@ impl PeerConnectionFactory {
     /// Use this when only using NativeAudioSource (no microphone capture needed).
     /// This prevents the microphone from interfering with the audio pipeline.
     pub fn set_adm_recording_enabled(&self, enabled: bool) {
-        self.sys_handle.audio_device().set_adm_recording_enabled(enabled)
+        self.sys_handle
+            .audio_device()
+            .set_adm_recording_enabled(enabled)
     }
 
     /// Check if ADM recording (microphone) is enabled.
@@ -316,7 +336,9 @@ impl PeerConnectionFactory {
     /// delivered via FFI callbacks to the application (e.g., Unity AudioSource).
     /// When enabled, remote audio plays through the platform speakers with AEC.
     pub fn set_adm_playout_enabled(&self, enabled: bool) {
-        self.sys_handle.audio_device().set_adm_playout_enabled(enabled)
+        self.sys_handle
+            .audio_device()
+            .set_adm_playout_enabled(enabled)
     }
 
     /// Check if ADM playout (speakers) is enabled.

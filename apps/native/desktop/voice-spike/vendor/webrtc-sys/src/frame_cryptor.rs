@@ -212,7 +212,8 @@ impl RtcFrameCryptorObserverWrapper {
         participant_id: String,
         state: FrameCryptionState,
     ) {
-        self.observer.on_frame_cryption_state_change(participant_id, state);
+        self.observer
+            .on_frame_cryption_state_change(participant_id, state);
     }
 }
 
@@ -224,7 +225,9 @@ pub struct DataPacketCryptor {
 impl DataPacketCryptor {
     /// Create a new data packet cryptor with the specified algorithm and key provider
     pub fn new(algorithm: ffi::Algorithm, key_provider: cxx::SharedPtr<ffi::KeyProvider>) -> Self {
-        Self { inner: ffi::new_data_packet_cryptor(algorithm, key_provider) }
+        Self {
+            inner: ffi::new_data_packet_cryptor(algorithm, key_provider),
+        }
     }
 
     /// Encrypt data for a specific participant
@@ -235,7 +238,10 @@ impl DataPacketCryptor {
         data: &[u8],
     ) -> Result<ffi::EncryptedPacket, Box<dyn std::error::Error>> {
         let data_vec: Vec<u8> = data.to_vec();
-        match self.inner.encrypt_data_packet(participant_id.to_string(), key_index, data_vec) {
+        match self
+            .inner
+            .encrypt_data_packet(participant_id.to_string(), key_index, data_vec)
+        {
             Ok(packet) => Ok(packet),
             Err(e) => Err(format!("Encryption failed: {}", e).into()),
         }
@@ -247,7 +253,10 @@ impl DataPacketCryptor {
         participant_id: &str,
         encrypted_packet: &ffi::EncryptedPacket,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        match self.inner.decrypt_data_packet(participant_id.to_string(), encrypted_packet) {
+        match self
+            .inner
+            .decrypt_data_packet(participant_id.to_string(), encrypted_packet)
+        {
             Ok(data) => Ok(data.into_iter().collect()),
             Err(e) => Err(format!("Decryption failed: {}", e).into()),
         }

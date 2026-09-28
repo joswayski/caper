@@ -125,7 +125,10 @@ fn main() {
     ]);
     builder.define("WEBRTC_APM_DEBUG_DUMP", "0");
 
-    println!("cargo:rustc-link-search=native={}", webrtc_lib.to_str().unwrap());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        webrtc_lib.to_str().unwrap()
+    );
 
     for (key, value) in webrtc_sys_build::webrtc_defines() {
         let value = value.as_deref();
@@ -183,7 +186,10 @@ fn main() {
 
             // Do not use pkg_config::probe_library, because we only require headers.
             for lib_name in ["glib-2.0", "gobject-2.0", "gio-2.0"] {
-                let lib = pkg_config::Config::new().cargo_metadata(false).probe(lib_name).unwrap();
+                let lib = pkg_config::Config::new()
+                    .cargo_metadata(false)
+                    .probe(lib_name)
+                    .unwrap();
                 for path in lib.include_paths {
                     builder.include(path);
                 }
@@ -192,9 +198,18 @@ fn main() {
             add_lazy_load_so(
                 &mut builder,
                 "desktop_capturer",
-                ["drm", "gbm", "X11", "Xfixes", "Xdamage", "Xrandr", "Xcomposite", "Xext"]
-                    .map(String::from)
-                    .to_vec(),
+                [
+                    "drm",
+                    "gbm",
+                    "X11",
+                    "Xfixes",
+                    "Xdamage",
+                    "Xrandr",
+                    "Xcomposite",
+                    "Xext",
+                ]
+                .map(String::from)
+                .to_vec(),
             );
 
             let x86 = target_arch == "x86_64" || target_arch == "i686";
@@ -431,8 +446,10 @@ fn get_output_path() -> PathBuf {
     let manifest_dir_string = env::var("CARGO_MANIFEST_DIR").unwrap();
     let build_type = env::var("PROFILE").unwrap();
     let build_target = env::var("TARGET").unwrap();
-    let path =
-        Path::new(&manifest_dir_string).join("../target").join(build_target).join(build_type);
+    let path = Path::new(&manifest_dir_string)
+        .join("../target")
+        .join(build_target)
+        .join(build_type);
     path
 }
 
@@ -456,12 +473,18 @@ fn configure_darwin_sysroot(builder: &mut cc::Build) {
     println!("cargo:rustc-link-lib={}", clang_rt);
     println!("cargo:rustc-link-arg=-ObjC");
 
-    let sysroot = Command::new("xcrun").args(["--sdk", sdk, "--show-sdk-path"]).output().unwrap();
+    let sysroot = Command::new("xcrun")
+        .args(["--sdk", sdk, "--show-sdk-path"])
+        .output()
+        .unwrap();
 
     let sysroot = String::from_utf8_lossy(&sysroot.stdout);
     let sysroot = sysroot.trim();
 
-    let search_dirs = Command::new("cc").arg("--print-search-dirs").output().unwrap();
+    let search_dirs = Command::new("cc")
+        .arg("--print-search-dirs")
+        .output()
+        .unwrap();
 
     let search_dirs = String::from_utf8_lossy(&search_dirs.stdout);
     for line in search_dirs.lines() {
@@ -589,9 +612,12 @@ fn check_clang_version(builder: &cc::Build, libcxx: &path::Path) {
         .output()
         .unwrap_or_else(|e| panic!("failed to run {}: {e}", compiler.path().display()));
 
-    let major = String::from_utf8_lossy(&defines.stdout).lines().find_map(|line| {
-        line.strip_prefix("#define __clang_major__ ").and_then(|v| v.trim().parse::<u32>().ok())
-    });
+    let major = String::from_utf8_lossy(&defines.stdout)
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("#define __clang_major__ ")
+                .and_then(|v| v.trim().parse::<u32>().ok())
+        });
 
     match major {
         Some(major) if major >= min => {}
