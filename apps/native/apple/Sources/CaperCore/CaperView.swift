@@ -1220,6 +1220,7 @@ private struct ProfileView: View {
     @Bindable var model: AppModel
     @State private var username = ""
     @State private var displayName = ""
+    @FocusState private var displayNameFocused: Bool
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -1231,9 +1232,10 @@ private struct ProfileView: View {
                 Text("Your username is unique. Your display name is what people see in conversations.")
                     .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
+                    .submitLabel(.next).onSubmit { displayNameFocused = true }
                 Text("3-32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                CaperField(title: "Display name", text: $displayName)
+                CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
                 Text("Shown to other people. It does not need to be unique.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 if let error = model.error {
@@ -1381,6 +1383,7 @@ private struct ProfileSheet: View {
     @Bindable var model: AppModel; let close: () -> Void
     @State private var username = ""
     @State private var displayName = ""
+    @FocusState private var displayNameFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
             // Web's Edit profile dialog; Log out lives in User Settings.
@@ -1389,8 +1392,9 @@ private struct ProfileSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     CaperField(title: "Username", text: $username)
+                        .submitLabel(.next).onSubmit { displayNameFocused = true }
                     Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    CaperField(title: "Display name", text: $displayName)
+                    CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
                     Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
                     Button(model.busy ? "Saving…" : "Save profile") {
@@ -1578,7 +1582,16 @@ private struct ConfirmationSheet: View {
 
 private struct CaperField: View {
     let title: String; @Binding var text: String; var placeholder: String?
-    var body: some View { VStack(alignment: .leading, spacing: 7) { Text(title).font(CaperTheme.font(12, weight: .bold)); TextField(placeholder ?? title, text: $text).textFieldStyle(CaperTextFieldStyle()).accessibilityLabel(title) } }
+    /// Lets a form move focus between fields, e.g. Return on Username focuses
+    /// Display name so the keyboard never hides the next field on iPhone.
+    var focus: FocusState<Bool>.Binding?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(CaperTheme.font(12, weight: .bold))
+            let field = TextField(placeholder ?? title, text: $text).textFieldStyle(CaperTextFieldStyle()).accessibilityLabel(title)
+            if let focus { field.focused(focus) } else { field }
+        }
+    }
 }
 
 private struct CaperTextFieldStyle: TextFieldStyle {
