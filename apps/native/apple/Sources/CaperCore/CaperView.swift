@@ -90,10 +90,11 @@ private struct LoadingView: View {
 
 private struct Wordmark: View {
     var body: some View {
-        HStack(spacing: 0) {
-            Text("caper").foregroundStyle(CaperTheme.text)
-            Text(".").foregroundStyle(CaperTheme.terracottaBright)
-        }.font(CaperTheme.font(22, weight: .black)).tracking(-1)
+        Image("CaperWordmark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 132, height: 35)
+            .accessibilityLabel("Caper")
     }
 }
 

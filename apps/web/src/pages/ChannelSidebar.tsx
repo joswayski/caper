@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
-const DEFAULT_WIDTH = 280;
+const DEFAULT_WIDTH = 260;
 const MIN_WIDTH = 220;
 const MAX_WIDTH = 440;
 const STORAGE_KEY = "caper:channel-sidebar-width";
@@ -9,7 +9,7 @@ const STORAGE_KEY = "caper:channel-sidebar-width";
 // use the same saved width, without waiting for React to mount.
 export const sidebarWidthScript = `try{const w=Number(localStorage.getItem('${STORAGE_KEY}'));if(w>=${MIN_WIDTH}&&w<=${MAX_WIDTH})document.documentElement.style.setProperty('--channel-sidebar-width',w+'px')}catch{}`;
 
-export default function ChannelSidebar({ children, defaultWidth = DEFAULT_WIDTH }: { children: ReactNode; defaultWidth?: number }) {
+export default function ChannelSidebar({ children }: { children: ReactNode }) {
   const panel = useRef<HTMLElement>(null);
   const drag = useRef<{ x: number; width: number } | undefined>(undefined);
   const [width, setWidth] = useState<number>();
@@ -32,7 +32,7 @@ export default function ChannelSidebar({ children, defaultWidth = DEFAULT_WIDTH 
         Math.min(MAX_WIDTH, room.clientWidth - rail - 320),
       );
       setMaximum(max);
-      setWidth((current) => Math.min(current ?? defaultWidth, max));
+      setWidth((current) => Math.min(current ?? DEFAULT_WIDTH, max));
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -52,7 +52,7 @@ export default function ChannelSidebar({ children, defaultWidth = DEFAULT_WIDTH 
   };
 
   return (
-    <aside ref={panel} className="people-panel" style={{ width: width ?? `var(--channel-sidebar-width, ${defaultWidth}px)` }}>
+    <aside ref={panel} className="people-panel" style={{ width: width ?? `var(--channel-sidebar-width, ${DEFAULT_WIDTH}px)` }}>
       {children}
       <div
         className="channel-sidebar-resize"
@@ -61,8 +61,8 @@ export default function ChannelSidebar({ children, defaultWidth = DEFAULT_WIDTH 
         aria-orientation="vertical"
         aria-valuemin={MIN_WIDTH}
         aria-valuemax={maximum}
-        aria-valuenow={width ?? defaultWidth}
-        aria-valuetext={`${width ?? defaultWidth} pixels`}
+        aria-valuenow={width ?? DEFAULT_WIDTH}
+        aria-valuetext={`${width ?? DEFAULT_WIDTH} pixels`}
         tabIndex={0}
         title="Drag to resize. Arrow keys to adjust. Double-click to reset."
         onPointerDown={(event) => {
@@ -86,11 +86,11 @@ export default function ChannelSidebar({ children, defaultWidth = DEFAULT_WIDTH 
         onLostPointerCapture={() => {
           drag.current = undefined;
         }}
-        onDoubleClick={() => resize(defaultWidth)}
+        onDoubleClick={() => resize(DEFAULT_WIDTH)}
         onKeyDown={(event) => {
           const sizes: Record<string, number> = {
-            ArrowLeft: (width ?? defaultWidth) - 10,
-            ArrowRight: (width ?? defaultWidth) + 10,
+            ArrowLeft: (width ?? DEFAULT_WIDTH) - 10,
+            ArrowRight: (width ?? DEFAULT_WIDTH) + 10,
             Home: MIN_WIDTH,
             End: maximum,
           };

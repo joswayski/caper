@@ -2015,12 +2015,11 @@ impl CaperApp {
                     ui.vertical_centered(|ui| {
                         ui.set_max_width(440.0);
                         ui.add_space(100.0);
-                        ui.horizontal(|ui| {
-                            ui.label(bold("caper").size(23.0));
-                            ui.label(bold(".").size(23.0).color(TERRACOTTA_BRIGHT));
-                        });
-                        ui.add_space(58.0);
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.add(egui::Image::new(egui::include_image!(
+                                "../../../web/public/caper-wordmark.svg"
+                            )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                            ui.add_space(58.0);
                             ui.label(
                                 bold("ONE LAST THING")
                                     .size(11.0)
@@ -2120,12 +2119,11 @@ impl CaperApp {
                 ui.vertical_centered(|ui| {
                     ui.set_max_width(440.0);
                     ui.add_space(100.0);
-                    ui.horizontal(|ui| {
-                        ui.label(bold("caper").size(23.0));
-                        ui.label(bold(".").size(23.0).color(TERRACOTTA_BRIGHT));
-                    });
-                    ui.add_space(58.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        ui.add(egui::Image::new(egui::include_image!(
+                            "../../../web/public/caper-wordmark.svg"
+                        )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                        ui.add_space(58.0);
                         ui.label(
                             bold("WELCOME TO CAPER")
                                 .size(11.0)
