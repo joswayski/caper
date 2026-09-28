@@ -2371,10 +2371,30 @@ test("a signed-in page keeps a connected, trackless session pair ready for Join"
   keepVoiceWarm(WARM_ROOT);
   await tick();
   assert.equal(requests.length, 1, "a healthy pair is kept, not replaced");
-  // Public demo pages have no warm sessions.
-  setWarmRequestForTests(async () => { throw new Error("never called"); });
+});
+
+test("the signed-in live demo warms the public endpoint and Join adopts its connections", async (t) => {
+  const { client, install } = setup(t);
+  const requests: Array<string | undefined> = [];
+  setWarmRequestForTests(async (channelId) => { requests.push(channelId); return warmAnswer() as never; });
+  t.after(() => setWarmRequestForTests());
   keepVoiceWarm("/api/media");
   await tick();
+  assert.deepEqual(requests, [undefined], "the public demo has no account-channel ID");
+  assert.equal(hasWarmVoice(), true);
+  const original = fetch;
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (!url.endsWith("/join")) return original(url, init);
+    assert.equal(url, "/api/media/join");
+    assert.equal(JSON.parse(init.body as string).warm, "ticket");
+    return Response.json({
+      token: "capability", id: "self", iceServers: warmAnswer().iceServers, warm: true,
+      publish: { trackId: "mine", tracks: [{ mid: "0" }], sessionDescription: { type: "answer", sdp: providerSdp } },
+    });
+  });
+  await client.join();
+  assert.match((client as any).joinTiming.join, /pre-connected/);
+  assert.equal(Peer.all.length, 2, "Join does not create another connection");
   assert.equal(hasWarmVoice(), false);
 });
 

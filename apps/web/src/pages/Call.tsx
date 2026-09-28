@@ -540,8 +540,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     prepareVoiceJoin(root);
   };
   // Signed-in members keep a connected session pair ready while voice is idle,
-  // so Join only publishes and pulls. None during a call or for the public demo.
-  const keepWarm = signedIn && !channel?.demo && identityReady && available === true && idle;
+  // including in the live demo. Anonymous visitors do not provision sessions.
+  const keepWarm = signedIn && identityReady && available === true && idle;
   useEffect(() => {
     if (!keepWarm) { stopVoiceWarm(); return; }
     keepVoiceWarm(mediaRoot);

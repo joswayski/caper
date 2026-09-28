@@ -1304,6 +1304,100 @@ fn warm_join(ticket: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn public_warm_requires_authentication_and_adopts_only_the_issuing_account() {
+    async fn request(
+        s: &AppState,
+        operation: &str,
+        cookie: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let response = app(s.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/media/{operation}"))
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("caper_session={cookie}"))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body =
+            serde_json::from_slice(&to_bytes(response.into_body(), BODY_LIMIT).await.unwrap())
+                .unwrap();
+        (status, body)
+    }
+
+    let (s, mock) = state(); // Auth fixture accepts cookies; the provider is mocked.
+    let mut unavailable_auth = s.clone();
+    unavailable_auth.auth = auth::AuthVerifier::new();
+    assert_eq!(
+        request(&unavailable_auth, "warm", "member", warm_offers())
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        mock.connected.load(Ordering::SeqCst),
+        1,
+        "a cookie alone must not allocate sessions when authentication fails"
+    );
+
+    let (status, warm) = request(&s, "warm", "member", warm_offers()).await;
+    assert_eq!(status, StatusCode::OK, "{warm}");
+    assert_eq!(
+        request(&s, "warm", "member", warm_offers()).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let body = warm_join(&warm["ticket"]);
+    for (state, cookie) in [(&s, "other-member"), (&unavailable_auth, "member")] {
+        let (status, refused) = request(state, "join", cookie, body.clone()).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert_eq!(refused["code"], "warm_unavailable");
+    }
+    assert_eq!(
+        call(
+            app(s.clone()),
+            "POST",
+            "/api/media/join",
+            None,
+            body.clone()
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT,
+        "anonymous joins cannot adopt an account's ticket"
+    );
+    let sessions = mock.next.load(Ordering::SeqCst);
+    let turns = mock.next_turn.load(Ordering::SeqCst);
+    let (status, joined) = request(&s, "join", "member", body).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["warm"], true);
+    assert_eq!(
+        mock.next.load(Ordering::SeqCst),
+        sessions,
+        "no session creation at Join"
+    );
+    assert_eq!(
+        mock.next_turn.load(Ordering::SeqCst),
+        turns,
+        "no TURN issuance at Join"
+    );
+    assert_eq!(joined["iceServers"], warm["iceServers"]);
+    let registry = s.registry.lock().await;
+    let participant =
+        &registry.participants[&joined["id"].as_str().unwrap().parse::<Uuid>().unwrap()];
+    assert_eq!(participant.session, "w1");
+    assert_eq!(participant.receive_session.as_deref(), Some("w2"));
+    assert!(
+        registry.cleanup.is_empty(),
+        "adoption cancels idle credential revocation"
+    );
+}
+
+#[tokio::test]
 async fn warm_sessions_are_signed_in_only_rate_limited_and_revoked_unless_adopted() {
     let (public, _) = state();
     assert_eq!(
@@ -1311,7 +1405,7 @@ async fn warm_sessions_are_signed_in_only_rate_limited_and_revoked_unless_adopte
             .await
             .0,
         StatusCode::NOT_FOUND,
-        "the public demo has no warm sessions"
+        "anonymous demo visitors have no warm sessions"
     );
     let (mut s, mock) = state();
     s.media_session = Some(b"member".to_vec());

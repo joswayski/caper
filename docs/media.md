@@ -1598,10 +1598,10 @@ the ordinary way.
 
 A prepared join still leaves the connection handshakes on Join and lasts only
 seconds. Signed-in members now keep a **warm pair** instead: while a member is on
-an account channel, voice is available and they are not in a call, the browser
+an account channel or the public live demo, voice is available and they are not in a call, the browser
 creates two provider sessions with no tracks and connects both:
 
-- `media.warm` (account channels only; the public demo answers 404) takes two
+- `media.warm` (signed-in accounts only; anonymous demo visitors receive 404) takes two
   browser offers, each carrying only a negotiated data channel (no track, no
   in-band channel messages). The API calls Cloudflare `sessions/new` with each
   offer, which is the only form Cloudflare accepts for a session without tracks:
@@ -1611,7 +1611,9 @@ creates two provider sessions with no tracks and connects both:
   account's session hash, using a key derived from the provider secret every
   media pod already holds. It names both sessions, the TURN credentials, the
   issuing channel and the issue time, so a join in **any** of that account's
-  channels can adopt it.
+  channels, including the demo, can adopt it. On the demo, both issuance and
+  adoption validate the account cookie/bearer; a cookie alone is insufficient.
+  Guest joins still work without a warm ticket.
 - Join sends `warm: <ticket>` with its microphone offer, made on the warm
   connection (a new audio section beside the data section). The API verifies
   the ticket against the joining account and checks it is under 25 minutes old.
@@ -1648,11 +1650,13 @@ Lifecycle and cost:
 Validation:
 - Rust tests cover issue, rate limit and validation, adoption, and pulls into
   the warm receive session. They also cover the refusals (foreign, expired,
-  altered, replayed, monitor, public room) and cross-room cancellation of the
+  altered, replayed, monitor, anonymous demo visitor) and cross-room cancellation of the
   revocation. Each of the replay check, the signature check and the revocation
   cancel was removed in turn to confirm a test fails.
 - Web tests cover the warm lifecycle, adoption with no new PeerConnection, the
-  409/422 fallback, replacement after failure, and stopping on 404.
+  409/422 fallback, replacement after failure, and stopping on 404. Signed-in
+  demo tests cover public-endpoint preparation and adoption; Rust also checks
+  refusal when authentication fails and when another account uses the ticket.
 - Real Chromium over loopback, with a second local peer standing in for
   Cloudflare (not Cloudflare): the data-channel-only pair connected in 31 ms.
   Adding the microphone renegotiated without leaving `connected`, and audio
@@ -1666,9 +1670,11 @@ Validation:
   - End-to-end join time on a device.
   - How long iOS keeps the pair while the page is visible.
 
-Deploy API, then gateway (its allowlist gains `media.warm`), then web. An older
-gateway answers the command with 400, and the browser stops asking until
-reload. No migration, secret or configuration change. After merge:
+Deploy API, then gateway (it embeds the media handlers), then web. The signed-in
+demo extension requires both backend roles to be updated. An older backend
+returns 404 for demo preparation (or 400 if it lacks `media.warm` entirely), and
+the browser stops asking until reload. No migration, secret or configuration
+change. After merge:
 
 ```bash
 MERGED_SHA=<full-merged-caper-commit>

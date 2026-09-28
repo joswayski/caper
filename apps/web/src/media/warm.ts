@@ -6,7 +6,7 @@ import { appGateway } from "../gateway/client.ts";
  * Cloudflare keeps a connected session without media, so Join can publish and
  * pull straight away, skipping session creation, TURN issuance and both
  * connection handshakes. The ticket is signed for this account and works in
- * any of its channels.
+ * any of its channels, including the public live demo.
  */
 export interface WarmVoice {
   ticket: string;
@@ -83,10 +83,10 @@ function schedule(delay: number) {
 
 /**
  * Keeps one warm pair for this signed-in page while voice is idle. Idempotent;
- * `apiRoot` is any of the member's account channels (the public demo has none).
+ * the caller must have an account, including on the public demo.
  */
 export function keepVoiceWarm(apiRoot: string) {
-  if (typeof RTCPeerConnection === "undefined" || !channelFromRoot(apiRoot)) return;
+  if (typeof RTCPeerConnection === "undefined" || (apiRoot !== "/api/media" && !channelFromRoot(apiRoot))) return;
   root = apiRoot;
   if (!visibilityListening && typeof document !== "undefined") {
     visibilityListening = true;
