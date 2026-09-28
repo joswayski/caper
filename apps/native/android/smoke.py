@@ -186,8 +186,8 @@ def enter_first_field(value: str) -> None:
     adb("shell", "input", "keyevent", "KEYCODE_BACK")
 
 
-def capture(name: str, expected: str) -> ET.Element:
-    root = wait_for(contains=expected)
+def capture(name: str, expected: str, seconds: int = 20) -> ET.Element:
+    root = wait_for(contains=expected, seconds=seconds)
     OUTPUT.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(root).write(OUTPUT / f"{name}.xml", encoding="unicode")
     with (OUTPUT / f"{name}.png").open("wb") as image:
@@ -259,7 +259,9 @@ def main() -> None:
     adb("shell", "pm", "clear", PACKAGE)
     launch()
 
-    guest = capture("caper-android-guest-populated-desktop", "TEST FIXTURE")
+    # The first launch after a fresh install also compiles and warms the app,
+    # which can take well over 20 s on a loaded CI emulator.
+    guest = capture("caper-android-guest-populated-desktop", "TEST FIXTURE", seconds=60)
     assert find(guest, contains="The same conversation") is not None
     assert find(guest, description="Channel options") is None
     assert find(guest, description="Create channel") is None
