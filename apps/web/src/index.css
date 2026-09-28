@@ -60,7 +60,7 @@ body {
 .header-github { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 8px; color: var(--text-muted); transition: color .2s ease-out, background-color .2s ease-out; }
 .header-github:hover { color: var(--text); background: var(--surface); }
 .header-github:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
-.header-github svg { width: 20px; height: 20px; }
+.header-github svg { width: 20px; height: 20px; transform: translateY(2px); }
 .login-button { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 700; text-decoration: none; }
 .login-button:hover { border-color: var(--terracotta); }
 .login-button:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
