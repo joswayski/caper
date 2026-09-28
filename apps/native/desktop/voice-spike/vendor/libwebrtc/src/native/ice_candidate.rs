@@ -35,7 +35,9 @@ impl IceCandidate {
         );
 
         match res {
-            Ok(sys_handle) => Ok(ic::IceCandidate { handle: IceCandidate { sys_handle } }),
+            Ok(sys_handle) => Ok(ic::IceCandidate {
+                handle: IceCandidate { sys_handle },
+            }),
             Err(e) => Err(unsafe { sys_jsep::ffi::SdpParseError::from(e.what()).into() }),
         }
     }

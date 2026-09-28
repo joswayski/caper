@@ -164,7 +164,11 @@ impl Error for ffi::RtcError {}
 
 impl Display for ffi::RtcError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "RtcError occurred {:?}: {}", self.error_type, self.message)
+        write!(
+            f,
+            "RtcError occurred {:?}: {}",
+            self.error_type, self.message
+        )
     }
 }
 
@@ -192,7 +196,10 @@ mod tests {
         assert_eq!(error.error_detail, RtcErrorDetailType::DataChannelFailure);
         assert!(error.has_sctp_cause_code);
         assert_eq!(error.sctp_cause_code, 24);
-        assert_eq!(error.message, "this is not a test, I repeat, this is not a test");
+        assert_eq!(
+            error.message,
+            "this is not a test, I repeat, this is not a test"
+        );
     }
 
     /// On participant disconnect the C++ side sometimes hands us a string

@@ -57,7 +57,12 @@ impl NativeVideoStream {
         let video = unsafe { sys_vt::ffi::media_to_video(video_track.sys_handle()) };
         video.add_sink(&native_sink);
 
-        Self { native_sink, observer, video_track, frame_queue }
+        Self {
+            native_sink,
+            observer,
+            video_track,
+            frame_queue,
+        }
     }
 
     /// Set the packet trailer handler for this stream.
@@ -112,15 +117,21 @@ impl VideoTrackObserver {
     ) -> Option<FrameMetadata> {
         handler
             .and_then(|handler| {
-                handler.lookup_frame_metadata(rtp_timestamp).map(|(ts, fid, user_data)| {
-                    handler.emit_subscribe_timing(SubscribeTimingStage::DecoderOutput, ts, fid);
-                    (ts, fid, user_data)
-                })
+                handler
+                    .lookup_frame_metadata(rtp_timestamp)
+                    .map(|(ts, fid, user_data)| {
+                        handler.emit_subscribe_timing(SubscribeTimingStage::DecoderOutput, ts, fid);
+                        (ts, fid, user_data)
+                    })
             })
             .map(|(ts, fid, user_data)| FrameMetadata {
                 user_timestamp: if ts != 0 { Some(ts) } else { None },
                 frame_id: if fid != 0 { Some(fid) } else { None },
-                user_data: if user_data.is_empty() { None } else { Some(user_data) },
+                user_data: if user_data.is_empty() {
+                    None
+                } else {
+                    Some(user_data)
+                },
             })
     }
 }
@@ -173,9 +184,9 @@ struct UnboundedVideoFrameQueue {
 impl VideoFrameQueue {
     fn new(capacity: Option<usize>) -> Self {
         let kind = match capacity.filter(|capacity| *capacity > 0) {
-            Some(1) => {
-                VideoFrameQueueKind::Latest(LatestVideoFrameQueue { frame: Mutex::new(None) })
-            }
+            Some(1) => VideoFrameQueueKind::Latest(LatestVideoFrameQueue {
+                frame: Mutex::new(None),
+            }),
             Some(capacity) => {
                 let (producer, consumer) = RingBuffer::new(capacity);
                 VideoFrameQueueKind::Bounded(BoundedVideoFrameQueue {

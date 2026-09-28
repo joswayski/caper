@@ -56,7 +56,9 @@ pub mod native {
 
     impl Debug for NativeVideoStream {
         fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-            f.debug_struct("NativeVideoStream").field("track", &self.track()).finish()
+            f.debug_struct("NativeVideoStream")
+                .field("track", &self.track())
+                .finish()
         }
     }
 

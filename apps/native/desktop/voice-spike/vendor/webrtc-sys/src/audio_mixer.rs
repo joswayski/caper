@@ -99,7 +99,8 @@ impl AudioMixerSourceWrapper {
         target_sample_rate: i32,
         frame: Pin<&mut ffi::NativeAudioFrame>,
     ) -> AudioFrameInfo {
-        self.source.get_audio_frame_with_info(target_sample_rate, frame)
+        self.source
+            .get_audio_frame_with_info(target_sample_rate, frame)
     }
 }
 

@@ -241,7 +241,8 @@ impl PacketTrailerHandler {
             SubscribeTimingStage::DecoderUpload => sys_pt::VideoSubscribeTimingStage::DecoderUpload,
             SubscribeTimingStage::DecoderOutput => sys_pt::VideoSubscribeTimingStage::DecoderOutput,
         };
-        self.sys_handle.emit_subscribe_timing(stage, capture_timestamp_us, frame_id);
+        self.sys_handle
+            .emit_subscribe_timing(stage, capture_timestamp_us, frame_id);
     }
 }
 

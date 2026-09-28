@@ -184,7 +184,9 @@ pub mod native {
             num_channels: u32,
             queue_size_ms: u32,
         ) -> NativeAudioSource {
-            Self { handle: ImpAudioSource::new(options, sample_rate, num_channels, queue_size_ms) }
+            Self {
+                handle: ImpAudioSource::new(options, sample_rate, num_channels, queue_size_ms),
+            }
         }
 
         pub fn clear_buffer(&self) {

@@ -85,6 +85,8 @@ impl ToString for SessionDescription {
 
 impl Debug for SessionDescription {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionDescription").field("sdp_type", &self.sdp_type()).finish()
+        f.debug_struct("SessionDescription")
+            .field("sdp_type", &self.sdp_type())
+            .finish()
     }
 }

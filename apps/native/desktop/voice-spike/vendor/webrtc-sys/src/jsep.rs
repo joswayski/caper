@@ -77,7 +77,11 @@ impl Error for ffi::SdpParseError {}
 
 impl Display for ffi::SdpParseError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "SdpParseError occurred {}: {}", self.line, self.description)
+        write!(
+            f,
+            "SdpParseError occurred {}: {}",
+            self.line, self.description
+        )
     }
 }
 
@@ -118,6 +122,9 @@ mod tests {
         let err = unsafe { ffi::SdpParseError::from(&serialized) };
 
         assert!(!err.line.is_empty(), "error line should not be empty");
-        assert!(!err.description.is_empty(), "error description should not be empty");
+        assert!(
+            !err.description.is_empty(),
+            "error description should not be empty"
+        );
     }
 }

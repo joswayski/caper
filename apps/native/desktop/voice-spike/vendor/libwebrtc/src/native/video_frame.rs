@@ -30,26 +30,38 @@ pub fn new_video_frame_buffer(
 ) -> Box<dyn vf::VideoBuffer + Send + Sync> {
     unsafe {
         match sys_handle.buffer_type() {
-            vfb_sys::ffi::VideoFrameBufferType::Native => {
-                Box::new(vf::native::NativeBuffer { handle: NativeBuffer { sys_handle } })
-            }
+            vfb_sys::ffi::VideoFrameBufferType::Native => Box::new(vf::native::NativeBuffer {
+                handle: NativeBuffer { sys_handle },
+            }),
             vfb_sys::ffi::VideoFrameBufferType::I420 => Box::new(vf::I420Buffer {
-                handle: I420Buffer { sys_handle: sys_handle.pin_mut().get_i420() },
+                handle: I420Buffer {
+                    sys_handle: sys_handle.pin_mut().get_i420(),
+                },
             }),
             vfb_sys::ffi::VideoFrameBufferType::I420A => Box::new(vf::I420ABuffer {
-                handle: I420ABuffer { sys_handle: sys_handle.pin_mut().get_i420a() },
+                handle: I420ABuffer {
+                    sys_handle: sys_handle.pin_mut().get_i420a(),
+                },
             }),
             vfb_sys::ffi::VideoFrameBufferType::I422 => Box::new(vf::I422Buffer {
-                handle: I422Buffer { sys_handle: sys_handle.pin_mut().get_i422() },
+                handle: I422Buffer {
+                    sys_handle: sys_handle.pin_mut().get_i422(),
+                },
             }),
             vfb_sys::ffi::VideoFrameBufferType::I444 => Box::new(vf::I444Buffer {
-                handle: I444Buffer { sys_handle: sys_handle.pin_mut().get_i444() },
+                handle: I444Buffer {
+                    sys_handle: sys_handle.pin_mut().get_i444(),
+                },
             }),
             vfb_sys::ffi::VideoFrameBufferType::I010 => Box::new(vf::I010Buffer {
-                handle: I010Buffer { sys_handle: sys_handle.pin_mut().get_i010() },
+                handle: I010Buffer {
+                    sys_handle: sys_handle.pin_mut().get_i010(),
+                },
             }),
             vfb_sys::ffi::VideoFrameBufferType::NV12 => Box::new(vf::NV12Buffer {
-                handle: NV12Buffer { sys_handle: sys_handle.pin_mut().get_nv12() },
+                handle: NV12Buffer {
+                    sys_handle: sys_handle.pin_mut().get_nv12(),
+                },
             }),
             _ => unreachable!(),
         }
@@ -203,7 +215,9 @@ impl NativeBuffer {
     }
 
     pub fn to_i420(&self) -> I420Buffer {
-        I420Buffer { sys_handle: unsafe { self.sys_handle.to_i420() } }
+        I420Buffer {
+            sys_handle: unsafe { self.sys_handle.to_i420() },
+        }
     }
 
     pub fn to_argb(
@@ -214,7 +228,8 @@ impl NativeBuffer {
         dst_width: i32,
         dst_height: i32,
     ) {
-        self.to_i420().to_argb(format, dst, dst_stride, dst_width, dst_height)
+        self.to_i420()
+            .to_argb(format, dst, dst_stride, dst_width, dst_height)
     }
 }
 
@@ -442,7 +457,8 @@ impl I420ABuffer {
         dst_width: i32,
         dst_height: i32,
     ) {
-        self.to_i420().to_argb(format, dst, dst_stride, dst_width, dst_height)
+        self.to_i420()
+            .to_argb(format, dst, dst_stride, dst_width, dst_height)
     }
 
     pub fn data(&self) -> (&[u8], &[u8], &[u8], Option<&[u8]>) {
@@ -563,7 +579,8 @@ impl I422Buffer {
         dst_width: i32,
         dst_height: i32,
     ) {
-        self.to_i420().to_argb(format, dst, dst_stride, dst_width, dst_height)
+        self.to_i420()
+            .to_argb(format, dst, dst_stride, dst_width, dst_height)
     }
 
     pub fn data(&self) -> (&[u8], &[u8], &[u8]) {
@@ -676,7 +693,8 @@ impl I444Buffer {
         dst_width: i32,
         dst_height: i32,
     ) {
-        self.to_i420().to_argb(format, dst, dst_stride, dst_width, dst_height)
+        self.to_i420()
+            .to_argb(format, dst, dst_stride, dst_width, dst_height)
     }
 
     pub fn data(&self) -> (&[u8], &[u8], &[u8]) {
@@ -791,7 +809,8 @@ impl I010Buffer {
         dst_width: i32,
         dst_height: i32,
     ) {
-        self.to_i420().to_argb(format, dst, dst_stride, dst_width, dst_height)
+        self.to_i420()
+            .to_argb(format, dst, dst_stride, dst_width, dst_height)
     }
 
     pub fn data(&self) -> (&[u16], &[u16], &[u16]) {
@@ -840,22 +859,35 @@ impl NV12Buffer {
 
     pub fn sys_handle(&self) -> &vfb_sys::ffi::VideoFrameBuffer {
         unsafe {
-            &*recursive_cast!(&*self.sys_handle, nv12_to_biyuv8, biyuv8_to_biyuv, biyuv_to_vfb)
+            &*recursive_cast!(
+                &*self.sys_handle,
+                nv12_to_biyuv8,
+                biyuv8_to_biyuv,
+                biyuv_to_vfb
+            )
         }
     }
 
     pub fn width(&self) -> u32 {
         unsafe {
-            let ptr =
-                recursive_cast!(&*self.sys_handle, nv12_to_biyuv8, biyuv8_to_biyuv, biyuv_to_vfb);
+            let ptr = recursive_cast!(
+                &*self.sys_handle,
+                nv12_to_biyuv8,
+                biyuv8_to_biyuv,
+                biyuv_to_vfb
+            );
             (*ptr).width()
         }
     }
 
     pub fn height(&self) -> u32 {
         unsafe {
-            let ptr =
-                recursive_cast!(&*self.sys_handle, nv12_to_biyuv8, biyuv8_to_biyuv, biyuv_to_vfb);
+            let ptr = recursive_cast!(
+                &*self.sys_handle,
+                nv12_to_biyuv8,
+                biyuv8_to_biyuv,
+                biyuv_to_vfb
+            );
             (*ptr).height()
         }
     }
@@ -910,7 +942,8 @@ impl NV12Buffer {
         dst_width: i32,
         dst_height: i32,
     ) {
-        self.to_i420().to_argb(format, dst, dst_stride, dst_width, dst_height)
+        self.to_i420()
+            .to_argb(format, dst, dst_stride, dst_width, dst_height)
     }
 
     pub fn data(&self) -> (&[u8], &[u8]) {

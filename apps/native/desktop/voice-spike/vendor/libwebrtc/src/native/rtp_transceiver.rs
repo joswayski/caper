@@ -79,11 +79,19 @@ impl RtpTransceiver {
     }
 
     pub fn sender(&self) -> rtp_sender::RtpSender {
-        rtp_sender::RtpSender { handle: RtpSender { sys_handle: self.sys_handle.sender() } }
+        rtp_sender::RtpSender {
+            handle: RtpSender {
+                sys_handle: self.sys_handle.sender(),
+            },
+        }
     }
 
     pub fn receiver(&self) -> rtp_receiver::RtpReceiver {
-        rtp_receiver::RtpReceiver { handle: RtpReceiver { sys_handle: self.sys_handle.receiver() } }
+        rtp_receiver::RtpReceiver {
+            handle: RtpReceiver {
+                sys_handle: self.sys_handle.receiver(),
+            },
+        }
     }
 
     pub fn set_codec_preferences(&self, codecs: Vec<RtpCodecCapability>) -> Result<(), RtcError> {

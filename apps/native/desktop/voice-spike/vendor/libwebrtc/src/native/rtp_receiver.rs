@@ -48,7 +48,9 @@ impl RtpReceiver {
         self.sys_handle
             .streams()
             .into_iter()
-            .map(|s| MediaStream { handle: imp_ms::MediaStream { sys_handle: s.ptr } })
+            .map(|s| MediaStream {
+                handle: imp_ms::MediaStream { sys_handle: s.ptr },
+            })
             .collect()
     }
 
@@ -57,7 +59,10 @@ impl RtpReceiver {
         let ctx = Box::new(sys_rr::ReceiverContext(Box::new(tx)));
 
         self.sys_handle.get_stats(ctx, |ctx, stats| {
-            let tx = ctx.0.downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>().unwrap();
+            let tx = ctx
+                .0
+                .downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>()
+                .unwrap();
 
             if stats.is_empty() {
                 let _ = tx.send(Ok(vec![]));

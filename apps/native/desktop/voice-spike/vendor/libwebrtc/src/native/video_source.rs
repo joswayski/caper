@@ -32,13 +32,19 @@ use crate::{
 
 impl From<vt_sys::ffi::VideoResolution> for VideoResolution {
     fn from(res: vt_sys::ffi::VideoResolution) -> Self {
-        Self { width: res.width, height: res.height }
+        Self {
+            width: res.width,
+            height: res.height,
+        }
     }
 }
 
 impl From<VideoResolution> for vt_sys::ffi::VideoResolution {
     fn from(res: VideoResolution) -> Self {
-        Self { width: res.width, height: res.height }
+        Self {
+            width: res.width,
+            height: res.height,
+        }
     }
 }
 
@@ -78,8 +84,12 @@ async fn raw_keepalive_task(
         }
 
         let mut builder = vf_sys::ffi::new_video_frame_builder();
-        builder.pin_mut().set_rotation(VideoRotation::VideoRotation0);
-        builder.pin_mut().set_video_frame_buffer(i420.as_ref().sys_handle());
+        builder
+            .pin_mut()
+            .set_rotation(VideoRotation::VideoRotation0);
+        builder
+            .pin_mut()
+            .set_video_frame_buffer(i420.as_ref().sys_handle());
 
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         builder.pin_mut().set_timestamp_us(now.as_micros() as i64);
@@ -143,7 +153,9 @@ impl NativeVideoSource {
     pub fn capture_frame<T: AsRef<dyn VideoBuffer>>(&self, frame: &VideoFrame<T>) -> bool {
         let mut builder = vf_sys::ffi::new_video_frame_builder();
         builder.pin_mut().set_rotation(frame.rotation.into());
-        builder.pin_mut().set_video_frame_buffer(frame.buffer.as_ref().sys_handle());
+        builder
+            .pin_mut()
+            .set_video_frame_buffer(frame.buffer.as_ref().sys_handle());
 
         let capture_ts = if frame.timestamp_us == 0 {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -238,7 +250,8 @@ impl NativeVideoSource {
     /// The handler is set on the C++ VideoTrackSource so it has access to
     /// the TimestampAligner-adjusted capture timestamp for correct keying.
     pub fn set_packet_trailer_handler(&self, handler: PacketTrailerHandler) {
-        self.sys_handle.set_packet_trailer_handler(handler.sys_handle());
+        self.sys_handle
+            .set_packet_trailer_handler(handler.sys_handle());
     }
 
     pub fn video_resolution(&self) -> VideoResolution {
@@ -285,7 +298,13 @@ mod tests {
 
     #[tokio::test]
     async fn keepalive_task_does_not_keep_capture_state_alive() {
-        let source = NativeVideoSource::new(VideoResolution { width: 16, height: 16 }, false);
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: 16,
+                height: 16,
+            },
+            false,
+        );
         let captured_frames = Arc::downgrade(&source.captured_frames);
 
         tokio::task::yield_now().await;
@@ -296,7 +315,10 @@ mod tests {
 
     #[tokio::test]
     async fn keepalive_task_releases_native_source_after_drop() {
-        let resolution = VideoResolution { width: 16, height: 16 };
+        let resolution = VideoResolution {
+            width: 16,
+            height: 16,
+        };
         let source = NativeVideoSource::new_inner(resolution.clone(), false, false);
         let keepalive_task = tokio::spawn(raw_keepalive_task(
             resolution,

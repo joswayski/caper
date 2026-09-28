@@ -35,11 +35,16 @@ cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop native_inference_is_finite_and_owns_fresh_state -- --ignored
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --all-targets --no-deps -- -D warnings
 cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-desktop
+# The self-updater ships beside the app. Release builds set CAPER_BUILD_NUMBER
+# and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
+cargo build --manifest-path "$root/apps/native/updater/Cargo.toml" --locked --release
+version="0.1.${CAPER_BUILD_NUMBER:-0}"
 
 package_dir="$native/target/package"
 rm -rf "$native/dist" "$package_dir"
 mkdir -p "$native/dist" "$package_dir/Caper-linux-x64"
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-desktop" "$package_dir/Caper-linux-x64/caper-desktop"
+install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$package_dir/Caper-linux-x64/caper-updater"
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$native/voice-spike/licenses/"* "$package_dir/Caper-linux-x64/"
@@ -53,6 +58,8 @@ deb="$package_dir/deb"
 mkdir -p "$deb/DEBIAN" "$deb/usr/bin" "$deb/usr/lib/caper-desktop" "$deb/usr/share/applications" "$deb/usr/share/icons/hicolor/scalable/apps" "$deb/usr/share/doc/caper-desktop"
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-desktop" "$deb/usr/bin/caper-desktop"
 install -m 0755 "$CAPER_ONNXRUNTIME_LIBRARY" "$deb/usr/lib/caper-desktop/"
+# Only checks for updates here: /usr needs root, so the app links to the download.
+install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$deb/usr/lib/caper-desktop/caper-updater"
 install -m 0644 "$ort_dir/LICENSE" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-LICENSE"
 install -m 0644 "$ort_dir/ThirdPartyNotices.txt" "$deb/usr/share/doc/caper-desktop/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
 install -m 0644 "$root/apps/web/public/audio/dpdfnet8-v2/LICENSE-APACHE-2.0" "$deb/usr/share/doc/caper-desktop/DPDFNET-LICENSE"
@@ -64,7 +71,7 @@ install -m 0644 "$native/voice-spike/licenses/"* "$deb/usr/share/doc/caper-deskt
 size="$(du -sk "$deb" | cut -f1)"
 cat > "$deb/DEBIAN/control" <<EOF
 Package: caper-desktop
-Version: 0.1.0
+Version: $version
 Section: net
 Priority: optional
 Architecture: amd64

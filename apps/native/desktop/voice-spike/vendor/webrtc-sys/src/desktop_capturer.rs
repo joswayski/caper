@@ -101,13 +101,15 @@ impl DesktopCapturerCallbackWrapper {
     fn on_capture_result(&mut self, result: CaptureResult, frame: UniquePtr<DesktopFrame>) {
         match result {
             CaptureResult::Success => self.callback.on_capture_result(Ok(frame)),
-            CaptureResult::ErrorTemporary => {
-                self.callback.on_capture_result(Err(CaptureError::Temporary))
-            }
-            CaptureResult::ErrorPermanent => {
-                self.callback.on_capture_result(Err(CaptureError::Permanent))
-            }
-            _ => self.callback.on_capture_result(Err(CaptureError::Permanent)),
+            CaptureResult::ErrorTemporary => self
+                .callback
+                .on_capture_result(Err(CaptureError::Temporary)),
+            CaptureResult::ErrorPermanent => self
+                .callback
+                .on_capture_result(Err(CaptureError::Permanent)),
+            _ => self
+                .callback
+                .on_capture_result(Err(CaptureError::Permanent)),
         }
     }
 }
