@@ -63,16 +63,20 @@ final class CaperParityUITests: XCTestCase {
     /// between fields while the iOS keyboard animates in can drop the first tap,
     /// and typing then fails with "Neither element nor any descendant has
     /// keyboard focus".
+    private func hasKeyboardFocus(_ field: XCUIElement, timeout: TimeInterval = 2) -> Bool {
+        let focused = NSPredicate(format: "hasKeyboardFocus == true")
+        let expectation = XCTNSPredicateExpectation(predicate: focused, object: field)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
     private func type(_ text: String, into field: XCUIElement) {
         #if os(macOS)
         field.tap()
         field.typeText(text)
         #else
-        let focused = NSPredicate(format: "hasKeyboardFocus == true")
         for _ in 0..<3 {
             field.tap()
-            let expectation = XCTNSPredicateExpectation(predicate: focused, object: field)
-            if XCTWaiter().wait(for: [expectation], timeout: 2) == .completed {
+            if hasKeyboardFocus(field) {
                 field.typeText(text)
                 return
             }
@@ -653,7 +657,15 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(submit.label, "Finish account")
         XCTAssertFalse(submit.isEnabled)
         type("ab", into: username)
+        #if os(iOS)
+        // Return moves to Display name; on iPhone the keyboard covers that field,
+        // so tapping it would hit the keyboard instead.
+        username.typeText("\n")
+        XCTAssertTrue(hasKeyboardFocus(displayName), "Return on Username must focus Display name")
+        displayName.typeText("Fixture Name")
+        #else
         type("Fixture Name", into: displayName)
+        #endif
         XCTAssertFalse(submit.isEnabled, "two-letter usernames cannot submit")
         assertStaticText("TEST FIXTURE — username already taken. Choose another username.", in: app)
         capture("profile-validation", app: app)
