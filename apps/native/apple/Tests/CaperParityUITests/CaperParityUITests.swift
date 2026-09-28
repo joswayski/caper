@@ -5,7 +5,7 @@ import XCTest
 final class CaperParityUITests: XCTestCase {
     private var launchedApp: XCUIApplication?
 
-    private func launch(fixture: String? = nil, signedIn: Bool = true) -> XCUIApplication {
+    private static func configuredApp(fixture: String? = nil, signedIn: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["CAPER_TEST_MODE"] = "parity"
         app.launchEnvironment["CAPER_API_BASE_URL"] = "http://127.0.0.1:3001"
@@ -14,10 +14,31 @@ final class CaperParityUITests: XCTestCase {
             app.launchEnvironment["CAPER_TEST_SPACE_ID"] = "space0000001"
         }
         if let fixture { app.launchEnvironment["CAPER_UI_FIXTURE"] = fixture }
+        return app
+    }
+
+    private func launch(fixture: String? = nil, signedIn: Bool = true) -> XCUIApplication {
+        let app = Self.configuredApp(fixture: fixture, signedIn: signedIn)
         app.launch()
         launchedApp = app
         return app
     }
+
+    #if os(iOS)
+    /// On a freshly booted simulator the automation session can report an
+    /// empty accessibility tree for about a minute while the app is already on
+    /// screen, failing whichever test runs first. Warm it up once, before any
+    /// test's own deadlines start. Nothing is asserted or sent here.
+    nonisolated override class func setUp() {
+        super.setUp()
+        MainActor.assumeIsolated {
+            let app = configuredApp()
+            app.launch()
+            _ = app.descendants(matching: .any)["message-composer"].waitForExistence(timeout: 120)
+            app.terminate()
+        }
+    }
+    #endif
 
     override func tearDown() {
         if (testRun?.failureCount ?? 0) > 0, let app = launchedApp {
