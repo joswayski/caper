@@ -12,7 +12,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     # Every bundle, including embedded frameworks, needs both versions for App
-    # Store validation; release.yml overrides CURRENT_PROJECT_VERSION per upload.
+    # Store validation; release.yml overrides both per release (CAPER_BUILD_NUMBER).
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
@@ -194,6 +194,9 @@ targets:
       path: Configuration/macOS-Info.plist
       properties:
         CFBundleDisplayName: Caper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        # The self-updater compares this release build number with latest.json.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
         ATSApplicationFontsPath: .
     settings:

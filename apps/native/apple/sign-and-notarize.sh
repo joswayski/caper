@@ -5,6 +5,8 @@
 #
 # Environment: APPLE_SIGNING_IDENTITY (a Developer ID Application identity in an
 # unlocked keychain), NOTARY_KEY_PATH (.p8), NOTARY_KEY_ID, NOTARY_ISSUER.
+# Optional: CAPER_UPDATER_BINARY, the caper-updater built for this architecture,
+# is placed in Contents/MacOS and signed with the app so it can self-update.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -22,6 +24,11 @@ sign() {
   codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" "$@"
 }
 
+if [[ -n "${CAPER_UPDATER_BINARY:-}" ]]; then
+  install -m 0755 "$CAPER_UPDATER_BINARY" "$APP/Contents/MacOS/caper-updater"
+  sign "$APP/Contents/MacOS/caper-updater"
+fi
+
 # Inside out: nested dylibs and frameworks first, deepest paths first, then the app.
 while IFS= read -r item; do
   sign "$item"
@@ -30,6 +37,9 @@ done < <(find "$APP/Contents/Frameworks" \( -name '*.dylib' -o -name '*.framewor
 sign --entitlements "$ENTITLEMENTS" "$APP"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
+if [[ -n "${CAPER_UPDATER_BINARY:-}" ]]; then
+  codesign --verify --strict "$APP/Contents/MacOS/caper-updater"
+fi
 codesign -d --entitlements - "$APP" 2>/dev/null | grep -q 'com.apple.security.device.audio-input'
 
 work="$(mktemp -d)"

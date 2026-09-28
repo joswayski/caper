@@ -45,12 +45,17 @@ cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-de
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo build --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --release
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# The self-updater ships beside Caper.exe. Release builds set CAPER_BUILD_NUMBER
+# and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
+cargo build --manifest-path (Join-Path $Root "apps\native\updater\Cargo.toml") --target $Target --locked --release
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Dist = Join-Path $Native "dist"
 $Stage = Join-Path $Native "target\package\Caper-windows-x64"
 Remove-Item $Dist, $Stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $Dist, $Stage -ItemType Directory -Force | Out-Null
 Copy-Item (Join-Path $Native "target\$Target\release\caper-desktop.exe") (Join-Path $Stage "Caper.exe")
+Copy-Item (Join-Path $Native "target\$Target\release\caper-updater.exe") (Join-Path $Stage "caper-updater.exe")
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
 Copy-Item (Join-Path $Root "shared\fonts\cache\Satoshi-FFL.txt") $Stage
 Copy-Item (Join-Path $Native "voice-spike\licenses\*") $Stage

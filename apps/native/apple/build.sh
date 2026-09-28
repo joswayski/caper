@@ -22,9 +22,15 @@ case "$MODE" in
     machine="$(uname -m)"
     case "$machine" in arm64) artifact_arch=arm64 ;; x86_64) artifact_arch=x64 ;; *) echo "Unsupported macOS architecture: $machine" >&2; exit 2 ;; esac
     rm -rf "$ROOT/DerivedData" "$ROOT/dist/Caper.app"
+    # Release builds carry the release number the self-updater compares.
+    versions=()
+    if [[ -n "${CAPER_BUILD_NUMBER:-}" ]]; then
+      [[ "$CAPER_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "CAPER_BUILD_NUMBER must be a positive integer." >&2; exit 2; }
+      versions=(CURRENT_PROJECT_VERSION="$CAPER_BUILD_NUMBER" MARKETING_VERSION="0.1.$CAPER_BUILD_NUMBER")
+    fi
     xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperMacOS -configuration Release \
       -destination 'platform=macOS' -derivedDataPath "$ROOT/DerivedData" \
-      CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" ARCHS="$machine" ONLY_ACTIVE_ARCH=YES build
+      CAPER_MACOS_BUNDLE_ID="$MAC_BUNDLE_ID" ARCHS="$machine" ONLY_ACTIVE_ARCH=YES ${versions[@]+"${versions[@]}"} build
     cp -R "$ROOT/DerivedData/Build/Products/Release/Caper.app" "$ROOT/dist/Caper.app"
     test -x "$ROOT/dist/Caper.app/Contents/MacOS/Caper"
     test -f "$ROOT/dist/Caper.app/Contents/Frameworks/WebRTC.framework/WebRTC"

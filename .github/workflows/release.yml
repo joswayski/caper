@@ -7,7 +7,9 @@ name: Native release
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64.zip
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.tar.gz
-# and uploads the iPhone app to TestFlight.
+# and uploads the iPhone app to TestFlight. The Mac, Windows and Linux apps update
+# themselves from latest.json (signed with production/signing/updates) using
+# apps/native/updater; each release's build number is this workflow's run number.
 #
 # Started from the "Deploy Caper apps" button that native-ready.yml posts to
 # Discord (Godis dispatches this workflow with the exact commit and message), or
@@ -44,14 +46,20 @@ env:
   AWS_REGION: us-east-1
   RELEASE_SIGNER_ROLE: arn:aws:iam::395451633568:role/production-caper-release-signer
   RELEASE_TAG: native-latest
+  # Monotonic, compared by the self-updater. Re-runs rebuild the same number.
+  CAPER_BUILD_NUMBER: ${{ github.run_number }}
 
 jobs:
   resolve:
     name: Resolve release commit
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
+      update_public_key: ${{ steps.update_key.outputs.public_key }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,6 +75,29 @@ jobs:
           git merge-base --is-ancestor "$sha" "$GITHUB_SHA" || { echo "$sha is not on main." >&2; exit 1; }
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
           echo "Releasing $sha"
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Read the update public key
+        id: update_key
+        # Public, so it may pass between jobs. Until the key is stored
+        # (store-release-signing-secrets.sh updates --generate), desktop builds
+        # ship without self-updates rather than failing the release.
+        run: |
+          set -euo pipefail
+          public_key=""
+          if secret="$(aws secretsmanager get-secret-value --secret-id production/signing/updates \
+            --query SecretString --output text 2>/dev/null)"; then
+            public_key="$(jq -r '.public_key // ""' <<<"$secret")"
+          fi
+          unset secret
+          if [[ -z "$public_key" ]]; then
+            echo "::warning::production/signing/updates has no key; these desktop builds cannot self-update."
+          else
+            [[ "$public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]] || { echo "Stored update public key is malformed." >&2; exit 1; }
+          fi
+          echo "public_key=$public_key" >>"$GITHUB_OUTPUT"
 
   macos:
     name: macOS / ${{ matrix.label }}
@@ -94,6 +125,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.94.0
+          cache-workspaces: apps/native/updater
+      - name: Build the self-updater
+        env:
+          CAPER_UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
+        run: |
+          set -euo pipefail
+          [[ -n "$CAPER_UPDATE_PUBLIC_KEY" ]] || unset CAPER_UPDATE_PUBLIC_KEY
+          cargo build --manifest-path apps/native/updater/Cargo.toml --locked --release
+          echo "CAPER_UPDATER_BINARY=$GITHUB_WORKSPACE/apps/native/updater/target/release/caper-updater" >>"$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
@@ -312,8 +355,11 @@ jobs:
           arch: x64
       - name: Build and package Linux
         if: runner.os == 'Linux'
+        env:
+          CAPER_UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
         run: |
           set -euo pipefail
+          [[ -n "$CAPER_UPDATE_PUBLIC_KEY" ]] || unset CAPER_UPDATE_PUBLIC_KEY
           bash apps/native/desktop/build.sh
           mkdir -p release
           cp apps/native/desktop/dist/Caper-linux-x64.deb release/Caper-Linux-x64.deb
@@ -321,7 +367,10 @@ jobs:
       - name: Build and package Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          CAPER_UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
         run: |
+          if (-not $env:CAPER_UPDATE_PUBLIC_KEY) { Remove-Item Env:CAPER_UPDATE_PUBLIC_KEY }
           ./apps/native/desktop/build.ps1
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item apps/native/desktop/dist/Caper-windows-x64.zip release/Caper-Windows-x64.zip
@@ -338,16 +387,15 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release
           merge-multiple: true
-      - name: Replace the native-latest release
+      - name: Stage the release files
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           set -euo pipefail
@@ -369,10 +417,71 @@ jobs:
 
           **iPhone:** join through the TestFlight link.
           EOF
+          echo "RELEASE_ASSETS=${assets[*]} SHA256SUMS" >>"$GITHUB_ENV"
+      - uses: aws-actions/configure-aws-credentials@v6.2.3
+        if: needs.resolve.outputs.update_public_key != ''
+        with:
+          role-to-assume: ${{ env.RELEASE_SIGNER_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Write and sign the self-update manifest
+        if: needs.resolve.outputs.update_public_key != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
+        run: |
+          set -euo pipefail
+          cd release
+          # Shown in the apps' update prompt: the release commit's PR title.
+          notes="$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA/pulls" --jq '.[0].title // empty' 2>/dev/null || true)"
+          [[ -n "$notes" ]] || notes="$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA" --jq '.commit.message | split("\n")[0]')"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"
+          artifact() {
+            jq -n --arg url "$base/$1" --arg sha256 "$(sha256sum "$1" | cut -d' ' -f1)" \
+              --argjson size "$(stat -c %s "$1")" '{url: $url, sha256: $sha256, size: $size}'
+          }
+          jq -n \
+            --argjson build "$CAPER_BUILD_NUMBER" \
+            --arg version "0.1.$CAPER_BUILD_NUMBER" \
+            --arg commit "$RELEASE_SHA" \
+            --arg notes "${notes:0:500}" \
+            --argjson macos_arm64 "$(artifact Caper-macOS-Apple-Silicon.zip)" \
+            --argjson macos_x64 "$(artifact Caper-macOS-Intel.zip)" \
+            --argjson windows_x64 "$(artifact Caper-Windows-x64.zip)" \
+            --argjson linux_x64 "$(artifact Caper-Linux-x64.tar.gz)" \
+            '{schema: 1, build: $build, version: $version, commit: $commit, notes: $notes,
+              platforms: {"macos-arm64": $macos_arm64, "macos-x64": $macos_x64,
+                "windows-x64": $windows_x64, "linux-x64": $linux_x64}}' >latest.json
+          key="$RUNNER_TEMP/update-key.pem"
+          umask 077
+          aws secretsmanager get-secret-value --secret-id production/signing/updates \
+            --query SecretString --output text | jq -r .private_key_pem >"$key"
+          # Ed25519 over the exact bytes; caper-updater verifies the same way.
+          openssl pkeyutl -sign -rawin -inkey "$key" -in latest.json | base64 -w0 >latest.json.sig
+          rm -f "$key"
+          # The embedded public key must accept what was just signed.
+          { printf '%s' "$UPDATE_PUBLIC_KEY" | base64 -d | cat <(printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00') -; } >"$RUNNER_TEMP/update-public.der"
+          base64 -d latest.json.sig >"$RUNNER_TEMP/latest.sig.bin"
+          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey "$RUNNER_TEMP/update-public.der" \
+            -in latest.json -sigfile "$RUNNER_TEMP/latest.sig.bin"
+          cat latest.json
+          echo "RELEASE_ASSETS=$RELEASE_ASSETS latest.json latest.json.sig" >>"$GITHUB_ENV"
+      - name: Replace the native-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          cd release
+          read -r -a files <<<"$RELEASE_ASSETS"
           gh release delete "$RELEASE_TAG" --cleanup-tag --yes 2>/dev/null || true
           gh release create "$RELEASE_TAG" --prerelease --target "$RELEASE_SHA" \
-            --title "Caper apps (latest)" --notes-file notes.md \
-            "${assets[@]}" SHA256SUMS
+            --title "Caper apps (latest)" --notes-file notes.md "${files[@]}"
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/update-key.pem"
 
   notify-discord:
     name: Update Discord status
