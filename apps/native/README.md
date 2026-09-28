@@ -74,6 +74,22 @@ The root Rust workspace remains the API. The desktop client's separate Cargo
 workspace/lockfile does not add GUI dependencies to server images. Native builds
 do not require `npm install`; the website build is not an app-bundling step.
 
+## Signed builds for testers
+
+The **Native release** workflow (`.github/workflows/release.yml`, run manually from
+`main`) builds a Developer ID-signed, notarized Mac app for Apple Silicon and Intel
+and a release-signed Android APK. It replaces the `native-latest` pre-release, so
+these links always point at the newest build:
+
+- Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
+- Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
+- Android: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
+
+Signing material is read from AWS Secrets Manager through GitHub OIDC; see
+`docs/release-signing.md` in joswayski/infrastructure. Android testers allow
+installs from their browser once; updates install over the previous APK because
+every release uses the same upload key. iPhone builds will ship through TestFlight.
+
 ## Comparing native screens with the web
 
 Use the existing web UI as the reference, not platform-default widgets with
