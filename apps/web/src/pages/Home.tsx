@@ -50,11 +50,25 @@ export default function Home({ account, history, initialNow, latestChanges }: Ho
             </span>
           </h1>
           <p className="hero-lede">Chat with anyone, about anything.</p>
+          <section className="app-downloads" aria-labelledby="app-downloads-heading">
+            <h2 id="app-downloads-heading">Download Caper <span>Preview</span></h2>
+            <ul>
+              <li><strong>Mac</strong><span><a href={`${repositoryUrl}/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip`}>Apple Silicon</a> · <a href={`${repositoryUrl}/releases/download/native-latest/Caper-macOS-Intel.zip`}>Intel</a></span></li>
+              <li><strong>Windows</strong><a href={`${repositoryUrl}/releases/download/v2026.09.19.4/Caper_2026.9.1904_x64-setup.exe`}>x64 installer</a></li>
+              <li><strong>Linux</strong><span><a href={`${repositoryUrl}/releases/download/v2026.09.19.4/Caper_2026.9.1904_amd64.deb`}>.deb</a> · <a href={`${repositoryUrl}/releases/download/v2026.09.19.4/Caper_2026.9.1904_amd64.AppImage`}>AppImage</a></span></li>
+            </ul>
+            <p>Windows and Linux: older September 19 previews.</p>
+            <details>
+              <summary>Mobile apps · in development</summary>
+              <p><a href={`${repositoryUrl}/releases/download/native-latest/Caper-Android.apk`}>Android APK</a> — experimental; requires allowing installs from your browser.</p>
+              <p>iPhone — TestFlight access is not open yet.</p>
+            </details>
+          </section>
           <p className="made-by">
             Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a> · <a href={repositoryUrl} target="_blank" rel="noreferrer">Follow on GitHub</a>
           </p>
           <p className="experimental-note">
-            Caper may contain bugs or incomplete features. A desktop app is coming soon. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a> or by email:
+            Caper may contain bugs or incomplete features. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a> or by email:
           </p>
           <div className="feedback-email"><CopyEmailButton email={contactEmail} /></div>
         </div>
