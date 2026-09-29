@@ -108,10 +108,38 @@ def find(root: ET.Element, *, text: str | None = None, description: str | None =
     return None
 
 
+def dismiss_system_not_responding(root: ET.Element) -> bool:
+    """Answer Android's own "System UI isn't responding" dialog with Wait.
+
+    A loaded CI emulator sometimes stalls System UI; the dialog then covers
+    Caper and hides its nodes from uiautomator even though the app is fine.
+    Only the framework's dialog (package "android") is touched.
+    """
+    title = next(
+        (node for node in nodes(root)
+         if node.get("package") == "android" and "isn't responding" in node.get("text", "")),
+        None,
+    )
+    wait = next(
+        (node for node in nodes(root) if node.get("package") == "android" and node.get("text") == "Wait"),
+        None,
+    )
+    if title is None or wait is None:
+        return False
+    print(f"NOTE: dismissing emulator dialog {title.get('text')!r} with Wait")
+    x, y = center(wait)
+    adb("shell", "input", "tap", str(x), str(y))
+    time.sleep(1)
+    return True
+
+
 def wait_for(*, text: str | None = None, description: str | None = None, contains: str | None = None, resource_id: str | None = None, seconds: int = 20) -> ET.Element:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         root = hierarchy()
+        if dismiss_system_not_responding(root):
+            deadline += 5
+            continue
         match = find(root, text=text, description=description, contains=contains, resource_id=resource_id)
         if match is not None:
             return root

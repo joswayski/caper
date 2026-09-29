@@ -288,22 +288,37 @@ jobs:
             echo "CAPER_ANDROID_KEY_PASSWORD=$(jq -r .key_password "$secret")"
           } >>"$GITHUB_ENV"
           rm -f "$secret"
-      - name: Test and build the signed release APK
+      - name: Test and build the signed release APK and Play bundle
         working-directory: apps/native/android
         run: |
           set -euo pipefail
           ./prepare-fonts.sh
           bash prepare-audio.sh
-          CMAKE_BUILD_PARALLEL_LEVEL=1 ./gradlew --no-daemon --max-workers=1 testDebugUnitTest assembleRelease
+          # The .apk is the direct download; the .aab is what Google Play takes.
+          CMAKE_BUILD_PARALLEL_LEVEL=1 ./gradlew --no-daemon --max-workers=1 testDebugUnitTest assembleRelease bundleRelease
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk dist/Caper-Android.apk
+          mkdir -p play
+          cp app/build/outputs/bundle/release/app-release.aab play/Caper-Android-Play.aab
+          # Signed with the upload key; Google Play re-signs it for devices.
+          jarsigner -verify play/Caper-Android-Play.aab | tee play/verify.txt
+          grep -q 'jar verified' play/verify.txt
+          rm play/verify.txt
       - uses: actions/upload-artifact@v4
         with:
           name: release-android
           path: apps/native/android/dist/Caper-Android.apk
           if-no-files-found: error
           retention-days: 7
+      # Not a public download: upload it in Google Play Console (Testing →
+      # Internal testing → Create new release) until Play uploads are automated.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: google-play-bundle
+          path: apps/native/android/play/Caper-Android-Play.aab
+          if-no-files-found: error
+          retention-days: 30
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/caper-release.jks" "$RUNNER_TEMP/android.json"

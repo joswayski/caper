@@ -1439,15 +1439,14 @@ private struct ProfileSheet: View {
                         .submitLabel(.next).onSubmit { displayNameFocused = true }
                     Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
+                        // Return saves: on iPhone an error line can push Save
+                        // profile under the keyboard.
+                        .submitLabel(.done).onSubmit(save)
                     Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
-                    Button(model.busy ? "Saving…" : "Save profile") {
-                        Task {
-                            await model.saveProfile(username: username, displayName: displayName)
-                            if model.error == nil { close() }
-                        }
-                    }.buttonStyle(CaperPrimaryButton())
-                        .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                    Button(model.busy ? "Saving…" : "Save profile", action: save)
+                        .buttonStyle(CaperPrimaryButton())
+                        .disabled(!canSave)
                         .accessibilityIdentifier("profile-save")
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
             }.frame(maxHeight: 500).scrollDismissesKeyboard(.interactively)
@@ -1456,6 +1455,18 @@ private struct ProfileSheet: View {
                 username = model.account?.username ?? ""
                 displayName = model.account?.displayName ?? ""
             }
+    }
+
+    private var canSave: Bool {
+        !model.busy && ProfileValidation.error(username: username, displayName: displayName) == nil
+    }
+
+    private func save() {
+        guard canSave else { return }
+        Task {
+            await model.saveProfile(username: username, displayName: displayName)
+            if model.error == nil { close() }
+        }
     }
 }
 

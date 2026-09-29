@@ -69,6 +69,16 @@ final class CaperParityUITests: XCTestCase {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
+    /// iPhone: Return in the field saves, because the error line can push the
+    /// button under the keyboard. macOS clicks the button.
+    private func save(_ button: XCUIElement, from field: XCUIElement) {
+        #if os(iOS)
+        type("\n", into: field)
+        #else
+        button.tap()
+        #endif
+    }
+
     private func type(_ text: String, into field: XCUIElement) {
         #if os(macOS)
         field.tap()
@@ -628,13 +638,13 @@ final class CaperParityUITests: XCTestCase {
         control.httpBody = Data(#"{"failure":{"path":"/api/account/profile","method":"POST","status":503,"error":"TEST FIXTURE: profile save temporarily unavailable."}}"#.utf8)
         let (_, response) = try await URLSession.shared.data(for: control)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        submit.tap()
+        save(submit, from: displayName)
         assertStaticText("Your profile could not be saved. Please try again.", in: app)
         XCTAssertEqual(username.value as? String, savedUsername)
         XCTAssertEqual(displayName.value as? String, editedName)
         XCTAssertTrue(submit.isEnabled)
         capture("profile-rejected-save", app: app)
-        submit.tap()
+        save(submit, from: displayName)
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: submit)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 10), .completed)
         // Keep the shared fixture's reference author stable for other UI cases.
