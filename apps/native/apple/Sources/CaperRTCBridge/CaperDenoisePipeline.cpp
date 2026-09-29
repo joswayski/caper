@@ -174,12 +174,14 @@ extern "C" int CaperDenoisePipelineProcess(CaperDenoisePipeline *pipeline,
         return 0;
     }
     // Switch to RNNoise at eight hops on the worker; allow a bounded further
-    // reserve for it to catch up. A truly stalled worker still fails closed.
+    // reserve for it to catch up. Beyond that, shed this block as silence
+    // instead of failing for the rest of the call: one slow first inference or
+    // a scheduling hiccup must not mute the microphone permanently. Raw capture
+    // is still never exposed.
     if (pipeline->incoming.count() + frames > pipeline->rate * .16) {
-        pipeline->failed.store(true, std::memory_order_release);
         std::memset(output, 0, frames * sizeof(int16_t));
         std::memset(epochs, 0, frames * sizeof(uint32_t));
-        return 0;
+        return 1;
     }
     const float scale = std::clamp(gain, 0, 200) / 100.f / 32768.f;
     for (unsigned i = 0; i < frames; ++i) {

@@ -123,6 +123,10 @@ public final class VoiceClient {
     private var pollTask: Task<Void, Never>?
     private var turnTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var disconnectGraceTask: Task<Void, Never>?
+    private var resubscribeTask: Task<Void, Never>?
+    private var pullRetryTask: Task<Void, Never>?
+    private var pullRetryIndex = 0
     private var mediaSubscriptionID: String?
     private var stateSequence = 0
     private var restartSequence = 0
@@ -264,7 +268,14 @@ public final class VoiceClient {
                 Task { @MainActor in
                     guard let self, let peer, callbackPeer === peer, self.peer === peer,
                           self.generation == attempt, self.phase == .connected else { return }
-                    if state == .failed || state == .disconnected { self.scheduleReconnect(generation: attempt) }
+                    // Web (DISCONNECT_GRACE_MS): "disconnected" often recovers by
+                    // itself within seconds; only "failed" or a lasting drop rejoins.
+                    switch state {
+                    case .failed: self.scheduleReconnect(generation: attempt)
+                    case .disconnected: self.startDisconnectGrace(generation: attempt, peer: peer)
+                    case .connected: self.disconnectGraceTask?.cancel(); self.disconnectGraceTask = nil
+                    default: break
+                    }
                 }
             }
             let source = factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
@@ -277,7 +288,7 @@ public final class VoiceClient {
             var directionError: NSError?
             transceiver.setDirection(.sendOnly, error: &directionError)
             if let directionError { throw directionError }
-            let offer = try await peer.offer(for: RTCMediaConstraints(mandatoryConstraints: [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue], optionalConstraints: nil))
+            let offer = try await peer.offer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
             try checkCurrentAttempt(attempt, peer: peer)
             try await peer.setLocalDescription(offer)
             try checkCurrentAttempt(attempt, peer: peer)
@@ -315,7 +326,6 @@ public final class VoiceClient {
             audioDevice.publicationEnabled = !muted
             #endif
             track.isEnabled = !muted
-            reconnectAttempts = 0
             startLeaseRenewal(generation: attempt, peer: peer)
             if let turn = joined.turn { scheduleTurnRenewal(turn, generation: attempt, peer: peer) }
         } catch {
@@ -423,6 +433,9 @@ public final class VoiceClient {
                 guard !Task.isCancelled, let self, self.generation == attempt,
                       self.peer === expectedPeer, self.phase == .connected else { return }
                 await self.refreshRoster(expectedGeneration: attempt, expectedPeer: expectedPeer)
+                // A call that stayed up through a lease renewal earns a fresh
+                // reconnect budget; resetting on connect let a flapping call loop forever.
+                if self.generation == attempt, self.phase == .connected { self.reconnectAttempts = 0 }
             }
         }
     }
@@ -446,7 +459,10 @@ public final class VoiceClient {
         if event["type"] as? String == "subscription.error" {
             if let status = event["status"] as? Int, [401, 403, 404].contains(status) {
                 detachLocal(); phase = .failed; error = "Voice access ended. Rejoin to recover."
-            } else { scheduleReconnect(generation: attempt) }
+            } else {
+                mediaSubscriptionID = nil
+                resubscribeMedia(generation: attempt, peer: expectedPeer)
+            }
             return
         }
         guard event["type"] as? String == "snapshot",
@@ -470,8 +486,11 @@ public final class VoiceClient {
         let callChannelID = channelID
         try await acquireSignaling(generation: attempt, peer: peer)
         defer { releaseSignaling(generation: attempt, peer: peer) }
-        guard snapshotRevisions.accept(snapshot.revision) else { return }
+        // An equal revision is replayed on purpose: the lease refresh and the
+        // unavailable-pull retry must be able to reconcile the same roster again.
+        guard snapshot.revision == snapshotRevisions.latest || snapshotRevisions.accept(snapshot.revision) else { return }
         participants = snapshot.participants
+        var unavailable = false
         let liveTracks = Set(snapshot.participants.filter { $0.id != selfID }.flatMap(\.tracks).filter { $0.kind == "microphone" }.map(\.id))
         for departed in Set(subscribed.keys).subtracting(liveTracks) {
             if let mid = subscribed.removeValue(forKey: departed) {
@@ -490,7 +509,10 @@ public final class VoiceClient {
                 let response: SignalingResponse
                 do { response = try await api.media(channelID: callChannelID, operation: "subscribe", token: token, body: SubscribeBody(trackId: track.id)) }
                 catch let failure as APIError where failure.status == 404 && failure.code == "track_gone" {
+                    // Web: a newcomer's track is listed at publication but pullable
+                    // only once its media flows. Retry instead of waiting for a new revision.
                     try checkCurrentAttempt(attempt, peer: peer)
+                    unavailable = true
                     continue
                 }
                 try checkCurrentAttempt(attempt, peer: peer)
@@ -498,7 +520,7 @@ public final class VoiceClient {
                 if let offer = response.sessionDescription {
                     try await peer.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: offer.sdp))
                     try checkCurrentAttempt(attempt, peer: peer)
-                    let answer = try await peer.answer(for: RTCMediaConstraints(mandatoryConstraints: [kRTCMediaConstraintsOfferToReceiveAudio: kRTCMediaConstraintsValueTrue], optionalConstraints: nil))
+                    let answer = try await peer.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
                     try checkCurrentAttempt(attempt, peer: peer)
                     try await peer.setLocalDescription(answer)
                     try checkCurrentAttempt(attempt, peer: peer)
@@ -510,6 +532,58 @@ public final class VoiceClient {
                 participantByMID[mid] = participant.id
                 if let audio = remoteAudioByMID[mid] { applyLocalPlayback(to: audio, participantID: participant.id) }
             }
+        }
+        schedulePullRetry(unavailable: unavailable, generation: attempt, peer: peer)
+    }
+
+    /// Web PULL_RETRY_DELAYS_MS: re-read the roster until every listed track pulls.
+    private func schedulePullRetry(unavailable: Bool, generation attempt: Int, peer expectedPeer: RTCPeerConnection) {
+        guard unavailable else { pullRetryIndex = 0; return }
+        let delays = [250, 250, 500, 500, 1_000, 2_000, 4_000, 8_000]
+        guard pullRetryTask == nil, pullRetryIndex < delays.count else { return }
+        let delay = delays[pullRetryIndex]
+        pullRetryIndex += 1
+        pullRetryTask = Task { [weak self, weak expectedPeer] in
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard !Task.isCancelled, let self, let expectedPeer,
+                  self.generation == attempt, self.peer === expectedPeer else { return }
+            self.pullRetryTask = nil
+            await self.refreshRoster(expectedGeneration: attempt, expectedPeer: expectedPeer)
+        }
+    }
+
+    /// Web DISCONNECT_GRACE_MS: rejoin only if the transport stays down.
+    private func startDisconnectGrace(generation attempt: Int, peer expectedPeer: RTCPeerConnection) {
+        guard disconnectGraceTask == nil else { return }
+        disconnectGraceTask = Task { [weak self, weak expectedPeer] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, let self, let expectedPeer,
+                  self.generation == attempt, self.peer === expectedPeer else { return }
+            self.disconnectGraceTask = nil
+            if expectedPeer.connectionState != .connected { self.scheduleReconnect(generation: attempt) }
+        }
+    }
+
+    /// The gateway drops a subscription that errored; the call itself is still up.
+    private func resubscribeMedia(generation attempt: Int, peer expectedPeer: RTCPeerConnection) {
+        guard resubscribeTask == nil, let token else { return }
+        let callChannelID = channelID
+        resubscribeTask = Task { [weak self, weak expectedPeer] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, let self, let expectedPeer,
+                  self.generation == attempt, self.peer === expectedPeer, self.phase == .connected else { return }
+            self.resubscribeTask = nil
+            let id = await self.gateway.subscribeMedia(channelID: callChannelID, token: token) { [weak self] event in
+                self?.receiveMedia(event, generation: attempt, peer: expectedPeer)
+            }
+            guard self.generation == attempt, self.peer === expectedPeer else {
+                await self.gateway.unsubscribe(id); return
+            }
+            self.mediaSubscriptionID = id
+            // Catch up on anything the dropped subscription missed.
+            await self.refreshRoster(expectedGeneration: attempt, expectedPeer: expectedPeer)
+        }
+    }
         }
     }
 
@@ -563,6 +637,9 @@ public final class VoiceClient {
         pollTask?.cancel(); pollTask = nil
         turnTask?.cancel(); turnTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
+        disconnectGraceTask?.cancel(); disconnectGraceTask = nil
+        resubscribeTask?.cancel(); resubscribeTask = nil
+        pullRetryTask?.cancel(); pullRetryTask = nil; pullRetryIndex = 0
         if let mediaSubscriptionID { Task { await gateway.unsubscribe(mediaSubscriptionID) } }
         mediaSubscriptionID = nil
         microphone?.isEnabled = false
@@ -926,9 +1003,19 @@ public final class VoiceClient {
                 self?.handleAudioInterruption(note, generation: attempt)
             }
         })
-        audioObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
+        audioObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            let reason = raw.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
             Task { @MainActor in
                 guard let self, self.generation == attempt else { return }
+                // Starting the voice unit, the join chime or a category/override
+                // change also posts route changes. Only a device appearing or
+                // leaving needs the unit rebuilt; rebuilding on every notice made
+                // each rejoin trigger the next one.
+                guard reason == .oldDeviceUnavailable || reason == .newDeviceAvailable else {
+                    await self.refreshAudioDevices()
+                    return
+                }
                 self.audioDevice.audioRouteInterrupted() // fail closed before route reconfiguration
                 await self.refreshAudioDevices()
                 if self.generation == attempt && self.phase == .connected { self.scheduleReconnect(generation: attempt) }
