@@ -166,7 +166,10 @@ html.live-sheet-open { overflow: hidden; }
 @keyframes live-sheet-in { from { opacity: 0; transform: translateY(24px) scale(.97); } }
 .live-scene[data-mode="sheet"][data-active] :is(.live-slab, .live-shadow) { display: none; }
 .live-scene[data-mode="sheet"][data-active] .live-window { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); border: 0; border-radius: 0; background: var(--surface); }
-.live-scene[data-mode="sheet"][data-active] .live-close { top: calc(7px + env(safe-area-inset-top, 0px)); }
+/* Line the close up with the header row beside it: the row starts at the
+   sidebar's 16px padding and the button is as tall as the row, and its right
+   edge shares the room's 12px inset. */
+.live-scene[data-mode="sheet"][data-active] .live-close { top: calc(16px + env(safe-area-inset-top, 0px)); right: 12px; }
 .live-scene[data-mode="sheet"][data-active] :is(.call-room, .people-panel, .stage) { border-radius: 0; }
 .live-scene[data-mode="sheet"] .live-close { width: 40px; height: 40px; }
 
