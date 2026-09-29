@@ -584,8 +584,6 @@ public final class VoiceClient {
             await self.refreshRoster(expectedGeneration: attempt, expectedPeer: expectedPeer)
         }
     }
-        }
-    }
 
     private func applyLocalPlayback(to track: RTCAudioTrack, participantID: String) {
         let participantGain = participantGains[participantID] ?? 100
