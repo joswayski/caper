@@ -300,7 +300,7 @@ final class CaperParityUITests: XCTestCase {
     #if os(macOS)
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
         let app = launch()
-        let handle = app.buttons["channel-sidebar-resize"]
+        let handle = app.descendants(matching: .any)["channel-sidebar-resize"]
         let channelTitle = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertTrue(handle.waitForExistence(timeout: 5))
         handle.doubleClick()
@@ -332,12 +332,29 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(handle.value as? String, "290 pixels", "reset keeps the resize handle focused")
         app.terminate()
         let reopened = launch()
-        let saved = reopened.buttons["channel-sidebar-resize"]
+        let saved = reopened.descendants(matching: .any)["channel-sidebar-resize"]
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
         XCTAssertEqual(saved.value as? String, "290 pixels", "resized width survives relaunch")
         XCTAssertEqual(reopened.descendants(matching: .any)["selected-channel-name"].frame.minX - initialEdge, 10, accuracy: 2)
         capture("sidebar-resized", app: reopened)
         saved.doubleClick()
+    }
+
+    func testInlineJoinAndProfileBackdropDismissal() {
+        let app = launch()
+        let channel = app.buttons["channel-chan00000001"]
+        let join = app.buttons["join-voice-chan00000001"]
+        XCTAssertTrue(join.waitForExistence(timeout: 10))
+        XCTAssertEqual(join.frame.midY, channel.frame.midY, accuracy: 2, "Join stays on the channel's row")
+        let settings = app.descendants(matching: .any)["account-settings-menu"]
+        XCTAssertTrue(settings.isHittable)
+        XCTAssertLessThan(settings.frame.maxX, app.descendants(matching: .any)["channel-sidebar-resize"].frame.midX)
+        app.buttons["account-profile"].tap()
+        XCTAssertTrue(app.buttons["profile-save"].waitForExistence(timeout: 5))
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["profile-save"])
+        XCTAssertEqual(XCTWaiter().wait(for: [dismissed], timeout: 3), .completed)
+        XCTAssertTrue(app.buttons["account-profile"].isHittable)
     }
 
     func testMembersCanBeHiddenWithoutChangingConversation() {

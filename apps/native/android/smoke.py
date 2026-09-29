@@ -293,6 +293,11 @@ def main() -> None:
     assert find(guest, contains="The same conversation") is not None
     assert find(guest, description="Channel options") is None
     assert find(guest, description="Create channel") is None
+    assert find(guest, text="Caper") is not None
+    general = find(guest, text="general")
+    join = find(guest, text="Join")
+    assert general is not None and join is not None
+    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
     tap(description="Collapse channels")
     guest_collapsed = wait_for(description="Expand channels")
     assert find(guest_collapsed, text="general") is None
@@ -435,6 +440,14 @@ def main() -> None:
     assert center(menu)[0] < center(channel)[0], "Browse must precede the channel title, as on the web"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
+    tap(description="Show member list")
+    members_open = capture("caper-android-narrow-members", "Hide member list")
+    members_toggle = find(members_open, description="Hide member list")
+    members_title = find(members_open, text="Members")
+    assert members_toggle is not None and members_title is not None
+    assert center(members_toggle)[1] < center(members_title)[1], "Member overlay must leave the header toggle exposed"
+    tap(description="Hide member list")
+    wait_for(description="Show member list")
     tap(text="Browse")
     tap(description="Fixture Studio")
     wait_for(text="Fixture Studio")

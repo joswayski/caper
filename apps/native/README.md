@@ -166,6 +166,37 @@ screenshots. Desktop reference size is 1440×900, narrow reference 390×844; bro
 viewport emulation does not prove native mobile or touch behavior. Each platform
 README describes its own preview controls and remaining validation gaps.
 
+### Layout regression checks
+
+Check these states on every native release, not only a wide populated screenshot:
+
+- Guest General uses **Caper** as its shell heading (the server's demo flag and
+  guest permissions are unchanged). Account-space names remain user-defined.
+- Join shares the channel row when space permits. Crowded voice groups may wrap,
+  as in the browser; neither Join nor channel settings may clip. Check the minimum
+  desktop sidebar width, long names, and populated voice rosters.
+- Members stay on the right: a column when chat has enough room, an overlay below
+  the chat header otherwise. The toggle must stay accessible. Never stack members
+  underneath the composer. Check 840px desktop windows as well as 1440px and mobile.
+- Desktop sidebar drag, arrow keys, bounds, double-click reset and restored width
+  must agree with the actual conversation edge. All bottom account controls must
+  remain reachable at the minimum width.
+- Apple workspace/profile/audio dialogs dismiss on the backdrop or Escape on Mac;
+  underlying controls cannot activate through the dialog. Destructive confirmation
+  sheets still use protected native presentation and cannot dismiss during a write.
+- Mac window controls occupy the system title bar, not the space rail. Apple audio
+  sliders retain keyboard/VoiceOver adjustment; iPhone retains the system audio-route
+  picker. Sending a message does not introduce a new keyboard-dismissal policy.
+- Navigation does not show a global loading bar or play a voice-toggle sound for
+  the Members button. Genuine pending-send and disconnected/reconnecting states
+  stay visible; hiding them is not a connection fix.
+
+Linux fixture rendering and egui geometry tests cover the shared Windows/Linux
+implementation, not Windows rendering. Apple UI tests cover resize, inline Join,
+profile backdrop dismissal, audio controls, and narrow layouts but require Xcode.
+Android requires its SDK and emulator/device checks. Do not mark either mobile
+platform visually accepted based on Linux or browser screenshots.
+
 ## Release gates
 
 Passing a build or mock protocol test does **not** establish any of these gates:
