@@ -1761,64 +1761,22 @@ private struct CaperSecondaryButton: ButtonStyle {
     }
 }
 
-/// One track/thumb treatment across Apple platforms, with keyboard and VoiceOver adjustment.
+/// Caper's slider: the platform's own control in Caper's colour. It keeps native
+/// keyboard, VoiceOver and pointer behaviour. A drawn track and thumb only
+/// imitated a slider to accessibility, which could not report its geometry, so
+/// VoiceOver adjustment and UI automation could not move it.
 private struct CaperSlider: View {
     @Binding var value: Double
     let bounds: ClosedRange<Double>
     let step: Double
-    @Environment(\.isEnabled) private var enabled
-    @FocusState private var focused: Bool
     init(value: Binding<Double>, in bounds: ClosedRange<Double>, step: Double) {
         _value = value; self.bounds = bounds; self.step = step
     }
-    private func set(_ proposed: Double) {
-        guard enabled else { return }
-        value = min(bounds.upperBound, max(bounds.lowerBound, bounds.lowerBound + ((proposed - bounds.lowerBound) / step).rounded() * step))
-    }
     var body: some View {
-        #if os(macOS)
-        // The Mac control is AppKit's own slider in Caper's colour: it keeps
-        // native keyboard, VoiceOver and pointer behaviour. A drawn stand-in
-        // lacked the orientation AppKit accessibility clients need to adjust it.
         Slider(value: $value, in: bounds, step: step)
             .tint(CaperTheme.terracottaBright)
             .frame(height: 32)
             .accessibilityValue("\(Int(value))%")
-        #else
-        custom
-        #endif
-    }
-
-    private var custom: some View {
-        GeometryReader { geometry in
-            let width = max(1, geometry.size.width - 16)
-            let fraction = min(1, max(0, (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)))
-            ZStack(alignment: .leading) {
-                Capsule().fill(CaperTheme.border).frame(height: 4)
-                Capsule().fill(CaperTheme.terracottaBright).frame(width: 8 + width * fraction, height: 4)
-                Circle().fill(CaperTheme.text).frame(width: 16, height: 16)
-                    .overlay(Circle().stroke(focused ? CaperTheme.terracottaBright : CaperTheme.border, lineWidth: 2))
-                    .offset(x: width * fraction)
-            }.frame(height: 32).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { gesture in
-                    focused = true
-                    set(bounds.lowerBound + Double((gesture.location.x - 8) / width) * (bounds.upperBound - bounds.lowerBound))
-                })
-        }.frame(height: 32).opacity(enabled ? 1 : 0.45)
-            .focusable().focusEffectDisabled().focused($focused)
-            .accessibilityRepresentation {
-                Slider(value: $value, in: bounds, step: step).accessibilityValue("\(Int(value))%")
-            }
-            .onKeyPress { press in
-                switch press.key {
-                case .leftArrow, .downArrow: set(value - step)
-                case .rightArrow, .upArrow: set(value + step)
-                case .home: set(bounds.lowerBound)
-                case .end: set(bounds.upperBound)
-                default: return .ignored
-                }
-                return .handled
-            }
     }
 }
 
