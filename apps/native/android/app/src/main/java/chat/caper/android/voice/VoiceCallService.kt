@@ -87,13 +87,22 @@ class VoiceCallService : Service() {
     private var turnRenewal: Job? = null
     private var recovery: Job? = null
     private var pullRetry: Job? = null
+    private var mutedForFocus = false
+    private var routeChosenByUser = false
     private var mediaEvents: MediaEventClient? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var audio: AudioManager
     private var focus: AudioFocusRequest? = null
     private val deviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { scope.launch { engine?.invalidateCapture(); updateRoutes() } }
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { scope.launch { engine?.invalidateCapture(); updateRoutes() } }
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { scope.launch { devicesChanged() } }
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { scope.launch { devicesChanged() } }
+    }
+
+    /** A headset plugged in or removed mid-call moves the call there (or back to the speaker). */
+    private fun devicesChanged() {
+        engine?.invalidateCapture()
+        if (engine != null && !routeChosenByUser) chooseDefaultRoute()
+        updateRoutes()
     }
 
     override fun onCreate() {
@@ -240,7 +249,15 @@ class VoiceCallService : Service() {
                 turnRenewal = launch {
                     try {
                         var wait = current.turnRefreshAfterMs() ?: return@launch
-                        while (isActive) { delay(wait.coerceAtLeast(1_000)); wait = current.refreshTurn() ?: return@launch }
+                        while (isActive) {
+                            delay(wait.coerceAtLeast(1_000))
+                            // A dropped request or 5xx retries; the current TURN credentials are still valid.
+                            wait = try { current.refreshTurn() ?: return@launch }
+                            catch (error: Throwable) {
+                                if (error is CancellationException || !transientVoiceControlError(error)) throw error
+                                5_000
+                            }
+                        }
                     } catch (error: Throwable) {
                         if (error is TimeoutCancellationException) {
                             failCall(current, IOException("TURN renewal timed out.", error))
@@ -372,18 +389,13 @@ class VoiceCallService : Service() {
     }
 
     private fun acquireAudio() {
+        mutedForFocus = false
+        routeChosenByUser = false
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
         val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
         if (Build.VERSION.SDK_INT >= 26) {
             focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE).setAudioAttributes(attributes)
-                .setOnAudioFocusChangeListener { change ->
-                    if (change < 0) scope.launch {
-                        val (current, attempt) = currentCall() ?: return@launch
-                        runCatching { current.setMuted(true) {
-                            commitCallResult(current, attempt) { it.copy(muted = true) }
-                        } }.onFailure { localControlFailed(current, attempt, it, "Audio focus was lost; voice status will retry.") }
-                    }
-                }.build().also { request ->
+                .setOnAudioFocusChangeListener { change -> scope.launch { audioFocusChanged(change) } }.build().also { request ->
                     check(audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "Audio focus unavailable." }
                 }
         }
@@ -409,6 +421,26 @@ class VoiceCallService : Service() {
         }.onFailure { Log.w("CaperVoice", "Could not choose an audio route", it) }
     }
 
+    /** Another app took the audio (a phone call, an alarm). A notification that
+     * only asks to duck is ignored, and a temporary loss unmutes again when the
+     * focus comes back, so the user is not left silently muted. */
+    private suspend fun audioFocusChanged(change: Int) {
+        val (current, attempt) = currentCall() ?: return
+        val restore = when (change) {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> return
+            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (!current.muted) mutedForFocus = change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                true
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> if (mutedForFocus) { mutedForFocus = false; false } else return
+            else -> return
+        }
+        runCatching { current.setMuted(restore) {
+            commitCallResult(current, attempt) { it.copy(muted = current.muted) }
+        } }.onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted) } }
+            .onFailure { localControlFailed(current, attempt, it, "Audio focus changed; voice status will retry.") }
+    }
+
     private fun updateRoutes() {
         if (Build.VERSION.SDK_INT < 31) return
         val routes = audio.availableCommunicationDevices.map { AudioRoute(it.id, it.productName?.toString() ?: routeName(it.type)) }
@@ -419,6 +451,7 @@ class VoiceCallService : Service() {
     private fun selectRoute(id: Int) {
         if (Build.VERSION.SDK_INT < 31 || id < 0) return
         val device = audio.availableCommunicationDevices.firstOrNull { it.id == id } ?: return
+        routeChosenByUser = true
         engine?.invalidateCapture()
         if (!audio.setCommunicationDevice(device)) {
             update { it.copy(error = "That audio route is unavailable.") }

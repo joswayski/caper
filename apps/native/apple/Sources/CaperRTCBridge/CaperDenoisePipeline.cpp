@@ -122,7 +122,12 @@ struct CaperDenoisePipeline {
                 int index = static_cast<int>(outputPosition);
                 float fraction = static_cast<float>(outputPosition - index);
                 float value = denoised[index] + (denoised[std::min(index + 1, 479)] - denoised[index]) * fraction;
-                if (!std::isfinite(value)) { failed.store(true, std::memory_order_release); break; }
+                if (!std::isfinite(value)) {
+                    // A bad model frame is silence and a switch to RNNoise, not
+                    // a microphone that stays muted for the rest of the call.
+                    value = 0;
+                    mode.store(fallback ? 2 : 0, std::memory_order_release);
+                }
                 if (!outgoing.push(value, previousHopEpoch == hopEpoch ? hopEpoch : 0)) {
                     failed.store(true, std::memory_order_release); break;
                 }

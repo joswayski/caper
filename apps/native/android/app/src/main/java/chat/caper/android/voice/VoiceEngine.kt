@@ -218,7 +218,9 @@ class VoiceEngine(
     }
 
     suspend fun heartbeat(onParticipants: (List<Participant>) -> Unit) = lock.withLock {
-        check(connectionState.value == PeerConnection.PeerConnectionState.CONNECTED) { "Voice transport disconnected." }
+        // A heartbeat that lands during a transport blip waits for recovery;
+        // throwing here ended the whole call.
+        if (connectionState.value != PeerConnection.PeerConnectionState.CONNECTED) return@withLock
         reconcile(onParticipants)
     }
 
@@ -547,13 +549,15 @@ class VoiceEngine(
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) = Unit
         override fun onIceCandidate(candidate: IceCandidate?) = Unit
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) = Unit
-        override fun onAddStream(stream: MediaStream?) = guardCallback { stream?.audioTracks?.forEach { registerRemote(null, it) } }
+        // Unified Plan reports every remote track through onTrack, with its MID.
+        // WebRTC then also calls onAddTrack (and onAddStream) for the same track;
+        // registering it again without a MID would silence it right after
+        // onTrack enabled it, so a newcomer stayed mute until the next heartbeat.
+        override fun onAddStream(stream: MediaStream?) = Unit
         override fun onRemoveStream(stream: MediaStream?) = Unit
         override fun onDataChannel(channel: DataChannel?) = Unit
         override fun onRenegotiationNeeded() = Unit
-        override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) = guardCallback {
-            (receiver?.track() as? AudioTrack)?.let { registerRemote(null, it) }
-        }
+        override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) = Unit
         override fun onTrack(transceiver: RtpTransceiver?) = guardCallback {
             (transceiver?.receiver?.track() as? AudioTrack)?.let { registerRemote(transceiver.mid, it) }
         }
@@ -628,8 +632,14 @@ internal suspend fun closeDepartedSubscription(
 ) {
     silence()
     try { close() } catch (error: Throwable) {
-        if (error is CancellationException || !transientVoiceControlError(error)) throw error
-        return
+        if (error is CancellationException) throw error
+        // Web closeMid: when a participant leaves, the server already removed
+        // everyone's subscriptions to them, so close answers 404. That is done,
+        // not a lost call.
+        if (error !is ApiException || error.status != 404) {
+            if (!transientVoiceControlError(error)) throw error
+            return
+        }
     }
     forget()
 }

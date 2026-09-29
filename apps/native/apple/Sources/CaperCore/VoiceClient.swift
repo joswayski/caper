@@ -499,7 +499,11 @@ public final class VoiceClient {
                     remoteAudio.removeAll { $0 === track }
                 }
                 participantByMID.removeValue(forKey: mid)
-                try await api.media(channelID: callChannelID, operation: "close", token: token, body: CloseBody(mid: mid))
+                do { try await api.media(channelID: callChannelID, operation: "close", token: token, body: CloseBody(mid: mid)) }
+                catch let failure as APIError where failure.status == 404 {
+                    // Web closeMid: the server already dropped subscriptions to a
+                    // participant who left, so this is done, not lost voice access.
+                }
                 guard generation == attempt, self.peer === peer else { return }
             }
         }
