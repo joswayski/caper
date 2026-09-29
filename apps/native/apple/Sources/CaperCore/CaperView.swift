@@ -332,27 +332,16 @@ private struct SpaceRail: View {
     @Bindable var model: AppModel
     let showLogin: () -> Void
     let create: () -> Void
+    private var createHelp: String {
+        if model.account == nil { return "Sign in to create a space" }
+        if model.canCreateSpace { return "Create space" }
+        return "Space limit reached (\(model.limits?.ownedSpaces ?? 20) owned, \(model.limits?.totalSpaces ?? 100) total)"
+    }
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
                 ForEach(model.spaces) { space in
-                    Button { Task { await model.select(space: space) } } label: {
-                        Text(space.demo ? "C" : String(space.name.prefix(1)).uppercased())
-                            .font(CaperTheme.font(13, weight: .black))
-                            .frame(width: 40, height: 40)
-                            .background(model.selectedSpaceID == space.id ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: model.selectedSpaceID == space.id ? 8 : 12))
-                            .overlay(RoundedRectangle(cornerRadius: model.selectedSpaceID == space.id ? 8 : 12).stroke(model.selectedSpaceID == space.id ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border))
-                    }
-                    .buttonStyle(.plain).help(space.demo ? "Caper" : space.name)
-                    .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
-                    .accessibilityLabel(space.demo ? "Caper" : space.name)
-                    .accessibilityValue(model.openingSpaceID == space.id ? "Opening" : model.selectedSpaceID == space.id ? "Selected" : "")
-                    .overlay(alignment: .leading) {
-                        if model.selectedSpaceID == space.id {
-                            RoundedRectangle(cornerRadius: 2).fill(CaperTheme.terracottaBright).frame(width: 3, height: 24).offset(x: -10)
-                        }
-                    }
+                    SpaceRailButton(model: model, space: space)
                 }
                 Button(action: model.account == nil ? showLogin : create) {
                     CaperIcon(name: "plus", size: 20).foregroundStyle(CaperTheme.terracottaBright)
@@ -362,12 +351,44 @@ private struct SpaceRail: View {
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border, style: StrokeStyle(lineWidth: 1, dash: [4])))
                 }
                 .buttonStyle(.plain).disabled(model.account != nil && !model.canCreateSpace)
-                .help(model.account == nil ? "Sign in to create a space" : model.canCreateSpace ? "Create space"
-                      : "Space limit reached (\(model.limits?.ownedSpaces ?? 20) owned, \(model.limits?.totalSpaces ?? 100) total)")
+                .help(createHelp)
             }.padding(.vertical, 14).frame(maxWidth: .infinity)
         }
         .background(CaperTheme.blackout)
         .overlay(alignment: .trailing) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+    }
+}
+
+/// One space in the rail. Kept out of SpaceRail's body so the Swift type
+/// checker handles each piece in reasonable time.
+private struct SpaceRailButton: View {
+    @Bindable var model: AppModel
+    let space: Space
+    private var selected: Bool { model.selectedSpaceID == space.id }
+    private var name: String { space.demo ? "Caper" : space.name }
+    private var corner: CGFloat { selected ? 8 : 12 }
+    private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
+    private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
+    private var state: String { model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : "" }
+
+    var body: some View {
+        Button { Task { await model.select(space: space) } } label: {
+            Text(space.demo ? "C" : String(space.name.prefix(1)).uppercased())
+                .font(CaperTheme.font(13, weight: .black))
+                .frame(width: 40, height: 40)
+                .background(fill)
+                .clipShape(RoundedRectangle(cornerRadius: corner))
+                .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
+        }
+        .buttonStyle(.plain).help(name)
+        .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
+        .accessibilityLabel(name)
+        .accessibilityValue(state)
+        .overlay(alignment: .leading) {
+            if selected {
+                RoundedRectangle(cornerRadius: 2).fill(CaperTheme.terracottaBright).frame(width: 3, height: 24).offset(x: -10)
+            }
+        }
     }
 }
 
