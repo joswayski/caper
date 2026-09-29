@@ -67,13 +67,16 @@ export default function Home({ account, history, initialNow, latestChanges, down
           <p className="hero-lede">Chat with anyone, about anything.</p>
           <div className="app-downloads">
             {download ? <>
-              <a className="download-button" href={download.url}>{download.label}</a>
+              <div className="download-actions">
+                <a className="download-button" href={download.url}><PlatformIcon platform={platform!} />{download.label}</a>
+                <a className="source-button" href={repositoryUrl} target="_blank" rel="noreferrer"><GitHubIcon />View source</a>
+              </div>
+              <p><a href={`${repositoryUrl}/releases/tag/native-latest`}>Also available for {platform === "macos" ? "Windows and Linux" : platform === "windows" ? "macOS and Linux" : "macOS and Windows"}</a></p>
               <p>Preview · {download.detail}
                 {platform === "macos" && <> · <a href={intelMacDownload}>Intel Mac</a></>}
                 {platform === "linux-deb" && <> · <a href={downloads["linux-tar"].url}>.tar.gz</a></>}
                 {platform === "linux-tar" && <> · <a href={downloads["linux-deb"].url}>.deb for Ubuntu / Debian</a></>}
               </p>
-              <p><a href={`${repositoryUrl}/releases/tag/native-latest`}>All desktop downloads</a></p>
             </> : <p>Desktop previews for <a href={`${repositoryUrl}/releases/tag/native-latest`}>Mac, Windows, and Linux</a>.</p>}
             <p>Mobile apps are in development.</p>
           </div>
@@ -130,6 +133,16 @@ function formatRelativeTime(committedAt: string, now: number) {
   }
 
   return relativeTimeFormatter.format(0, "second");
+}
+
+// Platform logo paths shared with Captures' homepage download buttons.
+function PlatformIcon({ platform }: { platform: DownloadPlatform }) {
+  const path = platform === "macos"
+    ? "M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"
+    : platform === "windows"
+      ? "M3 5.15 11.15 4v7.35H3V5.15Zm9.15-1.45L21 2.4v8.95h-8.85V3.7ZM3 12.85h8.15V20.2L3 19.05v-6.2Zm9.15 0H21v8.95l-8.85-1.45v-7.5Z"
+      : "M12 2.2c-2.05 0-3.7 1.7-3.7 4 0 .72.18 1.38.5 1.94-2.28 1.32-3.85 3.55-4.38 6.1-.52 2.5.05 4.28 1.55 5.15-.62.42-1.02 1.1-1.02 1.88 0 1.42 1.48 2.18 3.05 2.52 1.42.3 3.12.36 5 .36s3.58-.06 5-.36c1.57-.34 3.05-1.1 3.05-2.52 0-.78-.4-1.46-1.02-1.88 1.5-.87 2.07-2.65 1.55-5.15-.53-2.55-2.1-4.78-4.38-6.1.32-.56.5-1.22.5-1.94 0-2.3-1.65-4-3.7-4ZM10.2 5.55c.45-.3.95.05.88.58-.06.46-.58.72-1.02.45-.44-.26-.42-.82.14-1.03Zm3.8 0c.56.21.58.77.14 1.03-.44.27-.96.01-1.02-.45-.07-.53.43-.88.88-.58ZM9.35 16.85c.9.5 1.75.78 2.65.78s1.75-.28 2.65-.78c.28-.16.6.02.6.34 0 .78-1.05 1.5-3.25 1.5s-3.25-.72-3.25-1.5c0-.32.32-.5.6-.34Z";
+  return <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" d={path} /></svg>;
 }
 
 function GitHubIcon() {

@@ -3,7 +3,7 @@ export type DownloadPlatform = "macos" | "windows" | "linux-deb" | "linux-tar";
 const release = "https://github.com/joswayski/caper/releases/download/native-latest";
 
 export const downloads = {
-  macos: { label: "Download for Mac", detail: "Apple Silicon", url: `${release}/Caper-macOS-Apple-Silicon.zip` },
+  macos: { label: "Download for macOS", detail: "Apple Silicon", url: `${release}/Caper-macOS-Apple-Silicon.zip` },
   windows: { label: "Download for Windows", detail: "x64 · ZIP", url: `${release}/Caper-Windows-x64.zip` },
   "linux-deb": { label: "Download for Linux", detail: "x64 · .deb", url: `${release}/Caper-Linux-x64.deb` },
   "linux-tar": { label: "Download for Linux", detail: "x64 · .tar.gz", url: `${release}/Caper-Linux-x64.tar.gz` },
