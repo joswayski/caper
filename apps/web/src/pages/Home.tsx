@@ -72,12 +72,12 @@ export default function Home({ account, history, initialNow, latestChanges, down
             {download ?
               <p><a href={`${repositoryUrl}/releases/tag/native-latest`}>Also available for {platform === "macos" ? "Windows and Linux" : platform === "windows" ? "macOS and Linux" : "macOS and Windows"}</a></p>
               : <p>Available for <a href={`${repositoryUrl}/releases/tag/native-latest`}>macOS, Windows, and Linux</a>.</p>}
-            <p>Mobile apps are coming soon.</p>
           </div>
           <p className="experimental-note">
-            Caper may contain bugs or incomplete features. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a> or by email:
+            Mobile apps are coming soon. Caper may contain bugs or incomplete features. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a> or by email:
           </p>
           <div className="feedback-email"><CopyEmailButton email={contactEmail} /></div>
+          <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">José Valerio</a></p>
         </div>
 
         <LiveWindow account={account} history={history} active={open} onActiveChange={setOpen} />
