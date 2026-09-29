@@ -96,8 +96,10 @@ Outputs are unsigned:
 - `dist/Caper-windows-x64.zip` (self-update payload / optional portable archive)
 
 Windows Setup installs to `%LOCALAPPDATA%\Programs\Caper\app`, creates Start
-and desktop shortcuts, and registers an uninstaller in Installed apps. Neither
-installation nor launch requires a terminal or administrator access. The updater
+and desktop shortcuts, and registers an uninstaller in Installed apps. Opening
+Setup immediately shows installation progress, then closes and opens Caper;
+there are no Welcome/Next/Finish clicks. Silent `/S` installs do not launch Caper.
+Neither installation nor launch requires a terminal or administrator access. The updater
 replaces only `app`, preserving the uninstaller and shortcuts. Close Caper before
 installing or uninstalling. CI runs `test-installer.ps1` on a clean Windows host
 to check the PE GUI subsystem, install/reinstall, file hashes, shortcuts and removal.

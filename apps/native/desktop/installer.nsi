@@ -7,13 +7,13 @@ OutFile "${OUTPUT}"
 InstallDir "$LOCALAPPDATA\Programs\Caper"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
+AutoCloseWindow true
+ShowInstDetails nevershow
 Icon "resources/caper.ico"
 UninstallIcon "resources/caper.ico"
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_RUN "$INSTDIR\app\Caper.exe"
-!insertmacro MUI_PAGE_WELCOME
+; Opening Setup immediately installs; no Welcome, Next, or Finish clicks.
 !insertmacro MUI_PAGE_INSTFILES
-!insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
@@ -25,6 +25,13 @@ Function .onInit
   ${EndIf}
   SetShellVarContext current
   SetRegView 64
+FunctionEnd
+
+Function .onInstSuccess
+  ; Automated /S installs must not open a GUI or initialize audio devices.
+  IfSilent done
+  Exec '"$INSTDIR\app\Caper.exe"'
+  done:
 FunctionEnd
 
 Section "Caper"

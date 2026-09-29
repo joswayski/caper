@@ -91,8 +91,9 @@ newest build:
 - Windows: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe
 - Linux: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
 
-Windows users run Setup once, then open Caper from Start or the desktop shortcut;
-there is no extraction or console window. It installs per-user without admin
+Windows users open Setup once; it installs immediately and opens Caper, with no
+Welcome/Next/Finish clicks. Later launches use Start or the desktop shortcut.
+There is no extraction or console window. It installs per-user without admin
 access and appears in Installed apps for removal. Close any old portable copy
 first; the installer does not remove downloads from previous versions.
 Linux users on Ubuntu 24.04 or compatible Debian-based systems open the `.deb`
