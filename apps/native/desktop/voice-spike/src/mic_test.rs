@@ -255,6 +255,11 @@ impl MicTestControl {
         .then_some(devices.capture_epoch)
     }
 
+    /// A failed start cancels this control for good; nothing can reopen it.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
     pub(crate) fn requested_epoch(&self) -> Option<u64> {
         let devices = self.devices.lock().ok()?;
         (self.live_recording_enabled() && !devices.released).then_some(devices.capture_epoch)

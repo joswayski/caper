@@ -518,6 +518,12 @@ public final class VoiceClient {
                     try checkCurrentAttempt(attempt, peer: peer)
                     unavailable = true
                     continue
+                } catch let failure as APIError where failure.status == 409 {
+                    // Another negotiation (an ICE restart for TURN renewal) is
+                    // pending on the server; pull this track on the next retry.
+                    try checkCurrentAttempt(attempt, peer: peer)
+                    unavailable = true
+                    continue
                 }
                 try checkCurrentAttempt(attempt, peer: peer)
                 guard let mid = response.tracks?.first?.mid, !mid.isEmpty else { throw VoiceError.invalidAnswer }

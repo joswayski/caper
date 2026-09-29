@@ -470,6 +470,18 @@ impl Voice {
             }
             gateway.stop();
             session.leave();
+            // The loop also ends when the media side gives up on its own (a
+            // capture peer that could not reopen, a closed transport). Without
+            // this the window kept showing "Connected" to a dead call. After
+            // the user leaves, the generation has moved on and this is ignored.
+            report(
+                &events,
+                &repaint,
+                Report::Failed(
+                    generation,
+                    VoiceError::Local("Voice disconnected. Join again to reconnect.".into()),
+                ),
+            );
         });
     }
 
@@ -862,7 +874,10 @@ impl Voice {
                 (false, None) => control.select_default_output(),
             };
             if let Err(error) = result {
-                self.leave();
+                // The call stays up on the previous device when it can.
+                if control.is_cancelled() {
+                    self.leave();
+                }
                 self.device_error = Some(error);
                 return;
             }

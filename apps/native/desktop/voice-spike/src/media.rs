@@ -957,13 +957,29 @@ impl JoinControl {
                 audio.microphone.set_enabled(false);
                 audio.source.clear_buffer();
             }
-            let result = capture.as_ref().map(|capture| match guid {
-                Some(guid) => capture.select_input(guid),
-                None => capture.select_default_input(),
+            let mut reverted = false;
+            let result = capture.as_ref().map(|capture| {
+                let chosen = match guid {
+                    Some(guid) => capture.select_input(guid),
+                    None => capture.select_default_input(),
+                };
+                if chosen.is_err() {
+                    // An unplugged or busy microphone keeps the call on the one
+                    // in use before this switch; only if that fails too does
+                    // the call end.
+                    reverted = match intent.input.as_ref() {
+                        Some(Some(previous)) => capture.select_input(previous),
+                        _ => capture.select_default_input(),
+                    }
+                    .is_ok();
+                }
+                chosen
             });
             if let Some(audio) = local.as_mut() {
                 audio.source.clear_buffer();
-                if was_enabled && result.as_ref().is_none_or(Result::is_ok) && !self.is_cancelled()
+                if was_enabled
+                    && (reverted || result.as_ref().is_none_or(Result::is_ok))
+                    && !self.is_cancelled()
                 {
                     audio.microphone.set_enabled(true);
                 }
@@ -971,9 +987,10 @@ impl JoinControl {
             if result.as_ref().is_none_or(Result::is_ok) {
                 intent.input = Some(guid.map(str::to_owned));
             }
-            result.unwrap_or(Ok(()))
+            (result.unwrap_or(Ok(())), reverted)
         };
-        if result.is_err() {
+        let (result, reverted) = result;
+        if result.is_err() && !reverted {
             self.cancel();
         }
         result
@@ -997,23 +1014,31 @@ impl JoinControl {
                 .lock()
                 .map_err(|_| "device intent unavailable")?;
             let local = self.local.lock().map_err(|_| "local audio unavailable")?;
+            let mut reverted = false;
             let result = local.as_ref().map(|local| {
                 if match guid {
                     Some(guid) => select_device(&local.factory, guid, false),
                     None => local.factory.select_default_playout_device(),
                 } {
-                    Ok(())
-                } else {
-                    local.factory.set_adm_playout_enabled(false);
-                    Err("selected speaker is unavailable".into())
+                    return Ok(());
                 }
+                // Keep playing on the speaker in use before this switch.
+                reverted = match intent.output.as_ref() {
+                    Some(Some(previous)) => select_device(&local.factory, previous, false),
+                    _ => local.factory.select_default_playout_device(),
+                };
+                if !reverted {
+                    local.factory.set_adm_playout_enabled(false);
+                }
+                Err("selected speaker is unavailable".into())
             });
             if result.as_ref().is_none_or(Result::is_ok) {
                 intent.output = Some(guid.map(str::to_owned));
             }
-            result.unwrap_or(Ok(()))
+            (result.unwrap_or(Ok(())), reverted)
         };
-        if result.is_err() {
+        let (result, reverted) = result;
+        if result.is_err() && !reverted {
             self.cancel();
         }
         result
@@ -1458,7 +1483,13 @@ impl NativeSession {
                         result = live_microphone.reconnect_live(requested, selected_input.as_deref()) => result,
                     };
                     if !matches!(rebound, Ok(true)) {
-                        if rebound.is_err() && capture_gate.requested_epoch() == Some(requested) {
+                        // A failed reopen (device busy or unplugged) cancels the
+                        // private capture for good. End the call so the user is
+                        // told, instead of looking unmuted while sending silence.
+                        if rebound.is_err()
+                            && (capture_gate.requested_epoch() == Some(requested)
+                                || capture_gate.is_cancelled())
+                        {
                             break;
                         }
                         continue;
@@ -1471,6 +1502,9 @@ impl NativeSession {
                     active_epoch = epoch;
                 }
                 if epoch.is_none() {
+                    if capture_gate.is_cancelled() {
+                        break;
+                    }
                     tokio::select! {
                         biased;
                         _ = capture_stopped.changed() => break,
@@ -1890,20 +1924,29 @@ impl NativeSession {
             .keys()
             .cloned()
             .collect();
+        // One track that fails for a moment must not skip the others or end the
+        // call; the next poll (3 s, or sooner on a pushed snapshot) retries it.
         for track in subscribed {
-            if !available.contains_key(&track) {
-                self.unsubscribe(&track).await?;
+            if !available.contains_key(&track)
+                && let Err(error) = self.unsubscribe(&track).await
+                && error.terminal()
+            {
+                return Err(error);
             }
         }
         for (track, kind) in available {
+            // Release the lock before subscribing: subscribe takes it again.
+            let subscribed = self
+                .subscriptions
+                .lock()
+                .map_err(|_| "voice subscription state unavailable")?
+                .contains_key(&track);
             if kind == "microphone"
-                && !self
-                    .subscriptions
-                    .lock()
-                    .map_err(|_| "voice subscription state unavailable")?
-                    .contains_key(&track)
+                && !subscribed
+                && let Err(error) = self.subscribe(&track).await
+                && error.terminal()
             {
-                self.subscribe(&track).await?;
+                return Err(error);
             }
         }
         Ok(snapshot)
@@ -1921,6 +1964,9 @@ impl NativeSession {
             {
                 return Ok(());
             }
+            // Another negotiation (a TURN-renewal ICE restart, a pull in flight)
+            // is pending on the server; try this track again on the next poll.
+            Err(error) if error.status == Some(409) => return Ok(()),
             Err(error) => return Err(self.fail_closed(error)),
         };
         let mid = response
@@ -1946,14 +1992,28 @@ impl NativeSession {
                 .set_local_description(answer)
                 .await
                 .map_err(|error| error.to_string())?;
-            self.api
+            if let Err(error) = self
+                .api
                 .post_empty(
                     "negotiate",
                     &self.token,
                     json!({"sessionDescription":local_sdp(&self.peer)?}),
                 )
                 .await
-                .map_err(|error| self.fail_closed(error))?;
+            {
+                if error.retryable() || error.status == Some(409) {
+                    // Forget the pull so the next poll subscribes it again,
+                    // instead of keeping a track that never plays.
+                    self.subscriptions
+                        .lock()
+                        .map_err(|_| "voice subscription state unavailable")?
+                        .remove(track_id);
+                    if error.status == Some(409) {
+                        return Ok(());
+                    }
+                }
+                return Err(self.fail_closed(error));
+            }
         } else if response.requires_immediate_renegotiation {
             return Err("media service requested negotiation without an offer".into());
         }
@@ -1969,10 +2029,18 @@ impl NativeSession {
             .cloned();
         self.local_control.remove_remote_track(track_id);
         if let Some(mid) = mid {
-            self.api
+            match self
+                .api
                 .post_empty("close", &self.token, json!({"mid":mid}))
                 .await
-                .map_err(|error| self.fail_closed(error))?;
+            {
+                Ok(()) => {}
+                // Web closeMid: when a participant leaves, the server already
+                // removed everyone's subscriptions to them, so close answers
+                // 404. That is closed, not a reason to end this call.
+                Err(error) if error.status == Some(404) => {}
+                Err(error) => return Err(self.fail_closed(error)),
+            }
             self.subscriptions
                 .lock()
                 .map_err(|_| "voice subscription state unavailable")?
@@ -3631,6 +3699,7 @@ mod tests {
                     r#"{"error":"temporary"}"#,
                 ),
                 ("close", "204 No Content", ""),
+                ("close", "404 Not Found", r#"{"error":"track not found"}"#),
                 ("snapshot", "403 Forbidden", r#"{"error":"access revoked"}"#),
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
@@ -3704,6 +3773,17 @@ mod tests {
         );
         session.unsubscribe("departed").await.unwrap();
         assert!(session.subscriptions.lock().unwrap().is_empty());
+        // The server already dropped subscriptions to a participant who left:
+        // close answers 404, which is closed, not a reason to end the call.
+        session
+            .subscriptions
+            .lock()
+            .unwrap()
+            .insert("left".into(), "left-mid".into());
+        session.unsubscribe("left").await.unwrap();
+        assert!(session.subscriptions.lock().unwrap().is_empty());
+        assert_eq!(session.token, "media-token");
+        assert_ne!(peer.connection_state(), PeerConnectionState::Closed);
         let error = session.snapshot().await.unwrap_err();
         assert!(
             matches!(error, VoiceError::Media(MediaError { status: Some(403), ref detail, .. }) if detail == "access revoked")

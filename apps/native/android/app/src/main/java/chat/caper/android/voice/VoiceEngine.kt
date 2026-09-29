@@ -284,6 +284,9 @@ class VoiceEngine(
         } catch (error: ApiException) {
             // A newcomer's track is listed at publication but pullable only once its media flows.
             if (departedTrack(error)) return false
+            // Another negotiation (an ICE restart for TURN renewal) is pending on
+            // the server; pull this track on the next retry instead of ending the call.
+            if (error.status == 409) return false
             throw error
         }
         val mid = subscriptionMid(response)
