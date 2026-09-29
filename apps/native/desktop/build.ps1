@@ -19,7 +19,7 @@ $OrtArchive = Join-Path $Native "target\onnxruntime-win-x64-1.23.2.zip"
 $OrtExtract = Join-Path $Native "target\onnxruntime-win-x64-1.23.2"
 New-Item (Join-Path $Native "target") -ItemType Directory -Force | Out-Null
 if (-not (Test-Path $OrtArchive)) {
-  Invoke-WebRequest 'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip' -OutFile $OrtArchive
+  Invoke-WebRequest 'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip' -OutFile $OrtArchive -MaximumRetryCount 6 -RetryIntervalSec 5
 }
 if ((Get-FileHash $OrtArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd') {
   throw 'ONNX Runtime download hash mismatch'
