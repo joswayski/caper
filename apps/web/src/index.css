@@ -131,7 +131,21 @@ body {
     filter .22s ease-in;
 }
 .hero-copy > .hero-lede { max-width: 580px; margin: 26px 0 0; color: #d1d3d4; font-size: clamp(1.12rem, 1.5vw, 1.3rem); font-weight: 600; line-height: 1.5; }
-.hero-copy > .made-by { margin: 32px 0 0; color: var(--text-muted); font-size: .875rem; font-weight: 500; }
+.app-downloads { margin-top: 28px; width: 100%; max-width: 380px; font-size: .8125rem; line-height: 1.55; }
+.app-downloads a { color: var(--text); text-underline-offset: 4px; }
+.app-downloads a:hover { color: var(--terracotta-bright); }
+.app-downloads a:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
+.download-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.app-downloads .download-button, .app-downloads .source-button { display: inline-flex; justify-content: center; align-items: center; gap: 10px; min-height: 46px; padding: 10px 16px; border: 1px solid transparent; border-radius: 999px; font-size: .8125rem; font-weight: 700; text-decoration: none; white-space: nowrap; transition: background-color .2s ease, border-color .2s ease; }
+.app-downloads .download-button { color: var(--blackout); background: var(--text); }
+.app-downloads .download-button:hover { color: var(--blackout); background: #fff; }
+.app-downloads .source-button { color: var(--text); border-color: var(--border); background: var(--surface); }
+.app-downloads .source-button:hover { color: var(--text); border-color: var(--text-muted); }
+.download-actions svg { width: 18px; height: 18px; flex: none; }
+.app-downloads p { margin: 8px 0 0; color: var(--text-muted); font-size: .75rem; }
+.app-downloads p a { color: inherit; text-decoration: none; }
+.app-downloads p a:hover { color: var(--text); text-decoration: underline; }
+.hero-copy > .made-by { margin: 20px 0 0; color: var(--text-muted); font-size: .75rem; font-weight: 400; }
 .made-by a,
 .experimental-note a { color: var(--text); text-underline-offset: 4px; }
 .hero-copy > .experimental-note { max-width: 380px; margin-top: 12px; color: var(--text-muted); font-size: .8125rem; font-weight: 400; line-height: 1.55; }
@@ -183,7 +197,8 @@ body {
   .hero-copy > h1 { order: 2; }
   .hero-copy > .hero-lede { order: 3; }
   .hero .live-stage { order: 4; width: 100%; aspect-ratio: 1.3; min-height: 0; margin-top: 20px; }
-  .hero-copy > .made-by { order: 7; }
+  .hero-copy > .app-downloads { order: 5; }
+  .hero-copy > .made-by { order: 10; }
   .hero-copy > .experimental-note { order: 8; max-width: 560px; }
   .hero-copy > .feedback-email { order: 9; }
 }

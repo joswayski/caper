@@ -4,11 +4,10 @@ import type { Account } from "../account/client";
 import type { GeneralChatHistory } from "../chat/types";
 import Call from "../pages/Call";
 import Spaces from "../spaces/Spaces";
-import LivePreview from "./LivePreview";
 import { attachLiveMotion } from "./liveMotion";
 import "./live-window.css";
 
-export type LiveStatus = "live" | "connecting" | "preview";
+export type LiveStatus = "live" | "connecting";
 
 type LiveWindowProps = {
   account: Account | null;
@@ -19,12 +18,10 @@ type LiveWindowProps = {
 };
 
 /**
- * The homepage's 3D window. With the public channel available it contains the
- * real #general room (chat, voice roster and controls); opening it turns the
- * window into the app. Otherwise it plays a labeled preview.
+ * The homepage's 3D window always renders the real #general room, including its
+ * loading and unavailable states. Opening it enables chat and voice interaction.
  */
 export default function LiveWindow({ account, history, active, onActiveChange, onStatusChange }: LiveWindowProps) {
-  const live = !!history || !!account;
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
   const activatorRef = useRef<HTMLButtonElement>(null);
@@ -37,7 +34,7 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
   const [engaged, setEngaged] = useState(false);
   const [online, setOnline] = useState(false);
   const [touched, setTouched] = useState(false);
-  const status: LiveStatus = !live ? "preview" : online ? "live" : "connecting";
+  const status: LiveStatus = online ? "live" : "connecting";
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
@@ -45,13 +42,13 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
     if (!stage || !scene) return;
     controller.current = attachLiveMotion(stage, scene, {
       bounds: () => stage.closest<HTMLElement>("[data-live-bounds]"),
-      activate: () => { if (live) change.current(true); },
+      activate: () => change.current(true),
       deactivate: () => change.current(false),
       interacted: () => setTouched(true),
     });
     setReady(true);
     return () => { controller.current?.detach(); controller.current = undefined; };
-  }, [live]);
+  }, []);
 
   useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
 
@@ -111,19 +108,16 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
         <div className="live-shadow" aria-hidden="true" />
         {[5, 4, 3, 2, 1].map((depth) => <div key={depth} className="live-slab" style={{ "--z": -depth * 5 } as CSSProperties} aria-hidden="true" />)}
         <div className="live-window">
-          {status === "preview" && <span className="live-status" role="status">Preview</span>}
           {active && <button className="live-close" type="button" data-live-control onClick={() => onActiveChange(false)} aria-label="Exit demo" title="Exit demo">
             {sheet ? <X aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
           </button>}
           <div className="live-app" inert={!active}>
             {account
               ? <Spaces embedded engaged={engaged} initialAccount={account} initialHistory={history ?? undefined} onChatOnlineChange={setOnline} />
-              : history
-              ? <Call embedded engaged={engaged} initialHistory={history} onChatOnlineChange={setOnline} />
-              : <LivePreview />}
+              : <Call embedded engaged={engaged} initialHistory={history ?? undefined} onChatOnlineChange={setOnline} />}
           </div>
         </div>
-        {live && !active && <button
+        {!active && <button
           ref={activatorRef}
           className="live-activator"
           type="button"
