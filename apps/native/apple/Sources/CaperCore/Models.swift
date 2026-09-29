@@ -183,6 +183,13 @@ public enum MessageValidation {
 public struct PendingMessage: Equatable, Sendable {
     public let id: String
     public let text: String
+    public let createdAt: String
+
+    public init(id: String, text: String, createdAt: String = ISO8601DateFormatter().string(from: Date())) {
+        self.id = id
+        self.text = text
+        self.createdAt = createdAt
+    }
 }
 
 /// Owns the send/replay invariants shared by HTTP confirmation and gateway

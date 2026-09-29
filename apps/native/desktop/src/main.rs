@@ -15,6 +15,7 @@ mod updates;
 mod voice;
 mod worker;
 
+use chrono::{DateTime, Local, TimeZone};
 use effects::{Effect, Effects};
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use gateway::GatewayEvent;
@@ -68,6 +69,7 @@ enum NavIcon {
 struct PendingSend {
     id: String,
     text: String,
+    created_at: String,
     sending: bool,
     rejection: Option<String>,
 }
@@ -78,12 +80,14 @@ impl PendingSend {
             || Self {
                 id: uuid::Uuid::new_v4().to_string(),
                 text: draft.into(),
+                created_at: Local::now().to_rfc3339(),
                 sending: true,
                 rejection: None,
             },
             |pending| Self {
                 id: pending.id.clone(),
                 text: pending.text.clone(),
+                created_at: pending.created_at.clone(),
                 sending: true,
                 rejection: None,
             },
@@ -4478,10 +4482,21 @@ impl CaperApp {
                     // Web's history header: older-page status above the messages.
                     self.history_header(ui);
                     let messages: Vec<_> = self.timeline.messages().cloned().collect();
+                    let mut last_date = None;
                     for message in messages {
+                        if let Some(date) = display_date(&message.created_at)
+                            && take_date_divider(&mut last_date, &date.key)
+                        {
+                            date_divider(ui, &date.label);
+                        }
                         self.message(ui, &message);
                     }
                     if let Some(pending) = self.pending.clone() {
+                        if let Some(pending_date) = display_date(&pending.created_at)
+                            && take_date_divider(&mut last_date, &pending_date.key)
+                        {
+                            date_divider(ui, &pending_date.label);
+                        }
                         let author = self.session.as_ref().map_or_else(
                             || self.identity_name(),
                             |session| session.author.name.clone(),
@@ -5800,6 +5815,34 @@ fn message_row(
         });
 }
 
+fn date_divider(ui: &mut egui::Ui, label: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        let available = (ui.available_width() - 36.0).max(0.0);
+        let text = RichText::new(label).size(10.0).color(MUTED);
+        let label_width = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(label.into(), egui::FontId::proportional(10.0), MUTED)
+                .size()
+                .x
+        });
+        let rule_width = ((available - label_width - 20.0) / 2.0).max(0.0);
+        let rule = |ui: &mut egui::Ui| {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(rule_width, 1.0), egui::Sense::hover());
+            ui.painter().line_segment(
+                [rect.left_center(), rect.right_center()],
+                Stroke::new(1.0, BORDER),
+            );
+        };
+        rule(ui);
+        ui.add_space(10.0);
+        ui.label(text);
+        ui.add_space(10.0);
+        rule(ui);
+    });
+}
+
 fn avatar(ui: &mut egui::Ui, name: &str, size: f32, speaking: bool) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     ui.painter()
@@ -5892,22 +5935,41 @@ fn member_page_ids(detail: &SpaceDetail, page: usize) -> Vec<String> {
         .collect()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct DisplayDate {
+    key: String,
+    label: String,
+}
+
+fn timestamp_parts<Tz: TimeZone>(timestamp: &str, timezone: &Tz) -> Option<(DisplayDate, String)>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let parsed = DateTime::parse_from_rfc3339(timestamp).ok()?;
+    let local = parsed.with_timezone(timezone);
+    Some((
+        DisplayDate {
+            key: local.format("%Y-%m-%d").to_string(),
+            label: local.format("%A, %B %-d, %Y").to_string(),
+        },
+        local.format("%-I:%M %p").to_string(),
+    ))
+}
+
+fn display_date(timestamp: &str) -> Option<DisplayDate> {
+    timestamp_parts(timestamp, &Local).map(|parts| parts.0)
+}
+
+fn take_date_divider(previous: &mut Option<String>, date: &str) -> bool {
+    if previous.as_deref() == Some(date) {
+        return false;
+    }
+    *previous = Some(date.to_owned());
+    true
+}
+
 fn display_time(timestamp: &str) -> String {
-    let Some(value) = timestamp.get(11..16) else {
-        return timestamp.to_owned();
-    };
-    let Some((hour, minute)) = value.split_once(':') else {
-        return value.to_owned();
-    };
-    let Ok(hour) = hour.parse::<u8>() else {
-        return value.to_owned();
-    };
-    let suffix = if hour < 12 { "AM" } else { "PM" };
-    let hour = match hour % 12 {
-        0 => 12,
-        value => value,
-    };
-    format!("{hour}:{minute} {suffix}")
+    timestamp_parts(timestamp, &Local).map_or_else(|| timestamp.to_owned(), |parts| parts.1)
 }
 
 fn configure(context: &egui::Context) {
@@ -6422,13 +6484,15 @@ fn main() -> eframe::Result {
 mod tests {
     use super::{
         CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingSend, Phase, endpoint, media,
-        member_page_ids, normalize_channel, permanent_send_rejection, voice,
+        member_page_ids, normalize_channel, permanent_send_rejection, take_date_divider,
+        timestamp_parts, voice,
     };
     use crate::model::{
         Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
         SpaceDetail, Spaces,
     };
     use crate::worker::LoadError;
+    use chrono::FixedOffset;
     use eframe::egui;
 
     fn render(
@@ -6450,6 +6514,32 @@ mod tests {
                 app.dialogs(context);
             },
         )
+    }
+
+    #[test]
+    fn message_dates_and_times_share_the_local_calendar_boundary() {
+        let pacific = FixedOffset::west_opt(8 * 60 * 60).unwrap();
+        let (before, before_time) = timestamp_parts("2026-01-02T07:59:00Z", &pacific).unwrap();
+        let (after, after_time) = timestamp_parts("2026-01-02T08:00:00Z", &pacific).unwrap();
+
+        assert_eq!(before.key, "2026-01-01");
+        assert_eq!(before.label, "Thursday, January 1, 2026");
+        assert_eq!(before_time, "11:59 PM");
+        assert_eq!(after.key, "2026-01-02");
+        assert_eq!(after.label, "Friday, January 2, 2026");
+        assert_eq!(after_time, "12:00 AM");
+    }
+
+    #[test]
+    fn date_dividers_cover_first_and_day_changes_without_pending_duplicates() {
+        let mut previous = None;
+        assert!(take_date_divider(&mut previous, "2026-09-28"));
+        assert!(!take_date_divider(&mut previous, "2026-09-28"));
+        assert!(take_date_divider(&mut previous, "2026-09-29"));
+        // A pending message on the latest loaded message's day reuses its divider.
+        assert!(!take_date_divider(&mut previous, "2026-09-29"));
+        // A pending-only conversation still receives the first divider.
+        assert!(take_date_divider(&mut None, "2026-09-29"));
     }
 
     fn click(app: &mut CaperApp, context: &egui::Context, pos: egui::Pos2) {
@@ -7555,10 +7645,12 @@ mod tests {
 
     #[test]
     fn unknown_send_retry_preserves_id_and_original_text() {
-        let first = PendingSend::prepare(None, "first payload");
+        let mut first = PendingSend::prepare(None, "first payload");
+        first.created_at = "2026-09-28T23:59:00Z".into();
         let retry = PendingSend::prepare(Some(&first), "edited payload");
         assert_eq!(retry.id, first.id);
         assert_eq!(retry.text, "first payload");
+        assert_eq!(retry.created_at, "2026-09-28T23:59:00Z");
         assert!(retry.sending);
     }
 

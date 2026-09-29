@@ -30,6 +30,7 @@ tokio = { version = "1", default-features = false }
 tokio-stream = "0.1"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence"] }
 egui_extras = { version = "0.33.3", default-features = false, features = ["svg"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
