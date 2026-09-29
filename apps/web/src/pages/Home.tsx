@@ -75,10 +75,10 @@ export default function Home({ account, history, initialNow, latestChanges, down
           </div>
           <p className="experimental-note">
             Caper is a work in progress and may contain bugs or incomplete features. Mobile apps are available. If you&apos;d like access or have feedback, reach out on{" "}
-            <a href={xUrl} target="_blank" rel="noreferrer">X</a>{" "}
-            or <a href={`mailto:${contactEmail}`}>email</a>.
+            <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a>{" "}
+            or by email:
           </p>
-          <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
+          <div className="feedback-email"><CopyEmailButton email={contactEmail} /></div>
         </div>
 
         <LiveWindow account={account} history={history} active={open} onActiveChange={setOpen} />
@@ -146,6 +146,43 @@ function GitHubIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
       <path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a10.9 10.9 0 0 1 5.76 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.27 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" />
     </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M18.9 2.25h3.68l-8.04 9.19L24 21.75h-7.4l-5.8-7.58-6.63 7.58H.48l8.6-9.83L0 2.25h7.59l5.24 6.93 6.07-6.93Zm-1.29 17.29h2.04L6.48 4.34H4.29L17.61 19.54Z" />
+    </svg>
+  );
+}
+
+function CopyEmailButton({ email }: { email: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyEmail() {
+    try {
+      await navigator.clipboard.writeText(email);
+    } catch {
+      const input = document.createElement("textarea");
+      input.value = email;
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.append(input);
+      input.select();
+      document.execCommand("copy");
+      input.remove();
+    }
+
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_800);
+  }
+
+  return (
+    <button className="copy-email" type="button" onClick={() => void copyEmail()}>
+      <span>{email}</span>
+      <small>{copied ? "copied!" : "click to copy"}</small>
+    </button>
   );
 }
 
