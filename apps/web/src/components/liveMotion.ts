@@ -101,7 +101,7 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
   const tilt = { x: 0, y: 0 };
   const target = { x: 0, y: 0 };
   const hover = { x: 0, y: 0, tx: 0, ty: 0 };
-  let press: { id: number; x: number; y: number; tiltX: number; tiltY: number; touch: boolean; dragging: boolean } | null = null;
+  let press: { id: number; x: number; y: number; tiltX: number; tiltY: number; dragging: boolean } | null = null;
 
   const layout = () => {
     const pose = layoutLiveScene(stage, scene);
@@ -167,7 +167,7 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
     if (active || press || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
     if (interactive(event.target)) return;
     options.interacted();
-    press = { id: event.pointerId, x: event.clientX, y: event.clientY, tiltX: tilt.x, tiltY: tilt.y, touch: event.pointerType !== "mouse", dragging: false };
+    press = { id: event.pointerId, x: event.clientX, y: event.clientY, tiltX: tilt.x, tiltY: tilt.y, dragging: false };
     try { stage.setPointerCapture(event.pointerId); } catch { /* Synthetic pointers cannot be captured. */ }
   };
   const pointerMove = (event: PointerEvent) => {
@@ -179,8 +179,7 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
       if (!press.dragging && Math.hypot(dx, dy) > 6) { press.dragging = true; stage.dataset.dragging = ""; }
       if (!press.dragging) return;
       target.y = clamp(press.tiltY + dx / width * 70);
-      // One-finger vertical movement belongs to page scrolling on touch screens.
-      if (!press.touch) target.x = clamp(press.tiltX - dy / height * 50);
+      target.x = clamp(press.tiltX - dy / height * 50);
       wake();
     } else if (event.pointerType === "mouse" && !motion.matches) {
       hover.ty = ((event.clientX - left) / width - 0.5) * 2 * HOVER;

@@ -16,7 +16,7 @@
   min-height: 520px;
   perspective: 1900px;
   cursor: pointer;
-  /* One-finger vertical scroll stays native; horizontal drags tilt the window. */
+  /* Empty stage space remains scrollable; touches on the window drag it. */
   touch-action: pan-y pinch-zoom;
   user-select: none;
   -webkit-user-select: none;
@@ -32,6 +32,7 @@
 .live-scene {
   --depth: 1;
   --counter-scale: 1.4;
+  touch-action: none;
   position: absolute;
   left: var(--scene-left, 0);
   top: var(--scene-top, 0);
@@ -42,6 +43,7 @@
   color: var(--text);
   outline: none;
 }
+.live-stage[data-active] .live-scene { touch-action: auto; }
 .live-stage:not([data-ready]) .live-scene { visibility: hidden; }
 
 /* Raised layers. --z is the resting height in logical pixels. */
