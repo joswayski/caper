@@ -258,17 +258,30 @@ class VoiceEngine(
             }
         }
         val subscribedTracks = synchronized(remoteLock) { subscriptions.keys.toSet() }
-        for (track in wanted - subscribedTracks) subscribe(track, token)
+        var unavailable = false
+        for (track in wanted - subscribedTracks) if (!subscribe(track, token)) unavailable = true
+        hasUnavailableTracks = unavailable
+    }
+
+    /** A listed track the SFU could not pull yet (web: retried on PULL_RETRY_DELAYS_MS). */
+    @Volatile var hasUnavailableTracks = false
+        private set
+
+    /** Re-read the roster to pull tracks that were not ready at the last reconcile. */
+    suspend fun retryUnavailable(onParticipants: (List<Participant>) -> Unit) = lock.withLock {
+        if (hasUnavailableTracks && resources.isOpen) reconcile(onParticipants)
     }
 
     fun eventToken(): String? = resources.use { mediaToken }
     fun selfParticipantId(): String? = selfId
 
-    private suspend fun subscribe(trackId: String, token: String) {
+    /** False when the source is listed but not pullable yet (track_gone). */
+    private suspend fun subscribe(trackId: String, token: String): Boolean {
         val response: SignalResponse = try {
             media("subscribe", buildJsonObject { put("trackId", trackId) }, token)
         } catch (error: ApiException) {
-            if (departedTrack(error)) return
+            // A newcomer's track is listed at publication but pullable only once its media flows.
+            if (departedTrack(error)) return false
             throw error
         }
         val mid = subscriptionMid(response)
@@ -287,6 +300,7 @@ class VoiceEngine(
                 buildJsonObject { putJsonObject("sessionDescription") { put("type", "answer"); put("sdp", localSdp) } }, token,
             )
         }
+        return true
     }
 
     suspend fun setMuted(value: Boolean, onLocalApplied: () -> Unit = {}) = localMute.setMuted(value, onLocalApplied)

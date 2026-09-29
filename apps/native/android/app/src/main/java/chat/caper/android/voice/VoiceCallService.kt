@@ -86,6 +86,7 @@ class VoiceCallService : Service() {
     private var speaking: Job? = null
     private var turnRenewal: Job? = null
     private var recovery: Job? = null
+    private var pullRetry: Job? = null
     private var mediaEvents: MediaEventClient? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var audio: AudioManager
@@ -203,11 +204,13 @@ class VoiceCallService : Service() {
                     onSnapshot = { snapshot -> scope.launch {
                         if (engine === current && attempts.isCurrent(attempt)) runCatching {
                             current.applySnapshot(snapshot) { value -> scope.launch { participants(current, attempt, value) } }
+                            schedulePullRetry(current, attempt)
                         }.onFailure { if (it !is CancellationException) failCall(current, it) }
                     } },
                     onTerminal = { error -> scope.launch { failCall(current, error) } },
                 ).also { it.start() }
                 commitCallResult(current, attempt) { it.copy(phase = VoiceState.Phase.CONNECTED, selfId = current.selfParticipantId()) }
+                schedulePullRetry(current, attempt)
                 launch { sampleDiagnostics(current, attempt) }
                 speaking = launch {
                     val lastLoud = mutableMapOf<String, Long>()
@@ -253,11 +256,26 @@ class VoiceCallService : Service() {
         }
     }
 
+    /** Web PULL_RETRY_DELAYS_MS: a newcomer's microphone is heard within a second, not at the next 15 s heartbeat. */
+    private fun schedulePullRetry(current: VoiceEngine, attempt: Long) {
+        if (!current.hasUnavailableTracks || pullRetry?.isActive == true) return
+        pullRetry = scope.launch {
+            for (wait in longArrayOf(250, 250, 500, 500, 1_000, 2_000, 4_000, 8_000)) {
+                delay(wait)
+                if (engine !== current || !attempts.isCurrent(attempt)) return@launch
+                runCatching { current.retryUnavailable { value -> scope.launch { participants(current, attempt, value) } } }
+                    .onFailure { if (it is CancellationException) throw it }
+                if (!current.hasUnavailableTracks) return@launch
+            }
+        }
+    }
+
     private suspend fun heartbeatWithRecovery(current: VoiceEngine, attempt: Long) {
         val started = System.currentTimeMillis()
         while (engine === current && attempts.isCurrent(attempt)) {
             try {
                 current.heartbeat { value -> scope.launch { participants(current, attempt, value) } }
+                schedulePullRetry(current, attempt)
                 commitCallResult(current, attempt) { it.copy(error = null) }
                 return
             } catch (error: Throwable) {
@@ -313,7 +331,7 @@ class VoiceCallService : Service() {
         if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         engine = null
         activeAttempt = null
-        heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
+        heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); pullRetry?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         val token = current.closeLocal()
         update { it.copy(phase = VoiceState.Phase.FAILED, error = error.message ?: "Voice connection failed.", speakingParticipants = emptySet(), monitoring = false) }
         notifyState(); releaseAudio(); stopSelf()
@@ -340,7 +358,7 @@ class VoiceCallService : Service() {
         engine = null
         val joining = connectJob
         connectJob = null
-        heartbeat?.cancel(); speaking?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
+        heartbeat?.cancel(); speaking?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); pullRetry?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         joining?.cancel()
         val token = current?.closeLocal()
         // Web keeps mute and deafen after leaving; the next join starts from them.
@@ -467,7 +485,7 @@ class VoiceCallService : Service() {
             invalidateJoinAuthorization()
         }
         attempts.end()
-        connectJob?.cancel(); heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); mediaEvents?.close(); mediaEvents = null
+        connectJob?.cancel(); heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); pullRetry?.cancel(); mediaEvents?.close(); mediaEvents = null
         val current = engine; engine = null
         if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         activeAttempt = null
