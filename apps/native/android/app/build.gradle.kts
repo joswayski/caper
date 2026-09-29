@@ -50,6 +50,9 @@ android {
         versionCode = buildNumber.get()
         versionName = if (buildNumber.get() > 1) "0.1.${buildNumber.get()}" else "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // The Play bundle carries native symbols so Android vitals can show
+        // readable stack traces for crashes in WebRTC or the audio pipeline.
+        ndk { debugSymbolLevel = "FULL" }
         buildConfigField("boolean", "ENABLE_NATIVE_VOICE", "true")
         externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
     }

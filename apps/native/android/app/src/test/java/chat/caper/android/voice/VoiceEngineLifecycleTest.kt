@@ -67,6 +67,12 @@ class VoiceEngineLifecycleTest {
         closeDepartedSubscription({ audible = false }, {}, { remembered = false })
         assertFalse(remembered)
 
+        // The server drops subscriptions to a participant who left; close then
+        // answers 404, which must forget the MID instead of ending the call.
+        remembered = true
+        closeDepartedSubscription({ audible = false }, { throw ApiException(404, "track not found") }, { remembered = false })
+        assertFalse(remembered)
+
         var touchedDisposedTrack = false
         assertFalse(acceptRemoteCallback(true, { touchedDisposedTrack = true }, { false }))
         assertFalse(touchedDisposedTrack)

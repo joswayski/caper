@@ -1,6 +1,7 @@
 package chat.caper.android.voice
 
 import android.content.Context
+import android.util.Log
 import chat.caper.android.data.CaperApi
 import chat.caper.android.data.ApiException
 import chat.caper.android.model.*
@@ -85,16 +86,17 @@ class VoiceEngine(
     fun setProcessingStrength(value: Int) { capture?.processingStrength(value) }
     fun processingReport(): LongArray = capture?.report() ?: longArrayOf()
     fun invalidateCapture() { localMute.withCurrent { muted ->
-        resources.use { capture?.publication(connected.get() && !muted) }
+        // Device callbacks can race a failing join's teardown; a closed call has nothing to gate.
+        if (resources.isOpen) runCatching { resources.use { capture?.publication(connected.get() && !muted) } }
     } }
-    fun beginMicComparison() { resources.use {
+    fun beginMicComparison() { if (resources.isOpen) resources.use {
         capture?.beginComparison()
         microphone?.setEnabled(false)
     } }
     fun micComparisonLevel(): Float = if (resources.isOpen) runCatching { resources.use { capture?.inputLevel } }.getOrNull() ?: 0f else 0f
-    internal fun finishMicComparison(): MicComparison? = resources.use {
+    internal fun finishMicComparison(): MicComparison? = if (!resources.isOpen) null else runCatching { resources.use {
         capture?.endComparison()
-    }
+    } }.getOrNull()
     fun resumeAfterMicComparison() { localMute.withCurrent { muted ->
         resources.use {
             capture?.resumePublication()
@@ -119,7 +121,13 @@ class VoiceEngine(
                 val audioModule = JavaAudioDeviceModule.builder(appContext)
                     .setInputSampleRate(48000)
                     .setAudioBufferCallback { buffer, format, channels, rate, read, time ->
-                        processor.onBuffer(buffer, format, channels, rate, read)
+                        // Runs on WebRTC's capture thread: a throw here aborts the app,
+                        // so fail closed to silence instead.
+                        try { processor.onBuffer(buffer, format, channels, rate, read) }
+                        catch (error: Throwable) {
+                            Log.e("CaperVoice", "Capture processing failed", error)
+                            for (index in 0 until buffer.capacity()) buffer.put(index, 0)
+                        }
                         time
                     }.createAudioDeviceModule()
                 try { factory = PeerConnectionFactory.builder().setAudioDeviceModule(audioModule).createPeerConnectionFactory() }
@@ -148,7 +156,10 @@ class VoiceEngine(
                     .createIceServer()
             }
             val (current, transceiver) = resources.use {
-                rtcConfiguration = PeerConnection.RTCConfiguration(servers)
+                rtcConfiguration = PeerConnection.RTCConfiguration(servers).apply {
+                    // Web: bundlePolicy "max-bundle"; every SFU pull shares one transport.
+                    bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+                }
                 val connection = factory!!.createPeerConnection(rtcConfiguration, observer)
                     ?: error("Could not create voice connection.")
                 peer = connection
@@ -207,7 +218,9 @@ class VoiceEngine(
     }
 
     suspend fun heartbeat(onParticipants: (List<Participant>) -> Unit) = lock.withLock {
-        check(connectionState.value == PeerConnection.PeerConnectionState.CONNECTED) { "Voice transport disconnected." }
+        // A heartbeat that lands during a transport blip waits for recovery;
+        // throwing here ended the whole call.
+        if (connectionState.value != PeerConnection.PeerConnectionState.CONNECTED) return@withLock
         reconcile(onParticipants)
     }
 
@@ -247,17 +260,33 @@ class VoiceEngine(
             }
         }
         val subscribedTracks = synchronized(remoteLock) { subscriptions.keys.toSet() }
-        for (track in wanted - subscribedTracks) subscribe(track, token)
+        var unavailable = false
+        for (track in wanted - subscribedTracks) if (!subscribe(track, token)) unavailable = true
+        hasUnavailableTracks = unavailable
+    }
+
+    /** A listed track the SFU could not pull yet (web: retried on PULL_RETRY_DELAYS_MS). */
+    @Volatile var hasUnavailableTracks = false
+        private set
+
+    /** Re-read the roster to pull tracks that were not ready at the last reconcile. */
+    suspend fun retryUnavailable(onParticipants: (List<Participant>) -> Unit) = lock.withLock {
+        if (hasUnavailableTracks && resources.isOpen) reconcile(onParticipants)
     }
 
     fun eventToken(): String? = resources.use { mediaToken }
     fun selfParticipantId(): String? = selfId
 
-    private suspend fun subscribe(trackId: String, token: String) {
+    /** False when the source is listed but not pullable yet (track_gone). */
+    private suspend fun subscribe(trackId: String, token: String): Boolean {
         val response: SignalResponse = try {
             media("subscribe", buildJsonObject { put("trackId", trackId) }, token)
         } catch (error: ApiException) {
-            if (departedTrack(error)) return
+            // A newcomer's track is listed at publication but pullable only once its media flows.
+            if (departedTrack(error)) return false
+            // Another negotiation (an ICE restart for TURN renewal) is pending on
+            // the server; pull this track on the next retry instead of ending the call.
+            if (error.status == 409) return false
             throw error
         }
         val mid = subscriptionMid(response)
@@ -276,6 +305,7 @@ class VoiceEngine(
                 buildJsonObject { putJsonObject("sessionDescription") { put("type", "answer"); put("sdp", localSdp) } }, token,
             )
         }
+        return true
     }
 
     suspend fun setMuted(value: Boolean, onLocalApplied: () -> Unit = {}) = localMute.setMuted(value, onLocalApplied)
@@ -327,8 +357,8 @@ class VoiceEngine(
     suspend fun audioLevels(): Map<String, Double> = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
         resources.use {
             val current = peer ?: error("Voice transport is unavailable.")
-            current.getStats { report ->
-                if (!resources.isOpen) return@getStats
+            current.getStats { report -> guardCallback(continuation) {
+                if (!resources.isOpen) return@guardCallback
                 val participantByMid = synchronized(remoteLock) {
                     subscriptions.entries.mapNotNull { (track, mid) -> participantForTrack[track]?.let { mid to it } }.toMap()
                 }
@@ -344,15 +374,15 @@ class VoiceEngine(
                     levels[id] = maxOf(levels[id] ?: 0.0, level)
                 }
                 if (continuation.isActive) continuation.resume(levels)
-            }
+            } }
         }
     }
 
     suspend fun diagnostics(): VoiceDiagnostics = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
         resources.use {
             val current = peer ?: error("Voice transport is unavailable.")
-            current.getStats { report ->
-            if (!resources.isOpen) return@getStats
+            current.getStats { report -> guardCallback(continuation) {
+            if (!resources.isOpen) return@guardCallback
             val stats = report.statsMap.values
             fun numbers(type: String, key: String) = stats.filter { it.type == type }.mapNotNull { (it.members[key] as? Number)?.toLong() }
             val received = numbers("inbound-rtp", "bytesReceived").sum()
@@ -375,7 +405,7 @@ class VoiceEngine(
             val receiveRate = if (previous == null || elapsed == null) 0 else ((received - previous.second).coerceAtLeast(0) * 8_000 / elapsed)
             val sendRate = if (previous == null || elapsed == null) 0 else ((sent - previous.third).coerceAtLeast(0) * 8_000 / elapsed)
             if (continuation.isActive) continuation.resume(VoiceDiagnostics(received, receiveRate, sent, sendRate, lost, jitter, rtt, route, joinTiming, checks))
-            }
+            } }
         }
     }
 
@@ -507,10 +537,10 @@ class VoiceEngine(
     private val observer = object : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState?) = Unit
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) = Unit
-        override fun onStandardizedIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
+        override fun onStandardizedIceConnectionChange(newState: PeerConnection.IceConnectionState?) = guardCallback {
             if (iceConnectedAt == null && (newState == PeerConnection.IceConnectionState.CONNECTED || newState == PeerConnection.IceConnectionState.COMPLETED)) iceConnectedAt = monotonicMs()
         }
-        override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
+        override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) = guardCallback {
             if (newState != null) {
                 if (resources.isOpen) {
                     connectionState.value = newState
@@ -522,14 +552,16 @@ class VoiceEngine(
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) = Unit
         override fun onIceCandidate(candidate: IceCandidate?) = Unit
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) = Unit
-        override fun onAddStream(stream: MediaStream?) = stream?.audioTracks?.forEach { registerRemote(null, it) } ?: Unit
+        // Unified Plan reports every remote track through onTrack, with its MID.
+        // WebRTC then also calls onAddTrack (and onAddStream) for the same track;
+        // registering it again without a MID would silence it right after
+        // onTrack enabled it, so a newcomer stayed mute until the next heartbeat.
+        override fun onAddStream(stream: MediaStream?) = Unit
         override fun onRemoveStream(stream: MediaStream?) = Unit
         override fun onDataChannel(channel: DataChannel?) = Unit
         override fun onRenegotiationNeeded() = Unit
-        override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-            (receiver?.track() as? AudioTrack)?.let { registerRemote(null, it) }
-        }
-        override fun onTrack(transceiver: RtpTransceiver?) {
+        override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) = Unit
+        override fun onTrack(transceiver: RtpTransceiver?) = guardCallback {
             (transceiver?.receiver?.track() as? AudioTrack)?.let { registerRemote(transceiver.mid, it) }
         }
     }
@@ -603,8 +635,14 @@ internal suspend fun closeDepartedSubscription(
 ) {
     silence()
     try { close() } catch (error: Throwable) {
-        if (error is CancellationException || !transientVoiceControlError(error)) throw error
-        return
+        if (error is CancellationException) throw error
+        // Web closeMid: when a participant leaves, the server already removed
+        // everyone's subscriptions to them, so close answers 404. That is done,
+        // not a lost call.
+        if (error !is ApiException || error.status != 404) {
+            if (!transientVoiceControlError(error)) throw error
+            return
+        }
     }
     forget()
 }
@@ -784,11 +822,30 @@ private suspend fun PeerConnection.createOfferAwait(resources: VoiceResourceGate
     sdp { resources.use { createOffer(it, MediaConstraints()) } }
 private suspend fun PeerConnection.createAnswerAwait(resources: VoiceResourceGate): RtcSessionDescription =
     sdp { resources.use { createAnswer(it, MediaConstraints()) } }
+/** WebRTC calls these from its own threads through JNI, where any uncaught
+ * throwable aborts the process. Log it and fail only the pending operation. */
+private inline fun guardCallback(block: () -> Unit) {
+    try { block() } catch (error: Throwable) { Log.e("CaperVoice", "WebRTC callback failed", error) }
+}
+private inline fun <T> guardCallback(continuation: kotlinx.coroutines.CancellableContinuation<T>, block: () -> Unit) {
+    try { block() } catch (error: Throwable) {
+        Log.e("CaperVoice", "WebRTC callback failed", error)
+        if (continuation.isActive) continuation.resumeWithException(error)
+    }
+}
+
 private suspend fun PeerConnection.sdp(start: (SdpObserver) -> Unit): RtcSessionDescription =
     kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
         start(object : SdpObserver {
-            override fun onCreateSuccess(value: RtcSessionDescription) = continuation.resume(value)
-            override fun onCreateFailure(error: String) = continuation.resumeWithException(IllegalStateException(error))
+            override fun onCreateSuccess(value: RtcSessionDescription?) = guardCallback(continuation) {
+                if (continuation.isActive) {
+                    if (value != null) continuation.resume(value)
+                    else continuation.resumeWithException(IllegalStateException("WebRTC produced no description."))
+                }
+            }
+            override fun onCreateFailure(error: String?) = guardCallback(continuation) {
+                if (continuation.isActive) continuation.resumeWithException(IllegalStateException(error ?: "WebRTC could not create a description."))
+            }
             override fun onSetSuccess() = Unit
             override fun onSetFailure(error: String) = Unit
         })
@@ -798,8 +855,10 @@ private suspend fun PeerConnection.setRemoteDescriptionAwait(value: RtcSessionDe
 private suspend fun PeerConnection.setDescription(local: Boolean, value: RtcSessionDescription, resources: VoiceResourceGate) =
     kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
         val callback = object : SdpObserver {
-            override fun onSetSuccess() = continuation.resume(Unit)
-            override fun onSetFailure(error: String) = continuation.resumeWithException(IllegalStateException(error))
+            override fun onSetSuccess() = guardCallback(continuation) { if (continuation.isActive) continuation.resume(Unit) }
+            override fun onSetFailure(error: String?) = guardCallback(continuation) {
+                if (continuation.isActive) continuation.resumeWithException(IllegalStateException(error ?: "WebRTC rejected the description."))
+            }
             override fun onCreateSuccess(value: RtcSessionDescription?) = Unit
             override fun onCreateFailure(error: String?) = Unit
         }

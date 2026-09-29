@@ -20,7 +20,7 @@ ort_archive="$CARGO_TARGET_DIR/onnxruntime-linux-x64-1.23.2.tgz"
 ort_dir="$CARGO_TARGET_DIR/onnxruntime-linux-x64-1.23.2"
 mkdir -p "$CARGO_TARGET_DIR"
 if [[ ! -f "$ort_archive" ]]; then
-  curl -fL --retry 2 -o "$ort_archive" 'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz'
+  curl -fL --retry 6 --retry-delay 5 --retry-all-errors -o "$ort_archive" 'https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz'
 fi
 echo '1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b  '"$ort_archive" | sha256sum --check --status
 mkdir -p "$ort_dir"

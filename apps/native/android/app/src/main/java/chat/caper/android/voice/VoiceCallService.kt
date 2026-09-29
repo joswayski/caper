@@ -12,6 +12,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import chat.caper.android.MainActivity
@@ -71,7 +72,12 @@ class VoiceCallService : Service() {
     // Android service lifecycle and explicit stop run on Main. Resume all
     // asynchronous results here too, so ownership checks and state commits
     // cannot interleave with a synchronous stop/replacement.
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    // An exception escaping a launch here would crash the whole app; end the
+    // call instead, as web does when a voice operation fails.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + CoroutineExceptionHandler { _, error ->
+        Log.e("CaperVoice", "Voice task failed", error)
+        engine?.let { failCall(it, error) }
+    })
     private val attempts = CallAttemptGate()
     private var engine: VoiceEngine? = null
     private var activeAttempt: Long? = null
@@ -80,13 +86,23 @@ class VoiceCallService : Service() {
     private var speaking: Job? = null
     private var turnRenewal: Job? = null
     private var recovery: Job? = null
+    private var pullRetry: Job? = null
+    private var mutedForFocus = false
+    private var routeChosenByUser = false
     private var mediaEvents: MediaEventClient? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var audio: AudioManager
     private var focus: AudioFocusRequest? = null
     private val deviceCallback = object : AudioDeviceCallback() {
-        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { scope.launch { engine?.invalidateCapture(); updateRoutes() } }
-        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { scope.launch { engine?.invalidateCapture(); updateRoutes() } }
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) { scope.launch { devicesChanged() } }
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) { scope.launch { devicesChanged() } }
+    }
+
+    /** A headset plugged in or removed mid-call moves the call there (or back to the speaker). */
+    private fun devicesChanged() {
+        engine?.invalidateCapture()
+        if (engine != null && !routeChosenByUser) chooseDefaultRoute()
+        updateRoutes()
     }
 
     override fun onCreate() {
@@ -98,8 +114,15 @@ class VoiceCallService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!BuildConfig.ENABLE_NATIVE_VOICE) {
+        // startForegroundService() requires startForeground() before any stop,
+        // or Android kills the app. Satisfy it before every early exit.
+        if (intent?.action == ACTION_START && !startForegroundSafely()) {
+            update { it.copy(phase = VoiceState.Phase.FAILED, error = "Voice could not start.", speakingParticipants = emptySet()) }
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (!BuildConfig.ENABLE_NATIVE_VOICE) {
+            stopForegroundAndSelf()
             return START_NOT_STICKY
         }
         when (intent?.action) {
@@ -110,7 +133,7 @@ class VoiceCallService : Service() {
                 requireNotNull(intent.getStringExtra(EXTRA_SPACE_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_DISPLAY_NAME)),
                 intent.getBooleanExtra(EXTRA_DEMO, false),
-            ) else if (engine == null) stopSelf()
+            ) else if (engine == null) stopForegroundAndSelf()
             ACTION_MUTE -> scope.launch {
                 if (state.value.monitoring) return@launch
                 val (current, attempt) = currentCall() ?: return@launch
@@ -154,7 +177,7 @@ class VoiceCallService : Service() {
         if (engine != null) return
         invalidateJoinAuthorization()
         val token = TokenStore(this).read()
-        if (!demo && token == null) return stopSelf()
+        if (!demo && token == null) return stopForegroundAndSelf()
         val attempt = attempts.begin()
         activeAttempt = attempt
         val preferences = getSharedPreferences("audio", MODE_PRIVATE)
@@ -190,11 +213,13 @@ class VoiceCallService : Service() {
                     onSnapshot = { snapshot -> scope.launch {
                         if (engine === current && attempts.isCurrent(attempt)) runCatching {
                             current.applySnapshot(snapshot) { value -> scope.launch { participants(current, attempt, value) } }
+                            schedulePullRetry(current, attempt)
                         }.onFailure { if (it !is CancellationException) failCall(current, it) }
                     } },
                     onTerminal = { error -> scope.launch { failCall(current, error) } },
                 ).also { it.start() }
                 commitCallResult(current, attempt) { it.copy(phase = VoiceState.Phase.CONNECTED, selfId = current.selfParticipantId()) }
+                schedulePullRetry(current, attempt)
                 launch { sampleDiagnostics(current, attempt) }
                 speaking = launch {
                     val lastLoud = mutableMapOf<String, Long>()
@@ -224,7 +249,15 @@ class VoiceCallService : Service() {
                 turnRenewal = launch {
                     try {
                         var wait = current.turnRefreshAfterMs() ?: return@launch
-                        while (isActive) { delay(wait.coerceAtLeast(1_000)); wait = current.refreshTurn() ?: return@launch }
+                        while (isActive) {
+                            delay(wait.coerceAtLeast(1_000))
+                            // A dropped request or 5xx retries; the current TURN credentials are still valid.
+                            wait = try { current.refreshTurn() ?: return@launch }
+                            catch (error: Throwable) {
+                                if (error is CancellationException || !transientVoiceControlError(error)) throw error
+                                5_000
+                            }
+                        }
                     } catch (error: Throwable) {
                         if (error is TimeoutCancellationException) {
                             failCall(current, IOException("TURN renewal timed out.", error))
@@ -240,11 +273,26 @@ class VoiceCallService : Service() {
         }
     }
 
+    /** Web PULL_RETRY_DELAYS_MS: a newcomer's microphone is heard within a second, not at the next 15 s heartbeat. */
+    private fun schedulePullRetry(current: VoiceEngine, attempt: Long) {
+        if (!current.hasUnavailableTracks || pullRetry?.isActive == true) return
+        pullRetry = scope.launch {
+            for (wait in longArrayOf(250, 250, 500, 500, 1_000, 2_000, 4_000, 8_000)) {
+                delay(wait)
+                if (engine !== current || !attempts.isCurrent(attempt)) return@launch
+                runCatching { current.retryUnavailable { value -> scope.launch { participants(current, attempt, value) } } }
+                    .onFailure { if (it is CancellationException) throw it }
+                if (!current.hasUnavailableTracks) return@launch
+            }
+        }
+    }
+
     private suspend fun heartbeatWithRecovery(current: VoiceEngine, attempt: Long) {
         val started = System.currentTimeMillis()
         while (engine === current && attempts.isCurrent(attempt)) {
             try {
                 current.heartbeat { value -> scope.launch { participants(current, attempt, value) } }
+                schedulePullRetry(current, attempt)
                 commitCallResult(current, attempt) { it.copy(error = null) }
                 return
             } catch (error: Throwable) {
@@ -300,7 +348,7 @@ class VoiceCallService : Service() {
         if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         engine = null
         activeAttempt = null
-        heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
+        heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); pullRetry?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         val token = current.closeLocal()
         update { it.copy(phase = VoiceState.Phase.FAILED, error = error.message ?: "Voice connection failed.", speakingParticipants = emptySet(), monitoring = false) }
         notifyState(); releaseAudio(); stopSelf()
@@ -327,7 +375,7 @@ class VoiceCallService : Service() {
         engine = null
         val joining = connectJob
         connectJob = null
-        heartbeat?.cancel(); speaking?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
+        heartbeat?.cancel(); speaking?.cancel(); heartbeat = null; turnRenewal?.cancel(); turnRenewal = null; recovery?.cancel(); pullRetry?.cancel(); recovery = null; mediaEvents?.close(); mediaEvents = null
         joining?.cancel()
         val token = current?.closeLocal()
         // Web keeps mute and deafen after leaving; the next join starts from them.
@@ -341,23 +389,56 @@ class VoiceCallService : Service() {
     }
 
     private fun acquireAudio() {
+        mutedForFocus = false
+        routeChosenByUser = false
         audio.mode = AudioManager.MODE_IN_COMMUNICATION
         val attributes = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
         if (Build.VERSION.SDK_INT >= 26) {
             focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE).setAudioAttributes(attributes)
-                .setOnAudioFocusChangeListener { change ->
-                    if (change < 0) scope.launch {
-                        val (current, attempt) = currentCall() ?: return@launch
-                        runCatching { current.setMuted(true) {
-                            commitCallResult(current, attempt) { it.copy(muted = true) }
-                        } }.onFailure { localControlFailed(current, attempt, it, "Audio focus was lost; voice status will retry.") }
-                    }
-                }.build().also { request ->
+                .setOnAudioFocusChangeListener { change -> scope.launch { audioFocusChanged(change) } }.build().also { request ->
                     check(audio.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "Audio focus unavailable." }
                 }
         }
         wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Caper:voice").apply { acquire() }
+        chooseDefaultRoute()
         updateRoutes()
+    }
+
+    /** Communication mode starts on the earpiece; like iPhone, use a headset when
+     * one is connected and otherwise the loudspeaker. */
+    private fun chooseDefaultRoute() {
+        val headsets = setOf(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_USB_HEADSET)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 31) {
+                val devices = audio.availableCommunicationDevices
+                val choice = devices.firstOrNull { it.type in headsets } ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (choice != null && audio.communicationDevice?.id != choice.id) audio.setCommunicationDevice(choice)
+            } else {
+                @Suppress("DEPRECATION")
+                audio.isSpeakerphoneOn = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).none { it.type in headsets }
+            }
+        }.onFailure { Log.w("CaperVoice", "Could not choose an audio route", it) }
+    }
+
+    /** Another app took the audio (a phone call, an alarm). A notification that
+     * only asks to duck is ignored, and a temporary loss unmutes again when the
+     * focus comes back, so the user is not left silently muted. */
+    private suspend fun audioFocusChanged(change: Int) {
+        val (current, attempt) = currentCall() ?: return
+        val restore = when (change) {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> return
+            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (!current.muted) mutedForFocus = change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                true
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> if (mutedForFocus) { mutedForFocus = false; false } else return
+            else -> return
+        }
+        runCatching { current.setMuted(restore) {
+            commitCallResult(current, attempt) { it.copy(muted = current.muted) }
+        } }.onSuccess { commitCallResult(current, attempt) { it.copy(muted = current.muted) } }
+            .onFailure { localControlFailed(current, attempt, it, "Audio focus changed; voice status will retry.") }
     }
 
     private fun updateRoutes() {
@@ -370,6 +451,7 @@ class VoiceCallService : Service() {
     private fun selectRoute(id: Int) {
         if (Build.VERSION.SDK_INT < 31 || id < 0) return
         val device = audio.availableCommunicationDevices.firstOrNull { it.id == id } ?: return
+        routeChosenByUser = true
         engine?.invalidateCapture()
         if (!audio.setCommunicationDevice(device)) {
             update { it.copy(error = "That audio route is unavailable.") }
@@ -388,8 +470,20 @@ class VoiceCallService : Service() {
     private fun releaseAudio() {
         focus?.let(audio::abandonAudioFocusRequest); focus = null
         if (Build.VERSION.SDK_INT >= 31) audio.clearCommunicationDevice()
+        else {
+            @Suppress("DEPRECATION")
+            audio.isSpeakerphoneOn = false
+        }
         audio.mode = AudioManager.MODE_NORMAL
         wakeLock?.takeIf { it.isHeld }?.release(); wakeLock = null
+    }
+
+    private fun startForegroundSafely(): Boolean = try { startForegroundNotification(); true }
+        catch (error: Exception) { Log.e("CaperVoice", "Could not start the call notification", error); false }
+
+    private fun stopForegroundAndSelf() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     private fun startForegroundNotification() {
@@ -419,10 +513,12 @@ class VoiceCallService : Service() {
     }
 
     override fun onDestroy() {
-        if (active === this) active = null
-        invalidateJoinAuthorization()
+        if (active === this) {
+            active = null
+            invalidateJoinAuthorization()
+        }
         attempts.end()
-        connectJob?.cancel(); heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); mediaEvents?.close(); mediaEvents = null
+        connectJob?.cancel(); heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); pullRetry?.cancel(); mediaEvents?.close(); mediaEvents = null
         val current = engine; engine = null
         if (comparisonEngine === current) { comparisonEngine = null; comparisonAttempt = null }
         activeAttempt = null

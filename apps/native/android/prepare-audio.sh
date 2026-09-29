@@ -20,14 +20,14 @@ cp "$REPO"/apps/web/public/audio/effects/*.wav "$OUT/assets/effects/"
 
 AAR="$OUT/onnxruntime-android-1.23.2.aar"
 if [[ ! -f "$AAR" ]]; then
-  curl -fLsS --retry 2 'https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar' -o "$AAR.tmp"
+  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar' -o "$AAR.tmp"
   mv "$AAR.tmp" "$AAR"
 fi
 echo "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827  $AAR" | sha256sum -c -
 unzip -oq "$AAR" 'headers/*' 'jni/*/libonnxruntime.so' -d "$OUT/ort"
 for notice in LICENSE ThirdPartyNotices.txt; do
   if [[ ! -f "$OUT/ort/$notice" ]]; then
-    curl -fLsS --retry 2 "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.23.2/$notice" -o "$OUT/ort/$notice"
+    curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.23.2/$notice" -o "$OUT/ort/$notice"
   fi
 done
 echo "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c  $OUT/ort/LICENSE" | sha256sum -c -
@@ -39,10 +39,10 @@ RN="$OUT/rnnoise"
 if [[ ! -f "$RN/src/rnnoise_data.c" ]]; then
   SRC="$OUT/rnnoise-source.tar.gz"
   WEIGHTS="$OUT/rnnoise-model.tar.gz"
-  curl -fLsS --retry 2 'https://github.com/xiph/rnnoise/archive/70f1d256acd4b34a572f999a05c87bf00b67730d.tar.gz' -o "$SRC"
+  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://github.com/xiph/rnnoise/archive/70f1d256acd4b34a572f999a05c87bf00b67730d.tar.gz' -o "$SRC"
   echo "f61ee0b3f4c4cd337303e003d333357c5eaf25ef5d75a742109ee59e9a0a3932  $SRC" | sha256sum -c -
   tar -xzf "$SRC" -C "$RN" --strip-components=1
-  curl -fLsS --retry 2 'https://media.xiph.org/rnnoise/models/rnnoise_data-0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37.tar.gz' -o "$WEIGHTS"
+  curl -fLsS --retry 6 --retry-delay 5 --retry-all-errors 'https://media.xiph.org/rnnoise/models/rnnoise_data-0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37.tar.gz' -o "$WEIGHTS"
   echo "0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37  $WEIGHTS" | sha256sum -c -
   tar -xzf "$WEIGHTS" -C "$RN" src/rnnoise_data.c src/rnnoise_data.h
 fi
