@@ -1,5 +1,4 @@
 .call-page { min-height: 100vh; background: var(--blackout); }
-.call-header { width: min(1400px, calc(100% - 56px)); height: 80px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
 .call-destination { color: var(--text-muted); font-size: .78rem; font-weight: 700; text-decoration: none; }
 .call-destination:hover { color: var(--text); }
 .voice-panel { flex: 0 0 auto; margin: auto 12px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); }
@@ -194,8 +193,7 @@
   .mic-comparison article.latest { animation: none; }
 }
 @media (max-width: 760px) {
-  .call-header, .call-room { width: calc(100% - 24px); }
-  .call-header { height: 64px; }
+  .call-room { width: calc(100% - 24px); }
   .call-room { grid-template: auto minmax(0, 1fr) / 1fr; }
   .call-room.spaces-room { height: calc(100dvh - 88px); min-height: 420px; }
   .spaces-room .stage { min-height: 0; }
