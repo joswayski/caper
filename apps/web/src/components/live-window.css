@@ -61,13 +61,9 @@
 .live-slab { position: absolute; inset: 0; border: 1px solid #1d2326; border-radius: 18px; background: #0d1012; transform: translateZ(calc(var(--z) * var(--depth) * 1px)); pointer-events: none; }
 .live-slab:nth-child(3) { background: #0a0c0d; }
 
-.live-window { position: absolute; inset: 0; display: grid; grid-template-rows: 44px minmax(0, 1fr); border: 1px solid #2b3134; border-radius: 18px; background: #111416; box-shadow: inset 0 1px 0 rgb(255 255 255 / .05), 0 30px 80px rgb(0 0 0 / calc(.45 * (1 - var(--depth)))); transform-style: preserve-3d; }
+.live-window { position: absolute; inset: 0; display: grid; grid-template-rows: minmax(0, 1fr); border: 1px solid #2b3134; border-radius: 18px; background: #111416; box-shadow: inset 0 1px 0 rgb(255 255 255 / .05), 0 30px 80px rgb(0 0 0 / calc(.45 * (1 - var(--depth)))); transform-style: preserve-3d; }
 
-.live-titlebar { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 0 10px 0 16px; border-bottom: 1px solid #1f2427; }
-.live-lights { display: flex; gap: 7px; }
-.live-lights i { width: 10px; height: 10px; border-radius: 50%; background: #d86a51; opacity: .85; }
-.live-lights i:nth-child(2) { background: #d9ab5c; }
-.live-lights i:nth-child(3) { background: #7f9a58; }
+.live-window > .live-status { position: absolute; z-index: 4; top: 12px; right: 12px; }
 .live-status { display: inline-flex; flex: none; align-items: center; gap: 7px; margin-left: auto; padding: 4px 10px; border: 1px solid #30373a; border-radius: 999px; background: #171b1d; color: var(--text-muted); font-size: 12px; font-weight: 700; }
 .live-status i { position: relative; width: 7px; height: 7px; border-radius: 50%; background: #7d8388; }
 .live-status[data-status="live"] { color: var(--text); }
@@ -75,14 +71,18 @@
 .live-status[data-status="live"] i::after { position: absolute; inset: -4px; content: ""; border: 1.5px solid var(--live-green); border-radius: 50%; animation: live-ping 2s ease-out infinite; }
 .live-status[data-status="connecting"] i { background: #d9ab5c; }
 @keyframes live-ping { from { opacity: .8; transform: scale(.5); } to { opacity: 0; transform: scale(1.5); } }
-.live-titlebar .live-close { margin-left: auto; }
-.live-status + .live-close { margin-left: 0; }
+.live-window > .live-close { position: absolute; z-index: 4; top: 10px; right: 10px; background: var(--surface); }
+.live-stage[data-active] .chat-heading { padding-right: 58px; }
 .live-close { display: grid; width: 32px; height: 32px; flex: none; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 8px; color: var(--text-muted); background: transparent; cursor: pointer; transition: color .15s ease, background-color .15s ease, border-color .15s ease; }
 .live-close:hover { border-color: var(--border); color: var(--text); background: var(--surface-raised); }
 .live-close:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 2px; }
 .live-close svg { width: 17px; height: 17px; }
 
 .live-app { position: relative; min-width: 0; min-height: 0; transform-style: preserve-3d; }
+.live-app .call-header { display: none; }
+.live-app :is(.spaces-state, .spaces-empty) { min-height: 0; height: 100%; overflow: auto; }
+.live-app .space-rail { border-radius: 17px 0 0 17px; }
+.live-app .space-member-presence { border-radius: 0 17px 17px 0; padding-top: 48px; }
 
 /* The real room (pages/Call.tsx), fitted to the window instead of the page. */
 .live-app .call-page { height: 100%; min-height: 0; background: transparent; transform-style: preserve-3d; }
@@ -91,8 +91,9 @@
    projects its right edge beyond the titlebar when tilted. Only inset panels
    lift above it. */
 .live-app .people-panel { border-bottom-left-radius: 17px; transform-style: preserve-3d; }
+.live-app .call-room:not(.spaces-room) > .people-panel { border-top-left-radius: 17px; }
 .live-app .voice-panel { transform: translateZ(calc(var(--depth) * 18px)); }
-.live-app .stage { overflow: hidden auto; border-bottom-right-radius: 17px; }
+.live-app .stage { overflow: hidden auto; border-radius: 0 17px 17px 0; }
 @media (min-width: 761px) {
   /* Put the sidebar's channel and the chat header on one 60px header line. */
   .live-app .sidebar-channels { padding-top: 10px; }
@@ -101,6 +102,9 @@
 @media (max-width: 760px) {
   .live-app .people-panel { border-radius: 0; }
   .live-app .stage { border-radius: 0 0 17px 17px; }
+  .live-stage[data-active] .live-app .sidebar-channels { padding-right: 62px; }
+  .live-stage[data-active] .chat-heading { padding-right: 12px; }
+  .live-app .space-member-presence { padding-top: 0; }
   /* The phone layout stacks the roster above the chat. In the small resting
      card, keep the roster short so the conversation shows; opening the window
      restores the full layout. */
@@ -119,7 +123,7 @@
 .live-scene[data-settled] .live-shadow { display: none; }
 
 /* At rest the whole window is one button: drag to tilt, click or tap to open. */
-.live-activator { position: absolute; inset: 44px 0 0; z-index: 5; display: grid; place-items: center; padding: 0; border: 0; border-radius: 0 0 18px 18px; color: inherit; background: transparent; font: inherit; cursor: inherit; transform: translateZ(calc(var(--depth) * 80px)); }
+.live-activator { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 0; border: 0; border-radius: 18px; color: inherit; background: transparent; font: inherit; cursor: inherit; transform: translateZ(calc(var(--depth) * 80px)); }
 .live-activator:focus-visible { outline: calc(3px * var(--counter-scale)) solid var(--terracotta-bright); outline-offset: -2px; }
 .live-invite { display: inline-flex; align-items: center; gap: 9px; padding: 10px 18px 10px 14px; border-radius: 999px; color: #121416; background: #f3f4f5; box-shadow: 0 16px 36px rgb(0 0 0 / .5); font-size: 15px; font-weight: 800; letter-spacing: -.01em; transform: scale(var(--counter-scale)); transform-origin: 50% 50%; transition: background-color .2s ease, color .2s ease; animation: live-invite-in .7s .9s cubic-bezier(.16, 1, .3, 1) both; }
 .live-invite i { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--caper); }
@@ -139,12 +143,10 @@ html.live-sheet-open { overflow: hidden; }
 .live-scene[data-mode="sheet"][data-active] { position: fixed; z-index: 1000; inset: 0; width: 100%; height: 100dvh; animation: live-sheet-in .36s cubic-bezier(.16, 1, .3, 1) both; }
 @keyframes live-sheet-in { from { opacity: 0; transform: translateY(24px) scale(.97); } }
 .live-scene[data-mode="sheet"][data-active] :is(.live-slab, .live-shadow) { display: none; }
-.live-scene[data-mode="sheet"][data-active] .live-window { grid-template-rows: calc(48px + env(safe-area-inset-top, 0px)) minmax(0, 1fr); padding-bottom: env(safe-area-inset-bottom, 0px); border: 0; border-radius: 0; background: var(--surface); }
-.live-scene[data-mode="sheet"][data-active] .live-titlebar { padding: env(safe-area-inset-top, 0px) 8px 0 16px; }
-.live-scene[data-mode="sheet"][data-active] .live-lights { display: none; }
+.live-scene[data-mode="sheet"][data-active] .live-window { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); border: 0; border-radius: 0; background: var(--surface); }
+.live-scene[data-mode="sheet"][data-active] .live-close { top: calc(7px + env(safe-area-inset-top, 0px)); }
 .live-scene[data-mode="sheet"][data-active] :is(.call-room, .people-panel, .stage) { border-radius: 0; }
 .live-scene[data-mode="sheet"] .live-close { width: 40px; height: 40px; }
-.live-scene[data-mode="sheet"] .live-lights { display: none; }
 
 /* Preview (no live channel): a scripted room built from shipped features. */
 .preview-room { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 10px; height: 100%; padding: 10px; transform-style: preserve-3d; }

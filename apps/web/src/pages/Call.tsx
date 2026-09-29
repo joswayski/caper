@@ -271,7 +271,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   // Browser capability, so it is read after hydration to match server markup.
   const [outputSelectable, setOutputSelectable] = useState(false);
   useEffect(() => setOutputSelectable(typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype), []);
-  const [membersVisible, setMembersVisible] = useState(true);
+  const [membersVisible, setMembersVisible] = useState(!embedded);
   const [selfPresence, setSelfPresence] = useState<PresenceStatus>();
   const [localPresence, setLocalPresence] = useState<PresenceStatus>("offline");
   const [presenceLive, setPresenceLive] = useState(false);
