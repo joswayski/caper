@@ -647,7 +647,10 @@ formatting, Clippy with warnings denied, and workspace tests passed (106 passed,
 24 ignored); the separately executed disposable Postgres/Valkey chat suite passed
 all 7 tests, including persistence, duplicate/concurrent adds, removals, account
 identity, authorization/revocation, outbox rollback, mutation limits, and both
-reaction-cap boundaries. Rust desktop tests passed (116 passed, 9 ignored).
+reaction-cap boundaries. Rust desktop tests passed after rebasing onto the latest
+native fixes (117 passed, 9 ignored). `cargo build --locked --release --package
+caper-api` passed. Docker had no daemon, so API/web build stages were validated
+directly rather than building container images.
 Chromium desktop and 390px narrow-layout checks used the real local API, Postgres,
 and gateway: two-viewer updates, refresh persistence, chip ownership/removal,
 search/empty state, and Escape/focus return passed. A deliberately simulated HTTP
