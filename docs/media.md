@@ -2459,6 +2459,38 @@ non-loopback address of the machine (Chromium does not use loopback candidates),
 and point the API at it with `MEDIA_PROVIDER_BASE=http://127.0.0.1:8080/v1` and
 `MEDIA_PROVIDER_ALLOW_INSECURE=true`.
 
+### Benchmark Cloudflare against the SFU
+
+`caper-sfu-bench` (in the SFU image) replays a join's provider calls against
+any Cloudflare-compatible API and prints median/p90 per step: round 1 (two
+sessions and TURN in parallel, skipped for signed-in joins), round 2 (publish
+and pull in parallel) and the receive answer that gates hearing others. Sessions
+never connect; it closes its tracks, revokes its TURN credentials, and prints no
+secrets or SDP. It measures only the provider part of a join, the part that
+changes; browser-to-API round trips and ICE are the same either way. Run it
+inside the cluster (the image is multi-architecture) so it sees the API's
+network path. Locally against a debug build it reported 3.6 ms for round 2.
+
+Cloudflare, with the API's own credentials:
+
+```bash
+IMAGE=ghcr.io/joswayski/caper-sfu:<full sha>
+SECURITY='"securityContext":{"runAsNonRoot":true,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}'
+kubectl -n default run caper-bench-cloudflare --rm -i --restart=Never --image="$IMAGE" --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"caper-bench-cloudflare","image":"'"$IMAGE"'","command":["caper-sfu-bench"],"envFrom":[{"secretRef":{"name":"caper-api-cloudflare"}}],"env":[{"name":"MEDIA_PROVIDER_BASE","value":"https://rtc.live.cloudflare.com/v1"},{"name":"BENCH_RUNS","value":"20"}],'"$SECURITY"'}]}}'
+```
+
+The self-hosted SFU, before cutover, with its `.env` values in a temporary Secret:
+
+```bash
+eval "$(ssh ubuntu@$IP "sudo grep -E '^SFU_(APP_ID|APP_SECRET|TURN_KEY_ID|TURN_API_TOKEN)=' /opt/caper-sfu/.env")"
+kubectl -n default create secret generic caper-bench-sfu \
+  --from-literal=MEDIA_PROVIDER_BASE=https://sfu.caper.chat:8443/v1 \
+  --from-literal=CF_SFU_APP_ID="$SFU_APP_ID" --from-literal=CF_SFU_APP_SECRET="$SFU_APP_SECRET" \
+  --from-literal=CF_TURN_KEY_ID="$SFU_TURN_KEY_ID" --from-literal=CF_TURN_API_TOKEN="$SFU_TURN_API_TOKEN"
+kubectl -n default run caper-bench-sfu --rm -i --restart=Never --image="$IMAGE" --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"caper-bench-sfu","image":"'"$IMAGE"'","command":["caper-sfu-bench"],"envFrom":[{"secretRef":{"name":"caper-bench-sfu"}}],"env":[{"name":"BENCH_RUNS","value":"20"}],'"$SECURITY"'}]}}'
+kubectl -n default delete secret caper-bench-sfu
+```
+
 ### Validation (September 29, 2026)
 
 - **Automated** (`cargo test -p caper-sfu`): two str0m peers publish, pull,

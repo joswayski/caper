@@ -17,9 +17,17 @@ permissions:
   contents: read
 jobs:
   sfu:
-    # The self-hosted SFU runs on an x86 Lightsail instance outside the
-    # cluster, so its image is published to GHCR rather than the private ECR.
-    runs-on: ubuntu-24.04
+    # The SFU runs on an x86 Lightsail instance outside the cluster; its
+    # benchmark also runs inside the arm64 cluster. Each architecture builds on
+    # a native runner, and the image goes to GHCR rather than the private ECR.
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -33,12 +41,12 @@ jobs:
           context: .
           file: apps/sfu/Dockerfile
           target: sfu
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           load: true
           tags: caper-sfu:test
-          cache-from: type=gha,scope=sfu
-          cache-to: type=gha,scope=sfu,mode=max
-      - name: Verify health and authentication without real secrets
+          cache-from: type=gha,scope=sfu-${{ matrix.arch }}
+          cache-to: type=gha,scope=sfu-${{ matrix.arch }},mode=max
+      - name: Verify health, authentication and the benchmark without real secrets
         run: |
           set -euo pipefail
           container="$(docker run -d -p 8080:8080 \
@@ -52,12 +60,32 @@ jobs:
           test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)" = 204
           test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/v1/apps/app/sessions/new)" = 401
           test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer secret' http://127.0.0.1:8080/v1/apps/app/sessions/new)" = 201
-      - name: Publish
+          docker run --rm --network host --entrypoint caper-sfu-bench \
+            -e MEDIA_PROVIDER_BASE=http://127.0.0.1:8080/v1 -e CF_SFU_APP_ID=app -e CF_SFU_APP_SECRET=secret \
+            -e CF_TURN_KEY_ID=key -e CF_TURN_API_TOKEN=token -e BENCH_RUNS=3 caper-sfu:test
+      - name: Publish this architecture
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
           echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
-          docker tag caper-sfu:test "$IMAGE:$GITHUB_SHA"
-          docker push "$IMAGE:$GITHUB_SHA"
-          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_SHA")"
-          printf '### Published SFU image\n\n`%s`\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
+          docker tag caper-sfu:test "$IMAGE:$GITHUB_SHA-${{ matrix.arch }}"
+          docker push "$IMAGE:$GITHUB_SHA-${{ matrix.arch }}"
+  manifest:
+    needs: sfu
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/caper-sfu
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Publish one multi-architecture tag
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create --tag "$IMAGE:$GITHUB_SHA" \
+            "$IMAGE:$GITHUB_SHA-amd64" "$IMAGE:$GITHUB_SHA-arm64"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$GITHUB_SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          printf '### Published SFU image\n\n`%s:%s@%s` (linux/amd64, linux/arm64)\n' "$IMAGE" "$GITHUB_SHA" "$digest" >> "$GITHUB_STEP_SUMMARY"

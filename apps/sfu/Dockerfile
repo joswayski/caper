@@ -17,6 +17,8 @@ RUN groupadd --gid 10001 caper \
     && useradd --uid 10001 --gid caper --no-create-home --shell /usr/sbin/nologin caper
 
 COPY --from=builder /build/target/release/caper-sfu /usr/local/bin/caper-sfu
+# Provider benchmark (docs/media.md#benchmark-cloudflare-against-the-sfu).
+COPY --from=builder /build/target/release/caper-sfu-bench /usr/local/bin/caper-sfu-bench
 
 USER 10001:10001
 EXPOSE 8080 50000/udp
