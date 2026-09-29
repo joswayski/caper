@@ -5,7 +5,7 @@ import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
 import type { GeneralChatHistory } from "../chat/types";
-import { detectDownloadPlatform, downloads, intelMacDownload, type DownloadPlatform } from "../downloads";
+import { detectDownloadPlatform, downloads, type DownloadPlatform } from "../downloads";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
@@ -50,7 +50,6 @@ export default function Home({ account, history, initialNow, latestChanges, down
       <header className="site-header shell">
         <Wordmark />
         <div className="site-header-actions">
-          <a className="header-github" href={repositoryUrl} target="_blank" rel="noreferrer" aria-label="Caper on GitHub"><GitHubIcon /></a>
           <AccountNav account={account} />
         </div>
       </header>
@@ -66,23 +65,15 @@ export default function Home({ account, history, initialNow, latestChanges, down
           </h1>
           <p className="hero-lede">Chat with anyone, about anything.</p>
           <div className="app-downloads">
-            {download ? <>
-              <div className="download-actions">
-                <a className="download-button" href={download.url}><PlatformIcon platform={platform!} />{download.label}</a>
-                <a className="source-button" href={repositoryUrl} target="_blank" rel="noreferrer"><GitHubIcon />View source</a>
-              </div>
+            <div className="download-actions">
+              {download && platform && <a className="download-button" href={download.url}><PlatformIcon platform={platform} />{download.label}</a>}
+              <a className="source-button" href={repositoryUrl} target="_blank" rel="noreferrer"><GitHubIcon />View source</a>
+            </div>
+            {download ?
               <p><a href={`${repositoryUrl}/releases/tag/native-latest`}>Also available for {platform === "macos" ? "Windows and Linux" : platform === "windows" ? "macOS and Linux" : "macOS and Windows"}</a></p>
-              <p>Preview · {download.detail}
-                {platform === "macos" && <> · <a href={intelMacDownload}>Intel Mac</a></>}
-                {platform === "linux-deb" && <> · <a href={downloads["linux-tar"].url}>.tar.gz</a></>}
-                {platform === "linux-tar" && <> · <a href={downloads["linux-deb"].url}>.deb for Ubuntu / Debian</a></>}
-              </p>
-            </> : <p>Desktop previews for <a href={`${repositoryUrl}/releases/tag/native-latest`}>Mac, Windows, and Linux</a>.</p>}
-            <p>Mobile apps are in development.</p>
+              : <p>Available for <a href={`${repositoryUrl}/releases/tag/native-latest`}>macOS, Windows, and Linux</a>.</p>}
+            <p>Mobile apps are coming soon.</p>
           </div>
-          <p className="made-by">
-            Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a> · <a href={repositoryUrl} target="_blank" rel="noreferrer">Follow on GitHub</a>
-          </p>
           <p className="experimental-note">
             Caper may contain bugs or incomplete features. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a> or by email:
           </p>
