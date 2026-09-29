@@ -32,7 +32,13 @@ pub(crate) struct ReservedUsernames(HashSet<String>);
 
 impl Default for ReservedUsernames {
     fn default() -> Self {
-        Self(["caper", "admin", "feedback"].map(str::to_owned).into())
+        Self(
+            [
+                "caper", "admin", "admins", "mod", "mods", "support", "feedback",
+            ]
+            .map(str::to_owned)
+            .into(),
+        )
     }
 }
 
@@ -148,18 +154,22 @@ mod tests {
     #[test]
     fn reserved_names_include_defaults_and_trimmed_case_insensitive_additions() {
         let defaults = ReservedUsernames::from_env(&RuntimeEnvironment::default());
-        for name in ["caper", "admin", "feedback"] {
+        for name in [
+            "caper", "admin", "admins", "mod", "mods", "support", "feedback",
+        ] {
             assert!(defaults.contains(name));
         }
         let configured =
             ReservedUsernames::from_env(&RuntimeEnvironment::from_values_for_test([(
                 "RESERVED_USERNAMES",
-                " Mod, SUPPORT , ,caper",
+                " Security, TEAM , ,caper",
             )]));
-        for name in ["caper", "admin", "feedback", "mod", "support"] {
+        for name in [
+            "caper", "admin", "admins", "mod", "mods", "support", "feedback", "security", "team",
+        ] {
             assert!(configured.contains(name));
         }
-        assert!(!configured.contains("moderator"));
+        assert!(!configured.contains("security_team"));
         assert!(!configured.contains("alice"));
     }
 
