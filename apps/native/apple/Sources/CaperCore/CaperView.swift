@@ -1120,10 +1120,16 @@ private struct ChatView: View {
                     .onSubmit { Task { await chat.send() } }
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))
+                        // Size the actual label, not only its styled background: clicks
+                        // beside the glyph must submit too, especially on macOS.
+                        .frame(width: 42, height: 42)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PrimaryIconButton())
                 .disabled(chat.sending || chat.sendRejected || (chat.pendingMessage == nil && MessageValidation.error(for: chat.draft) != nil))
+                .help(chat.sending ? "Sending…" : chat.sendRejected ? "Edit or dismiss the rejected message before sending another." : "Send message")
                 .accessibilityLabel("Send message")
+                .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
             }.padding(.horizontal, 18).padding(.vertical, 12)
             if chat.draft.unicodeScalars.count >= 3000 {
@@ -1185,10 +1191,11 @@ private struct TypingDots: View {
 private struct PrimaryIconButton: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.foregroundStyle(.white).frame(width: 42, height: 42)
+        configuration.label.foregroundStyle(.white)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.45)
+            .modifier(ControlHover())
     }
 }
 
