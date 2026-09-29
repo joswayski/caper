@@ -318,7 +318,7 @@ try {
   // Mount the real homepage with explicit loader fixtures; API/gateway mocks
   // remain the same as the standalone spaces checks above.
   for (const guest of [false, true]) {
-    browser('open', `${url}?public`);
+    browser('open', `${url}?public&width=440`);
     wait('!!document.querySelector(".channel-navigation")');
     evaluate(`(async () => {
       const { default: React } = await import('/node_modules/.vite/deps/react.js');
@@ -357,6 +357,12 @@ try {
             return { row: row.toJSON(), heading: heading.toJSON(), delta: row.top + row.height / 2 - heading.top - heading.height / 2 };
           })()`);
           assert.ok(Math.abs(alignment.delta) < 2, `Public general row must align with the chat header: ${JSON.stringify(alignment)}`);
+          assert.ok(evaluate('document.querySelector(".live-app .people-panel").getBoundingClientRect().width <= 260'), 'A wide saved sidebar must stay compact on the homepage');
+          assert.ok(evaluate(`(() => {
+            const line = document.querySelector('.live-app .channel-line').getBoundingClientRect();
+            const panel = document.querySelector('.live-app .people-panel').getBoundingClientRect();
+            return line.height <= 44 && line.top - panel.top >= 5 && line.top - panel.top <= 8;
+          })()`), 'Public channel highlight must be compact and inset from the top');
           screenshot('homepage-public-aligned');
         }
         if (width === 390) browser('click', '.live-app .navigation-toggle');

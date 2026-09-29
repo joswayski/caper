@@ -101,6 +101,9 @@
   /* Spaces already provide their own aligned 54px navigation header. */
   .live-app .spaces-room .sidebar-channels { padding-top: 0; }
   .live-app .spaces-room .chat-heading { min-height: 54px; }
+  /* A wide saved app sidebar must not overwhelm the homepage room. */
+  .live-app .people-panel { max-width: 260px; }
+  .live-app .spaces-room > .people-panel { max-width: min(260px, max(220px, calc(100cqw - 380px))); }
 }
 @media (max-width: 760px) {
   .live-app .people-panel { border-radius: 0; }

@@ -29,7 +29,7 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
         room.querySelector(".space-rail")?.getBoundingClientRect().width ?? 0;
       const max = Math.max(
         MIN_WIDTH,
-        Math.min(MAX_WIDTH, room.clientWidth - rail - 320),
+        Math.min(room.closest(".live-app") ? DEFAULT_WIDTH : MAX_WIDTH, room.clientWidth - rail - 320),
       );
       setMaximum(max);
       setWidth((current) => Math.min(current ?? DEFAULT_WIDTH, max));
