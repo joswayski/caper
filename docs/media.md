@@ -219,9 +219,9 @@ across all guests), no noise-model downloads, and no sounds. Anything posted
 to General is visible on the homepage, and moderation and deletion do not
 exist yet. Spectators see who is in voice and who is muted, not who is
 speaking; speaking is detected only by call participants. When the channel
-cannot be loaded, the window plays a scripted preview labeled "Preview",
-limited to shipped features (text, typing, voice presence), and cannot be
-opened. Each channel line in the sidebar shows who is in that channel's voice
+cannot be loaded, the same real room shows its loading or unavailable state,
+and can still be opened to retry. No scripted conversations or participants
+replace unavailable data. Each channel line in the sidebar shows who is in that channel's voice
 and a Join button. At 760px and narrower, `/spaces` keeps the viewed channel's
 line (its voice roster and Join) and the voice panel above the conversation,
 as the homepage room does; Browse opens the full space and channel list.

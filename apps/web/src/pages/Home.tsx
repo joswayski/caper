@@ -5,6 +5,7 @@ import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
 import type { GeneralChatHistory } from "../chat/types";
+import { detectDownloadPlatform, downloads, intelMacDownload, type DownloadPlatform } from "../downloads";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
@@ -16,13 +17,27 @@ type HomeProps = {
   history: GeneralChatHistory | null;
   initialNow: number;
   latestChanges: readonly LatestChange[];
+  downloadPlatform: DownloadPlatform | null;
 };
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 
-export default function Home({ account, history, initialNow, latestChanges }: HomeProps) {
+export default function Home({ account, history, initialNow, latestChanges, downloadPlatform }: HomeProps) {
   const [now, setNow] = useState(initialNow);
   const [open, setOpen] = useState(false);
+  const [platform, setPlatform] = useState(downloadPlatform);
+  const download = platform ? downloads[platform] : null;
+
+  useEffect(() => {
+    // iPadOS can send a Mac user agent; touch points distinguish it after hydration.
+    const hints = navigator as Navigator & { userAgentData?: { platform: string; mobile: boolean } };
+    setPlatform(detectDownloadPlatform({
+      userAgent: navigator.userAgent,
+      platform: hints.userAgentData?.platform ?? navigator.platform,
+      mobile: hints.userAgentData?.mobile,
+      maxTouchPoints: navigator.maxTouchPoints,
+    }));
+  }, []);
 
   useEffect(() => {
     setNow(Date.now());
@@ -50,20 +65,18 @@ export default function Home({ account, history, initialNow, latestChanges }: Ho
             </span>
           </h1>
           <p className="hero-lede">Chat with anyone, about anything.</p>
-          <section className="app-downloads" aria-labelledby="app-downloads-heading">
-            <h2 id="app-downloads-heading">Download Caper <span>Preview</span></h2>
-            <ul>
-              <li><strong>Mac</strong><span><a href={`${repositoryUrl}/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip`}>Apple Silicon</a> · <a href={`${repositoryUrl}/releases/download/native-latest/Caper-macOS-Intel.zip`}>Intel</a></span></li>
-              <li><strong>Windows</strong><a href={`${repositoryUrl}/releases/download/v2026.09.19.4/Caper_2026.9.1904_x64-setup.exe`}>x64 installer</a></li>
-              <li><strong>Linux</strong><span><a href={`${repositoryUrl}/releases/download/v2026.09.19.4/Caper_2026.9.1904_amd64.deb`}>.deb</a> · <a href={`${repositoryUrl}/releases/download/v2026.09.19.4/Caper_2026.9.1904_amd64.AppImage`}>AppImage</a></span></li>
-            </ul>
-            <p>Windows and Linux: older September 19 previews.</p>
-            <details>
-              <summary>Mobile apps · in development</summary>
-              <p><a href={`${repositoryUrl}/releases/download/native-latest/Caper-Android.apk`}>Android APK</a> — experimental; requires allowing installs from your browser.</p>
-              <p>iPhone — TestFlight access is not open yet.</p>
-            </details>
-          </section>
+          <div className="app-downloads">
+            {download ? <>
+              <a className="download-button" href={download.url}>{download.label}</a>
+              <p>Preview · {download.detail}
+                {platform === "macos" && <> · <a href={intelMacDownload}>Intel Mac</a></>}
+                {platform === "linux-deb" && <> · <a href={downloads["linux-tar"].url}>.tar.gz</a></>}
+                {platform === "linux-tar" && <> · <a href={downloads["linux-deb"].url}>.deb for Ubuntu / Debian</a></>}
+              </p>
+              <p><a href={`${repositoryUrl}/releases/tag/native-latest`}>All desktop downloads</a></p>
+            </> : <p>Desktop previews for <a href={`${repositoryUrl}/releases/tag/native-latest`}>Mac, Windows, and Linux</a>.</p>}
+            <p>Mobile apps are in development.</p>
+          </div>
           <p className="made-by">
             Created by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a> · <a href={repositoryUrl} target="_blank" rel="noreferrer">Follow on GitHub</a>
           </p>

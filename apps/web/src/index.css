@@ -132,16 +132,12 @@ body {
 }
 .hero-copy > .hero-lede { max-width: 580px; margin: 26px 0 0; color: #d1d3d4; font-size: clamp(1.12rem, 1.5vw, 1.3rem); font-weight: 600; line-height: 1.5; }
 .app-downloads { margin-top: 28px; width: 100%; max-width: 380px; font-size: .8125rem; line-height: 1.55; }
-.app-downloads h2 { margin: 0; font-size: .9375rem; font-weight: 700; }
-.app-downloads h2 span { margin-left: 6px; color: var(--text-muted); font-size: .6875rem; font-weight: 400; }
-.app-downloads ul { display: grid; gap: 8px; margin: 12px 0; padding: 0; list-style: none; }
-.app-downloads li { display: grid; grid-template-columns: 80px 1fr; gap: 12px; }
 .app-downloads a { color: var(--text); text-underline-offset: 4px; }
 .app-downloads a:hover { color: var(--terracotta-bright); }
-.app-downloads a:focus-visible, .app-downloads summary:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; border-radius: 2px; }
+.app-downloads a:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 4px; }
+.app-downloads .download-button { display: inline-flex; align-items: center; min-height: 48px; padding: 10px 20px; border-radius: 8px; background: var(--terracotta); font-size: .9375rem; font-weight: 700; text-decoration: none; }
+.app-downloads .download-button:hover { color: var(--text); background: var(--terracotta-bright); }
 .app-downloads p { margin: 8px 0 0; color: var(--text-muted); font-size: .75rem; }
-.app-downloads details { margin-top: 12px; }
-.app-downloads summary { cursor: pointer; color: var(--text-muted); }
 .hero-copy > .made-by { margin: 32px 0 0; color: var(--text-muted); font-size: .875rem; font-weight: 500; }
 .made-by a,
 .experimental-note a { color: var(--text); text-underline-offset: 4px; }
