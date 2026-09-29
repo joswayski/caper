@@ -77,7 +77,7 @@ export default function Home({ account, history, initialNow, latestChanges, down
             Mobile apps are coming soon. Caper may contain bugs or incomplete features. Please give feedback on <a className="feedback-x" href={xUrl} target="_blank" rel="noreferrer" aria-label="Give feedback on X"><XIcon /></a> or by email:
           </p>
           <div className="feedback-email"><CopyEmailButton email={contactEmail} /></div>
-          <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">José Valerio</a></p>
+          <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
         </div>
 
         <LiveWindow account={account} history={history} active={open} onActiveChange={setOpen} />
