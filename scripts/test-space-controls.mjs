@@ -335,6 +335,13 @@ try {
       const root = document.createElement('div'); document.body.append(root);
       createRoot(root).render(React.createElement(Home, { account: ${guest ? 'null' : 'homeFixture.account'}, history: homeFixture.history, initialNow: Date.now(), latestChanges: [] }));
     })()`);
+    if (!guest) {
+      wait('!!document.querySelector(".live-app .channel-section-toggle")');
+      assert.equal(evaluate('document.querySelectorAll(".live-app .channel-navigation h1").length'), 0, 'Public demo must not render a space heading');
+      browser('set', 'viewport', '1280', '844', '2');
+      evaluate('document.fonts.ready');
+      screenshot('homepage-public-no-heading');
+    }
     for (const width of [1280, 390]) {
       browser('set', 'viewport', String(width), '844', '2');
       browser('click', '.live-activator');
@@ -345,6 +352,7 @@ try {
         if (width === 390) browser('click', '.live-app .navigation-toggle');
         browser('click', '.live-app [aria-label="Disposable UI fixture"]');
         wait('!!document.querySelector(".live-app .channel-manage")');
+        assert.ok(evaluate('parseFloat(getComputedStyle(document.querySelector(".live-app .space-menu h1")).fontSize) < 20'), 'Space names must not inherit homepage headline typography');
         if (width === 390) browser('click', '.live-app .navigation-toggle');
         browser('click', '.live-app [aria-label="Create space"]');
         wait('!!document.querySelector(".space-dialog[open]")');

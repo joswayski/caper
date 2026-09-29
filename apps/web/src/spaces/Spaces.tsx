@@ -996,8 +996,8 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
       className="channel-navigation"
       aria-label={`${detail.space.name} channels`}
     >
-      <header>
-        {detail.space.demo ? <h1 className="demo-space-title">{detail.space.name}</h1> : <details
+      {(!detail.space.demo || navigationOpen) && <header>
+        {!detail.space.demo && <details
           ref={spaceMenu}
           className="space-menu"
           onKeyDown={(event) => {
@@ -1053,7 +1053,7 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
             <X aria-hidden="true" />
           </button>
         )}
-      </header>
+      </header>}
       <div className="channel-section-heading">
         <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded(!channelsExpanded)}>
           <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
