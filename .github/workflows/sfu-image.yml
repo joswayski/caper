@@ -1,0 +1,63 @@
+name: SFU image
+on:
+  pull_request:
+    paths:
+      - apps/sfu/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/sfu-image.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/sfu/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/sfu-image.yml
+permissions:
+  contents: read
+jobs:
+  sfu:
+    # The self-hosted SFU runs on an x86 DigitalOcean droplet, outside AWS,
+    # so its image is published to GHCR rather than the private ECR.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/caper-sfu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/sfu/Dockerfile
+          target: sfu
+          platforms: linux/amd64
+          load: true
+          tags: caper-sfu:test
+          cache-from: type=gha,scope=sfu
+          cache-to: type=gha,scope=sfu,mode=max
+      - name: Verify health and authentication without real secrets
+        run: |
+          set -euo pipefail
+          container="$(docker run -d -p 8080:8080 \
+            -e SFU_PUBLIC_IP=127.0.0.1 -e SFU_APP_ID=app -e SFU_APP_SECRET=secret \
+            -e SFU_TURN_KEY_ID=key -e SFU_TURN_API_TOKEN=token caper-sfu:test)"
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/health; then break; fi
+            sleep 1
+          done
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)" = 204
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/v1/apps/app/sessions/new)" = 401
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer secret' http://127.0.0.1:8080/v1/apps/app/sessions/new)" = 201
+      - name: Publish
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          docker tag caper-sfu:test "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:$GITHUB_SHA"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_SHA")"
+          printf '### Published SFU image\n\n`%s`\n' "$digest" >> "$GITHUB_STEP_SUMMARY"

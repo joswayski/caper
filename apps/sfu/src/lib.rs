@@ -54,7 +54,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/apps/{app}/stats", get(stats))
         .route("/v1/apps/{app}/sessions/new", post(create_session))
         .route("/v1/apps/{app}/sessions/{session}", get(get_session))
-        .route("/v1/apps/{app}/sessions/{session}/tracks/new", post(tracks_new))
+        .route(
+            "/v1/apps/{app}/sessions/{session}/tracks/new",
+            post(tracks_new),
+        )
         .route(
             "/v1/apps/{app}/sessions/{session}/renegotiate",
             put(renegotiate),
@@ -143,11 +146,13 @@ fn body<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<Option<T>, ApiErro
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(None);
     }
-    serde_json::from_slice(bytes).map(Some).map_err(|error| ApiError {
-        status: 400,
-        code: "invalid_request_error",
-        description: error.to_string(),
-    })
+    serde_json::from_slice(bytes)
+        .map(Some)
+        .map_err(|error| ApiError {
+            status: 400,
+            code: "invalid_request_error",
+            description: error.to_string(),
+        })
 }
 
 #[derive(Deserialize)]

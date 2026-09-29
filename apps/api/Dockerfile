@@ -7,6 +7,9 @@ COPY apps/api/Cargo.toml apps/api/Cargo.toml
 COPY apps/api/src apps/api/src
 COPY apps/api/build.rs apps/api/build.rs
 COPY apps/api/migrations apps/api/migrations
+# The SFU is a separate image; its workspace manifest only needs to resolve.
+COPY apps/sfu/Cargo.toml apps/sfu/Cargo.toml
+RUN mkdir -p apps/sfu/src && touch apps/sfu/src/lib.rs && echo "fn main() {}" > apps/sfu/src/main.rs
 
 RUN cargo build --locked --release --package caper-api
 

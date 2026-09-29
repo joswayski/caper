@@ -1,0 +1,9 @@
+{
+	# 443 belongs to coturn (TURN over TLS). Certificates use the HTTP-01
+	# challenge on port 80.
+	https_port 8443
+}
+
+{$SFU_DOMAIN}:8443 {
+	reverse_proxy 127.0.0.1:8080
+}

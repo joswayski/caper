@@ -69,6 +69,8 @@ services:
       CF_SFU_APP_SECRET: ${CF_SFU_APP_SECRET:-}
       CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}
       CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN:-}
+      MEDIA_PROVIDER_BASE: ${MEDIA_PROVIDER_BASE:-}
+      MEDIA_PROVIDER_ALLOW_INSECURE: ${MEDIA_PROVIDER_ALLOW_INSECURE:-}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       RUST_LOG: ${RUST_LOG:-caper_api=info,tower_http=info}
       ENVIRONMENT: staging
@@ -97,6 +99,8 @@ services:
       CF_SFU_APP_SECRET: ${CF_SFU_APP_SECRET:-}
       CF_TURN_KEY_ID: ${CF_TURN_KEY_ID:-}
       CF_TURN_API_TOKEN: ${CF_TURN_API_TOKEN:-}
+      MEDIA_PROVIDER_BASE: ${MEDIA_PROVIDER_BASE:-}
+      MEDIA_PROVIDER_ALLOW_INSECURE: ${MEDIA_PROVIDER_ALLOW_INSECURE:-}
       DATABASE_URL: ${DATABASE_URL:-postgres://caper_runtime:caper_runtime@postgres:5432/caperchat?sslmode=disable}
       DATABASE_ALLOW_INSECURE: "true"
       VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}

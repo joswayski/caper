@@ -1,0 +1,14 @@
+.git
+.github
+.amp
+.agents
+node_modules
+**/node_modules
+**/.output
+**/dist
+target
+apps/web
+apps/native
+docs
+.env
+.env.*

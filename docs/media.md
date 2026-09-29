@@ -44,7 +44,9 @@ never renew call leases.
 Browser → same-origin `/api/chat/events` WebSocket → Rust gateway → existing
 authorized media handlers → Cloudflare control API. Fifteen-second `media.snapshot`
 commands renew call leases; pushed snapshots discover roster/track changes.
-Browser ↔ Cloudflare Realtime SFU/TURN still carries audio. No audio relays through
+Browser ↔ Cloudflare Realtime SFU/TURN still carries audio; a
+[self-hosted SFU](#self-hosted-sfu) exposing the same API is available as a
+configuration switch. No audio relays through
 the gateway, AWS, Workers, Durable Objects, RealtimeKit or PlanetScale.
 
 Production activation is staged: keep the API at one replica until every pod uses
@@ -2330,6 +2332,133 @@ speech, device unplug/change, denial, repeated join/leave, restart, mute/deafen,
 and a long session. Force relay in a test-only PeerConnection override and inspect
 selected ICE stats, then test a restrictive network including TCP/TLS fallback.
 Do not infer TURN success from ordinary Wi-Fi. Compare muted/speaking RTP deltas.
+
+## Self-hosted SFU
+
+`apps/sfu` (`caper-sfu`) is an optional replacement for Cloudflare Realtime:
+an audio-only SFU built on [str0m](https://github.com/algesten/str0m) that
+answers the subset of the Cloudflare Realtime SFU and TURN HTTP APIs this API
+uses (`sessions/new` with or without an offer, `tracks/new` for publication,
+pulls and ICE restarts, `renegotiate`, `tracks/close`, session discovery,
+`generate-ice-servers` and `revoke`). Setting `MEDIA_PROVIDER_BASE` on the API
+and gateway switches providers; browsers and native clients are unchanged.
+`deploy/sfu` runs it on one public host with coturn for TURN and Caddy for the
+control API's certificate. Cloudflare stays the default until an operator cuts over.
+
+Why: Cloudflare charges $0.05 per outbound GB after its free allowance. A
+DigitalOcean droplet includes pooled transfer (for example 2 TB on the $12
+1 vCPU/2 GB size) and bills $0.01/GB beyond it. Audio is small: a full
+12-person room forwards about 6.6 Mbit/s, roughly 3 GB per hour. Do not run the
+SFU inside AWS: EC2 egress (about $0.09/GB) costs more than Cloudflare.
+
+### How it differs from Cloudflare
+
+- **One location.** Cloudflare connects each person to a nearby edge. The
+  droplet is in one region (NYC, a few milliseconds from the API in `us-east-1`),
+  so people far from it (US West, Europe) have longer audio paths than on
+  Cloudflare. Control calls are much faster: locally each operation took 2–18 ms,
+  against 180–255 ms measured on Cloudflare above, which is several hundred
+  milliseconds per join. Production adds the API-to-droplet round trip.
+- **Pulls answer at once.** No 425 wait for an unconnected session; a pull into
+  a session without a negotiated connection still gets an inactive placeholder
+  offer, as on Cloudflare.
+- **Close is always `force: true`** (no renegotiation). Closing an unknown MID,
+  or anything in an ended session, succeeds so cleanup backlogs drain.
+- **Session lifetime.** A session that never receives a packet ends after 30 s;
+  a connected one ends 30 s after its last packet. Browsers' ICE consent checks
+  keep a connected, silent session (including warm sessions) alive.
+- **TURN credentials cannot be revoked.** They are coturn REST credentials,
+  bounded by the requested TTL (at most 48 hours); `revoke` returns 204.
+- **Not E2EE**, as before: the SFU terminates DTLS-SRTP. It forwards Opus frames
+  unchanged and never decodes or records audio. Logs exclude SDP and credentials.
+- **Single process, no redundancy.** Restarting the SFU or the droplet drops
+  every call; clients rejoin automatically. Capacity limits other than
+  `SFU_MAX_SESSIONS` (default 1,000) have not been load-tested.
+
+### Configuration
+
+API and gateway (both run media handlers):
+
+| Variable | Meaning |
+| --- | --- |
+| `MEDIA_PROVIDER_BASE` | Cloudflare-compatible API root. Absent: `https://rtc.live.cloudflare.com/v1`. Self-hosted: `https://sfu.caper.chat:8443/v1`. Must be HTTPS without credentials, query or fragment. Allowlisted in the Secrets Manager record. |
+| `MEDIA_PROVIDER_ALLOW_INSECURE` | Process-only local-development opt-in (`true`/`1`) allowing `http://`. Never set in production. |
+| `CF_SFU_APP_ID`, `CF_SFU_APP_SECRET`, `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN` | Unchanged names; at cutover they hold the SFU's `SFU_APP_ID`, `SFU_APP_SECRET`, `SFU_TURN_KEY_ID` and `SFU_TURN_API_TOKEN`. |
+
+SFU host (`deploy/sfu/.env`, mode 0600; see `.env.example`): `SFU_IMAGE`,
+`SFU_DOMAIN`, `SFU_PUBLIC_IP`, the four values above, and `TURN_SECRET`
+(shared only with coturn). The binary also reads `SFU_HTTP_BIND` (default
+`0.0.0.0:8080`; the bundle binds loopback behind Caddy), `SFU_UDP_PORT` (default
+`50000`), `SFU_MAX_SESSIONS`, `SFU_STUN_URLS`, `SFU_TURN_URLS`, `RUST_LOG` and
+`LOG_FORMAT`.
+
+Public ports: UDP 50000 (media), UDP/TCP 3478 (STUN/TURN), TCP 443 (TURN over
+TLS), UDP 49160–49999 (TURN relays), TCP 80 (certificate challenge) and TCP 8443
+(control API, bearer-authenticated). coturn may only relay to the SFU's own
+address.
+
+### Deploy and cut over
+
+Images: `sfu-image.yml` builds `apps/sfu/Dockerfile` for linux/amd64, checks
+health and authentication, and on merge to `main` pushes
+`ghcr.io/joswayski/caper-sfu:<full sha>`. Make the GHCR package public once
+(package settings), or `docker login ghcr.io` on the host with a read-only token.
+
+The droplet, firewall and reserved IP come from the infrastructure repository
+(`infra/environments/production/caper-sfu`). Then:
+
+1. DNS: a **DNS-only** (grey cloud) `A` record `sfu.caper.chat` → the reserved
+   IP. Cloudflare's proxy cannot carry UDP or TURN.
+2. On the host: copy `deploy/sfu/*` to `/opt/caper-sfu`, create `.env` from
+   `.env.example` with fresh `openssl rand -hex 32` secrets, then
+   `docker compose --env-file .env up -d`. Once Caddy has a certificate
+   (`docker compose logs caddy`), `docker compose restart coturn` so TURN over
+   TLS starts. Add a weekly restart of coturn (for example Monday 09:17 UTC) to
+   pick up renewed certificates.
+3. Verify: `curl -fsS https://sfu.caper.chat:8443/health` returns 204, and
+   `curl -fsS -H "Authorization: Bearer $SFU_APP_SECRET" https://sfu.caper.chat:8443/v1/apps/caper/stats`
+   returns counts.
+4. Deploy an API and gateway image containing `MEDIA_PROVIDER_BASE` support.
+5. Cut over at a quiet time: in `production/apps/caper`, set
+   `MEDIA_PROVIDER_BASE` and the four `CF_*` values to the SFU's in **one**
+   secret update. External Secrets refreshes within five minutes and Reloader
+   rolls the API and gateway. Calls in progress lose their Cloudflare sessions
+   and rejoin through the SFU.
+6. Test with two people on different networks, one forced to relay (see
+   [Cost and acceptance](#cost-and-acceptance)).
+
+Rollback: restore the previous secret version (Cloudflare values;
+`MEDIA_PROVIDER_BASE` set to `https://rtc.live.cloudflare.com/v1`). Keep the
+Cloudflare app and TURN key until the SFU has run for a while.
+
+Local development: run `cargo run -p caper-sfu` with `SFU_PUBLIC_IP` set to a
+non-loopback address of the machine (Chromium does not use loopback candidates),
+and point the API at it with `MEDIA_PROVIDER_BASE=http://127.0.0.1:8080/v1` and
+`MEDIA_PROVIDER_ALLOW_INSECURE=true`.
+
+### Validation (September 29, 2026)
+
+- **Automated** (`cargo test -p caper-sfu`): two str0m peers publish, pull,
+  renegotiate and exchange Opus frames through the SFU over loopback UDP; close
+  stops forwarding; missing tracks, unknown sessions, authentication, the
+  placeholder offer and TURN credential shape are covered.
+- **Chromium through the SFU, no app code:** a 440 Hz tone published from one
+  `RTCPeerConnection` and pulled on another decoded at full level (audio energy
+  3.99 over 4 s, no concealment), connected in about 100 ms. The warm path (a
+  track-less session connected with a negotiated data channel, then publishing
+  on it) and an ICE restart on the publisher (audio continued at 50 packets/s)
+  both worked.
+- **Full stack:** the real web app, API, gateway, Postgres and Valkey with two
+  headless guests joining public #general through the SFU. Both joined; 46
+  provider operations (create, publish, batched and single pulls, negotiate,
+  close, TURN issue) succeeded with no failures; each side received exactly the
+  RTP bytes the other sent. Decoded audio was silent in this run because the app's
+  processing chain left the fake-device beep silent in headless Chromium; the
+  tone test above covers decoding.
+- **Not yet validated:** TURN through coturn (UDP, TCP, TLS on 443), the
+  DigitalOcean deployment and certificates, real networks and NAT, physical
+  microphones, Safari, Firefox, native clients, long calls, and load. Record
+  these separately before and after cutover.
 
 ## Runbook
 

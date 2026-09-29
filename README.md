@@ -23,6 +23,7 @@ for available settings. Stop the stack with Ctrl-C.
 
 - [apps/web](apps/web) — TanStack Start web app
 - [apps/api](apps/api) — Rust API and WebSocket gateway
+- [apps/sfu](apps/sfu) — optional self-hosted audio SFU ([docs](docs/media.md#self-hosted-sfu))
 - [apps/native](apps/native/README.md) — native development clients; not yet feature-parity releases
 - [shared](shared) — shared design tokens
 

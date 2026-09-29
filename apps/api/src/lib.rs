@@ -101,7 +101,12 @@ impl Config {
             app_secret: get("CF_SFU_APP_SECRET"),
             turn_key_id: get("CF_TURN_KEY_ID"),
             turn_token: get("CF_TURN_API_TOKEN"),
-            provider_base: "https://rtc.live.cloudflare.com/v1".into(),
+            provider_base: provider_base(
+                get("MEDIA_PROVIDER_BASE").as_deref(),
+                environment
+                    .get("MEDIA_PROVIDER_ALLOW_INSECURE")
+                    .is_some_and(|v| v == "true" || v == "1"),
+            )?,
             #[cfg(test)]
             auth_fixture: false,
         };
@@ -135,6 +140,33 @@ impl Config {
             auth_fixture: true,
         }
     }
+}
+
+const CLOUDFLARE_BASE: &str = "https://rtc.live.cloudflare.com/v1";
+
+/// The Cloudflare Realtime-compatible API root: Cloudflare by default, or a
+/// self-hosted `caper-sfu` (`https://<host>/v1`). Plain HTTP requires the
+/// process-only local-development opt-in.
+fn provider_base(value: Option<&str>, allow_insecure: bool) -> Result<String, String> {
+    let Some(value) = value.map(str::trim) else {
+        return Ok(CLOUDFLARE_BASE.into());
+    };
+    let url =
+        reqwest::Url::parse(value).map_err(|_| "MEDIA_PROVIDER_BASE must be an absolute URL")?;
+    let secure = url.scheme() == "https" || (allow_insecure && url.scheme() == "http");
+    if !secure
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "MEDIA_PROVIDER_BASE must be an https:// URL without credentials, query, or fragment"
+                .into(),
+        );
+    }
+    Ok(value.trim_end_matches('/').to_owned())
 }
 
 #[derive(Debug, Error)]

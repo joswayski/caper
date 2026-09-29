@@ -38,7 +38,8 @@ impl Turn {
                 .map_or(0, |d| d.as_secs())
                 + ttl;
             let (username, credential) = credential(secret, expiry);
-            servers.push(json!({ "urls": self.turn, "username": username, "credential": credential }));
+            servers
+                .push(json!({ "urls": self.turn, "username": username, "credential": credential }));
         }
         servers
     }
@@ -63,7 +64,8 @@ mod tests {
         assert!(username.starts_with("1700000000:"));
         let mut mac = Hmac::<sha1::Sha1>::new_from_slice(b"secret").unwrap();
         mac.update(username.as_bytes());
-        let expected = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+        let expected =
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
         assert_eq!(password, expected);
     }
 
@@ -79,8 +81,15 @@ mod tests {
 
     #[test]
     fn ttl_is_bounded() {
-        let turn = Turn::new(Some("s".into()), vec![], vec!["turn:sfu.example:3478".into()]);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let turn = Turn::new(
+            Some("s".into()),
+            vec![],
+            vec!["turn:sfu.example:3478".into()],
+        );
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let servers = turn.ice_servers(Some(u64::MAX));
         let expiry: u64 = servers[0]["username"]
             .as_str()

@@ -2641,3 +2641,40 @@ fn database_url_requires_postgres_and_tls() {
         "DATABASE_URL must be a PostgreSQL URL"
     );
 }
+
+#[test]
+fn media_provider_base_defaults_to_cloudflare_and_accepts_a_self_hosted_sfu() {
+    assert_eq!(
+        provider_base(None, false).unwrap(),
+        "https://rtc.live.cloudflare.com/v1"
+    );
+    assert_eq!(
+        provider_base(Some("https://sfu.caper.chat/v1/"), false).unwrap(),
+        "https://sfu.caper.chat/v1"
+    );
+    assert!(provider_base(Some("http://sfu:8080/v1"), false).is_err());
+    assert_eq!(
+        provider_base(Some("http://sfu:8080/v1"), true).unwrap(),
+        "http://sfu:8080/v1"
+    );
+    for invalid in [
+        "sfu.caper.chat/v1",
+        "https://user:pass@sfu.caper.chat/v1",
+        "https://sfu.caper.chat/v1?x=1",
+        "ftp://sfu.caper.chat/v1",
+    ] {
+        assert!(provider_base(Some(invalid), true).is_err(), "{invalid}");
+    }
+    let environment = RuntimeEnvironment::from_values_for_test([
+        ("MEDIA_ENABLED", "true"),
+        ("CF_SFU_APP_ID", "app"),
+        ("CF_SFU_APP_SECRET", "secret"),
+        ("CF_TURN_KEY_ID", "key"),
+        ("CF_TURN_API_TOKEN", "token"),
+        ("MEDIA_PROVIDER_BASE", "https://sfu.caper.chat/v1"),
+    ]);
+    assert_eq!(
+        Config::from_env(&environment).unwrap().provider_base,
+        "https://sfu.caper.chat/v1"
+    );
+}

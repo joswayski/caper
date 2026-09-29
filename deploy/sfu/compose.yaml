@@ -1,0 +1,67 @@
+# Self-hosted Caper media on one public host (DigitalOcean droplet).
+# Host networking: WebRTC and TURN need the host's public IP and many UDP ports.
+# Start: docker compose --env-file .env up -d   (see docs/media.md#self-hosted-sfu)
+name: caper-sfu
+
+services:
+  sfu:
+    image: ${SFU_IMAGE:?set SFU_IMAGE to ghcr.io/joswayski/caper-sfu:<sha>}
+    network_mode: host
+    restart: unless-stopped
+    stop_grace_period: 10s
+    environment:
+      SFU_HTTP_BIND: 127.0.0.1:8080
+      SFU_UDP_PORT: "50000"
+      SFU_PUBLIC_IP: ${SFU_PUBLIC_IP:?}
+      SFU_MAX_SESSIONS: ${SFU_MAX_SESSIONS:-1000}
+      SFU_APP_ID: ${SFU_APP_ID:?}
+      SFU_APP_SECRET: ${SFU_APP_SECRET:?}
+      SFU_TURN_KEY_ID: ${SFU_TURN_KEY_ID:?}
+      SFU_TURN_API_TOKEN: ${SFU_TURN_API_TOKEN:?}
+      SFU_TURN_SECRET: ${TURN_SECRET:?}
+      SFU_STUN_URLS: stun:${SFU_DOMAIN:?}:3478
+      SFU_TURN_URLS: turn:${SFU_DOMAIN}:3478?transport=udp,turn:${SFU_DOMAIN}:3478?transport=tcp,turns:${SFU_DOMAIN}:443?transport=tcp
+      LOG_FORMAT: json
+      RUST_LOG: ${RUST_LOG:-caper_sfu=info,tower_http=warn}
+    logging: &logging
+      driver: json-file
+      options: { max-size: 20m, max-file: "5" }
+
+  # HTTPS for the control API on 8443 (the Caper API is its only client), and
+  # the certificate coturn uses for TURN over TLS on 443.
+  caddy:
+    image: caddy:2.10-alpine
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      SFU_DOMAIN: ${SFU_DOMAIN:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    logging: *logging
+
+  coturn:
+    image: coturn/coturn:4.7
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [caddy]
+    # Root reads Caddy's private key and binds 443; the relay itself is
+    # limited by turnserver.conf to reaching this host's SFU.
+    user: "0:0"
+    # Secrets and addresses as arguments; the config file holds the rest.
+    command:
+      - -c
+      - /etc/coturn/turnserver.conf
+      - --realm=${SFU_DOMAIN}
+      - --static-auth-secret=${TURN_SECRET}
+      - --external-ip=${SFU_PUBLIC_IP}
+      - --allowed-peer-ip=${SFU_PUBLIC_IP}
+      - --cert=/certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${SFU_DOMAIN}/${SFU_DOMAIN}.crt
+      - --pkey=/certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${SFU_DOMAIN}/${SFU_DOMAIN}.key
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - caddy-data:/certs:ro
+    logging: *logging
+
+volumes:
+  caddy-data:

@@ -222,7 +222,11 @@ impl Sfu {
 
     pub fn create(&mut self, offer: Option<&str>, now: Instant) -> Result<Value, ApiError> {
         if self.sessions.len() >= self.max_sessions {
-            return Err(ApiError::new(503, "capacity_error", "session limit reached"));
+            return Err(ApiError::new(
+                503,
+                "capacity_error",
+                "session limit reached",
+            ));
         }
         let mut rtc = self.rtc(now)?;
         let answer = match offer {
@@ -369,7 +373,11 @@ impl Sfu {
         }
         let mut wanted = vec![];
         for track in tracks {
-            match (track.location.as_str(), &track.session_id, &track.track_name) {
+            match (
+                track.location.as_str(),
+                &track.session_id,
+                &track.track_name,
+            ) {
                 ("remote", Some(source), Some(name)) => {
                     let found = source != id
                         && self

@@ -88,9 +88,22 @@ async fn main() -> Result<(), String> {
         .map_err(|e| format!("binding {http}: {e}"))?;
     tracing::info!(%http, %public, "caper-sfu listening");
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown())
         .await
         .map_err(|e| e.to_string())
+}
+
+async fn shutdown() {
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = terminate => {}
+    }
 }

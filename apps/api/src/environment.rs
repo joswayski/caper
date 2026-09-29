@@ -28,6 +28,7 @@ const SECRET_KEYS: &[&str] = &[
     "CF_SFU_APP_SECRET",
     "CF_TURN_KEY_ID",
     "CF_TURN_API_TOKEN",
+    "MEDIA_PROVIDER_BASE",
     "AXIOM_TOKEN",
     "AXIOM_DATASET",
     "AXIOM_ENDPOINT",
