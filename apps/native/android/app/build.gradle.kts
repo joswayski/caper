@@ -15,6 +15,9 @@ val releaseSigningInputs = listOf(releaseStore, releaseStorePassword, releaseKey
 val releaseSigningAvailable = releaseSigningInputs.all { it.isPresent }
 val apiBaseUrl = providers.gradleProperty("caperApiBaseUrl").orElse("https://caper.chat")
 val fixtureMode = providers.gradleProperty("caperFixtureMode").orElse("false")
+// Native release run number (release.yml). Google Play and APK updates need a
+// versionCode higher than the installed one; local builds stay at 1.
+val buildNumber = providers.environmentVariable("CAPER_BUILD_NUMBER").map { it.toInt() }.orElse(1)
 
 if (fixtureMode.get().toBoolean()) {
     val fixtureOrigin = URI(apiBaseUrl.get())
@@ -44,8 +47,8 @@ android {
         applicationId = "chat.caper.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-dev"
+        versionCode = buildNumber.get()
+        versionName = if (buildNumber.get() > 1) "0.1.${buildNumber.get()}" else "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "ENABLE_NATIVE_VOICE", "true")
         externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
