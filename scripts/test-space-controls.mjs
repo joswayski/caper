@@ -318,7 +318,7 @@ try {
   // Mount the real homepage with explicit loader fixtures; API/gateway mocks
   // remain the same as the standalone spaces checks above.
   for (const guest of [false, true]) {
-    browser('open', `${url}?public`);
+    browser('open', `${url}?public&width=440`);
     wait('!!document.querySelector(".channel-navigation")');
     evaluate(`(async () => {
       const { default: React } = await import('/node_modules/.vite/deps/react.js');
@@ -335,6 +335,14 @@ try {
       const root = document.createElement('div'); document.body.append(root);
       createRoot(root).render(React.createElement(Home, { account: ${guest ? 'null' : 'homeFixture.account'}, history: homeFixture.history, initialNow: Date.now(), latestChanges: [] }));
     })()`);
+    if (!guest) {
+      wait('!!document.querySelector(".live-app .channel-navigation[data-demo] .channel-select")');
+      assert.equal(evaluate('document.querySelectorAll(".live-app .channel-navigation h1").length'), 0, 'Public demo must not render a space heading');
+      assert.equal(evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'), 0, 'The single-channel demo must not have a Channels dropdown');
+      browser('set', 'viewport', '1280', '844', '2');
+      evaluate('document.fonts.ready');
+      screenshot('homepage-public-no-heading');
+    }
     for (const width of [1280, 390]) {
       browser('set', 'viewport', String(width), '844', '2');
       browser('click', '.live-activator');
@@ -342,9 +350,26 @@ try {
       wait('[...document.querySelectorAll(".live-stage, .live-scene")].every(el => el.getAnimations().every(animation => animation.playState === "finished"))');
       assert.equal(evaluate('document.querySelectorAll(".live-titlebar, .live-lights").length'), 0);
       if (!guest) {
+        if (width === 1280) {
+          const alignment = evaluate(`(() => {
+            const row = document.querySelector('.live-app .channel-select').getBoundingClientRect();
+            const heading = document.querySelector('.live-app .chat-heading').getBoundingClientRect();
+            return { row: row.toJSON(), heading: heading.toJSON(), delta: row.top + row.height / 2 - heading.top - heading.height / 2 };
+          })()`);
+          assert.ok(Math.abs(alignment.delta) < 2, `Public general row must align with the chat header: ${JSON.stringify(alignment)}`);
+          assert.ok(evaluate('document.querySelector(".live-app .people-panel").getBoundingClientRect().width <= 260'), 'A wide saved sidebar must stay compact on the homepage');
+          assert.ok(evaluate(`(() => {
+            const line = document.querySelector('.live-app .channel-line').getBoundingClientRect();
+            const panel = document.querySelector('.live-app .people-panel').getBoundingClientRect();
+            return line.height <= 44 && line.top - panel.top >= 5 && line.top - panel.top <= 8;
+          })()`), 'Public channel highlight must be compact and inset from the top');
+          screenshot('homepage-public-aligned');
+        }
         if (width === 390) browser('click', '.live-app .navigation-toggle');
         browser('click', '.live-app [aria-label="Disposable UI fixture"]');
         wait('!!document.querySelector(".live-app .channel-manage")');
+        assert.equal(evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'), 1, 'Account spaces retain channel controls');
+        assert.ok(evaluate('parseFloat(getComputedStyle(document.querySelector(".live-app .space-menu h1")).fontSize) < 20'), 'Space names must not inherit homepage headline typography');
         if (width === 390) browser('click', '.live-app .navigation-toggle');
         browser('click', '.live-app [aria-label="Create space"]');
         wait('!!document.querySelector(".space-dialog[open]")');
