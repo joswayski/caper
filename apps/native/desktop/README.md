@@ -83,7 +83,8 @@ Windows Server 2025 / Windows 11 build host:
 1. Install Visual Studio 2022 or newer Build Tools with **Desktop development with C++**
    and a Windows 10/11 SDK.
 2. Install rustup and the stable `1.94.0-x86_64-pc-windows-msvc` toolchain.
-3. Open the x64 Visual Studio developer environment, then run
+3. Install NSIS 3.11 (`choco install nsis --version=3.11 -y`).
+4. Open the x64 Visual Studio developer environment, then run
    `powershell -ExecutionPolicy Bypass -File apps/native/desktop/build.ps1`.
    Packaging uses its `VCToolsRedistDir` to locate the signed app-local runtime.
 
@@ -91,7 +92,15 @@ Outputs are unsigned:
 
 - `dist/Caper-linux-x64.tar.gz`
 - `dist/Caper-linux-x64.deb`
-- `dist/Caper-windows-x64.zip`
+- `dist/Caper-windows-x64-Setup.exe` (normal Windows download)
+- `dist/Caper-windows-x64.zip` (self-update payload / optional portable archive)
+
+Windows Setup installs to `%LOCALAPPDATA%\Programs\Caper\app`, creates Start
+and desktop shortcuts, and registers an uninstaller in Installed apps. Neither
+installation nor launch requires a terminal or administrator access. The updater
+replaces only `app`, preserving the uninstaller and shortcuts. Close Caper before
+installing or uninstalling. CI runs `test-installer.ps1` on a clean Windows host
+to check the PE GUI subsystem, install/reinstall, file hashes, shortcuts and removal.
 
 The `.deb` is built against Ubuntu 24.04 (glibc 2.39) and declares native
 X11/Wayland, D-Bus, PulseAudio/ALSA and Vulkan-or-GL runtime dependencies. It is not a static or

@@ -122,7 +122,12 @@ jobs:
       - name: Build and package Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./apps/native/desktop/build.ps1
+        run: |
+          choco install nsis --version=3.11 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./apps/native/desktop/build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./apps/native/desktop/test-installer.ps1 -Setup "$PWD/apps/native/desktop/dist/Caper-windows-x64-Setup.exe" -Stage "$PWD/apps/native/desktop/target/package/Caper-windows-x64"
       - name: Record exact checked-out revision and checksums
         shell: bash
         env:

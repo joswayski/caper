@@ -4,7 +4,7 @@ name: Native release
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
-#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64.zip
+#   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
 #   https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.tar.gz
 # and uploads the iPhone app to TestFlight. The Mac, Windows and Linux apps update
@@ -386,8 +386,13 @@ jobs:
           CAPER_UPDATE_PUBLIC_KEY: ${{ needs.resolve.outputs.update_public_key }}
         run: |
           if (-not $env:CAPER_UPDATE_PUBLIC_KEY) { Remove-Item Env:CAPER_UPDATE_PUBLIC_KEY }
+          choco install nsis --version=3.11 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./apps/native/desktop/build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./apps/native/desktop/test-installer.ps1 -Setup "$PWD/apps/native/desktop/dist/Caper-windows-x64-Setup.exe" -Stage "$PWD/apps/native/desktop/target/package/Caper-windows-x64"
           New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item apps/native/desktop/dist/Caper-windows-x64-Setup.exe release/Caper-Windows-x64-Setup.exe
           Copy-Item apps/native/desktop/dist/Caper-windows-x64.zip release/Caper-Windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
@@ -416,7 +421,7 @@ jobs:
           set -euo pipefail
           cd release
           assets=(Caper-macOS-Apple-Silicon.zip Caper-macOS-Intel.zip Caper-Android.apk
-            Caper-Windows-x64.zip Caper-Linux-x64.deb Caper-Linux-x64.tar.gz)
+            Caper-Windows-x64-Setup.exe Caper-Windows-x64.zip Caper-Linux-x64.deb Caper-Linux-x64.tar.gz)
           for asset in "${assets[@]}"; do test -s "$asset"; done
           sha256sum "${assets[@]}" >SHA256SUMS
           cat >notes.md <<EOF
@@ -426,9 +431,9 @@ jobs:
 
           **Android:** open [Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk) on the phone and allow installing from your browser when asked. Later versions install over it.
 
-          **Windows:** download [Caper-Windows-x64.zip](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Windows-x64.zip), unzip, and run Caper.exe. It is not code-signed yet, so Windows may warn first: choose **More info → Run anyway**.
+          **Windows:** run [Caper-Windows-x64-Setup.exe](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Windows-x64-Setup.exe), then open Caper from Start or the desktop shortcut. No extraction or administrator access needed. Close any old Caper copy before installing. It is not code-signed yet, so Windows may warn first: choose **More info → Run anyway**. The ZIP is retained for self-updates and optional portable use.
 
-          **Linux:** install [Caper-Linux-x64.deb](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Linux-x64.deb) on Ubuntu/Debian, or use the [tarball](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Linux-x64.tar.gz).
+          **Linux:** on Ubuntu 24.04 or a compatible Debian-based system, open [Caper-Linux-x64.deb](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Linux-x64.deb) in the software installer, then launch Caper from the application menu (no extraction or terminal window). The tarball is for self-updates and advanced portable use, not a universal Linux installer.
 
           **iPhone:** join through the TestFlight link.
           EOF

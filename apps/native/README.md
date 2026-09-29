@@ -88,9 +88,17 @@ newest build:
 - Mac (Apple Silicon): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip
 - Mac (Intel): https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip
 - Android: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk
-- Windows: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64.zip
+- Windows: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe
 - Linux: https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb
-  (or `Caper-Linux-x64.tar.gz`)
+
+Windows users run Setup once, then open Caper from Start or the desktop shortcut;
+there is no extraction or console window. It installs per-user without admin
+access and appears in Installed apps for removal. Close any old portable copy
+first; the installer does not remove downloads from previous versions.
+Linux users on Ubuntu 24.04 or compatible Debian-based systems open the `.deb`
+in their software installer, then launch Caper from the application menu without
+a terminal. This is not a universal Linux package. ZIP/tar archives remain for
+self-updates and advanced portable use, not the default install experience.
 
 **Releasing from Discord.** When **Native development builds** passes on `main`,
 `native-ready.yml` posts a "Caper apps build is ready" notification with a
