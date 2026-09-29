@@ -12,7 +12,8 @@ struct CaperMacOSApp: App {
                 .frame(minWidth: parity ? 390 : 840, minHeight: 600)
                 .onAppear { updater.start() }
         }
-        .windowStyle(.hiddenTitleBar)
+        // Keep system window controls in their own title bar, outside the space rail.
+        .windowStyle(.titleBar)
         .defaultSize(width: parity ? 1440 : 1180, height: parity ? 900 : 760)
         .commands {
             CommandGroup(after: .appInfo) {

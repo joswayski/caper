@@ -2437,7 +2437,9 @@ impl CaperApp {
                         egui::pos2(separator_rect.right(), content.top()),
                         content.max,
                     );
-                    let wide_members = context.viewport_rect().width() >= 1100.0;
+                    // Reserve 320px for chat; otherwise show members as a right-side
+                    // overlay below the header, never as a second row below chat.
+                    let wide_members = stage_rect.width() >= 540.0;
                     let members_visible = self.members_visible && !self.no_accessible_channels();
                     let (conversation_rect, members_rect) = if members_visible && wide_members {
                         let members = egui::Rect::from_min_max(
@@ -2453,16 +2455,10 @@ impl CaperApp {
                         )
                     } else if members_visible {
                         let members = egui::Rect::from_min_max(
-                            egui::pos2(stage_rect.left(), stage_rect.bottom() - 220.0),
+                            egui::pos2(stage_rect.right() - 220.0, stage_rect.top() + 53.0),
                             stage_rect.max,
                         );
-                        (
-                            egui::Rect::from_min_max(
-                                stage_rect.min,
-                                egui::pos2(stage_rect.right(), members.top()),
-                            ),
-                            Some(members),
-                        )
+                        (stage_rect, Some(members))
                     } else {
                         (stage_rect, None)
                     };
@@ -2499,6 +2495,13 @@ impl CaperApp {
                     if separator.clicked() {
                         separator.request_focus();
                     }
+                    if separator.hovered() || separator.dragged() || separator.has_focus() {
+                        ui.painter().vline(
+                            separator_rect.center().x,
+                            separator_rect.y_range(),
+                            Stroke::new(2.0, TERRACOTTA),
+                        );
+                    }
                     if separator.has_focus() {
                         ui.memory_mut(|memory| {
                             memory.set_focus_lock_filter(
@@ -2526,11 +2529,6 @@ impl CaperApp {
                         self.sidebar_width = self
                             .sidebar_width
                             .clamp(220.0, (content.width() - 380.0).clamp(220.0, 440.0));
-                        ui.painter().vline(
-                            separator_rect.center().x,
-                            separator_rect.y_range(),
-                            Stroke::new(2.0, TERRACOTTA),
-                        );
                     }
                     ui.scope_builder(egui::UiBuilder::new().max_rect(conversation_rect), |ui| {
                         self.conversation(ui, false)
@@ -2715,7 +2713,7 @@ impl CaperApp {
                                 let name = self
                                     .detail
                                     .as_ref()
-                                    .map_or("Caper", |detail| detail.space.name.as_str());
+                                    .map_or("Caper", |detail| if detail.space.demo { "Caper" } else { detail.space.name.as_str() });
                                 let title_rect = rect.shrink2(egui::vec2(8.0, 0.0));
                                 ui.painter()
                                     .with_clip_rect(egui::Rect::from_min_max(
@@ -2939,14 +2937,24 @@ impl CaperApp {
                                 break;
                             }
                             let active = self.selected_channel.as_deref() == Some(&id);
-                            let (response, settings) = channel_button(
-                                ui,
-                                ui.available_width(),
-                                &name,
-                                private,
-                                active,
-                                self.owner(),
-                            );
+                            let voice_width = self.channel_voice_width(&id, active);
+                            // Match web wrapping when avatars + Join would crowd the name/settings.
+                            let inline_voice = ui.available_width() - voice_width - 6.0 >= 110.0;
+                            let row = ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                let channel_width = ui.available_width() - if inline_voice && voice_width > 0.0 { voice_width + 6.0 } else { 0.0 };
+                                let controls = channel_button(
+                                    ui,
+                                    channel_width,
+                                    &name,
+                                    private,
+                                    active,
+                                    self.owner(),
+                                );
+                                if inline_voice { self.channel_voice_summary(ui, &id, &name, active); }
+                                controls
+                            });
+                            let (response, settings) = row.inner;
                             if settings.is_some_and(|response| response.clicked()) {
                                 self.open_manage_channel(&id, &name, private);
                             } else if response.clicked() {
@@ -2957,7 +2965,10 @@ impl CaperApp {
                                     channel: Some(id.clone()),
                                 });
                             }
-                            ui.push_id(&id, |ui| self.channel_voice(ui, &id, &name, active));
+                            ui.push_id(&id, |ui| {
+                                if !inline_voice { self.channel_voice_summary(ui, &id, &name, active); }
+                                self.channel_voice_roster(ui, &id);
+                            });
                             ui.add_space(3.0);
                         }
                         let active_visible = self.channels_expanded
@@ -2988,7 +2999,28 @@ impl CaperApp {
             .collect()
     }
 
-    fn channel_voice(&mut self, ui: &mut egui::Ui, id: &str, name: &str, viewed: bool) {
+    fn channel_voice_width(&self, id: &str, viewed: bool) -> f32 {
+        let own = self.voice.state.active_channel() == Some(id)
+            && !matches!(self.voice.state.phase, Phase::Failed(_));
+        let count = if own {
+            self.voice.participants.len()
+        } else {
+            self.channel_rosters.get(id).map_or(0, Vec::len)
+        };
+        let stack = if count == 0 {
+            0.0
+        } else {
+            count.min(3) as f32 * 16.0 + 26.0 + if count > 3 { 24.0 } else { 0.0 }
+        };
+        let join = if !own && (viewed || count > 0) {
+            76.0
+        } else {
+            0.0
+        };
+        stack + join + if stack > 0.0 && join > 0.0 { 6.0 } else { 0.0 }
+    }
+
+    fn channel_voice_summary(&mut self, ui: &mut egui::Ui, id: &str, name: &str, viewed: bool) {
         let own = self.voice.state.active_channel() == Some(id)
             && !matches!(self.voice.state.phase, Phase::Failed(_));
         let people = if own {
@@ -3001,7 +3033,7 @@ impl CaperApp {
         }
         let open = !self.collapsed_rosters.contains(id);
         ui.horizontal(|ui| {
-            ui.add_space(32.0);
+            ui.spacing_mut().item_spacing.x = 6.0;
             if !people.is_empty() {
                 let faces_width = people.len().min(3) as f32 * 16.0 + 8.0;
                 let width = faces_width + 18.0 + if people.len() > 3 { 24.0 } else { 0.0 };
@@ -3118,7 +3150,20 @@ impl CaperApp {
                 });
             }
         });
-        if open {
+    }
+
+    fn channel_voice_roster(&mut self, ui: &mut egui::Ui, id: &str) {
+        if self.collapsed_rosters.contains(id) {
+            return;
+        }
+        let own = self.voice.state.active_channel() == Some(id)
+            && !matches!(self.voice.state.phase, Phase::Failed(_));
+        let people = if own {
+            self.roster_for_active_call()
+        } else {
+            self.channel_rosters.get(id).cloned().unwrap_or_default()
+        };
+        if !people.is_empty() {
             self.voice_roster(ui, people, own);
         }
     }
@@ -4301,7 +4346,6 @@ impl CaperApp {
                                     {
                                         if narrow { self.narrow_members_visible = !self.narrow_members_visible; }
                                         else { self.members_visible = !self.members_visible; }
-                                        self.effects.toggle(if narrow { self.narrow_members_visible } else { self.members_visible });
                                     }
                                 },
                             );
@@ -5708,13 +5752,21 @@ fn channel_button(
         },
         if active { TERRACOTTA_BRIGHT } else { color },
     );
-    ui.painter().text(
-        egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
-        egui::Align2::LEFT_CENTER,
-        name,
-        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-        color,
-    );
+    ui.painter()
+        .with_clip_rect(egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 34.0, rect.top()),
+            egui::pos2(
+                rect.right() - if manageable { 34.0 } else { 6.0 },
+                rect.bottom(),
+            ),
+        ))
+        .text(
+            egui::pos2(rect.left() + 35.0, rect.center().y - 1.0),
+            egui::Align2::LEFT_CENTER,
+            name,
+            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+            color,
+        );
     // The nested settings hit target owns hover while the pointer is over it,
     // so parent-response hover alone makes the control disappear between the
     // mouse press and release. Geometry remains stable for the whole gesture.
@@ -6016,10 +6068,21 @@ fn configure(context: &egui::Context) {
     style.visuals.extreme_bg_color = COMPOSER;
     style.visuals.widgets.inactive.bg_fill = RAISED;
     style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+    style.visuals.widgets.inactive.corner_radius = CornerRadius::same(7);
+    style.visuals.widgets.hovered.bg_fill = COMPOSER;
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, TERRACOTTA_BRIGHT);
+    style.visuals.widgets.hovered.corner_radius = CornerRadius::same(7);
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(57, 35, 30);
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, TERRACOTTA_BRIGHT);
+    style.visuals.widgets.active.corner_radius = CornerRadius::same(7);
+    style.visuals.widgets.open.bg_fill = COMPOSER;
+    style.visuals.widgets.open.bg_stroke = Stroke::new(1.0, TERRACOTTA_BRIGHT);
+    style.visuals.widgets.open.corner_radius = CornerRadius::same(7);
     style.visuals.selection.bg_fill = TERRACOTTA;
     style.visuals.override_text_color = Some(TEXT);
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(10.0, 7.0);
+    style.spacing.interact_size.y = 36.0;
     style.visuals.window_corner_radius = CornerRadius::same(8);
     context.set_style(style);
 }
@@ -7270,6 +7333,72 @@ mod tests {
             assert!(json.get(field).is_some(), "missing {field}");
         }
         assert!(json.get("iceMs").is_none() && json.get("checks").is_none());
+    }
+
+    #[test]
+    fn compact_sidebar_keeps_join_inside_and_members_at_the_right() {
+        for (viewport, sidebar) in [(840.0, 220.0), (840.0, 440.0), (1000.0, 280.0)] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-voice-rosters"),
+            );
+            app.sidebar_width = sidebar;
+            let mut frame = || {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(viewport, 800.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| app.shell(context),
+                )
+            };
+            frame();
+            let output = frame();
+            let texts: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect();
+            let general = texts
+                .iter()
+                .find(|text| text.galley.job.text == "general")
+                .unwrap();
+            let joins: Vec<_> = texts
+                .iter()
+                .filter(|text| text.galley.job.text == "Join")
+                .collect();
+            assert_eq!(joins.len(), 2);
+            assert!(
+                (joins[0].pos.y + joins[0].galley.size().y / 2.0
+                    - general.pos.y
+                    - general.galley.size().y / 2.0)
+                    .abs()
+                    < 2.0,
+                "an unoccupied channel's Join stays inline"
+            );
+            for join in joins {
+                assert!(
+                    join.pos.x + join.galley.size().x < 60.0 + sidebar,
+                    "Join text must fit inside the sidebar"
+                );
+            }
+            let members = texts
+                .iter()
+                .find(|text| text.galley.job.text == "Members")
+                .unwrap();
+            assert!(
+                members.pos.x >= viewport - 220.0 && members.pos.y < 100.0,
+                "members must be at the right, never below chat"
+            );
+        }
     }
 
     #[test]

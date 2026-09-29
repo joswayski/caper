@@ -300,7 +300,7 @@ final class CaperParityUITests: XCTestCase {
     #if os(macOS)
     func testSidebarResizeKeyboardBoundsAndSavedWidth() {
         let app = launch()
-        let handle = app.buttons["channel-sidebar-resize"]
+        let handle = app.descendants(matching: .any)["channel-sidebar-resize"]
         let channelTitle = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertTrue(handle.waitForExistence(timeout: 5))
         handle.doubleClick()
@@ -332,12 +332,29 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(handle.value as? String, "290 pixels", "reset keeps the resize handle focused")
         app.terminate()
         let reopened = launch()
-        let saved = reopened.buttons["channel-sidebar-resize"]
+        let saved = reopened.descendants(matching: .any)["channel-sidebar-resize"]
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
         XCTAssertEqual(saved.value as? String, "290 pixels", "resized width survives relaunch")
         XCTAssertEqual(reopened.descendants(matching: .any)["selected-channel-name"].frame.minX - initialEdge, 10, accuracy: 2)
         capture("sidebar-resized", app: reopened)
         saved.doubleClick()
+    }
+
+    func testInlineJoinAndProfileBackdropDismissal() {
+        let app = launch()
+        let channel = app.buttons["channel-chan00000001"]
+        let join = app.buttons["join-voice-chan00000001"]
+        XCTAssertTrue(join.waitForExistence(timeout: 10))
+        XCTAssertEqual(join.frame.midY, channel.frame.midY, accuracy: 2, "Join stays on the channel's row")
+        let settings = app.descendants(matching: .any)["account-settings-menu"]
+        XCTAssertTrue(settings.isHittable)
+        XCTAssertLessThan(settings.frame.maxX, app.descendants(matching: .any)["channel-sidebar-resize"].frame.midX)
+        app.buttons["account-profile"].tap()
+        XCTAssertTrue(app.buttons["profile-save"].waitForExistence(timeout: 5))
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["profile-save"])
+        XCTAssertEqual(XCTWaiter().wait(for: [dismissed], timeout: 3), .completed)
+        XCTAssertTrue(app.buttons["account-profile"].isHittable)
     }
 
     func testMembersCanBeHiddenWithoutChangingConversation() {
@@ -460,7 +477,7 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Delete this channel for everyone in the space.", in: app)
     }
 
-    func testAccountCanSendExactlyOneMessageAndComposerClears() {
+    func testAccountCanSendExactlyOneMessageAndComposerClears() async throws {
         let app = launch()
         // The first cold Intel launch can still be opening its account space
         // after 10 seconds. Keep the exact content assertion, but allow startup
@@ -484,13 +501,36 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, message)
         let send = app.buttons["send-message-button"]
         XCTAssertTrue(send.isEnabled)
+        #if os(macOS)
+        // Click the visible button away from its small arrow glyph. A center
+        // tap cannot catch a label whose styled padding is not hit-testable.
+        send.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.75)).click()
+        #else
         send.tap()
+        #endif
 
         let delivered = staticTexts(message, in: app)
         XCTAssertTrue(delivered.firstMatch.waitForExistence(timeout: 10))
         XCTAssertEqual(delivered.count, 1, "HTTP confirmation and gateway delivery must merge into one message")
         let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
         XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
+
+        // An optimistic row and an empty composer are not proof of delivery.
+        // Verify the exact content was accepted once by the local fixture API.
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages")!,
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        var stored = 0
+        for _ in 0..<50 {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            let history = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let messages = try XCTUnwrap(history["messages"] as? [[String: Any]])
+            stored = messages.filter { ($0["content"] as? [String: Any])?["text"] as? String == message }.count
+            if stored > 0 { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(stored, 1, "Send must reach the server exactly once, not merely draw a pending row")
     }
 
     func testVoiceEntryAndAudioPreferencesWithoutFeatureFlag() {

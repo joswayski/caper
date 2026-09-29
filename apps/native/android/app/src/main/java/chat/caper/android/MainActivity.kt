@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import chat.caper.android.model.*
 import chat.caper.android.ui.*
@@ -129,7 +130,8 @@ internal data class VoiceJoinIntent(
                     state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
                 )
             }
-            if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Terracotta)
+            // Keep the current conversation stable while a space or channel opens.
+            if (state.busy && !homeVisible) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Terracotta)
         }
     }
 
@@ -213,7 +215,8 @@ internal data class VoiceJoinIntent(
     Column(Modifier.fillMaxSize()) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val narrow = maxWidth <= 760.dp
-            val medium = maxWidth in 761.dp..1099.dp
+            // 60 rail + 280 channels + 320 minimum chat + 220 members.
+            val medium = maxWidth < 880.dp
             var membersVisible by remember { mutableStateOf(!narrow) }
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
             Surface(
@@ -225,13 +228,13 @@ internal data class VoiceJoinIntent(
                         SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                         ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f), channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError, { voicePermissionError = null }) { setNavigationOpen(false) }
                     } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
-                    if (membersVisible && !navigationOpen) MemberPresencePanel(state, viewModel, Modifier.widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd))
+                    if (membersVisible && !navigationOpen) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd))
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError, { voicePermissionError = null })
-                    if (medium) Column(Modifier.weight(1f)) {
-                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
-                        if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.fillMaxWidth().heightIn(max = 240.dp), compact = true)
+                    if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
+                        Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize()) { setNavigationOpen(true) }
+                        if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
                     } else {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
                         if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
@@ -311,7 +314,7 @@ internal data class VoiceJoinIntent(
                         else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { spaceMenuOpen = false; show(Overlay.LeaveSpace) },
                             leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
                     }
-                } else Text(detail?.space?.name ?: "Caper", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                } else Text("Caper", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (closeNavigation != null) IconButton(closeNavigation) { Icon(painterResource(R.drawable.lucide_x), "Close navigation", tint = TextMuted) }
             }
             HorizontalDivider(color = Border)
@@ -355,20 +358,18 @@ internal data class VoiceJoinIntent(
                 val selected = channel.id == state.selectedChannel?.id
                 val people = if (activeChannel == channel.id) voice.participants else state.voiceRosters[if (detail.space.demo) "" else channel.id].orEmpty()
                 var rosterOpen by remember(channel.id) { mutableStateOf(true) }
-                Row(
-                    Modifier.fillMaxWidth().height(38.dp).clip(MaterialTheme.shapes.small)
-                        .background(if (selected) TerracottaWash else Color.Transparent)
-                        .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }
-                        .padding(horizontal = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
-                    Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(28.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
-                }
-                if (BuildConfig.ENABLE_NATIVE_VOICE && (selected || people.isNotEmpty() || activeChannel == channel.id)) {
-                    Row(Modifier.fillMaxWidth().padding(start = 34.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, modifier = Modifier.weight(1f)
+                val showVoice = BuildConfig.ENABLE_NATIVE_VOICE && (selected || people.isNotEmpty() || activeChannel == channel.id)
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
+                            .background(if (selected) TerracottaWash else Color.Transparent)
+                            .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }
+                            .padding(horizontal = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
+                        Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (showVoice && people.isNotEmpty()) TextButton({ rosterOpen = !rosterOpen }, contentPadding = PaddingValues(horizontal = 4.dp), modifier = Modifier
                             .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
                             Box(Modifier.width((24 + 16 * (people.size.coerceAtMost(3) - 1)).dp).height(24.dp)) {
                                 people.take(3).forEachIndexed { index, person ->
@@ -378,8 +379,8 @@ internal data class VoiceJoinIntent(
                             }
                             if (people.size > 3) Text("+${people.size - 3}", fontSize = 10.sp)
                             Icon(if (rosterOpen) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(15.dp))
-                        } else Spacer(Modifier.weight(1f))
-                        if (activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, modifier = Modifier
+                        }
+                        if (showVoice && activeChannel != channel.id && channel.id !in state.deniedVoiceChannels) TextButton({ joinVoice(channel) }, enabled = state.voiceAvailable == true, contentPadding = PaddingValues(horizontal = 8.dp), modifier = Modifier
                             // Web prepares the join on touch-down, before the tap completes.
                             .pointerInput(channel.id) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial); viewModel.prepareVoiceJoin(channel) } }
                             .semantics {
@@ -388,8 +389,9 @@ internal data class VoiceJoinIntent(
                         }) {
                             Icon(painterResource(R.drawable.lucide_speech), null, Modifier.size(14.dp)); Spacer(Modifier.width(5.dp)); Text("Join", fontSize = 11.sp)
                         }
+                        if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
                     }
-                    if (rosterOpen) {
+                    if (showVoice && rosterOpen) {
                         if (activeChannel == channel.id) VoiceRoster(voice)
                         else people.forEach { participant ->
                             Row(Modifier.fillMaxWidth().padding(start = 42.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1083,21 +1085,23 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     footer: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Dialog(close) { Surface(Modifier.widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth().heightIn(max = 760.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-        Column {
-            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                        description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
+    Dialog(close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.padding(16.dp).widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth().heightIn(max = 760.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+            Column {
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        Column(Modifier.weight(1f)) {
+                            Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                            description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
+                        }
+                        IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) }
                     }
-                    IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) }
+                    HorizontalDivider(color = Border); content()
                 }
-                HorizontalDivider(color = Border); content()
+                if (footer != null) { HorizontalDivider(color = Border); footer() }
             }
-            if (footer != null) { HorizontalDivider(color = Border); footer() }
         }
-    } }
+    }
 }
 
 @Composable private fun DialogActions(close: () -> Unit, label: String, busy: Boolean, action: () -> Unit) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {

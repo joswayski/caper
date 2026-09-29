@@ -81,7 +81,6 @@ public final class VoiceClient {
     public private(set) var speakingParticipants: Set<String> = []
     @ObservationIgnored private var lastLoud: [String: Date] = [:]
     public var error: String?
-    public var showAudioPreferences = false
     public var availableInputs: [AudioDevice] = []
     public var availableOutputs: [AudioDevice] = []
     public var selectedInputID: String?
