@@ -209,17 +209,19 @@ private struct WorkspaceView: View {
                                         .focusable()
                                         .focusEffectDisabled()
                                         .focused($sidebarFocused)
+                                        // A plain view is a generic group to AppKit accessibility,
+                                        // which carries no value. Present the handle as a slider
+                                        // so VoiceOver and tests read and adjust the width.
+                                        .accessibilityRepresentation {
+                                            Slider(value: Binding(
+                                                get: { min(sidebarWidth, sidebarMaximum(for: geometry.size.width)) },
+                                                set: { resizeSidebar($0, viewport: geometry.size.width) }
+                                            ), in: 220...max(230, sidebarMaximum(for: geometry.size.width)), step: 10)
+                                        }
                                         .accessibilityLabel("Channel sidebar width")
                                         .accessibilityIdentifier("channel-sidebar-resize")
                                         .accessibilityValue("\(Int(min(sidebarWidth, sidebarMaximum(for: geometry.size.width)))) pixels")
                                         .accessibilityHint("Drag to resize. Arrow keys adjust by 10 pixels; Home and End select the bounds. Double-click resets.")
-                                        .accessibilityAdjustableAction { direction in
-                                            switch direction {
-                                            case .increment: resizeSidebar(sidebarWidth + 10, viewport: geometry.size.width)
-                                            case .decrement: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
-                                            @unknown default: break
-                                            }
-                                        }
                                         .onKeyPress { press in
                                             switch press.key {
                                             case .leftArrow: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
@@ -1011,6 +1013,16 @@ private struct ChatView: View {
     let toggleMembers: () -> Void
     /// Web shows Connecting…/Offline only after a second without the gateway.
     @State private var showConnectionStatus = false
+
+    /// Scroll the unsent message into view after the current layout pass, so a
+    /// row that just grew (its error and actions appeared) is fully visible.
+    private func revealPending(_ proxy: ScrollViewProxy) {
+        guard let id = chat.pendingMessage?.id else { return }
+        Task { @MainActor in
+            await Task.yield()
+            proxy.scrollTo("pending-\(id)", anchor: .bottom)
+        }
+    }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
         self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
@@ -1105,9 +1117,11 @@ private struct ChatView: View {
                 }
                 #endif
                 .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
-                .onChange(of: chat.pendingMessage?.id, initial: true) { _, id in
-                    if let id { proxy.scrollTo("pending-\(id)", anchor: .bottom) }
-                }
+                .onChange(of: chat.pendingMessage?.id, initial: true) { _, _ in revealPending(proxy) }
+                // A rejection adds the "Not sent" line with Edit and Dismiss after
+                // the first scroll, so the row grows below the viewport; reveal it again.
+                .onChange(of: chat.sendRejected) { _, _ in revealPending(proxy) }
+                .onChange(of: chat.error) { _, _ in revealPending(proxy) }
             }
 
             HStack(spacing: 7) {
@@ -1551,7 +1565,7 @@ private struct SpaceEditor: View {
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
-            }
+            }.accessibilityIdentifier("space-settings-scroll")
         }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : "" }
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
@@ -1762,6 +1776,20 @@ private struct CaperSlider: View {
         value = min(bounds.upperBound, max(bounds.lowerBound, bounds.lowerBound + ((proposed - bounds.lowerBound) / step).rounded() * step))
     }
     var body: some View {
+        #if os(macOS)
+        // The Mac control is AppKit's own slider in Caper's colour: it keeps
+        // native keyboard, VoiceOver and pointer behaviour. A drawn stand-in
+        // lacked the orientation AppKit accessibility clients need to adjust it.
+        Slider(value: $value, in: bounds, step: step)
+            .tint(CaperTheme.terracottaBright)
+            .frame(height: 32)
+            .accessibilityValue("\(Int(value))%")
+        #else
+        custom
+        #endif
+    }
+
+    private var custom: some View {
         GeometryReader { geometry in
             let width = max(1, geometry.size.width - 16)
             let fraction = min(1, max(0, (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)))
