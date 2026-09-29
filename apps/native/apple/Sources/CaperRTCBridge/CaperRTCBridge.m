@@ -31,12 +31,15 @@ BOOL CaperNativeDenoiseWorkersRunWithoutHardware(void) {
         int16_t input[480], output[480];
         uint32_t epochs[480];
         unsigned frames = (unsigned)rate / 100;
-        for (unsigned hop = 0; hop < 20; hop++) {
+        // Runtime correctness only; sustained 10 ms timing needs physical
+        // acceptance. Feed every 30 ms until ten hops run (up to 30 seconds),
+        // so a slow first model run on a busy runner is not a failure.
+        for (unsigned hop = 0; hop < 1000 && CaperDenoisePipelineStatistics(pipeline).processedHops < 10; hop++) {
             for (unsigned i = 0; i < frames; i++) input[i] = (int16_t)(6000 * sin(2 * M_PI * (hop * frames + i) * 180 / rate));
             if (!CaperDenoisePipelineProcess(pipeline, input, output, epochs, frames, 100, 1)) {
                 CaperDenoisePipelineDestroy(pipeline); return NO;
             }
-            usleep(30000); // Runtime correctness only; sustained 10 ms timing needs physical acceptance.
+            usleep(30000);
         }
         CaperDenoiseStatistics stats = CaperDenoisePipelineStatistics(pipeline);
         BOOL worked = stats.mode == engine && stats.processedHops >= 10 &&
