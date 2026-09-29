@@ -336,8 +336,9 @@ try {
       createRoot(root).render(React.createElement(Home, { account: ${guest ? 'null' : 'homeFixture.account'}, history: homeFixture.history, initialNow: Date.now(), latestChanges: [] }));
     })()`);
     if (!guest) {
-      wait('!!document.querySelector(".live-app .channel-section-toggle")');
+      wait('!!document.querySelector(".live-app .channel-navigation[data-demo] .channel-select")');
       assert.equal(evaluate('document.querySelectorAll(".live-app .channel-navigation h1").length'), 0, 'Public demo must not render a space heading');
+      assert.equal(evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'), 0, 'The single-channel demo must not have a Channels dropdown');
       browser('set', 'viewport', '1280', '844', '2');
       evaluate('document.fonts.ready');
       screenshot('homepage-public-no-heading');
@@ -349,9 +350,19 @@ try {
       wait('[...document.querySelectorAll(".live-stage, .live-scene")].every(el => el.getAnimations().every(animation => animation.playState === "finished"))');
       assert.equal(evaluate('document.querySelectorAll(".live-titlebar, .live-lights").length'), 0);
       if (!guest) {
+        if (width === 1280) {
+          const alignment = evaluate(`(() => {
+            const row = document.querySelector('.live-app .channel-select').getBoundingClientRect();
+            const heading = document.querySelector('.live-app .chat-heading').getBoundingClientRect();
+            return { row: row.toJSON(), heading: heading.toJSON(), delta: row.top + row.height / 2 - heading.top - heading.height / 2 };
+          })()`);
+          assert.ok(Math.abs(alignment.delta) < 2, `Public general row must align with the chat header: ${JSON.stringify(alignment)}`);
+          screenshot('homepage-public-aligned');
+        }
         if (width === 390) browser('click', '.live-app .navigation-toggle');
         browser('click', '.live-app [aria-label="Disposable UI fixture"]');
         wait('!!document.querySelector(".live-app .channel-manage")');
+        assert.equal(evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'), 1, 'Account spaces retain channel controls');
         assert.ok(evaluate('parseFloat(getComputedStyle(document.querySelector(".live-app .space-menu h1")).fontSize) < 20'), 'Space names must not inherit homepage headline typography');
         if (width === 390) browser('click', '.live-app .navigation-toggle');
         browser('click', '.live-app [aria-label="Create space"]');

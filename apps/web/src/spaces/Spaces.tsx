@@ -994,6 +994,7 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
   const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
     <nav
       className="channel-navigation"
+      data-demo={detail.space.demo ? "" : undefined}
       aria-label={`${detail.space.name} channels`}
     >
       {(!detail.space.demo || navigationOpen) && <header>
@@ -1054,7 +1055,7 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
           </button>
         )}
       </header>}
-      <div className="channel-section-heading">
+      {!detail.space.demo && <div className="channel-section-heading">
         <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded(!channelsExpanded)}>
           <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
         </button>
@@ -1081,8 +1082,8 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
             </div>
           </details>
         </div>}
-      </div>
-      <ul id="space-channel-list" data-collapsed={channelsExpanded ? undefined : ""}>
+      </div>}
+      <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
         {detail.channels.map((item) => {
           const voice = voiceFor(item.id);
           return (

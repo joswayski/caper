@@ -98,6 +98,9 @@
   /* Put the sidebar's channel and the chat header on one 60px header line. */
   .live-app .sidebar-channels { padding-top: 10px; }
   .live-app .chat-heading { min-height: 61px; }
+  /* Spaces already provide their own aligned 54px navigation header. */
+  .live-app .spaces-room .sidebar-channels { padding-top: 0; }
+  .live-app .spaces-room .chat-heading { min-height: 54px; }
 }
 @media (max-width: 760px) {
   .live-app .people-panel { border-radius: 0; }
