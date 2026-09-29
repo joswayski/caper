@@ -20,6 +20,7 @@ import {
 import { getAccount, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError, loadChatHistory } from "../chat/client";
+import type { GeneralChatHistory } from "../chat/types";
 import Wordmark from "../components/Wordmark";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
@@ -724,14 +725,20 @@ function SpacesLoading() {
   </main>;
 }
 
-export default function Spaces() {
-  const [account, setAccount] = useState<Account>();
+export default function Spaces({ embedded = false, initialAccount, initialHistory, engaged = true, onChatOnlineChange }: {
+  embedded?: boolean;
+  initialAccount?: Account;
+  initialHistory?: GeneralChatHistory;
+  engaged?: boolean;
+  onChatOnlineChange?: (online: boolean) => void;
+} = {}) {
+  const [account, setAccount] = useState<Account | undefined>(initialAccount);
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [limits, setLimits] = useState<SpaceLimits>();
   const [view, setView] = useState<PreparedSpace>();
   const detail = view?.detail;
   const navigation = useRef(createSpaceNavigation());
-  const [selected, setSelected] = useState(selectedFromUrl);
+  const [selected, setSelected] = useState(() => embedded ? {} : selectedFromUrl());
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -760,7 +767,7 @@ export default function Spaces() {
     const query = new URLSearchParams();
     if (spaceId) query.set("space", spaceId);
     if (channelId) query.set("channel", channelId);
-    window.history[replace ? "replaceState" : "pushState"](
+    if (!embedded) window.history[replace ? "replaceState" : "pushState"](
       {},
       "",
       `/spaces${query.size ? `?${query}` : ""}`,
@@ -774,6 +781,7 @@ export default function Spaces() {
   };
 
   useEffect(() => {
+    if (embedded) return;
     const pop = () => setSelected(selectedFromUrl());
     window.addEventListener("popstate", pop);
     return () => window.removeEventListener("popstate", pop);
@@ -781,8 +789,8 @@ export default function Spaces() {
 
   useEffect(() => {
     let current = true;
-    void preloadSoundEffects();
-    void getAccount()
+    if (engaged) void preloadSoundEffects();
+    void (initialAccount ? Promise.resolve(initialAccount) : getAccount())
       .then(async (nextAccount) => {
         if (!current) return;
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
@@ -791,7 +799,7 @@ export default function Spaces() {
         if (!nextAccount) return void window.location.replace("/");
         const [result, demoHistory] = await Promise.all([
           nextAccount ? listSpaces() : Promise.resolve({ spaces: [], limits: undefined }),
-          loadChatHistory().catch((reason) => { if (!nextAccount) throw reason; return undefined; }),
+          initialHistory ? Promise.resolve(initialHistory) : loadChatHistory().catch((reason) => { if (!nextAccount) throw reason; return undefined; }),
         ]);
         if (!current) return;
         const demo = demoHistory ? navigation.current.setDemo(demoHistory) : undefined;
@@ -837,7 +845,7 @@ export default function Spaces() {
         setNavigationOpen(false);
         const query = new URLSearchParams({ space: next.detail.space.id });
         if (next.channelId) query.set("channel", next.channelId);
-        window.history.replaceState({}, "", `/spaces?${query}`);
+        if (!embedded) window.history.replaceState({}, "", `/spaces?${query}`);
       })
       .catch((reason) => {
         if (current) {
@@ -986,10 +994,11 @@ export default function Spaces() {
   const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
     <nav
       className="channel-navigation"
+      data-demo={detail.space.demo ? "" : undefined}
       aria-label={`${detail.space.name} channels`}
     >
-      <header>
-        {detail.space.demo ? <h1 className="demo-space-title">{detail.space.name}</h1> : <details
+      {(!detail.space.demo || navigationOpen) && <header>
+        {!detail.space.demo && <details
           ref={spaceMenu}
           className="space-menu"
           onKeyDown={(event) => {
@@ -1045,8 +1054,8 @@ export default function Spaces() {
             <X aria-hidden="true" />
           </button>
         )}
-      </header>
-      <div className="channel-section-heading">
+      </header>}
+      {!detail.space.demo && <div className="channel-section-heading">
         <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded(!channelsExpanded)}>
           <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
         </button>
@@ -1073,8 +1082,8 @@ export default function Spaces() {
             </div>
           </details>
         </div>}
-      </div>
-      <ul id="space-channel-list" data-collapsed={channelsExpanded ? undefined : ""}>
+      </div>}
+      <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
         {detail.channels.map((item) => {
           const voice = voiceFor(item.id);
           return (
@@ -1210,6 +1219,9 @@ export default function Spaces() {
   return (
     <>
       <Call
+        embedded={embedded}
+        engaged={engaged}
+        onChatOnlineChange={onChatOnlineChange}
         channel={{
           id: channel.id,
           name: channel.name,

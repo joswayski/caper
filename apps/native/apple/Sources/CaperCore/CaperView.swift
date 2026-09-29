@@ -1022,8 +1022,16 @@ private struct ChatView: View {
                         if chat.loading && chat.messages.isEmpty {
                             Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                         }
-                        ForEach(chat.messages) { message in MessageRow(message: message).id(message.id) }
+                        ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
+                            if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
+                                ChatDateDivider(createdAt: message.createdAt)
+                            }
+                            MessageRow(message: message).id(message.id)
+                        }
                         if let pending = chat.pendingMessage {
+                            if chat.messages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
+                                ChatDateDivider(createdAt: pending.createdAt)
+                            }
                             PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
                                               rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
                                               retry: { Task { await chat.send() } },
@@ -1162,6 +1170,42 @@ private struct PrimaryIconButton: ButtonStyle {
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
+struct ChatDateDivider: View {
+    let createdAt: String
+
+    var body: some View {
+        if let label = Self.fullDateLabel(createdAt) {
+            HStack(spacing: 10) {
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+                Text(label).font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    .fixedSize(horizontal: true, vertical: false)
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+            }.padding(.horizontal, 18).padding(.vertical, 8)
+        }
+    }
+
+    static func date(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
+
+    static func sameLocalDay(_ first: String, _ second: String, calendar: Calendar = .current) -> Bool {
+        guard let firstDate = date(first), let secondDate = date(second) else { return false }
+        return calendar.isDate(firstDate, inSameDayAs: secondDate)
+    }
+
+    static func fullDateLabel(_ value: String, locale: Locale = .current, timeZone: TimeZone = .current) -> String? {
+        guard let date = date(value) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .full
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
     }
 }
 
@@ -1395,15 +1439,14 @@ private struct ProfileSheet: View {
                         .submitLabel(.next).onSubmit { displayNameFocused = true }
                     Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
+                        // Return saves: on iPhone an error line can push Save
+                        // profile under the keyboard.
+                        .submitLabel(.done).onSubmit(save)
                     Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
-                    Button(model.busy ? "Saving…" : "Save profile") {
-                        Task {
-                            await model.saveProfile(username: username, displayName: displayName)
-                            if model.error == nil { close() }
-                        }
-                    }.buttonStyle(CaperPrimaryButton())
-                        .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                    Button(model.busy ? "Saving…" : "Save profile", action: save)
+                        .buttonStyle(CaperPrimaryButton())
+                        .disabled(!canSave)
                         .accessibilityIdentifier("profile-save")
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
             }.frame(maxHeight: 500).scrollDismissesKeyboard(.interactively)
@@ -1412,6 +1455,18 @@ private struct ProfileSheet: View {
                 username = model.account?.username ?? ""
                 displayName = model.account?.displayName ?? ""
             }
+    }
+
+    private var canSave: Bool {
+        !model.busy && ProfileValidation.error(username: username, displayName: displayName) == nil
+    }
+
+    private func save() {
+        guard canSave else { return }
+        Task {
+            await model.saveProfile(username: username, displayName: displayName)
+            if model.error == nil { close() }
+        }
     }
 }
 

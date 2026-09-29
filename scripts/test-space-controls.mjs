@@ -21,6 +21,7 @@ function fixture() {
   const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner', debugEnabled: new URL(location.href).searchParams.has('debug') };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: true };
+  window.homeFixture = { account, history: { space: { id: 'public123456', name: 'Public demo' }, channel: { id: 'general12345', name: 'general' }, messages: [], cursor: '0', hasMore: false } };
   const members = [{ ...account, owner: true }, ...Array.from({ length: 29 }, (_, index) => ({
     id: `member${String(index).padStart(6, '0')}`, username: `member_${index}`, displayName: `Fixture member ${index + 1}`, owner: false,
   }))];
@@ -114,7 +115,7 @@ function browser(...command) {
 }
 const evaluate = source => browser('eval', source).result;
 const wait = expression => browser('wait', '--fn', expression);
-const screenshot = name => { if (artifacts) browser('screenshot', '--full', `${artifacts}/${name}.png`); };
+const screenshot = name => { if (artifacts) browser('screenshot', ...(name.startsWith('homepage-') ? [] : ['--full']), `${artifacts}/${name}.png`); };
 const modal = '.delete-confirmation';
 const opens = () => evaluate('document.querySelectorAll(".space-dialog[open]").length');
 function openOverview() {
@@ -126,6 +127,7 @@ function openOverview() {
 try {
   browser('open', 'about:blank');
   browser('set', 'viewport', '1280', '900', '2');
+  if (!process.env.HOMEPAGE_ONLY) {
   for (const [viewport, saved, expected] of [[1280, '240', 240], [1280, '440', 440], [800, '440', 362], [1280, 'invalid', 280]]) {
     browser('set', 'viewport', String(viewport), '900', '2');
     browser('open', `${url}?space=space1234567&channel=channel12345&width=${saved}`);
@@ -312,6 +314,90 @@ try {
   }
   console.log('PASS: public guest and account footer dots track chat online/idle/offline without an account presence subscription.');
   console.log('PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).');
+  }
+  // Mount the real homepage with explicit loader fixtures; API/gateway mocks
+  // remain the same as the standalone spaces checks above.
+  for (const guest of [false, true]) {
+    browser('open', `${url}?public&width=440`);
+    wait('!!document.querySelector(".channel-navigation")');
+    evaluate(`(async () => {
+      const { default: React } = await import('/node_modules/.vite/deps/react.js');
+      const { default: { createRoot } } = await import('/node_modules/.vite/deps/react-dom_client.js');
+      const { default: Home } = await import('/src/pages/Home.tsx');
+      for (const child of document.body.children) child.style.display = 'none';
+      History.prototype.replaceState.call(history, {}, '', '/');
+      if (${guest}) {
+        const fetch = window.fetch;
+        window.fetch = (input, options) => String(input) === '/api/account/me'
+          ? Promise.resolve(Response.json({ error: 'unauthorized' }, { status: 401 }))
+          : fetch(input, options);
+      }
+      const root = document.createElement('div'); document.body.append(root);
+      createRoot(root).render(React.createElement(Home, { account: ${guest ? 'null' : 'homeFixture.account'}, history: homeFixture.history, initialNow: Date.now(), latestChanges: [] }));
+    })()`);
+    if (!guest) {
+      wait('!!document.querySelector(".live-app .channel-navigation[data-demo] .channel-select")');
+      assert.equal(evaluate('document.querySelectorAll(".live-app .channel-navigation h1").length'), 0, 'Public demo must not render a space heading');
+      assert.equal(evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'), 0, 'The single-channel demo must not have a Channels dropdown');
+      browser('set', 'viewport', '1280', '844', '2');
+      evaluate('document.fonts.ready');
+      screenshot('homepage-public-no-heading');
+    }
+    for (const width of [1280, 390]) {
+      browser('set', 'viewport', String(width), '844', '2');
+      browser('click', '.live-activator');
+      wait('!!document.querySelector(".live-scene[data-settled], .live-stage[data-sheet]")');
+      wait('[...document.querySelectorAll(".live-stage, .live-scene")].every(el => el.getAnimations().every(animation => animation.playState === "finished"))');
+      assert.equal(evaluate('document.querySelectorAll(".live-titlebar, .live-lights").length'), 0);
+      if (!guest) {
+        if (width === 1280) {
+          const alignment = evaluate(`(() => {
+            const row = document.querySelector('.live-app .channel-select').getBoundingClientRect();
+            const heading = document.querySelector('.live-app .chat-heading').getBoundingClientRect();
+            return { row: row.toJSON(), heading: heading.toJSON(), delta: row.top + row.height / 2 - heading.top - heading.height / 2 };
+          })()`);
+          assert.ok(Math.abs(alignment.delta) < 2, `Public general row must align with the chat header: ${JSON.stringify(alignment)}`);
+          assert.ok(evaluate('document.querySelector(".live-app .people-panel").getBoundingClientRect().width <= 260'), 'A wide saved sidebar must stay compact on the homepage');
+          assert.ok(evaluate(`(() => {
+            const line = document.querySelector('.live-app .channel-line').getBoundingClientRect();
+            const panel = document.querySelector('.live-app .people-panel').getBoundingClientRect();
+            return line.height <= 44 && line.top - panel.top >= 5 && line.top - panel.top <= 8;
+          })()`), 'Public channel highlight must be compact and inset from the top');
+          screenshot('homepage-public-aligned');
+        }
+        if (width === 390) browser('click', '.live-app .navigation-toggle');
+        browser('click', '.live-app [aria-label="Disposable UI fixture"]');
+        wait('!!document.querySelector(".live-app .channel-manage")');
+        assert.equal(evaluate('document.querySelectorAll(".live-app .channel-section-toggle").length'), 1, 'Account spaces retain channel controls');
+        assert.ok(evaluate('parseFloat(getComputedStyle(document.querySelector(".live-app .space-menu h1")).fontSize) < 20'), 'Space names must not inherit homepage headline typography');
+        if (width === 390) browser('click', '.live-app .navigation-toggle');
+        browser('click', '.live-app [aria-label="Create space"]');
+        wait('!!document.querySelector(".space-dialog[open]")');
+        screenshot(`homepage-create-space-${width}`);
+        browser('press', 'Escape');
+        assert.ok(evaluate('document.querySelector(".live-stage").hasAttribute("data-active")'), 'Dialog Escape must not exit the demo');
+        browser('focus', '.live-app [aria-label="Manage fixture-channel"]');
+        browser('press', 'Enter');
+        wait('!!document.querySelector(".space-dialog[open]")');
+        browser('press', 'Escape');
+        if (width === 390) browser('click', '.live-app .channel-select');
+      }
+      assert.equal(evaluate('location.pathname + location.search'), '/', 'Embedded navigation must not rewrite the homepage URL');
+      assert.ok(evaluate(`(() => {
+        const exit = document.querySelector('.live-close').getBoundingClientRect();
+        if (exit.top < 0 || exit.right > innerWidth || exit.bottom > innerHeight) return false;
+        return [...document.querySelectorAll('.live-app button')].filter(b => b.getClientRects().length).every(b => {
+          const r = b.getBoundingClientRect();
+          return r.right <= exit.left || r.left >= exit.right || r.bottom <= exit.top || r.top >= exit.bottom;
+        });
+      })()`), 'Exit must not overlap app buttons');
+      screenshot(`homepage-${guest ? 'guest' : 'account'}-${width}`);
+      browser('click', '[aria-label="Exit demo"]');
+      wait('!document.querySelector(".live-stage[data-active]")');
+      assert.equal(evaluate('document.activeElement.className'), 'live-activator');
+    }
+  }
+  console.log('PASS: homepage guest/account desktop and narrow layouts, local space navigation, create/manage dialogs, dialog Escape, exit and focus restoration (mock API/gateway).');
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }
 }

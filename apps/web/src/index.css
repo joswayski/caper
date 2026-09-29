@@ -73,7 +73,7 @@ body {
 .hero-copy { position: relative; z-index: 2; align-self: center; padding-left: clamp(0px, 2vw, 32px); transition: opacity .35s ease, transform .5s cubic-bezier(.16, 1, .3, 1), visibility 0s; }
 .hero[data-live-open] .hero-copy { visibility: hidden; opacity: 0; transform: translateX(-28px); transition: opacity .25s ease, transform .5s cubic-bezier(.16, 1, .3, 1), visibility 0s .25s; }
 .hero .live-stage { align-self: stretch; }
-.hero h1 { margin: 0; font-size: clamp(2.6rem, 3.9vw, 3.9rem); font-weight: 900; line-height: 1.16; letter-spacing: -.06em; }
+.hero-copy > h1 { margin: 0; font-size: clamp(2.6rem, 3.9vw, 3.9rem); font-weight: 900; line-height: 1.16; letter-spacing: -.06em; }
 .hero-title-line { display: block; white-space: nowrap; }
 .rolodex {
   position: relative;
@@ -194,7 +194,7 @@ body {
      copy continues below it. */
   .hero { height: auto; display: flex; flex-direction: column; align-items: flex-start; padding-block: 32px 64px; }
   .hero-copy, .hero[data-live-open] .hero-copy { display: contents; }
-  .hero h1 { order: 2; }
+  .hero-copy > h1 { order: 2; }
   .hero-copy > .hero-lede { order: 3; }
   .hero .live-stage { order: 4; width: 100%; aspect-ratio: 1.3; min-height: 0; margin-top: 20px; }
   .hero-copy > .app-downloads { order: 5; }
@@ -210,7 +210,7 @@ body {
   .site-header > .wordmark { width: 120px; }
   .site-header-actions { gap: 12px; }
   .hero { padding-block: 20px 48px; }
-  .hero h1 { font-size: clamp(2.2rem, 10vw, 3rem); }
+  .hero-copy > h1 { font-size: clamp(2.2rem, 10vw, 3rem); }
   .hero-copy > .hero-lede { margin-top: 18px; font-size: 1.08rem; }
   .hero-copy > .made-by { margin-top: 22px; }
   .hero .live-stage { aspect-ratio: .8; margin-top: 12px; margin-inline: -8px; width: calc(100% + 16px); }

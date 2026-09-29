@@ -3,6 +3,7 @@ import { Minimize2, X } from "lucide-react";
 import type { Account } from "../account/client";
 import type { GeneralChatHistory } from "../chat/types";
 import Call from "../pages/Call";
+import Spaces from "../spaces/Spaces";
 import { attachLiveMotion } from "./liveMotion";
 import "./live-window.css";
 
@@ -102,19 +103,18 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
         data-active={active ? "" : undefined}
         role={sheet ? "dialog" : undefined}
         aria-modal={sheet ? true : undefined}
-        aria-label={sheet ? "Caper #general" : undefined}
+        aria-label={sheet ? "Caper conversations" : undefined}
       >
         <div className="live-shadow" aria-hidden="true" />
         {[5, 4, 3, 2, 1].map((depth) => <div key={depth} className="live-slab" style={{ "--z": -depth * 5 } as CSSProperties} aria-hidden="true" />)}
         <div className="live-window">
-          <div className="live-titlebar">
-            <span className="live-lights" aria-hidden="true"><i /><i /><i /></span>
-            {active && <button className="live-close" type="button" data-live-control onClick={() => onActiveChange(false)} aria-label={sheet ? "Close #general" : "Minimize #general"}>
-              {sheet ? <X aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
-            </button>}
-          </div>
+          {active && <button className="live-close" type="button" data-live-control onClick={() => onActiveChange(false)} aria-label="Exit demo" title="Exit demo">
+            {sheet ? <X aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
+          </button>}
           <div className="live-app" inert={!active}>
-            <Call embedded engaged={engaged} initialAccount={account ?? undefined} initialHistory={history ?? undefined} onChatOnlineChange={setOnline} />
+            {account
+              ? <Spaces embedded engaged={engaged} initialAccount={account} initialHistory={history ?? undefined} onChatOnlineChange={setOnline} />
+              : <Call embedded engaged={engaged} initialHistory={history ?? undefined} onChatOnlineChange={setOnline} />}
           </div>
         </div>
         {!active && <button
@@ -122,7 +122,7 @@ export default function LiveWindow({ account, history, active, onActiveChange, o
           className="live-activator"
           type="button"
           data-live-activator
-          aria-label="Open the public #general channel. Arrow keys tilt the window."
+          aria-label={account ? "Open your spaces and channels. Arrow keys tilt the window." : "Open the public #general channel. Arrow keys tilt the window."}
           onClick={() => onActiveChange(true)}
         >
           <span className="live-invite" data-touched={touched ? "" : undefined}>

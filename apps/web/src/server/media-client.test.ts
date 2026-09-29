@@ -198,7 +198,7 @@ test("state requests carry increasing sequences across mute/deafen and retries",
   await client.setMuted(true);
   await client.setDeafened(true);
   await client.setDeafened(false);
-  assert.deepEqual(stateSequences, [1, 2, 3, 4]);
+  assert.deepEqual(stateSequences, [1, 2, 3]);
   const original = fetch;
   let rejected = false;
   install("fetch", async (url: string, init: RequestInit) => {
@@ -211,7 +211,7 @@ test("state requests carry increasing sequences across mute/deafen and retries",
   });
   await client.setMuted(false);
   await client.setMuted(true);
-  assert.deepEqual(stateSequences, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(stateSequences, [1, 2, 3, 4, 5]);
 });
 
 test("DPDFNet suppression is the fixed default and prepares before capture", async (t) => {
@@ -1086,10 +1086,12 @@ const snapshotEvent = (participants: object[], revision?: number) => new TextEnc
 
 test("Join overlaps silent publication with SSE and state with transport, but gates audio on all readiness", async (t) => {
   const { client, track, calls, states, events, install } = setup(t, { eventsReady: false });
+  await client.setMuted(true);
   const original = fetch;
   let snapshot!: () => void;
   let state!: () => void;
-  install("fetch", (url: string, init: RequestInit) => {
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) await client.setMuted(false);
     if (url.endsWith("/snapshot")) return new Promise<Response>((resolve) => { snapshot = () => resolve(Response.json({ participants: [] })); });
     if (url.endsWith("/state")) return new Promise<Response>((resolve) => { state = () => resolve(new Response(null, { status: 204 })); });
     return original(url, init);
@@ -1105,12 +1107,12 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   await tick();
   assert.equal(calls.includes("publish"), true);
   assert.equal(track.enabled, false, "publication establishes transport with silence");
-  assert.equal(typeof snapshot, "undefined");
+  assert.equal(typeof snapshot, "function", "the roster request overlaps the pending state write");
   assert.equal(typeof state, "function", "registry state updates run during the transport handshake");
   Peer.latest.connectionState = "connected";
   Peer.latest.dispatchEvent(new Event("connectionstatechange"));
   await tick();
-  assert.equal(typeof snapshot, "undefined");
+  assert.equal(typeof snapshot, "function");
   assert.equal(track.enabled, false, "state synchronization must finish before audio is enabled");
   state();
   await tick();
@@ -1120,6 +1122,69 @@ test("Join overlaps silent publication with SSE and state with transport, but ga
   await joining;
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(track.enabled, true);
+});
+
+for (const status of [200, 503]) test(`initial roster (${status}) overlaps publication without opening audio early`, async (t) => {
+  const { client, track, calls, states, install } = setup(t);
+  const original = fetch;
+  let publish!: () => void;
+  let snapshots = 0;
+  install("fetch", (url: string, init: RequestInit) => {
+    if (url.endsWith("/publish")) return new Promise<Response>((resolve) => {
+      publish = () => { void original(url, init).then(resolve); };
+    });
+    if (url.endsWith("/snapshot")) {
+      snapshots++;
+      return Promise.resolve(Response.json(status === 200
+        ? { participants: [{ id: "other", name: "Other", muted: false, deafened: false, tracks: [{ id: "remote", kind: "microphone" }] }] }
+        : { error: "roster unavailable" }, { status }));
+    }
+    return original(url, init);
+  });
+  const joining = client.join();
+  await tick();
+  assert.equal(snapshots, 1, "snapshot completes while publication is still pending");
+  assert.equal(calls.includes("subscribe"), false, "subscription reconciliation must wait for publication");
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.phase, "joining");
+  publish();
+  await joining;
+  assert.equal(states.at(-1)?.phase, status === 200 ? "connected" : "failed");
+  assert.equal(track.enabled, status === 200);
+  assert.equal(calls.includes("subscribe"), status === 200);
+});
+
+test("deafen changed during a warm Join is acknowledged before readiness", async (t) => {
+  const { client, track, states, install } = setup(t);
+  await warmed(t);
+  const original = fetch;
+  let acknowledge!: () => void;
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) {
+      const body = JSON.parse(init.body as string);
+      assert.equal(body.warm, "ticket");
+      assert.equal(body.deafened, false);
+      await client.setDeafened(true);
+      return Response.json({ token: "capability", id: "self", iceServers: [], warm: true,
+        publish: { trackId: "mine", sessionDescription: { type: "answer", sdp: providerSdp } } });
+    }
+    if (url.endsWith("/state")) {
+      assert.deepEqual(JSON.parse(init.body as string), { muted: true, deafened: true, sequence: 1 });
+      return new Promise<Response>((resolve) => { acknowledge = () => resolve(new Response(null, { status: 204 })); });
+    }
+    return original(url, init);
+  });
+  const joining = client.join();
+  await tick();
+  assert.equal(typeof acknowledge, "function");
+  assert.equal(track.enabled, false);
+  assert.equal(states.at(-1)?.phase, "joining");
+  acknowledge();
+  await joining;
+  assert.equal(states.at(-1)?.phase, "connected");
+  assert.equal(states.at(-1)?.deafened, true);
+  assert.equal(track.enabled, false);
+  assert.equal(Peer.all.length, 2, "uses the warm pair throughout");
 });
 
 /** Holds the microphone transport in "connecting" and records request bodies. */
@@ -1340,12 +1405,15 @@ test("state failure cancels an unfinished transport handshake without enabling a
   const { client, track, calls, states, install } = setup(t);
   t.mock.method(Peer.prototype, "setRemoteDescription", async () => { Peer.latest.connectionState = "connecting"; });
   const original = fetch;
-  install("fetch", (url: string, init: RequestInit) => url.endsWith("/state")
-    ? Promise.resolve(Response.json({ error: "state unavailable" }, { status: 503 }))
-    : original(url, init));
+  install("fetch", async (url: string, init: RequestInit) => {
+    if (url.endsWith("/join")) await client.setMuted(true);
+    return url.endsWith("/state")
+      ? Response.json({ error: "state unavailable" }, { status: 503 })
+      : original(url, init);
+  });
   await client.join();
   assert.equal(states.at(-1)?.phase, "failed");
-  assert.equal(calls.includes("snapshot"), false);
+  assert.equal(calls.includes("snapshot"), true, "the roster may run but cannot bypass a failed state repair");
   assert.equal(track.enabled, false);
   assert.equal(track.readyState, "ended");
   assert.equal(Peer.latest.connectionState, "closed");
@@ -1362,8 +1430,8 @@ test("a newer unsynchronized mute change during the initial roster is repaired b
     if (url.endsWith("/snapshot")) return new Promise<Response>((resolve) => { snapshot = () => resolve(Response.json({ participants: [] })); });
     if (url.endsWith("/state")) {
       updates.push(JSON.parse(init.body as string));
-      if (updates.length === 2) return Promise.resolve(Response.json({ error: "temporary state failure" }, { status: 503 }));
-      if (updates.length === 3) return new Promise<Response>((resolve) => { latestState = () => resolve(new Response(null, { status: 204 })); });
+      if (updates.length === 1) return Promise.resolve(Response.json({ error: "temporary state failure" }, { status: 503 }));
+      if (updates.length === 2) return new Promise<Response>((resolve) => { latestState = () => resolve(new Response(null, { status: 204 })); });
     }
     return original(url, init);
   });
@@ -1372,7 +1440,7 @@ test("a newer unsynchronized mute change during the initial roster is repaired b
   await assert.rejects(client.setMuted(false), /temporary state failure/);
   snapshot();
   await tick();
-  assert.deepEqual(updates.map((update) => update.muted), [true, false, false]);
+  assert.deepEqual(updates.map((update) => update.muted), [false, false]);
   assert.equal(track.enabled, false);
   assert.equal(states.at(-1)?.phase, "joining");
   latestState();
@@ -1813,7 +1881,7 @@ test("draining with failed state writes retries latest intent without replacing 
   await Promise.all([client.setDeafened(false), client.setMuted(false)]);
   t.mock.timers.tick(300);
   await tick();
-  assert.deepEqual(updates.at(-1), { muted: false, deafened: false, sequence: 5 });
+  assert.deepEqual(updates.at(-1), { muted: false, deafened: false, sequence: 4 });
   assert.equal(states.at(-1)?.stateSyncPending, false);
   assert.equal(states.at(-1)?.phase, "connected");
   assert.equal(states.some((state) => state.error !== undefined), false);
@@ -2170,7 +2238,7 @@ for (const failure of [502, 503, 504, "network", "timeout"] as const) {
   });
 }
 
-test("join carries current mute/deafen intent and synchronizes before slow publication finishes", async (t) => {
+test("join carries current mute/deafen intent without a redundant state write during slow publication", async (t) => {
   const { client, install, stateUpdates } = setup(t);
   await client.setDeafened(true);
   const original = fetch;
@@ -2190,7 +2258,7 @@ test("join carries current mute/deafen intent and synchronizes before slow publi
       name: "Laptop", muted: true, deafened: true, receive: true,
       publish: { mid: "0", sessionDescription: { type: "offer", sdp: "v=0\r\na=mid:0\r\n" } },
     });
-    assert.deepEqual(stateUpdates, [{ muted: true, deafened: true }]);
+    assert.deepEqual(stateUpdates, [], "Join already committed unchanged intent");
   } finally { finish(); await joining; }
 });
 

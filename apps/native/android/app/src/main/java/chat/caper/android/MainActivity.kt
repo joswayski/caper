@@ -22,6 +22,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -57,8 +58,11 @@ import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
@@ -766,10 +770,18 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }
         }
-        // Web gives every message its avatar, name and time.
-        items(state.messages, key = { message -> message.id }) { message -> MessageRow(message) }
+        // Keep the message keys stable while inserting purely presentational day boundaries.
+        itemsIndexed(state.messages, key = { _, message -> message.id }) { index, message ->
+            if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
+                DateDivider(message.createdAt)
+            }
+            MessageRow(message)
+        }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
+                if (state.messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
+                    DateDivider(pending.createdAt)
+                }
                 MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true)
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
@@ -780,6 +792,20 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Text("Start the conversation in #${state.selectedChannel?.name.orEmpty()}.", color = TextMuted, fontSize = 12.sp)
             }
         } }
+    }
+}
+
+@Composable private fun DateDivider(createdAt: String) {
+    val label = fullDateLabel(createdAt)
+    if (label.isEmpty()) return
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        HorizontalDivider(Modifier.weight(1f), color = Border)
+        Text(label, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        HorizontalDivider(Modifier.weight(1f), color = Border)
     }
 }
 
@@ -1103,4 +1129,10 @@ internal fun profileValid(username: String, displayName: String) =
 private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\\s+"), "-").filter { it in 'a'..'z' || it == '-' }.replace(Regex("-+"), "-").removePrefix("-").take(80)
 private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))
 private fun String.codePointTake(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max))
+private fun localDate(value: String, zoneId: ZoneId): LocalDate? = runCatching { Instant.parse(value).atZone(zoneId).toLocalDate() }.getOrNull()
+internal fun sameLocalDay(first: String, second: String, zoneId: ZoneId = ZoneId.systemDefault()): Boolean =
+    localDate(first, zoneId)?.let { it == localDate(second, zoneId) } == true
+internal fun fullDateLabel(value: String, zoneId: ZoneId = ZoneId.systemDefault(), locale: Locale = Locale.getDefault()): String = runCatching {
+    DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(locale).format(Instant.parse(value).atZone(zoneId))
+}.getOrDefault("")
 private fun timeLabel(value: String): String = runCatching { DateTimeFormatter.ofPattern("h:mm a").format(Instant.parse(value).atZone(ZoneId.systemDefault())) }.getOrDefault("")

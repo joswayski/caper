@@ -364,16 +364,17 @@ export class PublicCallClient {
       const offer = await pc.createOffer();
       const mid = audioMid(offer.sdp);
       if (!mid) throw new Error("The browser did not assign a media identifier.");
-      const joined = await this.joinWithOffer(offer, mid, warmTicket);
-      return { joined, publication: { pc, transceiver, offer, mid }, sessionMs: performance.now() - started };
+      const initialState = { muted: this.muted, deafened: this.deafened };
+      const joined = await this.joinWithOffer(offer, mid, initialState, warmTicket);
+      return { joined, initialState, publication: { pc, transceiver, offer, mid }, sessionMs: performance.now() - started };
     } catch (error) {
       pc.close();
       throw error;
     }
   }
 
-  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string, warm?: string) {
-    const body = { name: this.name, muted: this.muted, deafened: this.deafened };
+  private async joinWithOffer(offer: RTCSessionDescriptionInit, mid: string, initialState: { muted: boolean; deafened: boolean }, warm?: string) {
+    const body = { name: this.name, ...initialState };
     const publish = { mid, sessionDescription: { type: "offer", sdp: offer.sdp } };
     // The offer belongs to the warm connection: no fallback shape can reuse it.
     if (warm) return this.api<JoinResponse>("join", { ...body, publish, receive: true, warm }, undefined);
@@ -425,7 +426,7 @@ export class PublicCallClient {
   }
 
   private async connectPrepared(
-    { microphone, joined, publication, issuedAt, microphoneMs, sessionMs, warm }: Awaited<ReturnType<PublicCallClient["prepareJoin"]>>,
+    { microphone, joined, initialState, publication, issuedAt, microphoneMs, sessionMs, warm }: Awaited<ReturnType<PublicCallClient["prepareJoin"]>>,
     generation: number, started: number, label: string,
   ) {
     const prepared = performance.now();
@@ -451,17 +452,23 @@ export class PublicCallClient {
     const pulls = this.acceptJoinPulls(joined, generation, warm && joined.warm ? warm.receive : undefined);
     if (warm && !joined.warm) warm.receive.close();
     pulls.catch(() => undefined);
+    // Once live updates are ready, fetch the roster alongside publication/state.
+    // Opening the stream invalidates older snapshots on legacy APIs without
+    // revisions. Reconcile only after publication; audio still waits for both.
+    const renewal = opening.then(() => generation === this.generation && !signal.aborted ? this.renewLease() : false);
+    renewal.catch(() => undefined);
     const [events] = await Promise.all([
       opening,
       publishing,
-      // Reconcile any intent changed during capture/join, without waiting for SDP.
-      this.setState(),
+      // Join already committed this state. Only repair intent changed while
+      // waiting for its response/capture; later changes use the normal writer.
+      initialState.muted !== this.muted || initialState.deafened !== this.deafened || this.stateDirty
+        ? this.setState() : this.statePromise,
     ]);
     signal.throwIfAborted();
     const signaled = performance.now();
-    // The roster request renews the lease consumed by signaling. It overlaps ICE;
-    // any further pulls wait for their connection (see pullConnection).
-    const reconciled = this.renewLease().then((renewed) => renewed ? this.poll() : undefined);
+    // Further pulls wait for their connection (see pullConnection).
+    const reconciled = renewal.then((renewed) => renewed ? this.poll() : undefined);
     reconciled.catch(() => undefined);
     await waitFor(pc, "connectionstatechange", CONNECT_TIMEOUT_MS, () => pc.connectionState === "connected", signal);
     const connected = performance.now();
