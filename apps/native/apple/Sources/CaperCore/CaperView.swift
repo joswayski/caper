@@ -355,7 +355,7 @@ private struct ChannelSidebar: View {
                                 Text(model.detail?.space.name ?? "Caper").font(CaperTheme.font(15, weight: .bold)).lineLimit(1)
                                 Spacer(); if model.detail?.space.demo != true { CaperIcon(name: "chevron-down") }
                             }.contentShape(Rectangle())
-                        }.menuStyle(.borderlessButton).disabled(model.detail?.space.demo == true)
+                        }.menuStyle(.borderlessButton).disabled(model.detail?.space.demo == true || model.detail?.space.feedback == true)
                             .accessibilityLabel(model.detail?.space.name ?? "Caper")
                             .accessibilityIdentifier("selected-space-name")
                         if narrow { Button(action: close) { CaperIcon(name: "x") }.buttonStyle(SidebarIconButton()).accessibilityLabel("Close navigation") }
@@ -374,7 +374,7 @@ private struct ChannelSidebar: View {
                             }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         }.buttonStyle(.plain)
                         Spacer()
-                        if model.isOwner {
+                        if model.isOwner && model.detail?.space.feedback != true {
                             let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
                             Button { sheet = .createChannel } label: { CaperIcon(name: "plus") }
                                 .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).help(createHelp).accessibilityLabel("Create channel")
@@ -396,7 +396,8 @@ private struct ChannelSidebar: View {
                                         HStack(spacing: 9) {
                                             CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                                                 .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
-                                            Text(channel.name).lineLimit(1)
+                                            Text(model.detail?.space.feedback == true && model.isOwner ? "\(channel.name) · \(channel.private ? "Inbox" : "Shared")" : channel.name).lineLimit(1)
+                                            if channel.unread { Text("New").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright) }
                                             Spacer()
                                         }
                                         .font(CaperTheme.font(13, weight: .medium))
@@ -410,7 +411,7 @@ private struct ChannelSidebar: View {
                                         })
                                         .accessibilityIdentifier("channel-\(channel.id)")
                                         .accessibilityValue(model.openingChannelID == channel.id ? "Opening" : model.selectedChannelID == channel.id ? "Selected" : "")
-                                    if model.isOwner {
+                                    if model.isOwner && model.detail?.space.feedback != true {
                                         Button { sheet = .manageChannel(channel) } label: { CaperIcon(name: "settings") }
                                             .buttonStyle(SidebarIconButton()).help("Manage \(channel.name)").accessibilityLabel("Manage \(channel.name)")
                                     }
@@ -419,6 +420,17 @@ private struct ChannelSidebar: View {
                             }
                         }
                     }
+                        if model.detail?.space.feedback == true {
+                            let ownConversation = model.detail?.channels.contains { $0.feedbackUserId == model.account?.id } == true
+                            if !model.isOwner && !ownConversation {
+                                Text("Private between you and Jose.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                                Button("Chat with Jose") { Task { await model.startFeedback() } }
+                            }
+                            if model.isOwner {
+                                Button("Refresh inbox") { Task { await model.refreshFeedback() } }
+                                if model.detail?.nextFeedbackBefore != nil { Button("Load older conversations") { Task { await model.loadOlderFeedback() } } }
+                            }
+                        }
 
                     if let error = model.error {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).padding(8)
@@ -953,9 +965,11 @@ private struct ConversationStage: View {
                 Button(action: browse) { Label("Browse spaces", systemImage: "number") }.buttonStyle(.bordered)
                 CaperIcon(name: "hash", size: 30).foregroundStyle(CaperTheme.terracottaBright)
                 Text("No accessible channels").font(CaperTheme.font(20, weight: .bold))
-                Text(model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
+                Text(model.detail?.space.feedback == true ? "Your conversation is private between you and Jose." : model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
                     .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-                if model.isOwner { Button("Create channel", action: createChannel).buttonStyle(VoiceJoinButton()).padding(.top, 6) }
+                if model.detail?.space.feedback == true && !model.isOwner {
+                    Button("Chat with Jose") { Task { await model.startFeedback() } }.buttonStyle(VoiceJoinButton()).padding(.top, 6)
+                } else if model.isOwner { Button("Create channel", action: createChannel).buttonStyle(VoiceJoinButton()).padding(.top, 6) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.conversation)
         } else { ChatView(model: model, narrow: narrow, browse: browse, membersVisible: membersVisible, toggleMembers: toggleMembers) }
     }
@@ -971,6 +985,7 @@ private struct ChatView: View {
     let toggleMembers: () -> Void
     /// Web shows Connecting…/Offline only after a second without the gateway.
     @State private var showConnectionStatus = false
+    @Environment(\.scenePhase) private var scenePhase
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
         self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
@@ -1065,6 +1080,15 @@ private struct ChatView: View {
                 }
                 #endif
                 .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onChange(of: chat.messages.last?.seq, initial: true) { _, _ in
+                    if scenePhase == .active && !model.navigationOpen { Task { await model.markVisibleFeedbackRead() } }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active && !model.navigationOpen { Task { await model.markVisibleFeedbackRead() } }
+                }
+                .onChange(of: model.navigationOpen) { _, open in
+                    if !open && scenePhase == .active { Task { await model.markVisibleFeedbackRead() } }
+                }
                 .onChange(of: chat.pendingMessage?.id, initial: true) { _, id in
                     if let id { proxy.scrollTo("pending-\(id)", anchor: .bottom) }
                 }

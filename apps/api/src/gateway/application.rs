@@ -677,7 +677,7 @@ async fn presence_subscription(
     let mut timer = tokio::time::interval(Duration::from_secs(10));
     loop {
         identity.check(state).await?;
-        let permitted: Vec<String> = sqlx::query_scalar("SELECT u.external_id FROM public.space_members m JOIN public.spaces s ON s.id=m.space_id JOIN public.users u ON u.id=m.user_id WHERE s.external_id=$1 AND s.deleted_at IS NULL AND u.deleted_at IS NULL AND u.external_id=ANY($2) AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3)")
+        let permitted: Vec<String> = sqlx::query_scalar("SELECT u.external_id FROM public.spaces s JOIN public.users u ON u.external_id=ANY($2) WHERE s.external_id=$1 AND s.deleted_at IS NULL AND u.deleted_at IS NULL AND ((NOT s.feedback AND EXISTS(SELECT 1 FROM public.space_members m WHERE m.space_id=s.id AND m.user_id=u.id) AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3)) OR (s.feedback AND (u.id=$3 OR u.id=s.owner_id OR ($3=s.owner_id AND EXISTS(SELECT 1 FROM public.channels c WHERE c.space_id=s.id AND c.feedback_user_id=u.id AND c.deleted_at IS NULL)))))")
             .bind(space).bind(&sub.user_ids).bind(user).fetch_all(&state.chat.pool).await.map_err(|_| chat::unavailable())?;
         // Fail closed on removed memberships, including subscriptions established
         // before a privacy change. Never return global population snapshots.

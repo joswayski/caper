@@ -12,6 +12,19 @@ public struct Space: Codable, Equatable, Identifiable, Sendable {
     public let name: String
     public let ownerId: String
     public var demo: Bool?
+    public let feedback: Bool
+
+    public init(id: String, name: String, ownerId: String, demo: Bool? = nil, feedback: Bool = false) {
+        self.id = id; self.name = name; self.ownerId = ownerId; self.demo = demo; self.feedback = feedback
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, ownerId, demo, feedback }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id); name = try values.decode(String.self, forKey: .name)
+        ownerId = try values.decode(String.self, forKey: .ownerId); demo = try values.decodeIfPresent(Bool.self, forKey: .demo)
+        feedback = try values.decodeIfPresent(Bool.self, forKey: .feedback) ?? false
+    }
 }
 
 public struct Channel: Codable, Equatable, Identifiable, Sendable {
@@ -19,6 +32,24 @@ public struct Channel: Codable, Equatable, Identifiable, Sendable {
     public let spaceId: String
     public let name: String
     public let `private`: Bool
+    public let feedbackUserId: String?
+    public let latestSeq: String
+    public let unread: Bool
+
+    public init(id: String, spaceId: String, name: String, `private`: Bool, feedbackUserId: String? = nil, latestSeq: String = "0", unread: Bool = false) {
+        self.id = id; self.spaceId = spaceId; self.name = name; self.private = `private`
+        self.feedbackUserId = feedbackUserId; self.latestSeq = latestSeq; self.unread = unread
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, spaceId, name, `private`, feedbackUserId, latestSeq, unread }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id); spaceId = try values.decode(String.self, forKey: .spaceId)
+        name = try values.decode(String.self, forKey: .name); self.private = try values.decode(Bool.self, forKey: .private)
+        feedbackUserId = try values.decodeIfPresent(String.self, forKey: .feedbackUserId)
+        latestSeq = try values.decodeIfPresent(String.self, forKey: .latestSeq) ?? "0"
+        unread = try values.decodeIfPresent(Bool.self, forKey: .unread) ?? false
+    }
 }
 
 public struct Member: Codable, Equatable, Identifiable, Sendable {
@@ -43,6 +74,11 @@ public struct SpaceDetail: Codable, Sendable {
     public let space: Space
     public let channels: [Channel]
     public let members: [Member]
+    public let nextFeedbackBefore: String?
+
+    public init(space: Space, channels: [Channel], members: [Member], nextFeedbackBefore: String? = nil) {
+        self.space = space; self.channels = channels; self.members = members; self.nextFeedbackBefore = nextFeedbackBefore
+    }
 }
 
 public enum PresenceStatus: String, Codable, Sendable { case online, idle, offline, unknown }

@@ -152,11 +152,12 @@ async fn history_page(
 ) -> Result<Value, ApiError> {
     let access = channel_access(pool, channel, user).await?;
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
-        "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND s.demo=$3 AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
+        "SELECT s.external_id,s.name,CASE WHEN c.feedback_user_id IS NOT NULL AND s.owner_id=$4 THEN u.display_name || ' @' || u.username WHEN c.feedback_user_id IS NOT NULL THEN 'Chat with Jose' ELSE lower(c.name) END FROM public.channels c JOIN public.spaces s ON s.id=c.space_id LEFT JOIN public.users u ON u.id=c.feedback_user_id WHERE c.id=$1 AND s.id=$2 AND s.demo=$3 AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
     )
     .bind(access.id)
     .bind(access.space_id)
     .bind(access.demo)
+    .bind(user)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
@@ -376,7 +377,9 @@ async fn persist(
     // Membership mutations lock the space first. Take that lock in a separate
     // statement so the access query gets a fresh READ COMMITTED snapshot after
     // waiting; a predicate in the locking query can see pre-removal grants.
-    sqlx::query("SELECT s.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE c.external_id=$1 FOR UPDATE OF s")
+    // Concurrent sends may share this lock: only the channel sequence needs
+    // exclusive serialization, not every conversation in the Feedback space.
+    sqlx::query("SELECT s.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE c.external_id=$1 FOR SHARE OF s")
         .bind(channel)
         .fetch_optional(&mut *tx)
         .await
@@ -386,7 +389,9 @@ async fn persist(
         "SELECT c.id,c.last_seq FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
          WHERE c.external_id=$1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
            AND ((s.demo AND lower(c.name)='general') OR
-                ($2::bigint IS NOT NULL
+                ($2::bigint IS NOT NULL AND s.feedback AND
+                 (NOT c.private OR s.owner_id=$2 OR c.feedback_user_id=$2)) OR
+                ($2::bigint IS NOT NULL AND NOT s.feedback
                  AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
                  AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))))
          FOR UPDATE OF c",

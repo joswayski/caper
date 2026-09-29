@@ -99,6 +99,12 @@ pub enum Command {
         channel: String,
         typing: bool,
     },
+    MarkRead {
+        token: String,
+        space: String,
+        channel: String,
+        seq: String,
+    },
     Admin {
         generation: u64,
         token: String,
@@ -140,6 +146,14 @@ pub enum AdminOperation {
         name: String,
         private: bool,
     },
+    CreateFeedback {
+        space: String,
+    },
+    LoadFeedback {
+        space: String,
+        before: Option<String>,
+        channel: Option<String>,
+    },
     UpdateChannel {
         space: String,
         channel: String,
@@ -174,6 +188,7 @@ pub enum AdminResult {
     ChannelCreated(Channel),
     ChannelUpdated(Channel),
     ChannelDeleted(String),
+    FeedbackLoaded(SpaceDetail),
     Members {
         channel: Option<String>,
         members: Vec<Member>,
@@ -323,7 +338,7 @@ fn prepare_navigation(
     cached: Option<History>,
 ) -> Result<PreparedNavigation, LoadError> {
     let detail = space
-        .map(|space| api.space(token.unwrap_or_default(), space))
+        .map(|space| api.space_page(token.unwrap_or_default(), space, None, channel))
         .transpose()
         .map_err(|error| {
             let mut error = LoadError::from(error);
@@ -752,6 +767,15 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .history(token.as_deref(), &channel, Some(&before))
                 .map_err(LoadError::from),
         },
+        Command::MarkRead {
+            token,
+            space,
+            channel,
+            seq,
+        } => {
+            let _ = api.mark_read(&token, &space, &channel, &seq);
+            return;
+        }
         Command::Send {
             generation,
             token,
@@ -825,6 +849,19 @@ fn execute_admin(
             name,
             private,
         } => AdminResult::ChannelCreated(api.create_channel(token, &space, &name, private)?),
+        AdminOperation::CreateFeedback { space } => {
+            AdminResult::ChannelCreated(api.feedback_channel(token, &space)?)
+        }
+        AdminOperation::LoadFeedback {
+            space,
+            before,
+            channel,
+        } => AdminResult::FeedbackLoaded(api.space_page(
+            token,
+            &space,
+            before.as_deref(),
+            channel.as_deref(),
+        )?),
         AdminOperation::UpdateChannel {
             space,
             channel,
@@ -887,7 +924,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let detail = r#"{"space":{"id":"s","name":"Space","ownerId":"owner"},"channels":[{"id":"first","spaceId":"s","name":"first","private":false},{"id":"second","spaceId":"s","name":"second","private":true}],"members":[]}"#;
             for (path, body) in [
-                ("GET /api/spaces/s", detail),
+                ("GET /api/spaces/s?channel=second", detail),
                 (
                     "GET /api/chat/channels/second/messages",
                     r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"second","name":"second"},"messages":[],"cursor":"0","hasMore":false}"#,
@@ -896,7 +933,7 @@ mod tests {
                     "POST /api/chat/session",
                     r#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#,
                 ),
-                ("GET /api/spaces/s", detail),
+                ("GET /api/spaces/s?channel=revoked", detail),
                 ("GET /api/spaces/s", detail),
             ] {
                 let (stream, _) = server.accept().unwrap();

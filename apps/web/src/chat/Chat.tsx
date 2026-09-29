@@ -42,7 +42,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, messageSounds = true, onAuthorChange, onHistoryChange, onRead, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onRead?: (seq: string) => Promise<void>; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -58,6 +58,23 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
+  const readThrough = useRef("0");
+
+  useEffect(() => {
+    if (!onRead || !latestMessage || state.phase !== "ready") return;
+    let pending = false;
+    const mark = () => {
+      // A hidden tab, mobile navigation, or scrolling through older history is
+      // not reading the latest message. Never acknowledge a prefetched cursor.
+      if (pending || document.visibilityState !== "visible" || !followLatest.current ||
+          !composerRef.current?.getClientRects().length || BigInt(latestMessage.seq) <= BigInt(readThrough.current)) return;
+      pending = true;
+      void onRead(latestMessage.seq).then(() => { readThrough.current = latestMessage.seq; })
+        .catch(() => undefined).finally(() => { pending = false; });
+    };
+    const timer = setInterval(mark, 1_000);
+    return () => clearInterval(timer);
+  }, [onRead, latestMessage, state.phase]);
 
   useLayoutEffect(() => {
     const composer = composerRef.current;

@@ -3,6 +3,7 @@ export interface Space {
   name: string;
   ownerId: string;
   demo?: boolean;
+  feedback?: boolean;
 }
 
 export interface Channel {
@@ -10,6 +11,9 @@ export interface Channel {
   spaceId: string;
   name: string;
   private: boolean;
+  feedbackUserId?: string;
+  latestSeq?: string;
+  unread?: boolean;
 }
 
 export interface Member {
@@ -29,6 +33,7 @@ export interface SpaceDetail {
   space: Space;
   channels: Channel[];
   members: Member[];
+  nextFeedbackBefore?: string | null;
 }
 
 export class SpacesApiError extends Error {
@@ -86,8 +91,21 @@ export function listSpaces() {
   return request<{ spaces: Space[]; limits: SpaceLimits }>("/api/spaces");
 }
 
-export function getSpace(spaceId: string) {
-  return request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}`, { signal: AbortSignal.timeout(10_000) });
+export function getSpace(spaceId: string, channelId?: string, beforeFeedback?: string) {
+  const query = new URLSearchParams();
+  if (channelId) query.set("channel", pathId(channelId));
+  if (beforeFeedback) query.set("beforeFeedback", pathId(beforeFeedback));
+  return request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}${query.size ? `?${query}` : ""}`, { signal: AbortSignal.timeout(10_000) });
+}
+
+export function openFeedback(spaceId: string) {
+  return request<Channel>(`/api/spaces/${pathId(spaceId)}/feedback`, { method: "POST" });
+}
+
+export function markFeedbackRead(spaceId: string, channelId: string, seq: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/read`, {
+    method: "POST", body: JSON.stringify({ seq }),
+  });
 }
 
 export function createSpace(name: string) {

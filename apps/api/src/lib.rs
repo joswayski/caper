@@ -66,7 +66,7 @@ mod presence;
 mod spaces;
 use media_store::Timestamp;
 
-pub use db::{connect_database, connect_runtime_database, migrate_database};
+pub use db::{connect_database, connect_runtime_database, migrate_database, setup_feedback};
 pub use environment::RuntimeEnvironment;
 
 #[derive(Clone)]

@@ -563,6 +563,117 @@ constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
 
+## Official Feedback space
+
+Feedback is a singleton, account-only system space, separate from the ownerless
+guest demo. Completed accounts see `general`, `ideas`, and `bugs`; these channels
+are shared with everyone signed in, not anonymous visitors. Opening **Chat with
+Jose** creates or resumes one private channel for that account. Only that user
+and the configured space owner can access its messages, live subscriptions, and
+voice. Generic space/channel/member mutation endpoints cannot alter Feedback,
+including making private conversations public or granting another participant.
+Feedback membership and conversations do not consume normal space/channel quotas.
+Existing message rate limits still apply. The member API does not enumerate
+contacts: it returns only the requester and owner.
+
+The owner inbox is paged in groups of 50 private conversations, newest-created
+first. `GET /api/spaces/{space}?beforeFeedback={cursor}&channel={selected}` returns
+`nextFeedbackBefore`; the selected accessible conversation is included even when
+outside that page. Public channels precede private conversations. Web refreshes
+the visible Feedback list every 15 seconds; native clients expose **Refresh
+inbox** and **Load older conversations**. Older conversations can have unread
+messages, so review older pages as well: this version has no global unread
+counter, unread-only filter, email/push notifications, assignments, or team roles.
+Unread is per-account and persisted through
+`POST /api/spaces/{space}/channels/{channel}/read` with a decimal-string `seq`.
+GET/prefetch never marks messages read. Web acknowledges the visible latest
+message when at the bottom; native mobile clients acknowledge the open foreground
+conversation. Rust desktop acknowledges a focused, bottom-scrolled conversation.
+
+The owner is bound by account external ID, not username/email, and cannot be
+changed by rerunning setup with a different ID. Additional contributors can use
+shared channels like any signed-in account. A future private-feedback team role
+requires explicit authorization and updated disclosure; it must not silently
+expose conversations promised to be only between the user and Jose.
+
+### Feedback deployment order
+
+Merging does **not** activate this feature. No infrastructure additions or new
+secrets are required. Existing database, auth, chat, and shared Valkey settings
+remain prerequisites. Do not run setup against production until every API and
+gateway replica uses Feedback-aware authorization.
+
+1. Publish the merged API and web images using the normal image pipelines. Set
+   `MERGED_SHA` to that full commit. Deploy API first; startup applies
+   `202609290001_feedback.sql` and runtime grants using existing migration
+   credentials. No separate manual schema SQL is necessary.
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the workflow to succeed, then verify every pod's image.
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+
+2. Deploy the gateway from the same Feedback-aware revision and verify the
+   workflow and all replicas before provisioning the space.
+
+   ```bash
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+
+3. Obtain Jose's stable `id` from his authenticated `/api/account/me` response.
+   Confirm the account has completed its profile. Set `FEEDBACK_OWNER_ID` to that
+   exact ID (not a username, email, or guessed ID), then run the explicit setup:
+
+   ```bash
+   kubectl -n default exec deployment/caper-api -- /usr/local/bin/caper-api --setup-feedback "$FEEDBACK_OWNER_ID"
+   ```
+
+   Setup first checks/applies migrations with the existing migration credentials,
+   then provisions through the runtime database connection in a transaction. It is
+   safe to repeat for the same owner. It creates no account, does not claim the
+   first sign-in, and refuses a different owner. Locally, use
+   `cargo run -p caper-api -- --setup-feedback "$FEEDBACK_OWNER_ID"` after migrations
+   with explicitly disposable `DATABASE_URL` and `MIGRATION_DATABASE_URL` values.
+
+4. Deploy web. Release Android, Apple, and desktop clients independently after
+   their platform gates pass; older clients cannot create a private conversation
+   and may show rejected management controls, so update the owner's client.
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+5. Verify two completed accounts both see the shared channels, create distinct
+   private conversations, cannot discover/read each other's conversations, and
+   can exchange live messages with the owner. Verify reload preserves history
+   and unread state, owner paging works, and guests retain only the public demo.
+   No production migration, setup, release, or deployment was run during development.
+
+Rollback: web/native can revert independently, but retain Feedback-aware API and
+gateway authorization while Feedback is active. If those services must roll back,
+first disable the official space using the migration connection:
+`psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'UPDATE public.spaces SET deleted_at=now() WHERE feedback AND deleted_at IS NULL;'`.
+Wait for active subscriptions to lose access and verify denial before rolling
+back. Retain the additive schema and all messages/read cursors; do not drop tables
+or delete private conversations. Re-enabling is a separate deliberate operator
+action after restoring Feedback-aware services, not an effect of setup retries.
+
+### Feedback verification
+
+Disposable Postgres/Valkey tests cover setup/conversation races, private visibility,
+history and gateway replay/denial, mutation restrictions, read cursor bounds,
+pagination/deep links, and ordinary-space regressions. `scripts/test-feedback.mjs`
+uses explicitly mocked responses to exercise web create/retry/send, read cursors,
+quota exclusions, owner pagination, and desktop/narrow layouts. It is not live
+SFU evidence. Rust desktop tests compile and run with verified Satoshi fonts and
+`CC=clang-21 CXX=clang++-21`. Android/Apple code and decoding tests are included;
+their builds, device rendering, foreground/background read behavior, and live
+native delivery still require platform CI/device validation. No sustained-load
+benchmark, physical device, multi-network/TURN, or production test is claimed.
+
 ## Shared call state and rolling deployments
 
 The original shared-state rollout below covers the public General room. Account

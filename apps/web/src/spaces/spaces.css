@@ -76,6 +76,16 @@
 .channel-manage:hover { color: var(--text); background: var(--border); }
 .channel-manage svg { width: 14px; }
 .space-sidebar-error { margin: 14px 5px; color: #ff9b82; font-size: .7rem; line-height: 1.4; }
+.channel-navigation li:has(.feedback-section-label) { flex-wrap: wrap; }
+.feedback-section-label { flex: 0 0 100%; margin: 12px 0 6px; padding: 0 8px; color: var(--text-muted); font-size: .68rem; font-weight: 650; }
+.feedback-unread { flex: 0 0 auto; margin-left: auto; color: var(--terracotta-bright); font-size: .65rem; }
+.feedback-actions { display: grid; gap: 8px; margin: 16px 6px; }
+.feedback-actions button { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); font: inherit; font-size: .76rem; cursor: pointer; }
+.feedback-actions button:hover { background: var(--surface-raised); }
+.feedback-actions button:disabled { opacity: .5; cursor: wait; }
+.feedback-actions button svg { width: 16px; height: 16px; }
+.feedback-actions p { margin: 0; color: var(--text-muted); font-size: .7rem; line-height: 1.5; }
+.feedback-actions p[role="alert"] { color: #ff9b82; }
 .space-member-presence { min-height: 0; min-width: 0; border-left: 1px solid var(--border); background: var(--surface-sidebar); overflow-y: auto; }
 .member-presence-heading { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 54px; margin: 0; padding: 8px 12px; color: var(--text-muted); font-size: .75rem; font-weight: 700; }
 .member-presence-heading span:first-of-type { flex: 1; text-align: left; }

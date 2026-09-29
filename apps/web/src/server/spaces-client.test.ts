@@ -7,7 +7,10 @@ import {
   createChannel,
   createSpace,
   deleteSpace,
+  getSpace,
+  markFeedbackRead,
   normalizeChannelName,
+  openFeedback,
   spaceNameError,
 } from "../spaces/client.ts";
 
@@ -70,7 +73,7 @@ test("hover and click share one read, wait for history, and consume the snapshot
   let release!: (response: Response) => void;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const path = String(input); paths.push(path);
-    if (path === "/api/spaces/space1234567") return Response.json(spaceDetail);
+    if (path.startsWith("/api/spaces/space1234567")) return Response.json(spaceDetail);
     return new Promise<Response>((resolve) => { release = resolve; });
   });
   const navigation = createSpaceNavigation();
@@ -80,7 +83,7 @@ test("hover and click share one read, wait for history, and consume the snapshot
   void hover.then(() => { settled = true; });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(settled, false, "a channel list alone must not replace the visible space");
-  assert.deepEqual(paths, ["/api/spaces/space1234567", "/api/chat/channels/other1234567/messages"]);
+  assert.deepEqual(paths, ["/api/spaces/space1234567?channel=other1234567", "/api/chat/channels/other1234567/messages"]);
   release(Response.json(history("other1234567")));
   assert.equal((await hover).channelId, "other1234567");
   const again = navigation.take("space1234567", "other1234567");
@@ -173,4 +176,21 @@ test("public demo uses real history IDs and shares navigation without account-sp
   assert.deepEqual((await navigation.take("space1234567")).history, history("demoChannel1"));
   navigation.clear();
   assert.equal(navigation.peek("space1234567"), undefined);
+});
+
+test("feedback pagination includes selection and only explicit actions create or acknowledge conversations", async (t) => {
+  const requests: Array<{ path: string; init?: RequestInit }> = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ path: String(input), init });
+    return String(input).endsWith("/read") ? new Response(null, { status: 204 }) : Response.json(spaceDetail);
+  });
+  await getSpace("space1234567", "other1234567", "older1234567");
+  await openFeedback("space1234567");
+  await markFeedbackRead("space1234567", "other1234567", "9007199254740993");
+  assert.equal(requests[0].path, "/api/spaces/space1234567?channel=other1234567&beforeFeedback=older1234567");
+  assert.equal(requests[0].init?.method, undefined);
+  assert.equal(requests[1].path, "/api/spaces/space1234567/feedback");
+  assert.equal(requests[1].init?.method, "POST");
+  assert.equal(requests[2].path, "/api/spaces/space1234567/channels/other1234567/read");
+  assert.deepEqual(JSON.parse(String(requests[2].init?.body)), { seq: "9007199254740993" });
 });

@@ -38,6 +38,7 @@ private struct ChannelInput: Encodable {
     enum CodingKeys: String, CodingKey { case name; case privateChannel = "private" }
 }
 private struct UsernameInput: Encodable { let username: String }
+private struct ReadInput: Encodable { let seq: String }
 private struct MembersResponse: Decodable { let members: [Member] }
 
 public actor APIClient {
@@ -101,7 +102,13 @@ public actor APIClient {
     }
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
-    public func space(_ id: String) async throws -> SpaceDetail { try await request("api/spaces/\(try pathID(id))") }
+    public func space(_ id: String, beforeFeedback: String? = nil, channelID: String? = nil) async throws -> SpaceDetail {
+        var query: [URLQueryItem] = []
+        if let beforeFeedback { query.append(URLQueryItem(name: "beforeFeedback", value: beforeFeedback)) }
+        if let channelID { query.append(URLQueryItem(name: "channel", value: channelID)) }
+        let suffix = query.isEmpty ? "" : "?" + query.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
+        return try await request("api/spaces/\(try pathID(id))\(suffix)")
+    }
 
     public func createSpace(name: String) async throws -> Space {
         try await request("api/spaces", method: "POST", body: SpaceInput(name: name.trimmingCharacters(in: .whitespacesAndNewlines)))
@@ -125,6 +132,14 @@ public actor APIClient {
 
     public func deleteChannel(spaceID: String, channelID: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))", method: "DELETE")
+    }
+
+    public func feedbackChannel(spaceID: String) async throws -> Channel {
+        try await request("api/spaces/\(try pathID(spaceID))/feedback", method: "POST", body: Empty())
+    }
+
+    public func markRead(spaceID: String, channelID: String, seq: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/read", method: "POST", body: ReadInput(seq: seq))
     }
 
     public func spaceMembers(spaceID: String) async throws -> [Member] {

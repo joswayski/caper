@@ -31,6 +31,17 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class APIClientTests: XCTestCase {
+    func testFeedbackDetailDecodesPagingAndBackwardCompatibleDefaults() throws {
+        let data = Data(#"{"space":{"id":"space0000001","name":"Feedback","ownerId":"owner","feedback":true},"channels":[{"id":"channel00001","spaceId":"space0000001","name":"Jose","private":true,"feedbackUserId":"member","unread":true}],"members":[],"nextFeedbackBefore":"channel00001"}"#.utf8)
+        let detail = try JSONDecoder().decode(SpaceDetail.self, from: data)
+        XCTAssertTrue(detail.space.feedback)
+        XCTAssertEqual(detail.nextFeedbackBefore, "channel00001")
+        XCTAssertTrue(detail.channels[0].unread)
+        let old = try JSONDecoder().decode(SpaceDetail.self, from: Data(#"{"space":{"id":"space0000001","name":"Old","ownerId":"owner"},"channels":[],"members":[]}"#.utf8))
+        XCTAssertFalse(old.space.feedback)
+        XCTAssertNil(old.nextFeedbackBefore)
+    }
+
     override func tearDown() {
         MockURLProtocol.handler = nil
         MockURLProtocol.deferred = nil

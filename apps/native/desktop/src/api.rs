@@ -115,9 +115,31 @@ impl Api {
     }
 
     pub fn space(&self, token: &str, id: &str) -> Result<SpaceDetail, ApiError> {
+        self.space_page(token, id, None, None)
+    }
+
+    pub fn space_page(
+        &self,
+        token: &str,
+        id: &str,
+        before: Option<&str>,
+        channel: Option<&str>,
+    ) -> Result<SpaceDetail, ApiError> {
+        let mut query = vec![];
+        if let Some(before) = before {
+            query.push(format!("beforeFeedback={before}"));
+        }
+        if let Some(channel) = channel {
+            query.push(format!("channel={channel}"));
+        }
+        let suffix = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", query.join("&"))
+        };
         self.request(
             Method::GET,
-            &format!("api/spaces/{id}"),
+            &format!("api/spaces/{id}{suffix}"),
             Some(token),
             None,
             None,
@@ -235,6 +257,33 @@ impl Api {
             Some(token),
             None,
             None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn feedback_channel(&self, token: &str, space: &str) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/feedback"),
+            Some(token),
+            None,
+            Some(json!({})),
+        )
+    }
+
+    pub fn mark_read(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+        seq: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/read"),
+            Some(token),
+            None,
+            Some(json!({"seq":seq})),
         )?)
         .map(|_| ())
     }

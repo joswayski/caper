@@ -34,8 +34,8 @@ export function createSpaceNavigation() {
     const cached = entries.get(key);
     if (cached && cached.expires > Date.now()) return cached.result;
     const result = (async () => {
-      const detail = spaceId === demo?.space.id ? demo : await getSpace(spaceId);
       const previous = peek(spaceId, channelId);
+      const detail = spaceId === demo?.space.id ? demo : await getSpace(spaceId, channelId ?? previous?.channelId);
       if (previous?.channelId && !detail.channels.some((channel) => channel.id === previous.channelId)) {
         forget(spaceId);
         throw new SpacesApiError(404, "This channel is no longer accessible.");

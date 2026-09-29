@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -34,9 +35,12 @@ import {
   createSpace,
   deleteChannel,
   deleteSpace,
+  getSpace,
   listChannelMembers,
   listSpaces,
+  markFeedbackRead,
   normalizeChannelName,
+  openFeedback,
   removeChannelMember,
   removeSpaceMember,
   spaceNameError,
@@ -750,6 +754,45 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
   const [channelsExpanded, setChannelsExpanded] = useState(true);
+  const [feedbackPending, setFeedbackPending] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string>();
+  const selectionRef = useRef(selected);
+  selectionRef.current = selected;
+
+  const feedbackSpaceId = detail?.space.feedback ? detail.space.id : undefined;
+  const readFeedback = useCallback(async (seq: string) => {
+    if (!feedbackSpaceId || !view?.channelId) return;
+    const channelId = view.channelId;
+    await markFeedbackRead(feedbackSpaceId, channelId, seq);
+    setView((current) => current?.detail.space.id !== feedbackSpaceId ? current : {
+      ...current, detail: { ...current.detail, channels: current.detail.channels.map((item) =>
+        item.id === channelId && BigInt(item.latestSeq ?? "0") <= BigInt(seq) ? { ...item, unread: false } : item) },
+    });
+  }, [feedbackSpaceId, view?.channelId]);
+
+  useEffect(() => {
+    if (!feedbackSpaceId || !engaged) return;
+    let active = true;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      try {
+        const next = await getSpace(feedbackSpaceId, selectionRef.current.channelId);
+        if (active) setView((current) => {
+          if (current?.detail.space.id !== feedbackSpaceId) return current;
+          // Retain explicitly loaded older inbox pages when refreshing the head.
+          const older = current.detail.channels.filter((item) => !next.channels.some((fresh) => fresh.id === item.id));
+          return { ...current, detail: { ...next, channels: [...next.channels, ...older],
+            nextFeedbackBefore: older.length ? current.detail.nextFeedbackBefore : next.nextFeedbackBefore } };
+        });
+      } catch {
+        // Keep the open conversation usable; the explicit refresh exposes errors.
+      } finally { inFlight = false; }
+    };
+    const timer = setInterval(() => void refresh(), 15_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [feedbackSpaceId, engaged]);
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
@@ -866,15 +909,16 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
     (item) => item.id === view?.channelId,
   ) ?? detail?.channels[0];
   const owner = !!account && detail?.space.ownerId === account.id;
+  const canManage = owner && !detail?.space.feedback;
   const ownedCount = account
-    ? spaces.filter((space) => space.ownerId === account.id).length
+    ? spaces.filter((space) => space.ownerId === account.id && !space.feedback).length
     : 0;
   const canCreateSpace =
     !!limits &&
     ownedCount < limits.ownedSpaces &&
-    spaces.filter((space) => !space.demo).length < limits.totalSpaces;
+    spaces.filter((space) => !space.demo && !space.feedback).length < limits.totalSpaces;
   const canCreateChannel =
-    !!limits && !!detail && detail.channels.length < limits.channelsPerSpace;
+    !!limits && !!detail && !detail.space.feedback && detail.channels.length < limits.channelsPerSpace;
   const replaceDetail = (next: SpaceDetail) => {
     navigation.current.forget(next.space.id);
     if (view) {
@@ -896,6 +940,32 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
     setSpaces(remaining);
     setDialog(undefined);
     choose(remaining[0]?.id, undefined, true);
+  };
+
+  const feedbackAction = async (action: "open" | "refresh" | "older") => {
+    if (!detail?.space.feedback || feedbackPending) return;
+    const spaceId = detail.space.id;
+    setFeedbackPending(true);
+    setFeedbackError(undefined);
+    try {
+      if (action === "open") {
+        const conversation = await openFeedback(spaceId);
+        if (selectionRef.current.spaceId !== spaceId) return;
+        navigation.current.forget(spaceId);
+        choose(spaceId, conversation.id);
+      } else {
+        const next = await getSpace(spaceId, view?.channelId, action === "older" ? detail.nextFeedbackBefore ?? undefined : undefined);
+        if (selectionRef.current.spaceId !== spaceId) return;
+        if (action === "older") {
+          const fresh = new Map(next.channels.map((item) => [item.id, item]));
+          next.channels = [...detail.channels.map((item) => fresh.get(item.id) ?? item),
+            ...next.channels.filter((item) => !detail.channels.some((old) => old.id === item.id))];
+        }
+        replaceDetail(next);
+      }
+    } catch (reason) {
+      if (selectionRef.current.spaceId === spaceId) setFeedbackError(errorMessage(reason));
+    } finally { setFeedbackPending(false); }
   };
 
   if (loading) return <SpacesLoading />;
@@ -998,7 +1068,8 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
       aria-label={`${detail.space.name} channels`}
     >
       {(!detail.space.demo || navigationOpen) && <header>
-        {!detail.space.demo && <details
+        {detail.space.feedback && <h1 className="demo-space-title">Feedback</h1>}
+        {!detail.space.demo && !detail.space.feedback && <details
           ref={spaceMenu}
           className="space-menu"
           onKeyDown={(event) => {
@@ -1059,7 +1130,7 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
         <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded(!channelsExpanded)}>
           <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
         </button>
-        {owner && <div className="channel-section-actions">
+        {canManage && <div className="channel-section-actions">
           <button type="button" aria-label="Create channel" title={canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`} disabled={!canCreateChannel} onClick={() => setDialog("channel")}><Plus aria-hidden="true" /></button>
           <details ref={channelMenu} className="channel-section-menu" onKeyDown={(event) => {
             if (event.key === "Escape") {
@@ -1084,10 +1155,12 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
         </div>}
       </div>}
       <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
-        {detail.channels.map((item) => {
+        {detail.channels.map((item, index) => {
           const voice = voiceFor(item.id);
           return (
           <li key={item.id} data-voice={voice ? "" : undefined}>
+            {detail.space.feedback && (index === 0 || !!item.feedbackUserId !== !!detail.channels[index - 1]?.feedbackUserId) &&
+              <p className="feedback-section-label">{item.feedbackUserId ? owner ? "Private inbox" : "Your private conversation" : "Shared with everyone signed in"}</p>}
             <div className="channel-line">
             <button
               className="channel-select"
@@ -1104,9 +1177,10 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
                 <Hash aria-hidden="true" />
               )}
               <span>{item.name}</span>
+              {detail.space.feedback && item.unread && <small className="feedback-unread">New</small>}
             </button>
             {voice?.summary}
-            {owner && (
+            {canManage && (
               <button
                 className="channel-manage"
                 type="button"
@@ -1122,6 +1196,19 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
           );
         })}
       </ul>
+      {detail.space.feedback && <div className="feedback-actions">
+        {!owner && <>
+          {!detail.channels.some((item) => item.feedbackUserId === account?.id) &&
+            <button type="button" disabled={feedbackPending} onClick={() => void feedbackAction("open")}><LockKeyhole aria-hidden="true" />{feedbackPending ? "Opening…" : "Chat with Jose"}</button>}
+          <p>Private conversations are only visible to you and Jose. Shared channels are visible to everyone signed in.</p>
+        </>}
+        {owner && <>
+          <button type="button" disabled={feedbackPending} onClick={() => void feedbackAction("refresh")}>Refresh inbox</button>
+          {detail.nextFeedbackBefore && <button type="button" disabled={feedbackPending} onClick={() => void feedbackAction("older")}>Load older conversations</button>}
+          {!detail.channels.some((item) => item.feedbackUserId) && <p>No private conversations yet.</p>}
+        </>}
+        {feedbackError && <p role="alert">{feedbackError} Try again using the button above.</p>}
+      </div>}
       {error && (
         <p className="space-sidebar-error" role="alert">
           {error}
@@ -1234,9 +1321,10 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
         initialHistory={view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={view?.channelId === channel.id ? view.historyError : undefined}
         onHistoryChange={navigation.current.rememberHistory}
+        onRead={detail.space.feedback ? readFeedback : undefined}
         spaceRail={rail}
         channelNavigation={channelNavigation}
-        membersPanel={<MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} />}
+        membersPanel={detail.space.feedback ? undefined : <MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} />}
         onVoiceChannelOpen={(channelId, spaceId) => choose(spaceId, channelId)}
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}

@@ -48,11 +48,19 @@ async fn main() -> std::process::ExitCode {
 
 async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--migrate"), None) => return caper_api::migrate_database(environment).await,
-        (Some("--gateway"), None) => return run_gateway(environment).await,
-        (None, None) => {}
-        _ => return Err("usage: caper-api [--migrate|--gateway]".into()),
+    match (args.next().as_deref(), args.next(), args.next()) {
+        (Some("--migrate"), None, None) => return caper_api::migrate_database(environment).await,
+        (Some("--gateway"), None, None) => return run_gateway(environment).await,
+        (Some("--setup-feedback"), Some(owner), None) => {
+            return caper_api::setup_feedback(environment, &owner).await;
+        }
+        (None, None, None) => {}
+        _ => {
+            return Err(
+                "usage: caper-api [--migrate|--gateway|--setup-feedback <owner-external-id>]"
+                    .into(),
+            );
+        }
     }
     let config = Config::from_env(environment)?;
     let bind = config.bind;

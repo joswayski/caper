@@ -161,6 +161,7 @@ struct CaperApp {
     older_anchor: Option<f32>,
     history_height: f32,
     history_offset: Option<f32>,
+    feedback_read_at: Option<Instant>,
     has_more: bool,
     error: Option<String>,
     warning: Option<String>,
@@ -247,6 +248,7 @@ impl CaperApp {
             older_anchor: None,
             history_height: 0.0,
             history_offset: None,
+            feedback_read_at: None,
             has_more: false,
             error: None,
             warning: None,
@@ -323,7 +325,30 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name == "parity-admin" {
+                if matches!(name, "parity-feedback" | "parity-feedback-member") {
+                    let detail = app.detail.as_mut().unwrap();
+                    detail.space.name = "Feedback".into();
+                    detail.space.feedback = true;
+                    detail.channels[1].name = "ideas".into();
+                    detail.channels[2].name = "bugs".into();
+                    detail.channels[2].private = false;
+                    detail.channels.push(model::Channel {
+                        id: "feedback0001".into(),
+                        space_id: detail.space.id.clone(),
+                        name: "TEST FIXTURE Maya @maya".into(),
+                        private: true,
+                        feedback_user_id: Some("fixture-maya".into()),
+                        unread: true,
+                        ..Default::default()
+                    });
+                    detail.next_feedback_before = Some("feedback0001".into());
+                    app.spaces[1] = detail.space.clone();
+                    if name.ends_with("-member") {
+                        app.account.as_mut().unwrap().id = "fixture-alex".into();
+                        detail.channels.pop();
+                        detail.next_feedback_before = None;
+                    }
+                } else if name == "parity-admin" {
                     app.form_name = "Fixture Studio".into();
                     app.managed_members = app
                         .detail
@@ -531,18 +556,21 @@ impl CaperApp {
             name: "General".into(),
             owner_id: String::new(),
             demo: true,
+            ..Default::default()
         };
         let space = Space {
             id: "space0000001".into(),
             name: "Fixture Studio".into(),
             owner_id: "fixture-owner".into(),
             demo: false,
+            ..Default::default()
         };
         let channel = Channel {
             id: "chan00000001".into(),
             space_id: space.id.clone(),
             name: "general".into(),
             private: false,
+            ..Default::default()
         };
         self.account = Some(Account {
             id: "fixture-owner".into(),
@@ -557,12 +585,14 @@ impl CaperApp {
                 space_id: space.id.clone(),
                 name: "design".into(),
                 private: false,
+                ..Default::default()
             },
             Channel {
                 id: "chan00000003".into(),
                 space_id: space.id.clone(),
                 name: "planning".into(),
                 private: true,
+                ..Default::default()
             },
         ];
         self.spaces = vec![demo, space.clone()];
@@ -576,6 +606,7 @@ impl CaperApp {
         self.detail = Some(SpaceDetail {
             space,
             channels,
+            next_feedback_before: None,
             members: vec![
                 Member {
                     id: "fixture-owner".into(),
@@ -980,6 +1011,7 @@ impl CaperApp {
             self.clear_channel(&error);
             return;
         }
+        self.feedback_read_at = None;
         self.has_more = history.has_more;
         self.selected_channel = Some(history.channel.id.clone());
         if general {
@@ -988,6 +1020,7 @@ impl CaperApp {
                 name: history.space.name.clone(),
                 owner_id: String::new(),
                 demo: true,
+                ..Default::default()
             };
             self.spaces.retain(|space| !space.demo);
             self.spaces.insert(0, demo.clone());
@@ -999,8 +1032,10 @@ impl CaperApp {
                     space_id: history.space.id,
                     name: history.channel.name,
                     private: false,
+                    ..Default::default()
                 }],
                 members: vec![],
+                next_feedback_before: None,
             });
         }
         self.session_error = session.as_ref().err().cloned();
@@ -1470,7 +1505,9 @@ impl CaperApp {
                     .as_ref()
                     .is_some_and(|session| session.author.id != message.author.id);
                 match self.timeline.apply(*message) {
-                    Ok(model::Apply::Applied) if remote => self.effects.play(Effect::Message),
+                    Ok(model::Apply::Applied) if remote => {
+                        self.effects.play(Effect::Message);
+                    }
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
                 }
@@ -1859,13 +1896,40 @@ impl CaperApp {
             }
             AdminResult::ChannelCreated(channel) => {
                 if let Some(detail) = &mut self.detail {
+                    if detail.space.id != channel.space_id {
+                        return;
+                    }
+                    detail.channels.retain(|item| item.id != channel.id);
                     detail.channels.push(channel.clone());
                 }
                 self.dialog = None;
                 self.select_channel(channel.id.clone(), false);
                 // Web opens a new private channel's Overview to add members.
-                if channel.private {
+                if channel.private
+                    && !self
+                        .detail
+                        .as_ref()
+                        .is_some_and(|detail| detail.space.feedback)
+                {
                     self.open_manage_channel(&channel.id, &channel.name, true);
+                }
+            }
+            AdminResult::FeedbackLoaded(page) => {
+                if let Some(detail) = &mut self.detail
+                    && detail.space.id == page.space.id
+                {
+                    for channel in page.channels {
+                        if let Some(existing) = detail
+                            .channels
+                            .iter_mut()
+                            .find(|item| item.id == channel.id)
+                        {
+                            *existing = channel;
+                        } else {
+                            detail.channels.push(channel);
+                        }
+                    }
+                    detail.next_feedback_before = page.next_feedback_before;
                 }
             }
             AdminResult::ChannelUpdated(channel) => {
@@ -2852,7 +2916,7 @@ impl CaperApp {
                                         ui.spacing_mut().item_spacing.x = 2.0;
                                         let can_create = self.can_create_channel();
                                         let channel_tooltip = self.create_channel_tooltip();
-                                        if self.owner() {
+                                        if self.owner() && !self.detail.as_ref().is_some_and(|detail| detail.space.feedback) {
                                             let options = drawn_icon_button(
                                                 ui,
                                                 NavIcon::More,
@@ -2894,7 +2958,7 @@ impl CaperApp {
                                                     }
                                                 });
                                         }
-                                        if self.owner()
+                                        if self.owner() && !self.detail.as_ref().is_some_and(|detail| detail.space.feedback)
                                             && ui
                                                 .add_enabled_ui(can_create, |ui| {
                                                     drawn_icon_button_with_tooltip(
@@ -2928,22 +2992,30 @@ impl CaperApp {
                                     .channels
                                     .iter()
                                     .map(|channel| {
-                                        (channel.id.clone(), channel.name.clone(), channel.private)
+                                        (channel.id.clone(), channel.name.clone(), channel.private, channel.unread)
                                     })
                                     .collect()
                             });
-                        for (id, name, private) in channels {
+                        let mut previous_private = None;
+                        for (id, name, private, unread) in channels {
                             if !self.channels_expanded {
                                 break;
                             }
                             let active = self.selected_channel.as_deref() == Some(&id);
+                            let feedback_owner = self.owner() && self.detail.as_ref().is_some_and(|detail| detail.space.feedback);
+                            if feedback_owner && previous_private != Some(private) {
+                                ui.add_space(8.0);
+                                ui.label(RichText::new(if private { "Private inbox" } else { "Shared with everyone signed in" }).size(11.0).color(MUTED));
+                            }
+                            previous_private = Some(private);
+                            let label = if unread { format!("New · {name}") } else { name.clone() };
                             let (response, settings) = channel_button(
                                 ui,
                                 ui.available_width(),
-                                &name,
+                                &label,
                                 private,
                                 active,
-                                self.owner(),
+                                self.owner() && !self.detail.as_ref().is_some_and(|detail| detail.space.feedback),
                             );
                             if settings.is_some_and(|response| response.clicked()) {
                                 self.open_manage_channel(&id, &name, private);
@@ -2957,6 +3029,30 @@ impl CaperApp {
                             }
                             ui.push_id(&id, |ui| self.channel_voice(ui, &id, &name, active));
                             ui.add_space(3.0);
+                        }
+                        if self.channels_expanded && self.detail.as_ref().is_some_and(|detail| detail.space.feedback) {
+                            let owner = self.owner();
+                            let own = self.detail.as_ref().is_some_and(|detail| detail.channels.iter().any(|channel| channel.feedback_user_id.as_deref() == self.account.as_ref().map(|account| account.id.as_str())));
+                            ui.add_space(10.0);
+                            let width = ui.available_width();
+                            let button = |label| egui::Button::new(bold(label).size(12.0)).fill(RAISED).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).min_size(egui::vec2(width, 36.0));
+                            if !owner {
+                                ui.label(RichText::new("Private conversations are only visible to you and Jose.").size(11.0).color(MUTED));
+                                ui.add_space(8.0);
+                                if !own && ui.add(button("Chat with Jose")).clicked()
+                                    && let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone())
+                                { self.worker.send(Command::Admin { generation: self.generation, token, operation: AdminOperation::CreateFeedback { space } }); }
+                            }
+                            if owner {
+                                let cursor = self.detail.as_ref().and_then(|detail| detail.next_feedback_before.clone());
+                                if ui.add(button("Refresh inbox")).clicked()
+                                    && let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone())
+                                { self.worker.send(Command::Admin { generation: self.generation, token, operation: AdminOperation::LoadFeedback { space, before: None, channel: self.selected_channel.clone() } }); }
+                                ui.add_space(8.0);
+                                if cursor.is_some() && ui.add(button("Load older conversations")).clicked()
+                                    && let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone())
+                                { self.worker.send(Command::Admin { generation: self.generation, token, operation: AdminOperation::LoadFeedback { space, before: cursor, channel: self.selected_channel.clone() } }); }
+                            }
                         }
                         let active_visible = self.channels_expanded
                             && self.detail.as_ref().is_some_and(|detail| {
@@ -4219,8 +4315,14 @@ impl CaperApp {
                 ui.add_space(14.0);
                 ui.label(bold("No accessible channels").size(20.0));
                 ui.add_space(7.0);
+                let feedback = self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.space.feedback);
                 ui.label(
-                    RichText::new(if owner {
+                    RichText::new(if feedback {
+                        "Your conversation is private between you and Jose."
+                    } else if owner {
                         "Create a channel to start a conversation."
                     } else {
                         "The owner has not shared a channel with you yet."
@@ -4228,7 +4330,21 @@ impl CaperApp {
                     .size(13.0)
                     .color(MUTED),
                 );
-                if owner {
+                if feedback && !owner {
+                    ui.add_space(18.0);
+                    if ui.button("Chat with Jose").clicked() {
+                        if let (Some(token), Some(space)) =
+                            (self.token.clone(), self.selected_space.clone())
+                        {
+                            self.loading = true;
+                            self.worker.send(Command::Admin {
+                                generation: self.generation,
+                                token,
+                                operation: AdminOperation::CreateFeedback { space },
+                            });
+                        }
+                    }
+                } else if owner {
                     ui.add_space(18.0);
                     if ui
                         .add(
@@ -4544,6 +4660,22 @@ impl CaperApp {
                     }
                 });
             self.after_history(ui, &history, heading.response.rect);
+            // A received or prefetched message is not read until the focused
+            // conversation actually renders at the bottom. Retry at most every
+            // 15 seconds so a failed acknowledgement does not lose unread state.
+            if ui.input(|input| input.focused)
+                && history.state.offset.y + history.inner_rect.height() >= history.content_size.y - 8.0
+                && self.feedback_read_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(15))
+                && let (Some(token), Some(detail), Some(channel), Some(message)) = (
+                    self.token.clone(), self.detail.as_ref(), self.selected_channel.clone(), self.timeline.messages().last()
+                )
+                && detail.space.feedback
+            {
+                self.worker.send(Command::MarkRead {
+                    token, space: detail.space.id.clone(), channel, seq: message.seq.clone(),
+                });
+                self.feedback_read_at = Some(Instant::now());
+            }
         });
     }
 
@@ -4689,10 +4821,15 @@ impl CaperApp {
         let owned = self
             .spaces
             .iter()
-            .filter(|space| space.owner_id == account.id && !space.demo)
+            .filter(|space| space.owner_id == account.id && !space.demo && !space.feedback)
             .count();
         owned < limits.owned_spaces
-            && self.spaces.iter().filter(|space| !space.demo).count() < limits.total_spaces
+            && self
+                .spaces
+                .iter()
+                .filter(|space| !space.demo && !space.feedback)
+                .count()
+                < limits.total_spaces
     }
 
     fn can_create_channel(&self) -> bool {
@@ -4742,7 +4879,7 @@ impl CaperApp {
             .as_ref()
             .zip(self.detail.as_ref())
             .is_some_and(|(account, detail)| {
-                !detail.space.demo && account.id != detail.space.owner_id
+                !detail.space.demo && !detail.space.feedback && account.id != detail.space.owner_id
             })
     }
 
@@ -7136,6 +7273,7 @@ mod tests {
                 space_id: "space0000001".into(),
                 name: "secret".into(),
                 private: true,
+                ..Default::default()
             },
         ));
         assert!(matches!(&app.dialog, Some(Dialog::ManageChannel(id)) if id == "chan00000009"));
@@ -8023,9 +8161,11 @@ mod tests {
                 name: "Space".into(),
                 owner_id: "member-0".into(),
                 demo: false,
+                ..Default::default()
             },
             channels: Vec::new(),
             members,
+            next_feedback_before: None,
         };
         assert_eq!(member_page_ids(&detail, 0).len(), 25);
         assert_eq!(member_page_ids(&detail, 1), ["member-25"]);

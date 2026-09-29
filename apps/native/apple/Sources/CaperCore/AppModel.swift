@@ -220,7 +220,7 @@ public final class AppModel {
         let task = Task<PreparedNavigation, Error> {
             let detail: SpaceDetail
             if let demo { detail = demo }
-            else { detail = try await api.space(space.id) }
+            else { detail = try await api.space(space.id, channelID: channelID ?? previous?.channelID) }
             guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
             if let previousID = previous?.channelID, !detail.channels.contains(where: { $0.id == previousID }) {
                 throw APIError(status: 404, message: "This channel is no longer accessible.")
@@ -289,7 +289,7 @@ public final class AppModel {
             // A hover is not authorization for a later click. Recheck membership
             // even when speculative history has already completed.
             if space.demo == true, let demo = self.demoDetail { detail = demo }
-            else { detail = try await self.api.space(space.id) }
+            else { detail = try await self.api.space(space.id, channelID: channelID ?? lastChannelBySpace[space.id]) }
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             guard detail.space.id == space.id else { throw APIError(status: 502, message: "The service returned another space.") }
             spaceVerified = true
@@ -400,12 +400,51 @@ public final class AppModel {
     public var isOwner: Bool { account?.id == detail?.space.ownerId }
     public var canCreateSpace: Bool {
         guard account != nil, let limits else { return false }
-        return spaces.filter { $0.ownerId == account?.id }.count < limits.ownedSpaces
-            && spaces.filter { $0.demo != true }.count < limits.totalSpaces
+        return spaces.filter { $0.ownerId == account?.id && !$0.feedback }.count < limits.ownedSpaces
+            && spaces.filter { $0.demo != true && !$0.feedback }.count < limits.totalSpaces
     }
     public var canCreateChannel: Bool {
-        guard isOwner, let limits, let detail else { return false }
+        guard isOwner, let limits, let detail, !detail.space.feedback else { return false }
         return detail.channels.count < limits.channelsPerSpace
+    }
+
+    public func startFeedback() async {
+        guard var detail, detail.space.feedback, !isOwner else { return }
+        await work {
+            let channel = try await self.api.feedbackChannel(spaceID: detail.space.id)
+            guard self.detail?.space.id == detail.space.id else { return }
+            detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id } + [channel], members: detail.members)
+            self.replace(detail: detail)
+            await self.select(channel: channel)
+        }
+    }
+
+    public func refreshFeedback() async {
+        guard let space = detail?.space, space.feedback else { return }
+        await navigate(space: space, channelID: selectedChannelID, preparedDemo: nil)
+    }
+
+    public func loadOlderFeedback() async {
+        guard let current = detail, let cursor = current.nextFeedbackBefore else { return }
+        await work {
+            let page = try await self.api.space(current.space.id, beforeFeedback: cursor, channelID: self.selectedChannelID)
+            guard self.detail?.space.id == current.space.id else { return }
+            var ids = Set(current.channels.map(\.id))
+            let channels = current.channels + page.channels.filter { ids.insert($0.id).inserted }
+            self.replace(detail: SpaceDetail(space: current.space, channels: channels, members: current.members, nextFeedbackBefore: page.nextFeedbackBefore))
+        }
+    }
+
+    public func markVisibleFeedbackRead() async {
+        guard let detail, detail.space.feedback, let channelID = selectedChannelID,
+              let seq = chat.messages.last?.seq else { return }
+        let attempt = generation
+        do { try await api.markRead(spaceID: detail.space.id, channelID: channelID, seq: seq) } catch { return }
+        guard generation == attempt, let current = self.detail, current.space.id == detail.space.id, selectedChannelID == channelID else { return }
+        let channels = current.channels.map { channel in
+            channel.id == channelID && (Int64(channel.latestSeq) ?? 0) <= (Int64(seq) ?? 0) ? Channel(id: channel.id, spaceId: channel.spaceId, name: channel.name, private: channel.private, feedbackUserId: channel.feedbackUserId, latestSeq: channel.latestSeq, unread: false) : channel
+        }
+        replace(detail: SpaceDetail(space: current.space, channels: channels, members: current.members, nextFeedbackBefore: current.nextFeedbackBefore))
     }
 
     public func createSpace(name: String) async throws {

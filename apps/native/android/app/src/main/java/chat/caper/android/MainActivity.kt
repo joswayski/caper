@@ -53,6 +53,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
@@ -257,8 +260,8 @@ internal data class VoiceJoinIntent(
             }
         }
         val limits = state.limits
-        val canCreateSpace = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
-            state.spaces.count { !it.demo } < limits.totalSpaces
+        val canCreateSpace = limits != null && state.spaces.count { it.ownerId == state.account?.id && !it.feedback } < limits.ownedSpaces &&
+            state.spaces.count { !it.demo && !it.feedback } < limits.totalSpaces
         val spaceEnabled = state.account == null || canCreateSpace
         Surface(
             Modifier.size(40.dp).clickable(enabled = spaceEnabled) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
@@ -294,7 +297,7 @@ internal data class VoiceJoinIntent(
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 42.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (detail != null && !detail.space.demo) Box(Modifier.weight(1f)) {
+                if (detail != null && !detail.space.demo && !detail.space.feedback) Box(Modifier.weight(1f)) {
                     // Web: the space name opens a menu with Space settings (owners) or Leave space….
                     var spaceMenuOpen by remember(detail.space.id) { mutableStateOf(false) }
                     Row(Modifier.fillMaxWidth().heightIn(min = 42.dp).clip(MaterialTheme.shapes.small)
@@ -330,7 +333,7 @@ internal data class VoiceJoinIntent(
                     Text("Channels", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Text(channelCount.toString(), color = TextMuted, fontSize = 10.sp)
                 }
-                if (owner) {
+                if (owner && detail?.space?.feedback != true) {
                     IconButton({ show(Overlay.CreateChannel) }, enabled = canCreateChannel, modifier = Modifier.semantics {
                         if (!canCreateChannel) stateDescription = "Channel limit reached (${state.limits?.channelsPerSpace ?: 100})"
                     }) { Icon(painterResource(R.drawable.lucide_plus), "Create channel", tint = if (canCreateChannel) TextMuted else TextMuted.copy(alpha = 0.4f)) }
@@ -363,8 +366,9 @@ internal data class VoiceJoinIntent(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
-                    Spacer(Modifier.width(9.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(28.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
+                    Spacer(Modifier.width(9.dp)); Text(if (detail.space.feedback && owner) "${channel.name} · ${if (channel.private) "Inbox" else "Shared"}" else channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    if (channel.unread) Text("New", color = TerracottaBright, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    if (owner && detail.space.feedback.not()) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(28.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
                 }
                 if (BuildConfig.ENABLE_NATIVE_VOICE && (selected || people.isNotEmpty() || activeChannel == channel.id)) {
                     Row(Modifier.fillMaxWidth().padding(start = 34.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -404,6 +408,17 @@ internal data class VoiceJoinIntent(
                             }
                         }
                     }
+                }
+            }
+            if (channelsExpanded && detail?.space?.feedback == true) {
+                val ownConversation = detail.channels.any { it.feedbackUserId == state.account?.id }
+                if (!owner && !ownConversation) {
+                    Text("Private between you and Jose.", color = TextMuted, fontSize = 11.sp, modifier = Modifier.padding(9.dp))
+                    Button({ viewModel.startFeedback() }, modifier = Modifier.fillMaxWidth()) { Text("Chat with Jose") }
+                }
+                if (owner) {
+                    OutlinedButton({ viewModel.refreshFeedback() }, modifier = Modifier.fillMaxWidth()) { Text("Refresh inbox") }
+                    if (detail.nextFeedbackBefore != null) TextButton({ viewModel.loadOlderFeedback() }, modifier = Modifier.fillMaxWidth()) { Text("Load older conversations") }
                 }
             }
             if (activeChannel != null && detail?.channels?.none { it.id == activeChannel } == true) VoiceRoster(voice)
@@ -629,8 +644,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     openNavigation: () -> Unit,
 ) {
     val channel = state.selectedChannel
-    if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
+    if (channel == null) return EmptyChannel(state, viewModel, narrow, show, openNavigation, modifier)
     var draft by remember(channel.id) { mutableStateOf("") }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(channel.id, state.messages.lastOrNull()?.seq, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.markVisibleFeedbackRead()
+        }
+    }
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
         // Web waits a second before announcing a lost connection.
         val live = state.gateway == GatewayStatus.LIVE
@@ -716,7 +737,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 }
 
 /** Web's empty-channel stage: owners can create the first channel; narrow screens keep Browse spaces. */
-@Composable private fun EmptyChannel(state: AppUiState, narrow: Boolean, show: (Overlay) -> Unit, openNavigation: () -> Unit, modifier: Modifier) {
+@Composable private fun EmptyChannel(state: AppUiState, viewModel: CaperViewModel, narrow: Boolean, show: (Overlay) -> Unit, openNavigation: () -> Unit, modifier: Modifier) {
     val detail = state.selectedSpace
     // A space with channels is still opening one; do not flash the empty state.
     if (state.busy && detail?.channels?.isNotEmpty() == true) return Box(modifier.fillMaxSize().background(SurfaceConversation))
@@ -726,8 +747,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(painterResource(R.drawable.lucide_hash), null, tint = TerracottaBright)
             Text("No accessible channels", fontWeight = FontWeight.Bold)
-            Text(if (owner) "Create a channel to start a conversation." else "The owner has not shared a channel with you yet.", color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-            if (owner) OutlinedButton({ show(Overlay.CreateChannel) }, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Create channel") }
+            Text(if (detail?.space?.feedback == true) "Your conversation is private between you and Jose." else if (owner) "Create a channel to start a conversation." else "The owner has not shared a channel with you yet.", color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            if (detail?.space?.feedback == true && !owner) Button({ viewModel.startFeedback() }) { Text("Chat with Jose") }
+            else if (owner) OutlinedButton({ show(Overlay.CreateChannel) }, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Create channel") }
         }
     }
 }

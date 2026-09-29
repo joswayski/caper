@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: String,
@@ -13,7 +13,7 @@ pub struct Account {
     pub debug_enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Space {
     pub id: String,
@@ -21,15 +21,27 @@ pub struct Space {
     pub owner_id: String,
     #[serde(default)]
     pub demo: bool,
+    #[serde(default)]
+    pub feedback: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     pub id: String,
     pub space_id: String,
     pub name: String,
     pub private: bool,
+    #[serde(default)]
+    pub feedback_user_id: Option<String>,
+    #[serde(default = "zero_sequence")]
+    pub latest_seq: String,
+    #[serde(default)]
+    pub unread: bool,
+}
+
+fn zero_sequence() -> String {
+    "0".into()
 }
 
 /// Spectators receive identity and status, never media track capabilities.
@@ -68,10 +80,13 @@ pub struct SpaceLimits {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceDetail {
     pub space: Space,
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub next_feedback_before: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -242,6 +257,20 @@ pub fn sequence(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedback_detail_decodes_cursor_and_backward_compatible_defaults() {
+        let detail: SpaceDetail = serde_json::from_str(r#"{"space":{"id":"space0000001","name":"Feedback","ownerId":"owner","feedback":true},"channels":[{"id":"channel00001","spaceId":"space0000001","name":"Jose","private":true,"feedbackUserId":"member","unread":true}],"members":[],"nextFeedbackBefore":"channel00001"}"#).unwrap();
+        assert!(detail.space.feedback);
+        assert_eq!(detail.next_feedback_before.as_deref(), Some("channel00001"));
+        assert!(detail.channels[0].unread);
+        let old: Channel = serde_json::from_str(
+            r#"{"id":"channel00002","spaceId":"space0000001","name":"general","private":false}"#,
+        )
+        .unwrap();
+        assert_eq!(old.latest_seq, "0");
+        assert!(!old.unread);
+    }
 
     fn message(id: &str, seq: u64) -> Message {
         Message {

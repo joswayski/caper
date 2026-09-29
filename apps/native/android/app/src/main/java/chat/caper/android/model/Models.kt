@@ -11,12 +11,18 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false)
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
-@Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false)
+@Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false, val feedback: Boolean = false)
 @Serializable data class SpaceList(val spaces: List<Space>, val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
-@Serializable data class Channel(val id: String, val spaceId: String, val name: String, val private: Boolean)
+@Serializable data class Channel(
+    val id: String, val spaceId: String, val name: String, val private: Boolean,
+    val feedbackUserId: String? = null, val latestSeq: String = "0", val unread: Boolean = false,
+)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean)
-@Serializable data class SpaceDetail(val space: Space, val channels: List<Channel>, val members: List<Member>)
+@Serializable data class SpaceDetail(
+    val space: Space, val channels: List<Channel>, val members: List<Member>,
+    val nextFeedbackBefore: String? = null,
+)
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean)
 @Serializable data class ChatContent(val version: Int, val type: String, val text: String)
 @Serializable data class ChatMessage(

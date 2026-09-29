@@ -42,7 +42,10 @@ class CaperApi(
     )
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
-    suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
+    suspend fun space(token: String, id: String, beforeFeedback: String? = null, channel: String? = null): SpaceDetail {
+        val query = listOfNotNull(beforeFeedback?.let { "beforeFeedback=${it.pathId()}" }, channel?.let { "channel=${it.pathId()}" })
+        return get("/api/spaces/${id.pathId()}" + query.takeIf { it.isNotEmpty() }?.joinToString("&", "?").orEmpty(), token)
+    }
     suspend fun general(): ChatHistory = validatedHistory(get("/api/chat/general"))
     suspend fun history(token: String?, channel: String, before: String? = null): ChatHistory {
         val history: ChatHistory = get(
@@ -92,6 +95,11 @@ class CaperApi(
     )
     suspend fun deleteChannel(token: String, space: String, channel: String) {
         request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}", "DELETE", token)
+    }
+    suspend fun feedbackChannel(token: String, space: String): Channel =
+        post("/api/spaces/${space.pathId()}/feedback", token = token)
+    suspend fun markRead(token: String, space: String, channel: String, seq: String) {
+        post<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/read", buildJsonObject { put("seq", seq) }, token)
     }
     suspend fun spaceMembers(token: String, space: String): MemberList = get("/api/spaces/${space.pathId()}/members", token)
     suspend fun addSpaceMember(token: String, space: String, username: String): Member = post(

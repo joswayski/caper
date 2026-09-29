@@ -661,6 +661,91 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
     .await
     .unwrap();
 
+    // Feedback uses the same durable send/history/gateway path, without
+    // enrolling the entire application into ordinary space memberships.
+    let owner_external: String =
+        sqlx::query_scalar("SELECT external_id FROM public.users WHERE id=$1")
+            .bind(owner)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    crate::spaces::setup_feedback(&pool, &owner_external)
+        .await
+        .unwrap();
+    let feedback_id: i64 = sqlx::query_scalar("SELECT id FROM public.spaces WHERE feedback")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let feedback = random_id(12);
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name,private,feedback_user_id) VALUES($1,$2,'feedback-member',true,$3)")
+        .bind(&feedback).bind(feedback_id).bind(member).execute(&pool).await.unwrap();
+    let feedback_message = persist(
+        &pool,
+        &feedback,
+        chat_token,
+        Uuid::new_v4(),
+        "private feedback",
+    )
+    .await
+    .unwrap();
+    assert_eq!(feedback_message["seq"], "1");
+    // Another conversation must not wait for an unrelated sender's shared
+    // space lock. The old exclusive space lock would time out here.
+    let another_feedback = random_id(12);
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name,private,feedback_user_id) VALUES($1,$2,'feedback-outsider',true,$3)")
+        .bind(&another_feedback).bind(feedback_id).bind(outsider).execute(&pool).await.unwrap();
+    let mut shared = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
+        .bind(feedback_id)
+        .execute(&mut *shared)
+        .await
+        .unwrap();
+    let independent_send = tokio::time::timeout(
+        Duration::from_secs(2),
+        persist(
+            &pool,
+            &another_feedback,
+            outsider_chat,
+            Uuid::new_v4(),
+            "independent conversation",
+        ),
+    )
+    .await
+    .expect("unrelated feedback sends must not serialize on the space")
+    .unwrap();
+    assert_eq!(independent_send["seq"], "1");
+    shared.rollback().await.unwrap();
+    for token in [outsider_chat, guest] {
+        assert_eq!(
+            persist(&pool, &feedback, token, Uuid::new_v4(), "denied")
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for user in [Some(outsider), None] {
+        assert_eq!(
+            history_page(&pool, &feedback, None, user)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        history_page(&pool, &feedback, None, Some(owner))
+            .await
+            .unwrap()["messages"][0],
+        feedback_message
+    );
+    assert_eq!(
+        history_page(&pool, &feedback, None, Some(member))
+            .await
+            .unwrap()["channel"]["name"],
+        "Chat with Jose"
+    );
+
     let first_message = persist(&pool, &first, chat_token, Uuid::new_v4(), "first channel")
         .await
         .unwrap();
@@ -754,6 +839,36 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(axum::serve(listener, crate::gateway::router(gateway)).into_future());
+    let mut feedback_request =
+        format!("ws://{address}/api/chat/events?channelId={feedback}&after=0")
+            .into_client_request()
+            .unwrap();
+    feedback_request
+        .headers_mut()
+        .insert("cookie", format!("caper_session={cookie}").parse().unwrap());
+    let (mut feedback_socket, _) = tokio_tungstenite::connect_async(feedback_request)
+        .await
+        .unwrap();
+    assert_eq!(
+        event(&mut feedback_socket).await["message"],
+        feedback_message
+    );
+    assert_eq!(event(&mut feedback_socket).await["cursor"], "1");
+    let mut denied_feedback =
+        format!("ws://{address}/api/chat/events?channelId={feedback}&after=0")
+            .into_client_request()
+            .unwrap();
+    denied_feedback.headers_mut().insert(
+        "cookie",
+        format!("caper_session={outsider_cookie}").parse().unwrap(),
+    );
+    assert!(
+        tokio_tungstenite::connect_async(denied_feedback)
+            .await
+            .is_err()
+    );
+    feedback_socket.close(None).await.unwrap();
+
     let mut request = format!("ws://{address}/api/chat/events?channelId={first}&after=0")
         .into_client_request()
         .unwrap();

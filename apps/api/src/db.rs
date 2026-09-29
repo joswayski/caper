@@ -134,6 +134,18 @@ pub async fn connect_runtime_database(environment: &RuntimeEnvironment) -> Resul
     connect(&url).await
 }
 
+/// Creates the singleton official Feedback space after migrations have run.
+pub async fn setup_feedback(
+    environment: &RuntimeEnvironment,
+    owner_external_id: &str,
+) -> Result<(), String> {
+    migrate_database(environment).await?;
+    let pool = connect_runtime_database(environment).await?;
+    let result = crate::spaces::setup_feedback(&pool, owner_external_id).await;
+    pool.close().await;
+    result
+}
+
 async fn migrate(pool: &PgPool) -> Result<(), String> {
     sqlx::migrate!("./migrations")
         .run(pool)
@@ -158,6 +170,7 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!(
             "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members TO {role}"
         ),
+        format!("GRANT SELECT, INSERT, UPDATE ON public.feedback_read_cursors TO {role}"),
         format!(
             "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq TO {role}"
         ),

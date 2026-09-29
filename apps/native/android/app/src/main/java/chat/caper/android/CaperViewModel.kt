@@ -142,7 +142,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(busy = true, error = null, openError = null)
         viewModelScope.launch {
             try {
-                val detail = api.space(requireAccountToken(), id)
+                val selected = mutable.value.selectedChannel?.id.takeIf { mutable.value.selectedSpace?.space?.id == id }
+                val detail = api.space(requireAccountToken(), id, channel = selected)
                 if (request != generation) return@launch
                 mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
                 detail.channels.firstOrNull()?.let(::selectChannel)
@@ -569,6 +570,40 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val channel = api.createChannel(requireAccountToken(), detail.space.id, name, privateChannel)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
         replaceDetail(detail.copy(channels = detail.channels + channel)); selectChannel(channel); done(channel)
+    }
+    fun startFeedback() = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val channel = api.feedbackChannel(requireAccountToken(), detail.space.id)
+        if (request != accountGeneration || mutable.value.selectedSpace?.space?.id != detail.space.id) return@launchAction
+        replaceDetail(detail.copy(channels = (detail.channels.filter { it.id != channel.id } + channel)))
+        selectChannel(channel)
+    }
+
+    fun refreshFeedback() {
+        val id = mutable.value.selectedSpace?.space?.id ?: return
+        selectSpace(id)
+    }
+
+    fun loadOlderFeedback() = launchAction { request ->
+        val current = requireNotNull(mutable.value.selectedSpace)
+        val cursor = current.nextFeedbackBefore ?: return@launchAction
+        val page = api.space(requireAccountToken(), current.space.id, beforeFeedback = cursor, channel = mutable.value.selectedChannel?.id)
+        if (request != accountGeneration || mutable.value.selectedSpace?.space?.id != current.space.id) return@launchAction
+        val known = current.channels.mapTo(mutableSetOf()) { it.id }
+        replaceDetail(current.copy(channels = current.channels + page.channels.filter { known.add(it.id) }, nextFeedbackBefore = page.nextFeedbackBefore))
+    }
+
+    suspend fun markVisibleFeedbackRead() {
+        val detail = mutable.value.selectedSpace ?: return
+        val channel = mutable.value.selectedChannel ?: return
+        if (!detail.space.feedback) return
+        val seq = mutable.value.messages.lastOrNull()?.seq ?: return
+        val request = accountGeneration
+        val succeeded = runCatching { api.markRead(requireAccountToken(), detail.space.id, channel.id, seq) }.isSuccess
+        val current = mutable.value.selectedSpace
+        if (succeeded && request == accountGeneration && current?.space?.id == detail.space.id && mutable.value.selectedChannel?.id == channel.id) replaceDetail(current.copy(channels = current.channels.map {
+            if (it.id == channel.id && java.math.BigInteger(it.latestSeq) <= java.math.BigInteger(seq)) it.copy(unread = false) else it
+        }))
     }
     fun updateChannel(channel: Channel, name: String, privateChannel: Boolean, done: () -> Unit = {}) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)

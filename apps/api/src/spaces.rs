@@ -1,7 +1,7 @@
 use crate::{ApiError, AppState, RuntimeEnvironment, auth::Principal, auth::random_id};
 use axum::{
     Extension, Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, patch, post},
 };
@@ -113,7 +113,9 @@ pub(crate) async fn channel_access(
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
            AND ((s.demo AND lower(c.name) = 'general') OR
-                ($2::bigint IS NOT NULL
+                ($2::bigint IS NOT NULL AND s.feedback AND
+                 (NOT c.private OR s.owner_id=$2 OR c.feedback_user_id=$2)) OR
+                ($2::bigint IS NOT NULL AND NOT s.feedback
                  AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)
                  AND (s.owner_id = $2 OR NOT c.private OR
                       EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))))",
@@ -138,6 +140,7 @@ struct Space {
     id: String,
     name: String,
     owner_id: String,
+    feedback: bool,
 }
 
 #[derive(Serialize)]
@@ -147,6 +150,25 @@ struct Channel {
     space_id: String,
     name: String,
     private: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feedback_user_id: Option<String>,
+    latest_seq: String,
+    unread: bool,
+}
+
+type ChannelRow = (String, String, String, bool, Option<String>, i64, bool, i64);
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadInput {
+    seq: String,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SpaceQuery {
+    before_feedback: Option<String>,
+    channel: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -185,6 +207,11 @@ pub(crate) fn routes() -> Router<AppState> {
             get(get_space).patch(rename_space).delete(delete_space),
         )
         .route("/api/spaces/{space}/channels", post(create_channel))
+        .route("/api/spaces/{space}/feedback", post(ensure_feedback))
+        .route(
+            "/api/spaces/{space}/channels/{channel}/read",
+            post(mark_read),
+        )
         .route(
             "/api/spaces/{space}/channels/{channel}",
             patch(update_channel).delete(delete_channel),
@@ -235,11 +262,12 @@ async fn list_spaces(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Json<Value>, ApiError> {
-    let spaces: Vec<Space> = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT s.external_id, s.name, owner.external_id
-         FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id
+    let spaces: Vec<Space> = sqlx::query_as::<_, (String, String, String, bool)>(
+        "SELECT s.external_id, s.name, owner.external_id, s.feedback
+         FROM public.spaces s
          JOIN public.users owner ON owner.id = s.owner_id
-         WHERE sm.user_id = $1 AND s.deleted_at IS NULL AND NOT s.demo
+         WHERE s.deleted_at IS NULL AND NOT s.demo AND
+           (s.feedback OR EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$1))
          ORDER BY lower(s.name), s.id",
     )
     .bind(principal.user.id)
@@ -247,7 +275,7 @@ async fn list_spaces(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, name, owner_id)| Space { id, name, owner_id })
+    .map(|(id, name, owner_id, feedback)| Space { id, name, owner_id, feedback })
     .collect();
     Ok(Json(
         json!({"spaces":spaces,"limits":state.config.space_limits}),
@@ -265,8 +293,8 @@ async fn create_space(
     lock_onboarded_user(&mut tx, principal.user.id).await?;
     let (owned, memberships): (i64, i64) = sqlx::query_as(
         "SELECT
-           (SELECT count(*) FROM public.spaces WHERE owner_id = $1 AND deleted_at IS NULL),
-           (SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id WHERE sm.user_id = $1 AND s.deleted_at IS NULL)",
+           (SELECT count(*) FROM public.spaces WHERE owner_id = $1 AND deleted_at IS NULL AND NOT feedback),
+           (SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id WHERE sm.user_id = $1 AND s.deleted_at IS NULL AND NOT s.feedback)",
     )
     .bind(principal.user.id)
     .fetch_one(&mut *tx)
@@ -306,6 +334,7 @@ async fn create_space(
             id,
             name,
             owner_id: principal.user.external_id,
+            feedback: false,
         }),
     ))
 }
@@ -314,13 +343,14 @@ async fn get_space(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     Path(space): Path<String>,
+    Query(query): Query<SpaceQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let pool = pool(&state)?;
-    let row: (i64, String, String, String) = sqlx::query_as(
-        "SELECT s.id,s.name,s.external_id,o.external_id FROM public.spaces s
+    let row: (i64, String, String, String, bool) = sqlx::query_as(
+        "SELECT s.id,s.name,s.external_id,o.external_id,s.feedback FROM public.spaces s
          JOIN public.users o ON o.id=s.owner_id
          WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo
-           AND EXISTS (SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2)",
+           AND (s.feedback OR EXISTS (SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2))",
     )
     .bind(&space)
     .bind(principal.user.id)
@@ -328,24 +358,108 @@ async fn get_space(
     .await
     .map_err(database_error)?
     .ok_or_else(not_found)?;
-    let channels: Vec<Channel> = sqlx::query_as::<_, (String, String, String, bool)>(
-        "SELECT c.external_id,s.external_id,c.name,c.private FROM public.channels c
+    if query
+        .before_feedback
+        .as_ref()
+        .is_some_and(|id| id.len() != 12)
+        || query.channel.as_ref().is_some_and(|id| id.len() != 12)
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid channel cursor",
+        ));
+    }
+    if !row.4 && query.before_feedback.is_some() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "feedback pagination unavailable",
+        ));
+    }
+    if row.4 && row.3 != principal.user.external_id && query.before_feedback.is_some() {
+        return Err(not_found());
+    }
+    let before = if row.4 && query.before_feedback.is_some() {
+        Some(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT c.id FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
+             WHERE c.external_id=$1 AND c.space_id=$2 AND c.feedback_user_id IS NOT NULL
+               AND c.deleted_at IS NULL AND s.owner_id=$3",
+            )
+            .bind(query.before_feedback.as_deref())
+            .bind(row.0)
+            .bind(principal.user.id)
+            .fetch_optional(pool)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(not_found)?,
+        )
+    } else {
+        None
+    };
+    let mut channel_rows: Vec<ChannelRow> = sqlx::query_as(
+        "SELECT c.external_id,s.external_id,
+           CASE WHEN c.feedback_user_id IS NOT NULL AND s.owner_id=$2 THEN participant.display_name || ' @' || participant.username
+                WHEN c.feedback_user_id IS NOT NULL THEN 'Chat with Jose' ELSE c.name END,
+           c.private,participant.external_id,c.last_seq,
+           s.feedback AND c.last_seq > COALESCE(rc.seq,0),c.id
+         FROM public.channels c
          JOIN public.spaces s ON s.id=c.space_id
+         LEFT JOIN public.users participant ON participant.id=c.feedback_user_id
+         LEFT JOIN public.feedback_read_cursors rc ON rc.channel_id=c.id AND rc.user_id=$2
          WHERE c.space_id=$1 AND c.deleted_at IS NULL
-           AND (s.owner_id=$2 OR NOT c.private OR EXISTS (SELECT 1 FROM public.channel_members WHERE channel_id=c.id AND user_id=$2))
-         ORDER BY c.id",
+           AND (s.owner_id=$2 OR NOT c.private OR c.feedback_user_id=$2 OR (NOT s.feedback AND EXISTS (SELECT 1 FROM public.channel_members WHERE channel_id=c.id AND user_id=$2)))
+           AND (NOT s.feedback OR c.feedback_user_id IS NULL OR s.owner_id<>$2 OR ($3::bigint IS NULL OR c.id<$3))
+         ORDER BY (c.feedback_user_id IS NOT NULL), CASE WHEN c.feedback_user_id IS NULL THEN c.id END, c.id DESC
+         LIMIT CASE WHEN $4 THEN 54 ELSE 1000000 END",
     )
     .bind(row.0)
     .bind(principal.user.id)
+    .bind(before)
+    .bind(row.4 && row.3 == principal.user.external_id)
     .fetch_all(pool)
     .await
-    .map_err(database_error)?
-    .into_iter()
-    .map(|(id, space_id, name, private)| Channel { id, space_id, name, private })
-    .collect();
-    let members = members(pool, row.0).await?;
+    .map_err(database_error)?;
+    let mut next_feedback_before = None;
+    if row.4 && row.3 == principal.user.external_id {
+        let private_positions: Vec<usize> = channel_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.4.as_ref().map(|_| i))
+            .collect();
+        if private_positions.len() > 50 {
+            let last = private_positions[49];
+            next_feedback_before = Some(channel_rows[last].0.clone());
+            channel_rows.truncate(last + 1);
+        }
+        if let Some(selected) = query.channel.as_deref()
+            && !channel_rows.iter().any(|r| r.0 == selected)
+            && let Some(selected_row) =
+                load_channel_row(pool, row.0, principal.user.id, selected).await?
+        {
+            channel_rows.push(selected_row);
+        }
+    }
+    let channels: Vec<Channel> = channel_rows
+        .into_iter()
+        .map(
+            |(id, space_id, name, private, feedback_user_id, latest_seq, unread, _)| Channel {
+                id,
+                space_id,
+                name,
+                private,
+                feedback_user_id,
+                latest_seq: latest_seq.to_string(),
+                unread,
+            },
+        )
+        .collect();
+    let members = if row.4 {
+        feedback_members(pool, row.0, principal.user.id).await?
+    } else {
+        members(pool, row.0).await?
+    };
     Ok(Json(
-        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members}),
+        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3,feedback:row.4},"channels":channels,"members":members,"nextFeedbackBefore":next_feedback_before}),
     ))
 }
 
@@ -357,7 +471,7 @@ async fn rename_space(
 ) -> Result<Json<Space>, ApiError> {
     let name = space_name(&input.name)?;
     let row: Option<(String, String)> = sqlx::query_as(
-        "UPDATE public.spaces SET name=$3 WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo RETURNING external_id,(SELECT external_id FROM public.users WHERE id=$2)",
+        "UPDATE public.spaces SET name=$3 WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo AND NOT feedback RETURNING external_id,(SELECT external_id FROM public.users WHERE id=$2)",
     )
     .bind(&space)
     .bind(principal.user.id)
@@ -366,7 +480,12 @@ async fn rename_space(
     .await
     .map_err(database_error)?;
     let (id, owner_id) = row.ok_or_else(not_found)?;
-    Ok(Json(Space { id, name, owner_id }))
+    Ok(Json(Space {
+        id,
+        name,
+        owner_id,
+        feedback: false,
+    }))
 }
 
 async fn delete_space(
@@ -430,6 +549,9 @@ async fn create_channel(
             space_id: space,
             name: name.to_owned(),
             private: input.private,
+            feedback_user_id: None,
+            latest_seq: "0".into(),
+            unread: false,
         }),
     ))
 }
@@ -454,6 +576,9 @@ async fn update_channel(
         space_id: space,
         name: name.to_owned(),
         private: input.private,
+        feedback_user_id: None,
+        latest_seq: "0".into(),
+        unread: false,
     }))
 }
 
@@ -478,8 +603,13 @@ async fn list_members(
     Extension(principal): Extension<Principal>,
     Path(space): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = accessible_space(pool(&state)?, &space, principal.user.id).await?;
-    Ok(Json(json!({"members":members(pool(&state)?,id).await?})))
+    let (id, feedback) = accessible_space(pool(&state)?, &space, principal.user.id).await?;
+    let rows = if feedback {
+        feedback_members(pool(&state)?, id, principal.user.id).await?
+    } else {
+        members(pool(&state)?, id).await?
+    };
+    Ok(Json(json!({"members":rows})))
 }
 
 async fn add_space_member(
@@ -491,7 +621,7 @@ async fn add_space_member(
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
     let member = find_user_for_update(&mut tx, &input.username).await?;
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id=sm.space_id WHERE sm.user_id=$1 AND s.deleted_at IS NULL")
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id=sm.space_id WHERE sm.user_id=$1 AND s.deleted_at IS NULL AND NOT s.feedback")
         .bind(member.0).fetch_one(&mut *tx).await.map_err(database_error)?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2)",
@@ -535,7 +665,7 @@ async fn remove_space_member(
 ) -> Result<StatusCode, ApiError> {
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     let (space_id, owner_id): (i64, i64) = sqlx::query_as(
-        "SELECT id,owner_id FROM public.spaces WHERE external_id=$1 AND deleted_at IS NULL AND NOT demo FOR UPDATE",
+        "SELECT id,owner_id FROM public.spaces WHERE external_id=$1 AND deleted_at IS NULL AND NOT demo AND NOT feedback FOR UPDATE",
     )
     .bind(&space)
     .fetch_optional(&mut *tx)
@@ -699,12 +829,12 @@ async fn owner_space(
     space: &str,
     user: i64,
 ) -> Result<i64, ApiError> {
-    sqlx::query_scalar("SELECT id FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo FOR UPDATE")
+    sqlx::query_scalar("SELECT id FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo AND NOT feedback FOR UPDATE")
         .bind(space).bind(user).fetch_optional(&mut **tx).await.map_err(database_error)?.ok_or_else(not_found)
 }
 
-async fn accessible_space(pool: &PgPool, space: &str, user: i64) -> Result<i64, ApiError> {
-    sqlx::query_scalar("SELECT s.id FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo AND EXISTS(SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2)")
+async fn accessible_space(pool: &PgPool, space: &str, user: i64) -> Result<(i64, bool), ApiError> {
+    sqlx::query_as("SELECT s.id,s.feedback FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo AND (s.feedback OR EXISTS(SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2))")
         .bind(space).bind(user).fetch_optional(pool).await.map_err(database_error)?.ok_or_else(not_found)
 }
 
@@ -723,7 +853,7 @@ async fn owned_channel(
     channel: &str,
     user: i64,
 ) -> Result<(i64, i64), ApiError> {
-    sqlx::query_as("SELECT s.id,c.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE s.external_id=$1 AND c.external_id=$2 AND s.owner_id=$3 AND s.deleted_at IS NULL AND c.deleted_at IS NULL AND NOT s.demo")
+    sqlx::query_as("SELECT s.id,c.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE s.external_id=$1 AND c.external_id=$2 AND s.owner_id=$3 AND s.deleted_at IS NULL AND c.deleted_at IS NULL AND NOT s.demo AND NOT s.feedback")
         .bind(space).bind(channel).bind(user).fetch_optional(pool).await.map_err(database_error)?.ok_or_else(not_found)
 }
 
@@ -738,6 +868,151 @@ async fn find_user_for_update(
 async fn members(pool: &PgPool, space: i64) -> Result<Vec<Member>, ApiError> {
     Ok(sqlx::query_as::<_,(String,String,String,bool)>("SELECT u.external_id,u.username,u.display_name,s.owner_id=u.id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id JOIN public.spaces s ON s.id=sm.space_id WHERE sm.space_id=$1 AND u.deleted_at IS NULL ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id")
         .bind(space).fetch_all(pool).await.map_err(database_error)?.into_iter().map(|(id,username,display_name,owner)|Member{id,username,display_name,owner}).collect())
+}
+
+async fn load_channel_row(
+    pool: &PgPool,
+    space: i64,
+    requester: i64,
+    channel: &str,
+) -> Result<Option<ChannelRow>, ApiError> {
+    sqlx::query_as(
+        "SELECT c.external_id,s.external_id,
+           CASE WHEN s.owner_id=$2 THEN u.display_name || ' @' || u.username ELSE 'Chat with Jose' END,
+           c.private,u.external_id,c.last_seq,c.last_seq>COALESCE(rc.seq,0),c.id
+         FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
+         JOIN public.users u ON u.id=c.feedback_user_id
+         LEFT JOIN public.feedback_read_cursors rc ON rc.channel_id=c.id AND rc.user_id=$2
+         WHERE c.space_id=$1 AND c.external_id=$3 AND c.deleted_at IS NULL AND s.feedback
+           AND (s.owner_id=$2 OR c.feedback_user_id=$2)",
+    )
+    .bind(space)
+    .bind(requester)
+    .bind(channel)
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)
+}
+
+async fn feedback_members(
+    pool: &PgPool,
+    space: i64,
+    requester: i64,
+) -> Result<Vec<Member>, ApiError> {
+    Ok(sqlx::query_as::<_, (String, String, String, bool)>(
+        "SELECT u.external_id,u.username,u.display_name,s.owner_id=u.id
+         FROM public.spaces s JOIN public.users u ON u.id IN (s.owner_id,$2)
+         WHERE s.id=$1 AND s.feedback AND u.deleted_at IS NULL
+         ORDER BY (s.owner_id=u.id) DESC",
+    )
+    .bind(space)
+    .bind(requester)
+    .fetch_all(pool)
+    .await
+    .map_err(database_error)?
+    .into_iter()
+    .map(|(id, username, display_name, owner)| Member {
+        id,
+        username,
+        display_name,
+        owner,
+    })
+    .collect())
+}
+
+async fn ensure_feedback(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+) -> Result<(StatusCode, Json<Channel>), ApiError> {
+    let pool = pool(&state)?;
+    let row: (i64,i64) = sqlx::query_as("SELECT id,owner_id FROM public.spaces WHERE external_id=$1 AND feedback AND deleted_at IS NULL")
+        .bind(&space).fetch_optional(pool).await.map_err(database_error)?.ok_or_else(not_found)?;
+    if row.1 == principal.user.id {
+        return Err(conflict("feedback owner cannot create a self conversation"));
+    }
+    let id = random_id(12);
+    let (external_id,last_seq): (String,i64) = sqlx::query_as(
+        "INSERT INTO public.channels(external_id,space_id,name,private,feedback_user_id)
+         VALUES($1,$2,$3,true,$4) ON CONFLICT (space_id,feedback_user_id) WHERE feedback_user_id IS NOT NULL
+         DO UPDATE SET feedback_user_id=EXCLUDED.feedback_user_id RETURNING external_id,last_seq")
+        .bind(&id).bind(row.0).bind(format!("feedback-user-{}", principal.user.id)).bind(principal.user.id)
+        .fetch_one(pool).await.map_err(database_error)?;
+    Ok((
+        if external_id == id {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(Channel {
+            id: external_id,
+            space_id: space,
+            name: "Chat with Jose".into(),
+            private: true,
+            feedback_user_id: Some(principal.user.external_id),
+            latest_seq: last_seq.to_string(),
+            unread: false,
+        }),
+    ))
+}
+
+async fn mark_read(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path((space, channel)): Path<(String, String)>,
+    Json(input): Json<ReadInput>,
+) -> Result<StatusCode, ApiError> {
+    let seq = input
+        .seq
+        .parse::<i64>()
+        .ok()
+        .filter(|v| *v >= 0)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid cursor"))?;
+    let access = channel_access(pool(&state)?, &channel, Some(principal.user.id)).await?;
+    let feedback: bool = sqlx::query_scalar("SELECT s.feedback AND s.external_id=$2 FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE c.id=$1")
+        .bind(access.id).bind(&space).fetch_one(pool(&state)?).await.map_err(database_error)?;
+    if !feedback {
+        return Err(not_found());
+    }
+    let bounded = seq.min(access.last_seq);
+    sqlx::query("INSERT INTO public.feedback_read_cursors(channel_id,user_id,seq) VALUES($1,$2,$3)
+        ON CONFLICT(channel_id,user_id) DO UPDATE SET seq=GREATEST(feedback_read_cursors.seq,EXCLUDED.seq)")
+        .bind(access.id).bind(principal.user.id).bind(bounded).execute(pool(&state)?).await.map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn setup_feedback(pool: &PgPool, owner_external_id: &str) -> Result<(), String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| "failed to begin feedback setup")?;
+    sqlx::query("SELECT pg_advisory_xact_lock(731902,3)")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| "failed to lock feedback setup")?;
+    let owner: i64 = sqlx::query_scalar("SELECT id FROM public.users WHERE external_id=$1 AND deleted_at IS NULL AND username IS NOT NULL AND display_name IS NOT NULL FOR UPDATE")
+        .bind(owner_external_id).fetch_optional(&mut *tx).await.map_err(|_| "failed to load feedback owner")?
+        .ok_or("feedback owner must be an existing completed active account")?;
+    if let Some(existing) =
+        sqlx::query_scalar::<_, i64>("SELECT owner_id FROM public.spaces WHERE feedback")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| "failed to inspect feedback space")?
+    {
+        if existing != owner {
+            return Err("feedback space is already bound to a different owner".into());
+        }
+    } else {
+        sqlx::query("INSERT INTO public.spaces(external_id,name,owner_id,feedback) VALUES($1,'Feedback',$2,true)")
+            .bind(random_id(12)).bind(owner).execute(&mut *tx).await.map_err(|_| "failed to create feedback space")?;
+    }
+    for name in ["general", "ideas", "bugs"] {
+        sqlx::query("INSERT INTO public.channels(external_id,space_id,name) SELECT $1,id,$2 FROM public.spaces WHERE feedback ON CONFLICT DO NOTHING")
+            .bind(random_id(12)).bind(name).execute(&mut *tx).await.map_err(|_| "failed to create feedback channels")?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| "failed to commit feedback setup".to_owned())
 }
 
 fn constraint_or_database(error: sqlx::Error, message: &'static str) -> ApiError {
@@ -840,6 +1115,411 @@ mod tests {
         let quota_owner = principal(users[3].0, &users[3].1, users[3].2);
         let target = principal(users[4].0, &users[4].1, users[4].2);
 
+        let (setup_a, setup_b) = tokio::join!(
+            setup_feedback(&pool, &owner.user.external_id),
+            setup_feedback(&pool, &owner.user.external_id)
+        );
+        setup_a.unwrap();
+        setup_b.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.spaces WHERE feedback")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE s.feedback AND NOT c.private")
+                .fetch_one(&pool).await.unwrap(),
+            3
+        );
+        assert!(
+            setup_feedback(&pool, &member.user.external_id)
+                .await
+                .is_err()
+        );
+        let feedback_public: String = sqlx::query_scalar("SELECT c.external_id FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE s.feedback AND c.name='general'")
+            .fetch_one(&pool).await.unwrap();
+        assert!(
+            channel_access(&pool, &feedback_public, Some(outsider.user.id))
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            channel_access(&pool, &feedback_public, None)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+
+        let feedback_space: String =
+            sqlx::query_scalar("SELECT external_id FROM public.spaces WHERE feedback")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let feedback_state = AppState::with_database(
+            Config::test(false),
+            Arc::new(Cloudflare::new()),
+            Some(pool.clone()),
+        );
+        let (member_a, member_b) = tokio::join!(
+            ensure_feedback(
+                State(feedback_state.clone()),
+                Extension(member.clone()),
+                Path(feedback_space.clone())
+            ),
+            ensure_feedback(
+                State(feedback_state.clone()),
+                Extension(member.clone()),
+                Path(feedback_space.clone())
+            )
+        );
+        let member_channel = member_a.unwrap().1.0.id;
+        assert_eq!(member_channel, member_b.unwrap().1.0.id);
+        let outsider_channel = ensure_feedback(
+            State(feedback_state.clone()),
+            Extension(outsider.clone()),
+            Path(feedback_space.clone()),
+        )
+        .await
+        .unwrap()
+        .1
+        .0
+        .id;
+        assert!(
+            channel_access(&pool, &member_channel, Some(member.user.id))
+                .await
+                .is_ok()
+        );
+        assert!(
+            channel_access(&pool, &member_channel, Some(owner.user.id))
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            channel_access(&pool, &member_channel, Some(outsider.user.id))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        // Even an accidentally present normal membership cannot bypass Feedback privacy.
+        let feedback_internal: i64 =
+            sqlx::query_scalar("SELECT id FROM public.spaces WHERE feedback")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(feedback_internal)
+            .bind(outsider.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            channel_access(&pool, &member_channel, Some(outsider.user.id))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+
+        let detail_a = get_space(
+            State(feedback_state.clone()),
+            Extension(member.clone()),
+            Path(feedback_space.clone()),
+            Query(SpaceQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(detail_a["members"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            detail_a["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["private"] == true)
+                .count(),
+            1
+        );
+        assert_eq!(
+            detail_a["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == member_channel)
+                .unwrap()["name"],
+            "Chat with Jose"
+        );
+        assert!(!detail_a.to_string().contains("outsider"));
+        let owner_detail = get_space(
+            State(feedback_state.clone()),
+            Extension(owner.clone()),
+            Path(feedback_space.clone()),
+            Query(SpaceQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(
+            owner_detail["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == member_channel && c["name"] == "member @member")
+        );
+        assert!(
+            owner_detail["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == outsider_channel && c["name"] == "outsider @outsider")
+        );
+
+        sqlx::query(
+            "INSERT INTO public.users(external_id,username,display_name)
+            SELECT 'p'||lpad(n::text,11,'0'),'pager'||n,'Pager '||n FROM generate_series(1,51) n",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO public.channels(external_id,space_id,name,private,feedback_user_id)
+            SELECT 'q'||lpad(substring(u.username from 6)::text,11,'0'),$1,'feedback-user-'||u.id,true,u.id
+            FROM public.users u WHERE u.username LIKE 'pager%'")
+            .bind(feedback_internal).execute(&pool).await.unwrap();
+        let first_page = get_space(
+            State(feedback_state.clone()),
+            Extension(owner.clone()),
+            Path(feedback_space.clone()),
+            Query(SpaceQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(first_page["channels"].as_array().unwrap().len(), 53);
+        let next = first_page["nextFeedbackBefore"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let second_page = get_space(
+            State(feedback_state.clone()),
+            Extension(owner.clone()),
+            Path(feedback_space.clone()),
+            Query(SpaceQuery {
+                before_feedback: Some(next),
+                channel: Some(member_channel.clone()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(second_page["nextFeedbackBefore"].is_null());
+        assert!(
+            second_page["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == member_channel)
+        );
+        assert_eq!(
+            get_space(
+                State(feedback_state.clone()),
+                Extension(member.clone()),
+                Path(feedback_space.clone()),
+                Query(SpaceQuery {
+                    before_feedback: Some("xxxxxxxxxxxx".into()),
+                    channel: None
+                })
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+
+        for denied in [
+            rename_space(
+                State(feedback_state.clone()),
+                Extension(owner.clone()),
+                Path(feedback_space.clone()),
+                Json(NameInput {
+                    name: "Nope".into(),
+                }),
+            )
+            .await
+            .err()
+            .unwrap(),
+            update_channel(
+                State(feedback_state.clone()),
+                Extension(owner.clone()),
+                Path((feedback_space.clone(), feedback_public.clone())),
+                Json(ChannelInput {
+                    name: "changed".into(),
+                    private: false,
+                }),
+            )
+            .await
+            .err()
+            .unwrap(),
+        ] {
+            assert_eq!(denied.status, StatusCode::NOT_FOUND);
+        }
+        assert_eq!(
+            delete_space(
+                State(feedback_state.clone()),
+                Extension(owner.clone()),
+                Path(feedback_space.clone())
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            add_space_member(
+                State(feedback_state.clone()),
+                Extension(owner.clone()),
+                Path(feedback_space.clone()),
+                Json(MemberInput {
+                    username: "target".into()
+                })
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+
+        // Neither owning Feedback nor an incidental system membership consumes
+        // the sole ordinary-space slot.
+        let mut quota_config = Config::test(false);
+        quota_config.space_limits = Limits {
+            owned_spaces: 1,
+            total_spaces: 1,
+            channels_per_space: 1,
+        };
+        let quota_state = AppState::with_database(
+            quota_config,
+            Arc::new(Cloudflare::new()),
+            Some(pool.clone()),
+        );
+        for user in [&owner, &outsider] {
+            let created = create_space(
+                State(quota_state.clone()),
+                Extension(user.clone()),
+                Json(NameInput {
+                    name: "Ordinary quota slot".into(),
+                }),
+            )
+            .await
+            .unwrap()
+            .1
+            .0;
+            delete_space(
+                State(quota_state.clone()),
+                Extension(user.clone()),
+                Path(created.id),
+            )
+            .await
+            .unwrap();
+        }
+        // Even the owner cannot add a third party or convert a private feedback
+        // conversation into a public channel.
+        assert_eq!(
+            add_channel_member(
+                State(feedback_state.clone()),
+                Extension(owner.clone()),
+                Path((feedback_space.clone(), member_channel.clone())),
+                Json(MemberInput {
+                    username: "outsider".into()
+                })
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            update_channel(
+                State(feedback_state.clone()),
+                Extension(owner.clone()),
+                Path((feedback_space.clone(), member_channel.clone())),
+                Json(ChannelInput {
+                    name: "exposed".into(),
+                    private: false
+                })
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+
+        let member_channel_id: i64 = sqlx::query_scalar(
+            "UPDATE public.channels SET last_seq=9 WHERE external_id=$1 RETURNING id",
+        )
+        .bind(&member_channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            mark_read(
+                State(feedback_state.clone()),
+                Extension(outsider.clone()),
+                Path((feedback_space.clone(), member_channel.clone())),
+                Json(ReadInput { seq: "1".into() })
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            mark_read(
+                State(feedback_state.clone()),
+                Extension(member.clone()),
+                Path((feedback_space.clone(), member_channel.clone())),
+                Json(ReadInput { seq: "bad".into() })
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::BAD_REQUEST
+        );
+        mark_read(
+            State(feedback_state.clone()),
+            Extension(member.clone()),
+            Path((feedback_space.clone(), member_channel.clone())),
+            Json(ReadInput { seq: "999".into() }),
+        )
+        .await
+        .unwrap();
+        mark_read(
+            State(feedback_state.clone()),
+            Extension(member.clone()),
+            Path((feedback_space.clone(), member_channel.clone())),
+            Json(ReadInput { seq: "2".into() }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT seq FROM feedback_read_cursors WHERE channel_id=$1 AND user_id=$2"
+            )
+            .bind(member_channel_id)
+            .bind(member.user.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            9
+        );
+
         let space = random_id(12);
         let space_id: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Friends',$2) RETURNING id")
             .bind(&space).bind(owner.user.id).fetch_one(&pool).await.unwrap();
@@ -911,6 +1591,27 @@ mod tests {
         };
         let state =
             AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
+        sqlx::query("UPDATE public.channels SET last_seq=1 WHERE external_id=$1")
+            .bind(&public)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let normal_detail = get_space(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(space.clone()),
+            Query(SpaceQuery::default()),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(
+            normal_detail["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|channel| channel["unread"] == false)
+        );
         let listed = list_spaces(State(state.clone()), Extension(owner.clone()))
             .await
             .unwrap();
