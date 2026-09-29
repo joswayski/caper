@@ -7,7 +7,7 @@ test("desktop hints select current platform packages", () => {
     ["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "macos"],
     ["Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "windows"],
     ["Mozilla/5.0 (X11; Ubuntu; Linux x86_64)", "linux-deb"],
-    ["Mozilla/5.0 (X11; Linux x86_64)", "linux-tar"],
+    ["Mozilla/5.0 (X11; Linux x86_64)", "linux"],
     ["unrecognized", null],
   ] as const) {
     assert.equal(detectDownloadPlatform({ userAgent }), expected, userAgent);
@@ -32,7 +32,7 @@ test("all desktop links use the rolling native release, never legacy previews", 
   const base = "https://github.com/joswayski/caper/releases/download/native-latest/";
   assert.equal(downloads.macos.url, `${base}Caper-macOS-Apple-Silicon.zip`);
   assert.equal(intelMacDownload, `${base}Caper-macOS-Intel.zip`);
-  assert.equal(downloads.windows.url, `${base}Caper-Windows-x64.zip`);
+  assert.equal(downloads.windows.url, `${base}Caper-Windows-x64-Setup.exe`);
   assert.equal(downloads["linux-deb"].url, `${base}Caper-Linux-x64.deb`);
-  assert.equal(downloads["linux-tar"].url, `${base}Caper-Linux-x64.tar.gz`);
+  assert.equal(downloads.linux.url, "https://github.com/joswayski/caper/releases/tag/native-latest");
 });

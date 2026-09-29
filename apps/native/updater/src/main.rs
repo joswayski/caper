@@ -231,7 +231,15 @@ fn relocate(args: &[OsString]) -> Result<()> {
     fs::create_dir_all(&folder)?;
     let copy = folder.join(name);
     fs::copy(&source, &copy)?;
-    Command::new(&copy).args(args).arg(RELOCATED_FLAG).spawn()?;
+    let mut command = Command::new(&copy);
+    // The first updater starts hidden, but Windows does not inherit that flag
+    // when it relocates itself outside the directory being replaced.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command.args(args).arg(RELOCATED_FLAG).spawn()?;
     Ok(())
 }
 

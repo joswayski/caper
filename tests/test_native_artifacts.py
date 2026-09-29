@@ -26,6 +26,7 @@ class ArtifactTests(unittest.TestCase):
         artifacts.stage(target, self.revision, self.source, self.destination)
 
     def test_exact_packages_provenance_and_known_checksum(self):
+        (self.source / "Caper-windows-x64-Setup.exe").write_bytes(b"abc")
         (self.source / "Caper-windows-x64.zip").write_bytes(b"abc")
         (self.source / "private-key.txt").write_text("must not be uploaded")
         self.stage()
@@ -36,13 +37,24 @@ class ArtifactTests(unittest.TestCase):
         self.assertFalse(manifest["featureParityVerified"])
         self.assertFalse(manifest["nativeVoiceVerified"])
         self.assertEqual(manifest["packages"], [
+            {"name": "Caper-windows-x64-Setup.exe", "bytes": 3, "sha256": digest},
             {"name": "Caper-windows-x64.zip", "bytes": 3, "sha256": digest}
         ])
         self.assertEqual((self.destination / "SHA256SUMS").read_text(),
-                         f"{digest}  Caper-windows-x64.zip\n")
+                         f"{digest}  Caper-windows-x64-Setup.exe\n{digest}  Caper-windows-x64.zip\n")
         self.assertEqual({p.name for p in self.destination.iterdir()},
-                         {"Caper-windows-x64.zip", "BUILD.json", "SHA256SUMS"})
+                         {"Caper-windows-x64-Setup.exe", "Caper-windows-x64.zip", "BUILD.json", "SHA256SUMS"})
         self.assertEqual((self.destination / "Caper-windows-x64.zip").read_bytes(), b"abc")
+
+    def test_windows_requires_installer_and_update_archive(self):
+        for missing in artifacts.PACKAGES["windows-x64"]:
+            with self.subTest(missing=missing):
+                for name in artifacts.PACKAGES["windows-x64"]:
+                    (self.source / name).write_bytes(b"abc")
+                (self.source / missing).unlink()
+                with self.assertRaises(ValueError):
+                    self.stage()
+                self.assertFalse(self.destination.exists())
 
     def test_linux_requires_both_packages_before_staging(self):
         (self.source / "Caper-linux-x64.tar.gz").write_bytes(b"archive")
@@ -51,6 +63,7 @@ class ArtifactTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
 
     def test_empty_and_symlink_packages_rejected(self):
+        (self.source / "Caper-windows-x64-Setup.exe").write_bytes(b"abc")
         package = self.source / "Caper-windows-x64.zip"
         package.touch()
         with self.assertRaises(ValueError):
@@ -63,6 +76,7 @@ class ArtifactTests(unittest.TestCase):
             self.stage()
 
     def test_stale_destination_rejected(self):
+        (self.source / "Caper-windows-x64-Setup.exe").write_bytes(b"abc")
         (self.source / "Caper-windows-x64.zip").write_bytes(b"abc")
         self.destination.mkdir()
         with self.assertRaises(FileExistsError):

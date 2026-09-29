@@ -14,7 +14,7 @@ import shutil
 
 PACKAGES = {
     "linux-x64": ("Caper-linux-x64.deb", "Caper-linux-x64.tar.gz"),
-    "windows-x64": ("Caper-windows-x64.zip",),
+    "windows-x64": ("Caper-windows-x64-Setup.exe", "Caper-windows-x64.zip"),
     "macos-arm64": ("Caper-macos-arm64.zip",),
     "macos-x64": ("Caper-macos-x64.zip",),
     "ios-simulator-arm64": ("Caper-ios-simulator-arm64.zip",),

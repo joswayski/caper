@@ -78,4 +78,10 @@ foreach ($Dll in @('MSVCP140.dll', 'MSVCP140_1.dll', 'VCRUNTIME140.dll', 'VCRUNT
 }
 $Output = Join-Path $Dist "Caper-windows-x64.zip"
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Output -CompressionLevel Optimal
-Write-Host "Built: $Output (unsigned portable application)"
+# Keep the archive for signed self-updates; users download the setup executable.
+$Makensis = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+if (-not (Test-Path $Makensis)) { throw 'Install NSIS (choco install nsis --version=3.11 -y) before packaging' }
+$Setup = Join-Path $Dist 'Caper-windows-x64-Setup.exe'
+& $Makensis /V3 "/DSTAGE=$Stage" "/DOUTPUT=$Setup" (Join-Path $Native 'installer.nsi')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Host "Built: $Setup (unsigned installer), $Output (self-update archive)"

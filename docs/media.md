@@ -2526,10 +2526,21 @@ gh run download RUN_ID --repo joswayski/caper \
 Downloads need GitHub repository access and expire after 14 days. Each target has
 its own directory and `SHA256SUMS`; run `sha256sum --check SHA256SUMS` on Linux or
 `shasum -a 256 --check SHA256SUMS` on macOS **inside that directory**. On Windows,
-compare `(Get-FileHash .\Caper-windows-x64.zip -Algorithm SHA256).Hash` with the
+compare `(Get-FileHash .\Caper-windows-x64-Setup.exe -Algorithm SHA256).Hash` with the
 checksum file. `BUILD.json` records the tested checkout revision, which for a PR
 is generally its merge commit. Checksums detect changed bytes, not publisher
 identity. These artifacts are not a signed release or proof of voice support.
+
+Windows CI checks the actual app's PE GUI subsystem and exercises silent
+install/reinstall/uninstall, payload hashes, shortcuts and Installed apps
+registration. Setup stores the app under `%LOCALAPPDATA%\Programs\Caper\app`;
+the self-updater replaces that child directory, not the adjacent uninstaller.
+Physical Windows checks still include opening from Explorer/Start without a
+console, an in-app update/relaunch without a console, and uninstalling while
+Caper is closed. These packaging checks do not validate microphone capture.
+Linux's `.deb` already installs an application-menu entry with `Terminal=false`;
+the generic Linux website link now opens compatibility notes instead of directly
+downloading a tarball. No universal Linux installer is claimed.
 
 **Signing and stores are separate from compiling:** PR CI receives no developer
 certificates and does not publish releases or submit to stores.
@@ -2546,7 +2557,7 @@ certificates and does not publish releases or submit to stores.
   `.app` cannot run on a phone, even with a paid developer membership. TestFlight
   also has review/distribution requirements; no automatic approval is promised.
   See [Apple's preparation guide](https://developer.apple.com/documentation/xcode/preparing_your_app_for_distribution).
-- **Windows:** unsigned portable executables can be distributed, but SmartScreen,
+- **Windows:** unsigned installers and executables can be distributed, but SmartScreen,
   Smart App Control, and organization policy may warn or block execution. There
   is no guaranteed per-app override. Trusted code signing may use a certificate
   authority or a signing service; a monthly service is not the only option.
