@@ -24,6 +24,14 @@ server with synthetic audio and mocked HTTP/WebSocket/WebRTC. It is not live SFU
 or physical-device validation. Client tests also cover transport returning to
 `connecting` during startup subscription negotiation: Join waits for it to be
 connected again, with the existing timeout/cancellation and audio-readiness gates.
+Join carries the initial mute/deafen state; the browser sends a follow-up state
+write only if that intent changed while Join or microphone capture was pending.
+The authenticated initial snapshot starts as soon as live updates are ready,
+overlapping remaining publication/state work. Waiting for live-update readiness
+preserves snapshot ordering on older APIs without roster revisions. Subscription
+reconciliation still waits for publication, and the microphone remains silent
+until roster, current state, and transport readiness have all succeeded. These
+are web-only startup changes; device latency improvements require live measurement.
 The Rust API replaces a signed-in participant's submitted name
 with the account display name. Guest names can collide and are not verified or
 reserved; participant IDs, not names, distinguish people. With `VALKEY_URL` configured,
