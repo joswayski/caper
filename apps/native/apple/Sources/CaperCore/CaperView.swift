@@ -365,7 +365,7 @@ private struct SpaceRailButton: View {
     @Bindable var model: AppModel
     let space: Space
     private var selected: Bool { model.selectedSpaceID == space.id }
-    private var name: String { space.demo ? "Caper" : space.name }
+    private var name: String { space.demo == true ? "Caper" : space.name }
     private var corner: CGFloat { selected ? 8 : 12 }
     private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
@@ -373,7 +373,7 @@ private struct SpaceRailButton: View {
 
     var body: some View {
         Button { Task { await model.select(space: space) } } label: {
-            Text(space.demo ? "C" : String(space.name.prefix(1)).uppercased())
+            Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
                 .font(CaperTheme.font(13, weight: .black))
                 .frame(width: 40, height: 40)
                 .background(fill)
