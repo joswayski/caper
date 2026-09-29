@@ -103,6 +103,16 @@ export function stopVoiceWarm() {
   discard();
 }
 
+/**
+ * Drops the current pair without using it (its media server restarted, so its
+ * sessions are gone even while the connections still look healthy) and builds
+ * a replacement if the page still wants one.
+ */
+export function replaceWarmVoice() {
+  discard();
+  if (root) schedule(0);
+}
+
 export function hasWarmVoice() {
   return !!current && healthy(current);
 }

@@ -103,10 +103,19 @@ pub enum Command {
     Stats {
         reply: oneshot::Sender<Stats>,
     },
+    /// Tells every browser its connection ended, so it rejoins at once rather
+    /// than waiting out a silent disconnect. Replies once the goodbyes are sent.
+    Shutdown {
+        reply: oneshot::Sender<usize>,
+    },
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Stats {
+    /// Random per process: the Caper API tells participants to rejoin when it
+    /// changes, since a restart ended their sessions.
+    pub boot_id: String,
     pub sessions: usize,
     pub connected: usize,
     pub published: usize,
@@ -132,6 +141,7 @@ struct Session {
 }
 
 pub struct Sfu {
+    boot_id: String,
     public: SocketAddr,
     max_sessions: usize,
     sessions: HashMap<String, Session>,
@@ -148,6 +158,7 @@ impl Sfu {
     pub fn new(public: SocketAddr, max_sessions: usize, now: Instant) -> Self {
         str0m::crypto::from_feature_flags().install_process_default();
         Self {
+            boot_id: uuid::Uuid::new_v4().simple().to_string(),
             public,
             max_sessions,
             sessions: HashMap::new(),
@@ -203,12 +214,16 @@ impl Sfu {
             Command::Stats { reply } => {
                 let _ = reply.send(self.stats());
             }
+            Command::Shutdown { reply } => {
+                let _ = reply.send(self.close_all());
+            }
         }
     }
 
     #[must_use]
     pub fn stats(&self) -> Stats {
         Stats {
+            boot_id: self.boot_id.clone(),
             sessions: self.sessions.len(),
             connected: self
                 .sessions
@@ -501,6 +516,19 @@ impl Sfu {
             closed.extend(mids.iter().map(|mid| json!({ "mid": mid })));
         }
         json!({"requiresImmediateRenegotiation": false, "tracks": closed})
+    }
+
+    /// Starts closing every session: RTCP BYE, SCTP shutdown and DTLS
+    /// close_notify go out on the next drive. Returns how many were open.
+    pub fn close_all(&mut self) -> usize {
+        let mut closed = 0;
+        for (id, s) in &mut self.sessions {
+            if s.rtc.is_alive() && s.rtc.close().is_ok() {
+                closed += 1;
+            }
+            self.dirty.insert(id.clone());
+        }
+        closed
     }
 
     fn remove(&mut self, id: &str) {

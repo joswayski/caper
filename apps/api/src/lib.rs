@@ -859,6 +859,10 @@ struct Registry {
     /// Recent warm session issues, only to rate-limit them per account.
     #[serde(default)]
     warmed: Vec<WarmIssue>,
+    /// The self-hosted SFU process's boot ID. Participants rejoin when it
+    /// changes (a restart ended their sessions); absent with Cloudflare.
+    #[serde(default)]
+    media_server: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct WarmIssue {
@@ -2862,7 +2866,7 @@ fn public_snapshot(r: &Registry) -> Value {
             }
         })
         .collect();
-    json!({"participants":participants,"revision":r.revision})
+    json!({"participants":participants,"revision":r.revision,"mediaServer":r.media_server})
 }
 #[derive(Serialize)]
 struct PresenceView<'a> {
@@ -3975,6 +3979,96 @@ pub fn spawn_cleanup(s: AppState) {
             }
         }
     });
+}
+
+/// How often the API asks a self-hosted SFU whether it restarted.
+const PROVIDER_WATCH_INTERVAL: Duration = Duration::from_millis(500);
+
+/// A self-hosted SFU restart ends every call on it, and browsers only notice
+/// after an ICE timeout (about 15 s with the client's grace period). Each room's
+/// snapshot instead carries the SFU's boot ID, so participants rejoin as soon
+/// as the new process answers. Cloudflare needs none.
+pub fn spawn_provider_watch(s: AppState) {
+    if !s.config.enabled || s.config.provider_base == CLOUDFLARE_BASE {
+        return;
+    }
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("HTTP client");
+        let url = format!(
+            "{}/apps/{}/stats",
+            s.config.provider_base,
+            required(&s.config.app_id)
+        );
+        let mut shutdown = s.shutting_down.subscribe();
+        while !*shutdown.borrow() {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                () = tokio::time::sleep(PROVIDER_WATCH_INTERVAL) => {},
+            }
+            if let Some(server) = media_server_identity(&client, &url, &s.config).await {
+                announce_media_server(&s, &server).await;
+            }
+        }
+    });
+}
+
+async fn media_server_identity(
+    client: &reqwest::Client,
+    url: &str,
+    config: &Config,
+) -> Option<String> {
+    let value: Value = client
+        .get(url)
+        .bearer_auth(required(&config.app_secret))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    media_server_from_stats(&value)
+}
+
+fn media_server_from_stats(value: &Value) -> Option<String> {
+    value
+        .get("bootId")
+        .and_then(Value::as_str)
+        .and_then(diagnostic_token)
+}
+
+/// Records the SFU boot ID in every room with participants or prepared joins
+/// that disagrees. A new boot ID means the old process's sessions are gone, so
+/// prepared joins are dropped too. Writes only on change, so replicas agreeing
+/// on the value are no-ops.
+async fn announce_media_server(s: &AppState, server: &str) {
+    let Ok(rooms) = s.media_rooms().await else {
+        return;
+    };
+    for room in rooms {
+        let stale = room
+            .read(|r| {
+                Ok((!r.participants.is_empty() || !r.prepared.is_empty())
+                    && r.media_server.as_deref() != Some(server))
+            })
+            .await
+            .unwrap_or(false);
+        if stale {
+            let _ = room
+                .update(|r| {
+                    if r.media_server.is_some() {
+                        r.prepared.clear();
+                    }
+                    r.media_server = Some(server.to_owned());
+                    Ok(())
+                })
+                .await;
+        }
+    }
 }
 
 /// Close every registered provider track before process termination.

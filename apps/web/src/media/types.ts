@@ -19,6 +19,8 @@ export interface Participant {
 
 export interface CallSnapshot {
   participants: Participant[];
+  /** Identity of a self-hosted media server; changes when it restarts. */
+  mediaServer?: string | null;
 }
 
 export interface JoinResponse {

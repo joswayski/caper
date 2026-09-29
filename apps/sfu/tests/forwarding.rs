@@ -333,3 +333,42 @@ async fn turn_credentials_use_the_cloudflare_shape() {
         .unwrap();
     assert_eq!(revoked.status(), 204);
 }
+
+#[tokio::test]
+async fn shutdown_sends_closing_packets_to_connected_sessions() {
+    let now = Instant::now();
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut sfu = engine::Sfu::new(socket.local_addr().unwrap(), 10, now);
+    let mut peer = Peer::new();
+    let mut change = peer.rtc.sdp_api();
+    let _ = change.add_channel("warm".into());
+    let (offer, pending) = change.apply().unwrap();
+    let created = sfu.create(Some(&offer.to_sdp_string()), now).unwrap();
+    let answer =
+        SdpAnswer::from_sdp_string(created["sessionDescription"]["sdp"].as_str().unwrap()).unwrap();
+    peer.rtc.sdp_api().accept_answer(pending, answer).unwrap();
+    socket.set_nonblocking(true).unwrap();
+    let mut out = vec![];
+    let mut connected = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && !connected {
+        peer.step();
+        let mut buf = [0; 2000];
+        while let Ok((n, source)) = socket.recv_from(&mut buf) {
+            sfu.receive(source, &buf[..n], Instant::now());
+        }
+        sfu.timeout(Instant::now());
+        sfu.drive(Instant::now(), &mut out);
+        for (to, packet) in out.drain(..) {
+            let _ = socket.send_to(&packet, to);
+        }
+        connected = sfu.stats().connected == 1 && peer.rtc.is_connected();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(connected);
+    std::thread::sleep(Duration::from_millis(300));
+    peer.step();
+    assert_eq!(sfu.close_all(), 1);
+    sfu.drive(Instant::now(), &mut out);
+    assert!(!out.is_empty(), "closing sends packets");
+}

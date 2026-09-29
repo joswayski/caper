@@ -2,7 +2,7 @@ use caper_sfu::{AppState, Credentials, engine, router, turn::Turn};
 use std::{
     env,
     net::{IpAddr, SocketAddr},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::net::{TcpListener, UdpSocket};
 use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
@@ -80,6 +80,7 @@ async fn main() -> Result<(), String> {
     let sfu = engine::Sfu::new(public, max_sessions, Instant::now());
     tokio::spawn(engine::run(sfu, socket, receive));
 
+    let engine = commands.clone();
     let app = router(AppState::new(commands, credentials, turn))
         .layer(RequestBodyLimitLayer::new(256 * 1024))
         .layer(TraceLayer::new_for_http());
@@ -88,7 +89,22 @@ async fn main() -> Result<(), String> {
         .map_err(|e| format!("binding {http}: {e}"))?;
     tracing::info!(%http, %public, "caper-sfu listening");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
+        .with_graceful_shutdown(async move {
+            shutdown().await;
+            // Close every connection before exiting so browsers rejoin within
+            // about a second instead of waiting out a silent disconnect.
+            let (reply, closed) = tokio::sync::oneshot::channel();
+            if engine
+                .send(engine::Command::Shutdown { reply })
+                .await
+                .is_ok()
+            {
+                let closed = tokio::time::timeout(Duration::from_secs(2), closed).await;
+                tracing::info!(sessions = ?closed.ok().and_then(Result::ok), "closed sessions for shutdown");
+                // Let the close packets leave the socket.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
         .await
         .map_err(|e| e.to_string())
 }

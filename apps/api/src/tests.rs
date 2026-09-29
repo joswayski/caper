@@ -2678,3 +2678,98 @@ fn media_provider_base_defaults_to_cloudflare_and_accepts_a_self_hosted_sfu() {
         "https://sfu.caper.chat/v1"
     );
 }
+
+#[tokio::test]
+async fn a_self_hosted_sfu_restart_reaches_participants_through_their_snapshot() {
+    let (s, _) = state();
+    let joined = joined(&s, "Ada").await;
+    let token = joined["token"].as_str().unwrap().to_owned();
+    let snapshot = |s: AppState, token: String| async move {
+        call(
+            app(s),
+            "POST",
+            "/api/media/snapshot",
+            Some(&token),
+            json!({}),
+        )
+        .await
+        .1
+    };
+    // Cloudflare reports no media server.
+    assert_eq!(
+        snapshot(s.clone(), token.clone()).await["mediaServer"],
+        Value::Null
+    );
+
+    announce_media_server(&s, "boot-a").await;
+    let first = snapshot(s.clone(), token.clone()).await;
+    assert_eq!(first["mediaServer"], "boot-a");
+    // Agreeing replicas do not bump the revision.
+    announce_media_server(&s, "boot-a").await;
+    assert_eq!(
+        snapshot(s.clone(), token.clone()).await["revision"],
+        first["revision"]
+    );
+    // A restart changes the pushed snapshot, which triggers the client's rejoin.
+    announce_media_server(&s, "boot-b").await;
+    let restarted = snapshot(s.clone(), token.clone()).await;
+    assert_eq!(restarted["mediaServer"], "boot-b");
+    assert!(restarted["revision"].as_u64() > first["revision"].as_u64());
+}
+
+#[test]
+fn media_server_identity_is_a_bounded_boot_id() {
+    assert_eq!(
+        media_server_from_stats(&json!({"bootId": "0123abcd", "sessions": 1})).as_deref(),
+        Some("0123abcd")
+    );
+    assert!(media_server_from_stats(&json!({"sessions": 1})).is_none());
+    assert!(media_server_from_stats(&json!({"bootId": "<script>"})).is_none());
+    assert!(media_server_from_stats(&json!({"bootId": "a".repeat(200)})).is_none());
+}
+
+#[tokio::test]
+async fn provider_watch_publishes_the_sfu_boot_id_and_skips_cloudflare() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = Config::test(true);
+    config.provider_base = format!("http://{}", listener.local_addr().unwrap());
+    let router = Router::new().route(
+        "/apps/app/stats",
+        get(|headers: HeaderMap| async move {
+            assert_eq!(headers["authorization"], "Bearer secret");
+            Json(json!({"bootId": "boot-live", "sessions": 0}))
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let s = AppState::new(config, Arc::new(Mock::new()));
+    let joined = joined(&s, "Ada").await;
+    let token = joined["token"].as_str().unwrap().to_owned();
+    spawn_provider_watch(s.clone());
+    let mut server_id = Value::Null;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        server_id = call(
+            app(s.clone()),
+            "POST",
+            "/api/media/snapshot",
+            Some(&token),
+            json!({}),
+        )
+        .await
+        .1["mediaServer"]
+            .clone();
+        if !server_id.is_null() {
+            break;
+        }
+    }
+    s.begin_shutdown();
+    server.abort();
+    assert_eq!(server_id, "boot-live");
+
+    // Cloudflare mode never polls.
+    let mut cloudflare = Config::test(true);
+    cloudflare.provider_base = CLOUDFLARE_BASE.into();
+    let s = AppState::new(cloudflare, Arc::new(Mock::new()));
+    spawn_provider_watch(s.clone());
+    s.begin_shutdown();
+}

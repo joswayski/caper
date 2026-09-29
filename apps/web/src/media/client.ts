@@ -2,7 +2,7 @@ import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppress
 import { appGateway, GatewayError } from "../gateway/client.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
-import { closeWarmVoice, takeWarmVoice } from "./warm.ts";
+import { closeWarmVoice, replaceWarmVoice, takeWarmVoice } from "./warm.ts";
 import { EventConnection } from "./event-connection.ts";
 import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
 import { TurnRenewal } from "./turn-renewal.ts";
@@ -112,6 +112,8 @@ export class PublicCallClient {
   private token?: string;
   private name = "Guest";
   private selfId?: string;
+  /** The media server this call connected through, as reported by snapshots. */
+  private mediaServer?: string;
   private phase: CallViewState["phase"] = "idle";
   private participants: Participant[] = [];
   private remoteMedia = new Map<string, RemoteMedia>();
@@ -432,6 +434,7 @@ export class PublicCallClient {
     const signal = this.captureController.signal;
     this.token = joined.token;
     this.selfId = joined.id;
+    this.mediaServer = undefined;
     const pc = this.pc = publication.pc;
     let iceConnected: number | undefined;
     const iceChanged = () => {
@@ -553,8 +556,26 @@ export class PublicCallClient {
     }, delay);
   }
 
+  /**
+   * A self-hosted media server restart ends every call on it. Its new boot ID
+   * arrives as soon as it is back: rejoin at once instead of waiting out an ICE
+   * timeout. The first value after joining is ours; Cloudflare reports none.
+   */
+  private mediaServerChanged(server: string | null | undefined) {
+    if (!server || (this.phase !== "connected" && this.phase !== "joining")) return false;
+    if (this.mediaServer === undefined) {
+      this.mediaServer = server;
+      return false;
+    }
+    if (server === this.mediaServer) return false;
+    replaceWarmVoice();
+    this.scheduleReconnect("media server restarted", 0);
+    return true;
+  }
+
   private queueSnapshot(snapshot: CallSnapshot & { revision?: number }) {
     if (snapshot.revision !== undefined && this.latestRevision !== undefined && snapshot.revision < this.latestRevision) return;
+    if (this.mediaServerChanged(snapshot.mediaServer)) return;
     if (snapshot.revision !== undefined) this.latestRevision = snapshot.revision;
     this.pendingSnapshot = snapshot;
     this.pushedSnapshotVersion++;
@@ -1355,7 +1376,7 @@ export class PublicCallClient {
     }, delay);
   }
 
-  private scheduleReconnect(reason: string) {
+  private scheduleReconnect(reason: string, delay = Math.min(1_000 * 2 ** this.reconnects, 5_000)) {
     if (this.phase !== "connected" && this.phase !== "joining") return;
     // Kept across the rejoin, so a report taken afterwards still says why.
     this.lastReconnect = {
@@ -1369,7 +1390,7 @@ export class PublicCallClient {
     this.events?.stop();
     this.emit();
     window.clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = window.setTimeout(() => void this.rejoin(), Math.min(1_000 * 2 ** this.reconnects, 5_000));
+    this.reconnectTimer = window.setTimeout(() => void this.rejoin(), delay);
   }
 
   private async rejoin() {

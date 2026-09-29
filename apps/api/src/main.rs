@@ -1,5 +1,6 @@
 use caper_api::{
     Cloudflare, Config, RuntimeEnvironment, app, connect_database, shutdown_cleanup, spawn_cleanup,
+    spawn_provider_watch,
 };
 use std::{future::IntoFuture, sync::Arc, time::Duration};
 
@@ -63,6 +64,7 @@ async fn run(environment: &RuntimeEnvironment) -> Result<(), String> {
     state.enable_shared_media(environment).await?;
     state.enable_chat(environment).await?;
     spawn_cleanup(state.clone());
+    spawn_provider_watch(state.clone());
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|_| "could not bind media API".to_owned())?;

@@ -2469,3 +2469,18 @@ test("a warm connection that fails is replaced; an API without warm sessions is 
   assert.equal(unsupported.length, 1);
   assert.equal(hasWarmVoice(), false);
 });
+
+test("a restarted self-hosted media server triggers an immediate rejoin", async (t) => {
+  const { client, states } = setup(t);
+  await client.join();
+  await new Promise((resolve) => setImmediate(resolve));
+  const pushed = client as unknown as { queueSnapshot(snapshot: { participants: []; revision: number; mediaServer?: string | null }): void };
+  // Cloudflare reports none; the first reported server is the one joined.
+  pushed.queueSnapshot({ participants: [], revision: 100, mediaServer: null });
+  pushed.queueSnapshot({ participants: [], revision: 101, mediaServer: "boot-a" });
+  pushed.queueSnapshot({ participants: [], revision: 102, mediaServer: "boot-a" });
+  assert.equal(states.at(-1)?.phase, "connected");
+  pushed.queueSnapshot({ participants: [], revision: 103, mediaServer: "boot-b" });
+  assert.equal(states.at(-1)?.phase, "reconnecting");
+  assert.equal(client.getAudioDiagnostics().voice.lastReconnect?.reason, "media server restarted");
+});

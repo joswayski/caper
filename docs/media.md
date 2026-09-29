@@ -2346,8 +2346,8 @@ and gateway switches providers; browsers and native clients are unchanged.
 control API's certificate. Cloudflare stays the default until an operator cuts over.
 
 Why: Cloudflare charges $0.05 per outbound GB after its free allowance. A
-DigitalOcean droplet includes pooled transfer (for example 2 TB on the $12
-1 vCPU/2 GB size) and bills $0.01/GB beyond it. Audio is small: a full
+DigitalOcean droplet includes its public IPv4 and pooled transfer (1 TB on the
+$6/month 1 vCPU/1 GB size) and bills $0.01/GB beyond it. Audio is small: a full
 12-person room forwards about 6.6 Mbit/s, roughly 3 GB per hour. Do not run the
 SFU inside AWS: EC2 egress (about $0.09/GB) costs more than Cloudflare.
 
@@ -2367,13 +2367,27 @@ SFU inside AWS: EC2 egress (about $0.09/GB) costs more than Cloudflare.
 - **Session lifetime.** A session that never receives a packet ends after 30 s;
   a connected one ends 30 s after its last packet. Browsers' ICE consent checks
   keep a connected, silent session (including warm sessions) alive.
-- **TURN credentials cannot be revoked.** They are coturn REST credentials,
-  bounded by the requested TTL (at most 48 hours); `revoke` returns 204.
+- **TURN credentials are not revoked.** They are coturn REST credentials,
+  bounded by the requested TTL (at most 48 hours); `revoke` returns 204. Unlike
+  Cloudflare's TURN, coturn here may only relay to the SFU's own public port,
+  which anyone can already reach and which drops traffic for unknown sessions,
+  so a leftover credential gives no access to calls.
 - **Not E2EE**, as before: the SFU terminates DTLS-SRTP. It forwards Opus frames
   unchanged and never decodes or records audio. Logs exclude SDP and credentials.
-- **Single process, no redundancy.** Restarting the SFU or the droplet drops
-  every call; clients rejoin automatically. Capacity limits other than
-  `SFU_MAX_SESSIONS` (default 1,000) have not been load-tested.
+- **Single process, no redundancy.** Restarting the SFU or the droplet ends
+  every call's media. Browsers ignore the SFU's DTLS close and would only notice
+  after an ICE timeout (measured: `disconnected` at 5 s, `failed` at 15 s), so
+  the API polls the SFU's boot ID every 500 ms and puts it in each room's
+  snapshot as `mediaServer`. When it changes, clients drop any warm pair and
+  rejoin at once; prepared joins from the old process are discarded. Measured
+  locally with the full stack (two guests, SIGTERM then a new process): back in
+  the call and receiving audio 0.8–1.7 s after the stop, across three runs.
+  Production adds container start time. If the SFU stays down, clients fall back
+  to the ICE timeout and their normal rejoin attempts. Capacity limits other
+  than `SFU_MAX_SESSIONS` (default 1,000) have not been load-tested.
+- **Multiple servers are not supported yet.** One `MEDIA_PROVIDER_BASE` serves
+  every room. Scaling out means assigning each room to one SFU (all its
+  participants together) and draining a server before replacing it.
 
 ### Configuration
 
@@ -2426,6 +2440,9 @@ The droplet, firewall and reserved IP come from the infrastructure repository
    and rejoin through the SFU.
 6. Test with two people on different networks, one forced to relay (see
    [Cost and acceptance](#cost-and-acceptance)).
+7. Benchmark: every provider call is logged with `elapsed_ms` (the message still
+   says "Cloudflare operation succeeded"). Compare before and after cutover with
+   `kubectl -n default logs deploy/caper-api --since=1h | grep -o 'operation="[a-z_]*" status=[0-9]* elapsed_ms=[0-9]*'`.
 
 Rollback: restore the previous secret version (Cloudflare values;
 `MEDIA_PROVIDER_BASE` set to `https://rtc.live.cloudflare.com/v1`). Keep the
@@ -2455,6 +2472,9 @@ and point the API at it with `MEDIA_PROVIDER_BASE=http://127.0.0.1:8080/v1` and
   RTP bytes the other sent. Decoded audio was silent in this run because the app's
   processing chain left the fake-device beep silent in headless Chromium; the
   tone test above covers decoding.
+- **Restart recovery:** see the single-process note above (0.8–1.7 s locally).
+  Idle signed-in pages' warm pairs are replaced only when their connections
+  drop (about 10 s); a Join in that window fails once and retries.
 - **Not yet validated:** TURN through coturn (UDP, TCP, TLS on 443), the
   DigitalOcean deployment and certificates, real networks and NAT, physical
   microphones, Safari, Firefox, native clients, long calls, and load. Record
