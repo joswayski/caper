@@ -2345,20 +2345,24 @@ and gateway switches providers; browsers and native clients are unchanged.
 `deploy/sfu` runs it on one public host with coturn for TURN and Caddy for the
 control API's certificate. Cloudflare stays the default until an operator cuts over.
 
-Why: Cloudflare charges $0.05 per outbound GB after its free allowance. A
-DigitalOcean droplet includes its public IPv4 and pooled transfer (1 TB on the
-$6/month 1 vCPU/1 GB size) and bills $0.01/GB beyond it. Audio is small: a full
-12-person room forwards about 6.6 Mbit/s, roughly 3 GB per hour. Do not run the
-SFU inside AWS: EC2 egress (about $0.09/GB) costs more than Cloudflare.
+Why: Cloudflare charges $0.05 per outbound GB after its free allowance. An
+Amazon Lightsail instance includes its public IPv4 and a transfer allowance
+(2 TB on the $7/month 1 GB plan, inbound and outbound both counted; outbound
+beyond it is $0.09/GB). Audio is small: each voice stream is about 50 kbit/s
+(22.5 MB/hour), so a 4-person room uses about 360 MB per hour and a full
+12-person room about 3.2 GB; 2 TB is roughly 740 person-hours of talking a day
+in 4-person rooms. Do not run the SFU on EC2: its egress (about $0.09/GB) costs
+more than Cloudflare. Lightsail's terms forbid routing other AWS services'
+traffic out through it, so the instance runs voice only.
 
 ### How it differs from Cloudflare
 
 - **One location.** Cloudflare connects each person to a nearby edge. The
-  droplet is in one region (NYC, a few milliseconds from the API in `us-east-1`),
+  instance is in one place (`us-east-1a`, a millisecond or two from the API),
   so people far from it (US West, Europe) have longer audio paths than on
   Cloudflare. Control calls are much faster: locally each operation took 2–18 ms,
   against 180–255 ms measured on Cloudflare above, which is several hundred
-  milliseconds per join. Production adds the API-to-droplet round trip.
+  milliseconds per join. Production adds the API-to-instance round trip.
 - **Pulls answer at once.** No 425 wait for an unconnected session; a pull into
   a session without a negotiated connection still gets an inactive placeholder
   offer, as on Cloudflare.
@@ -2374,7 +2378,7 @@ SFU inside AWS: EC2 egress (about $0.09/GB) costs more than Cloudflare.
   so a leftover credential gives no access to calls.
 - **Not E2EE**, as before: the SFU terminates DTLS-SRTP. It forwards Opus frames
   unchanged and never decodes or records audio. Logs exclude SDP and credentials.
-- **Single process, no redundancy.** Restarting the SFU or the droplet ends
+- **Single process, no redundancy.** Restarting the SFU or the instance ends
   every call's media. Browsers ignore the SFU's DTLS close and would only notice
   after an ICE timeout (measured: `disconnected` at 5 s, `failed` at 15 s), so
   the API polls the SFU's boot ID every 500 ms and puts it in each room's
@@ -2400,7 +2404,8 @@ API and gateway (both run media handlers):
 | `CF_SFU_APP_ID`, `CF_SFU_APP_SECRET`, `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN` | Unchanged names; at cutover they hold the SFU's `SFU_APP_ID`, `SFU_APP_SECRET`, `SFU_TURN_KEY_ID` and `SFU_TURN_API_TOKEN`. |
 
 SFU host (`deploy/sfu/.env`, mode 0600; see `.env.example`): `SFU_IMAGE`,
-`SFU_DOMAIN`, `SFU_PUBLIC_IP`, the four values above, and `TURN_SECRET`
+`SFU_DOMAIN`, `SFU_PUBLIC_IP`, `SFU_PRIVATE_IP` (coturn behind Lightsail's 1:1 NAT), the four
+values above, and `TURN_SECRET`
 (shared only with coturn). The binary also reads `SFU_HTTP_BIND` (default
 `0.0.0.0:8080`; the bundle binds loopback behind Caddy), `SFU_UDP_PORT` (default
 `50000`), `SFU_MAX_SESSIONS`, `SFU_STUN_URLS`, `SFU_TURN_URLS`, `RUST_LOG` and
@@ -2418,10 +2423,11 @@ health and authentication, and on merge to `main` pushes
 `ghcr.io/joswayski/caper-sfu:<full sha>`. Make the GHCR package public once
 (package settings), or `docker login ghcr.io` on the host with a read-only token.
 
-The droplet, firewall and reserved IP come from the infrastructure repository
-(`infra/environments/production/caper-sfu`). Then:
+The Lightsail instance, static IP and public ports come from the
+infrastructure repository (`infra/environments/production/caper-sfu`, runbook
+`docs/caper-sfu.md`). Then:
 
-1. DNS: a **DNS-only** (grey cloud) `A` record `sfu.caper.chat` → the reserved
+1. DNS: a **DNS-only** (grey cloud) `A` record `sfu.caper.chat` → the static
    IP. Cloudflare's proxy cannot carry UDP or TURN.
 2. On the host: copy `deploy/sfu/*` to `/opt/caper-sfu`, create `.env` from
    `.env.example` with fresh `openssl rand -hex 32` secrets, then
@@ -2476,7 +2482,7 @@ and point the API at it with `MEDIA_PROVIDER_BASE=http://127.0.0.1:8080/v1` and
   Idle signed-in pages' warm pairs are replaced only when their connections
   drop (about 10 s); a Join in that window fails once and retries.
 - **Not yet validated:** TURN through coturn (UDP, TCP, TLS on 443), the
-  DigitalOcean deployment and certificates, real networks and NAT, physical
+  Lightsail deployment and certificates, real networks and NAT, physical
   microphones, Safari, Firefox, native clients, long calls, and load. Record
   these separately before and after cutover.
 

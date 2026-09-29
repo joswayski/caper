@@ -17,8 +17,8 @@ permissions:
   contents: read
 jobs:
   sfu:
-    # The self-hosted SFU runs on an x86 DigitalOcean droplet, outside AWS,
-    # so its image is published to GHCR rather than the private ECR.
+    # The self-hosted SFU runs on an x86 Lightsail instance outside the
+    # cluster, so its image is published to GHCR rather than the private ECR.
     runs-on: ubuntu-24.04
     permissions:
       contents: read

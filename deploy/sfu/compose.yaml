@@ -1,4 +1,4 @@
-# Self-hosted Caper media on one public host (DigitalOcean droplet).
+# Self-hosted Caper media on one public host (an Amazon Lightsail instance).
 # Host networking: WebRTC and TURN need the host's public IP and many UDP ports.
 # Start: docker compose --env-file .env up -d   (see docs/media.md#self-hosted-sfu)
 name: caper-sfu
@@ -54,8 +54,11 @@ services:
       - /etc/coturn/turnserver.conf
       - --realm=${SFU_DOMAIN}
       - --static-auth-secret=${TURN_SECRET}
-      - --external-ip=${SFU_PUBLIC_IP}
+      # Lightsail maps the static public IP 1:1 onto the private address.
+      - --external-ip=${SFU_PUBLIC_IP}/${SFU_PRIVATE_IP:?}
+      - --relay-ip=${SFU_PRIVATE_IP:?}
       - --allowed-peer-ip=${SFU_PUBLIC_IP}
+      - --allowed-peer-ip=${SFU_PRIVATE_IP:?}
       - --cert=/certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${SFU_DOMAIN}/${SFU_DOMAIN}.crt
       - --pkey=/certs/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${SFU_DOMAIN}/${SFU_DOMAIN}.key
     volumes:
