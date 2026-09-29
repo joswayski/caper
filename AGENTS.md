@@ -13,8 +13,9 @@ Adapted from the conventions in `joswayski/captures`.
 ## Working conventions
 
 - Keep changes focused; reuse existing patterns before adding dependencies or abstractions.
+- Consider every applicable platform for product changes: web (desktop and mobile layouts), Android, Apple (iOS/macOS), and Rust desktop. Implement shared behavior across these clients when needed; explicitly document intentional differences and validation gaps rather than treating browser coverage as native coverage.
 - Other agents may work concurrently. Use an isolated worktree for new concurrent work; never stash, overwrite, or publish another agent's changes.
-- Treat future native clients as independent implementations. Browser WebRTC success does not prove native capture or playback support.
+- Treat native clients as independent implementations. Browser WebRTC success does not prove native capture or playback support.
 - Never expose provider secrets or log SDP, credentials, or raw media. No unrestricted Cloudflare API proxy.
 - Keep one desired API replica until every API pod uses the same `VALKEY_URL` and compatible state schema. Never mix in-memory and shared-mode pods. Follow the staged cutover in `docs/media.md`; shared-mode shutdown must not close healthy Cloudflare tracks. Web replicas are independent.
 
@@ -32,3 +33,4 @@ Adapted from the conventions in `joswayski/captures`.
 - Build changed Docker images when a daemon is available; otherwise validate build stages directly and report the limitation.
 - Never equate mocks with live SFU validation. Record multi-network/TURN, sustained voice, and physical device checks separately.
 - Use focused, ready-for-review GitHub PRs, not direct default-branch pushes. Include exact post-merge operator commands for deployment/configuration changes.
+- Every PR must include a **Deployment order** section with numbered, step-by-step rollout instructions. Cover infrastructure, secrets/configuration, database migrations, services, and client releases when applicable, including prerequisites and exact operator commands for infrastructure/configuration changes. State explicitly when a step is unnecessary, when components can deploy independently, or when no deployment is required. Include relevant verification and rollback notes; do not imply merging deploys components automatically.

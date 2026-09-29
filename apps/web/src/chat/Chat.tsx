@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
+import { dateDivider } from "./dates.ts";
 import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import "./chat.css";
@@ -146,6 +147,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const messages = state.pendingSend ? [...state.messages, state.pendingSend] : state.messages;
+  const previewStart = Math.max(0, messages.length - Math.max(20, Math.ceil((typeof window === "undefined" ? 800 : window.innerHeight) / 50)));
   useLayoutEffect(() => {
     const list = initialListRef.current;
     if (list) list.scrollTop = list.scrollHeight;
@@ -174,10 +176,13 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     }
   };
 
-  const renderMessage = (_: number, message: (typeof messages)[number]) => {
+  const renderMessage = (index: number, message: (typeof messages)[number]) => {
     const pending = !("content" in message);
     const author = message.author;
-    return <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId} key={message.clientMessageId}>
+    const divider = hydrated ? dateDivider(message.createdAt, messages[index - 1]?.createdAt) : undefined;
+    return <div key={message.clientMessageId}>
+      {divider && <div className="chat-date-divider"><time dateTime={message.createdAt}>{divider}</time></div>}
+      <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId}>
       <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
@@ -193,7 +198,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
           </> : <button type="button" onClick={() => void submit()}>Retry send</button>}
         </div>}
       </div>
-    </article>;
+    </article></div>;
   };
 
   return <section className="chat-panel" aria-labelledby="chat-heading">
@@ -236,10 +241,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
             listRef.current?.scrollToIndex({ index: "LAST", align: "end" });
           }
         }}
-        itemContent={renderMessage} />}
+        itemContent={(index, message) => renderMessage(index - firstItemIndex, message)} />}
       {state.phase === "ready" && messages.length > 0 && !listReady && <div ref={initialListRef} className="chat-initial-messages" role="region" aria-label={`Messages in ${channelName}`}>
         <HistoryHeader context={{ hasMore: state.hasMore, loadingOlder: false, loadOlder }} />
-        {messages.slice(-Math.max(20, Math.ceil((typeof window === "undefined" ? 800 : window.innerHeight) / 50))).map((message, index) => renderMessage(index, message))}
+        {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
       </div>}
       <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text}`}</p>
     </div>
