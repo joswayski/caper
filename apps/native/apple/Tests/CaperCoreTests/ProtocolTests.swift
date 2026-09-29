@@ -145,6 +145,21 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(delivery.cursor, "42")
     }
 
+    func testReactionProtocolAndInterleavedCursorBookkeeping() {
+        func event(_ seq: String = "2", channel: String = "channel") -> [String: Any] {
+            ["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": seq,
+             "messageId": "message", "reactions": [["emoji": "👍", "authorIds": ["author"]]]]
+        }
+        var delivery = ChatDeliveryState()
+        XCTAssertTrue(delivery.receive(seq: "1"))
+        XCTAssertEqual(ReactionEvent.sequence(event(), channelID: "channel"), "2")
+        XCTAssertTrue(delivery.receive(seq: "2"))
+        XCTAssertTrue(delivery.receive(seq: "2"), "duplicate reaction does not move or resync")
+        XCTAssertTrue(delivery.receive(seq: "3"), "message after reaction remains contiguous")
+        XCTAssertFalse(delivery.receive(seq: "5"), "reaction gap is rejected")
+        XCTAssertNil(ReactionEvent.sequence(event(channel: "other"), channelID: "channel"))
+    }
+
     func testUnknownOutcomeRetriesExactCommandAndResetPreventsResurrection() {
         var delivery = ChatDeliveryState(cursor: "8")
         let first = delivery.begin(text: "original", makeID: { "id-one" })

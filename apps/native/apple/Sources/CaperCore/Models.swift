@@ -244,6 +244,21 @@ public struct ChatDeliveryState: Sendable {
     }
 }
 
+enum ReactionEvent {
+    static func sequence(_ event: [String: Any], channelID: String) -> String? {
+        guard event["schemaVersion"] as? Int == 1,
+              event["channelId"] as? String == channelID,
+              let messageID = event["messageId"] as? String, !messageID.isEmpty,
+              let reactions = event["reactions"] as? [[String: Any]],
+              reactions.allSatisfy({ reaction in
+                  guard let emoji = reaction["emoji"] as? String, !emoji.isEmpty,
+                        let authorIDs = reaction["authorIds"] as? [String] else { return false }
+                  return authorIDs.allSatisfy { !$0.isEmpty }
+              }) else { return nil }
+        return event["seq"] as? String
+    }
+}
+
 /// Accepts only snapshots that cannot move an already-versioned view
 /// backwards. Unversioned snapshots remain usable until a revision is seen.
 struct MonotonicRevision: Sendable {

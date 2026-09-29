@@ -930,6 +930,18 @@ public final class ChatModel {
             receiveTyping(author: author, typing: typing, revision: revision)
             return
         }
+        if type == "message.reactions" {
+            guard let seq = ReactionEvent.sequence(event, channelID: eventChannelID),
+                  delivery.receive(seq: seq) else {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            if let subscriptionID {
+                let cursor = delivery.cursor
+                Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
+            }
+            return
+        }
         if type == "message.created", let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw), let message = try? JSONDecoder().decode(ChatMessage.self, from: data) {
             guard message.channelId == eventChannelID,
                   event["seq"] as? String == message.seq,

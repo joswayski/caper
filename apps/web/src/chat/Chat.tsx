@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
+import MessageReactions from "./MessageReactions.tsx";
 import { dateDivider } from "./dates.ts";
 import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -187,6 +188,11 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
+        {"content" in message && <MessageReactions message={message} authorId={state.author?.id}
+          onReact={async (messageId, emoji, active) => {
+            if (!clientRef.current) throw new Error("Chat is not ready yet.");
+            await clientRef.current.setReaction(messageId, emoji, active);
+          }} />}
         {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
           <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
           {state.sendRejected ? <>

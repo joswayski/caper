@@ -563,6 +563,101 @@ constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
 
+## Message reactions (first web release)
+
+Desktop web exposes **Add reaction** on message hover or keyboard focus. On
+narrow/touch browser layouts it stays visible, and the searchable picker opens
+as a bottom sheet. Reactions appear below the message with counts; your own
+chips have a terracotta tint and `aria-pressed=true`. Clicking a chip adds or
+removes your contribution. Choosing an emoji in the picker only adds it. Pending
+messages cannot be reacted to. Failed saves show an explicit retry of the same
+desired state rather than an ambiguous toggle.
+
+The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
+and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
+build/dev preparation verifies artwork for every offered emoji. It makes no
+emoji-CDN requests and loads the picker code on demand. These are images, not
+the operating system's emoji font, so supported reactions look consistent across
+web platforms. Message-body emoji are unchanged. Custom uploads, frequently
+used/top-five lists, a skin-tone selector, and native reaction UI are deferred.
+
+`PUT /api/chat/channels/{channel}/messages/{message}/reactions` accepts
+`{emoji,active}` and `X-Caper-Chat-Token`. It checks the same channel/member/private
+grant and session permissions as sending. Unicode qualification variants are
+canonicalized; arbitrary text, multiple emoji, and emoji newer than 15.0 are
+rejected. Membership is unique by message, canonical emoji, and stable public
+author ID; separate account chat sessions therefore cannot inflate counts.
+Guest contributions belong to their persisted guest identity.
+
+The response and transactional outbox use
+`{type:"message.reactions",schemaVersion:1,channelId,seq,messageId,reactions}`.
+Each reaction is `{emoji,authorIds}`; IDs are visible to the channel's readers,
+as message-author IDs already are. `seq` participates in the existing ordered
+channel stream. History contains the current `reactions` and `reactionSeq`
+snapshot; original message `seq`, timestamp, and content do not change. A no-op
+returns the current snapshot revision (or `"0"`) without allocating an event.
+HTTP snapshots never advance the browser's replay cursor. Per-message revisions
+prevent stale replies or older pages from overwriting newer reactions. A full
+history resync drops older cached pages so missed reactions cannot remain stale;
+those pages can be loaded again. Normal reconnects replay missing events.
+
+Limits are 20 emoji kinds and 1,000 total contributions per message, plus 60
+mutations per actor/channel/minute. No-op retries do not consume that budget.
+Expired rate records are removed when that actor next mutates. Reactions,
+message snapshots, sequence allocation, and outbox commit together.
+
+### Deployment order for reactions
+
+1. **Prerequisites/infrastructure/secrets:** no infrastructure apply, new service,
+   feature flag, or secret is required. Keep the existing PostgreSQL/Valkey/chat
+   configuration. Obtain the immutable merged revision as `MERGED_SHA`; wait for
+   that revision's API/web images and native build artifacts before deployment.
+2. **Native compatibility first:** release the updated native clients before
+   exposing web reactions. They consume reaction sequence positions without
+   displaying reactions. From the Caper repository:
+   `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"`.
+   Watch that exact run and have native testers update. Older clients may fail to
+   advance across reaction events; this is not a native feature-parity release.
+3. **Database/API:**
+   `gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"`.
+   Watch the exact workflow run, then
+   `kubectl -n default rollout status deployment/caper-api --timeout=15m`.
+   API startup applies `202609290001_message_reactions.sql` and runtime grants
+   before serving. No manual database writes or separate migration job are needed.
+   Verify `/readyz` and that existing history/sends still work.
+4. **Gateway:** no new gateway-side event handling is needed; existing gateways
+   relay sequenced outbox payloads. Gateway deployment is independent of this
+   feature and can be omitted. Do not change replicas or shared media state.
+5. **Web last:**
+   `gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"`,
+   watch that exact run, then
+   `kubectl -n default rollout status deployment/caper-web --timeout=15m`.
+   Reload pre-release browser tabs. Verify two users adding/removing the same
+   emoji, one user's highlight, counts after refresh and reconnect, and denied
+   access to private messages. Check desktop hover/keyboard and narrow layouts.
+6. **Rollback:** roll back the web first to stop exposing reaction writes. Keep
+   the compatible native clients. The migration is additive: do not drop reaction
+   data or rewrite stored events. An API rollback can leave the tables in place;
+   older clients may resync when retained reaction events replay. Restore the
+   reaction-capable API/web to recover the saved reactions. Merging alone deploys
+   none of these components; the commands above require operator authorization.
+
+Validation in the orb: `npm run check` and all 293 web tests passed. Rust
+formatting, Clippy with warnings denied, and workspace tests passed (106 passed,
+24 ignored); the separately executed disposable Postgres/Valkey chat suite passed
+all 7 tests, including persistence, duplicate/concurrent adds, removals, account
+identity, authorization/revocation, outbox rollback, mutation limits, and both
+reaction-cap boundaries. Rust desktop tests passed (116 passed, 9 ignored).
+Chromium desktop and 390px narrow-layout checks used the real local API, Postgres,
+and gateway: two-viewer updates, refresh persistence, chip ownership/removal,
+search/empty state, and Escape/focus return passed. A deliberately simulated HTTP
+503 verified the visible save error and successful retry after restoring the API.
+Screenshots were inspected; the narrow capture is browser layout coverage, not
+a physical phone or touch/Safari test. Apple/Android compilation and device checks
+were unavailable in this Linux orb. Native protocol changes are separate from
+native UI; native release verification and production rollout checks remain
+required. No deployment or production database write was performed.
+
 ## Shared call state and rolling deployments
 
 The original shared-state rollout below covers the public General room. Account

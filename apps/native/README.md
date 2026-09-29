@@ -27,6 +27,10 @@ unverified. Visual
 matching, audio controls, platform lifecycle behavior, and physical-device
 acceptance remain in progress.
 
+Message reactions are initially web-only. Native clients intentionally provide no
+reaction controls or rendering in this slice, but consume validated sequenced
+reaction events so chat replay remains contiguous and later messages still arrive.
+
 ## Build and download
 
 The **Native development builds** GitHub Actions workflow uses macOS, Windows, and

@@ -1477,6 +1477,24 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Sequence {
+                generation,
+                channel,
+                seq,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                if matches!(
+                    self.timeline.apply_sequence(&seq),
+                    Ok(model::Apply::Resync) | Err(_)
+                ) {
+                    self.reload_channel();
+                }
+            }
             GatewayEvent::Typing {
                 generation,
                 channel,

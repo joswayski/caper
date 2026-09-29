@@ -15,6 +15,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GatewayClientTest {
+    @Test fun `reaction protocol validates shape channel and sequence`() {
+        fun event(seq: String = "2", channel: String = "channel") = Json.parseToJsonElement(
+            """{"type":"message.reactions","schemaVersion":1,"channelId":"$channel","seq":"$seq","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author"]}]}""",
+        ).jsonObject
+        assertEquals("2", reactionSequence(event(), "channel"))
+        assertEquals("2", reactionSequence(event(), "channel"), "duplicate frames remain valid")
+        assertEquals("4", reactionSequence(event("4"), "channel"), "gap handling uses the parsed sequence")
+        assertThrows(IllegalArgumentException::class.java) { reactionSequence(event(channel = "other"), "channel") }
+        assertThrows(IllegalArgumentException::class.java) {
+            reactionSequence(Json.parseToJsonElement("""{"type":"message.reactions","schemaVersion":2,"channelId":"channel","seq":"2","messageId":"message","reactions":[]}""").jsonObject, "channel")
+        }
+    }
+
     @Test fun `watch registered on open socket waits for hello and subscribes only once`() {
         val server = MockWebServer()
         val incoming = ArrayBlockingQueue<String>(8)

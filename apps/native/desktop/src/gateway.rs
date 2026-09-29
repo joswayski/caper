@@ -36,6 +36,11 @@ pub enum GatewayEvent {
         channel: String,
         message: Box<Message>,
     },
+    Sequence {
+        generation: u64,
+        channel: String,
+        seq: String,
+    },
     Typing {
         generation: u64,
         channel: String,
@@ -391,6 +396,49 @@ fn connect_once(
                             generation,
                             channel: channel.into(),
                             message: Box::new(message),
+                        });
+                    }
+                    Some("message.reactions") => {
+                        let valid = event["schemaVersion"].as_u64() == Some(1)
+                            && event["channelId"].as_str() == Some(channel)
+                            && event["messageId"].as_str().is_some_and(|id| !id.is_empty())
+                            && event["reactions"].as_array().is_some_and(|reactions| {
+                                reactions.iter().all(|reaction| {
+                                    reaction["emoji"]
+                                        .as_str()
+                                        .is_some_and(|emoji| !emoji.is_empty())
+                                        && reaction["authorIds"].as_array().is_some_and(|authors| {
+                                            authors.iter().all(|author| {
+                                                author.as_str().is_some_and(|id| !id.is_empty())
+                                            })
+                                        })
+                                })
+                            });
+                        if !valid {
+                            return Err(Failure::Retry(
+                                "The gateway returned invalid reactions.".into(),
+                            ));
+                        }
+                        let seq = event["seq"]
+                            .as_str()
+                            .ok_or_else(|| Failure::Retry("Invalid gateway cursor".into()))?;
+                        let previous = sequence(cursor).map_err(Failure::Retry)?;
+                        let next = sequence(seq).map_err(Failure::Retry)?;
+                        if next > previous + 1 {
+                            let _ = events.send(GatewayEvent::Resync {
+                                generation,
+                                channel: channel.into(),
+                            });
+                            return Ok(());
+                        }
+                        if next <= previous {
+                            continue;
+                        }
+                        *cursor = seq.into();
+                        let _ = events.send(GatewayEvent::Sequence {
+                            generation,
+                            channel: channel.into(),
+                            seq: seq.into(),
                         });
                     }
                     Some("resync_required") => {

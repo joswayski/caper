@@ -236,6 +236,40 @@ async function sendingFixture(t: TestContext) {
   };
 }
 
+test("reaction HTTP snapshots and sequenced delivery agree without skipping messages", async (t) => {
+  const f = await sendingFixture(t);
+  const target = committed({ clientMessageId: "target", text: "React here" }, "1");
+  f.sockets[0].message(target);
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(input), "/api/chat/channels/general/messages/message-1/reactions");
+    assert.equal(init?.method, "PUT");
+    assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+    assert.deepEqual(JSON.parse(String(init?.body)), { emoji: "👍", active: true });
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const adding = f.client.setReaction(target.id, "👍", true);
+  const added = { type: "message.reactions" as const, schemaVersion: 1 as const, channelId: "general", messageId: target.id, seq: "2", reactions: [{ emoji: "👍", authorIds: ["guest"] }] };
+  f.sockets[0].frame(added);
+  f.sockets[0].frame({ ...added, seq: "3", reactions: [] });
+  finish(Response.json(added));
+  await adding;
+  assert.deepEqual(f.state.messages[0].reactions, [], "late HTTP cannot undo a newer removal");
+  assert.equal(f.client.snapshotHistory()?.cursor, "3");
+  f.sockets[0].message(committed({ clientMessageId: "next", text: "After the reactions" }, "4"));
+  assert.equal(f.state.messages.length, 2);
+  assert.equal(f.client.snapshotHistory()?.cursor, "4");
+  const failed = f.client.setReaction(target.id, "👍", true);
+  finish(Response.json({ error: "Please try again" }, { status: 503 }));
+  await assert.rejects(failed, /Please try again/);
+  assert.deepEqual(f.state.messages[0].reactions, []);
+  const retry = f.client.setReaction(target.id, "👍", true);
+  finish(Response.json({ ...added, seq: "5" }));
+  await retry;
+  assert.deepEqual(f.state.messages[0].reactions, added.reactions);
+  assert.equal(f.client.snapshotHistory()?.cursor, "4", "HTTP acknowledgement alone does not advance replay");
+});
+
 test("message sounds exclude history, own messages, and duplicate replay", async (t) => {
   const sounds: string[] = [];
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Audio");
@@ -729,7 +763,8 @@ test("resync retains visible messages through transient failures but clears them
   f.client.retryLoad();
   finish(Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(6).seq, hasMore: true }));
   await tick();
-  assert.deepEqual(f.state.messages, [4, 5, 6].map(f.message), "a contiguous refresh retains saved pages");
+  assert.deepEqual(f.state.messages, [f.message(6)], "a full resync drops cached pages whose reaction snapshots may be stale");
+  assert.equal(f.state.hasMore, true, "older pages can be loaded again from authoritative history");
   assert.equal(f.state.error, undefined);
   f.client.retryLoad();
   finish(Response.json({ error: "Access removed" }, { status: 403 }));

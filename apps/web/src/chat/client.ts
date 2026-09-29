@@ -2,7 +2,7 @@ import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChatMessage, isChatReactionEvent, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatReactionEvent, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -293,6 +293,45 @@ export class ChatClient {
     }
   }
 
+  async setReaction(messageId: string, emoji: string, active: boolean): Promise<void> {
+    const channelId = this.state.channelId;
+    const session = this.session;
+    if (!channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then react again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, {
+      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ emoji, active }),
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        this.session = undefined;
+        void this.createSession();
+      }
+      throw await apiError(response, "Reaction could not be saved. Try again.");
+    }
+    const event: unknown = await response.json();
+    if (!isChatReactionEvent(event) || event.channelId !== channelId || event.messageId !== messageId) throw new Error("The chat service returned an invalid reaction.");
+    if (this.controller.signal.aborted) return;
+    this.timeline.mergeReactions(event);
+    this.update({ messages: this.timeline.messages });
+  }
+
+  private receiveEvent(event: ChatMessage | ChatReactionEvent) {
+    const visible = new Set(this.timeline.messages.map((item) => item.id));
+    const result = this.timeline.applyEvent(event);
+    if (!("type" in event)) {
+      const typer = this.typers.get(event.author.id);
+      if (typer && result !== "duplicate") { typer.typing = false; this.refreshTypers(); }
+    }
+    if (result !== "buffered" && result !== "overflow") {
+      const messages = this.timeline.messages;
+      this.update({ messages });
+      const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
+      if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
+    }
+    return result;
+  }
+
   private async loadInitial(prepared?: GeneralChatHistory) {
     const generation = ++this.generation;
     const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
@@ -309,33 +348,17 @@ export class ChatClient {
       if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
       if (generation !== this.generation) return;
       this.spaceId = history.space.id;
-      // Retain older pages only when the fresh page joins the saved range.
-      // A resync beyond the replay window must not leave an unpageable gap.
-      const contiguous = previous && history.messages[0]
-        && sequence(history.messages[0].seq) <= sequence(previous.cursor) + 1n;
-      const retainedOlder = previous?.messages[0] && history.messages[0]
-        && contiguous
-        && sequence(previous.messages[0].seq) < sequence(history.messages[0].seq);
-      this.timeline.reset([...(contiguous ? previous.messages : []), ...history.messages], history.cursor);
+      // A full resync replaces older cached pages: missed reaction events may
+      // have changed them, even when their text-message sequences still join.
+      this.timeline.reset(history.messages, history.cursor);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
-        channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
+        channelName: history.channel.name, messages: this.timeline.messages, hasMore: history.hasMore,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
-        message: (message) => {
-          const visible = new Set(this.timeline.messages.map((item) => item.id));
-          const result = this.timeline.applyEvent(message);
-          const typer = this.typers.get(message.author.id);
-          if (typer && result !== "duplicate") { typer.typing = false; this.refreshTypers(); }
-          if (result !== "buffered" && result !== "overflow") {
-            const messages = this.timeline.messages;
-            this.update({ messages });
-            const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
-            if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
-          }
-          return result;
-        },
+        message: (message) => this.receiveEvent(message),
+        reactions: (event) => this.receiveEvent(event),
         status: (online) => {
           if (!online) { this.typers.clear(); this.refreshTypers(); }
           this.update({ online });

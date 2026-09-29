@@ -197,6 +197,22 @@ impl Timeline {
         Ok(Apply::Applied)
     }
 
+    pub fn apply_sequence(&mut self, value: &str) -> Result<Apply, String> {
+        let seq = sequence(value)?;
+        if seq <= self.cursor {
+            return Ok(Apply::Duplicate);
+        }
+        if seq != self.cursor + 1 {
+            return Ok(Apply::Resync);
+        }
+        self.cursor = seq;
+        while let Some(next) = self.buffered.remove(&(self.cursor + 1)) {
+            self.cursor += 1;
+            self.merge(next)?;
+        }
+        Ok(Apply::Applied)
+    }
+
     pub fn merge_sent(&mut self, message: Message) -> Result<(), String> {
         self.merge(message)
     }
@@ -329,5 +345,21 @@ mod tests {
             Apply::Applied
         );
         assert_eq!(timeline.cursor(), "12");
+    }
+
+    #[test]
+    fn reaction_sequences_bridge_messages_and_reject_gaps() {
+        let mut timeline = Timeline::default();
+        assert_eq!(timeline.apply(message("one", 1)).unwrap(), Apply::Applied);
+        assert_eq!(timeline.apply_sequence("2").unwrap(), Apply::Applied);
+        assert_eq!(timeline.apply_sequence("2").unwrap(), Apply::Duplicate);
+        assert_eq!(timeline.apply(message("three", 3)).unwrap(), Apply::Applied);
+        assert_eq!(timeline.apply_sequence("5").unwrap(), Apply::Resync);
+        assert_eq!(timeline.cursor(), "3");
+        assert_eq!(
+            timeline.messages().count(),
+            2,
+            "reaction does not manufacture a message"
+        );
     }
 }

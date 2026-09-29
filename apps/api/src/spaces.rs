@@ -66,7 +66,6 @@ fn limit(value: Option<String>, default: i64, name: &str) -> Result<i64, String>
 pub(crate) struct ChannelAccess {
     pub(crate) id: i64,
     pub(crate) last_seq: i64,
-    pub(crate) space_id: i64,
     pub(crate) demo: bool,
 }
 
@@ -108,8 +107,8 @@ pub(crate) async fn channel_access(
     channel: &str,
     user: Option<i64>,
 ) -> Result<ChannelAccess, ApiError> {
-    sqlx::query_as::<_, (i64, i64, i64, bool)>(
-        "SELECT c.id, c.last_seq, s.id, s.demo
+    sqlx::query_as::<_, (i64, i64, bool)>(
+        "SELECT c.id, c.last_seq, s.demo
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
            AND ((s.demo AND lower(c.name) = 'general') OR
@@ -123,10 +122,9 @@ pub(crate) async fn channel_access(
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
-    .map(|(id, last_seq, space_id, demo)| ChannelAccess {
+    .map(|(id, last_seq, demo)| ChannelAccess {
         id,
         last_seq,
-        space_id,
         demo,
     })
     .ok_or_else(not_found)

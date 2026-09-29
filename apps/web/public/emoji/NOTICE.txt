@@ -1,0 +1,9 @@
+Twemoji graphics © Twitter, Inc. and other contributors.
+Source: https://github.com/twitter/twemoji and https://github.com/jdecked/twemoji
+Graphics license: Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+
+Caper distributes the unmodified Emoji 15.0 SVG artwork packaged by
+@twemoji/svg 15.0.0. Some files have additional Unicode-presentation filename
+aliases; the artwork is unchanged. The package's MIT license is also retained
+at /emoji/twemoji-15/license; it does not replace the graphics attribution above.
