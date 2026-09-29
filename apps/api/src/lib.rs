@@ -1696,16 +1696,25 @@ async fn join(
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
     let submitted_name = input.name.as_deref().unwrap_or_default().trim();
-    let account_name = if let Some(token) = account_token(&headers) {
+    let account = if let Some(token) = account_token(&headers) {
         s.auth
             .authenticate(token, s.database.as_ref())
             .await
             .ok()
-            .and_then(|principal| principal.user.display_name)
+            .map(|principal| {
+                (
+                    principal.user.display_name,
+                    Sha256::digest(token.as_bytes()).to_vec(),
+                )
+            })
     } else {
         None
     };
-    let name = account_name.as_deref().unwrap_or(submitted_name).trim();
+    let name = account
+        .as_ref()
+        .and_then(|(name, _)| name.as_deref())
+        .unwrap_or(submitted_name)
+        .trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
@@ -1721,7 +1730,13 @@ async fn join(
     let warm = match &input.warm {
         None => None,
         Some(ticket) => {
-            let verified = match (&s.media_session, &input.monitor, &input.publish) {
+            // Account-channel dispatch already authenticated its session. The
+            // public demo instead uses the validated account cookie/bearer above.
+            let identity = s
+                .media_session
+                .as_ref()
+                .or_else(|| account.as_ref().map(|(_, hash)| hash));
+            let verified = match (identity, &input.monitor, &input.publish) {
                 (Some(account), None, Some(_)) => verify_warm(&s.config, account, ticket),
                 _ => None,
             };
@@ -2238,11 +2253,19 @@ struct WarmInput {
 /// the provider sessions.
 async fn warm(
     State(s): State<AppState>,
+    headers: HeaderMap,
     Json(input): Json<WarmInput>,
 ) -> Result<Json<Value>, ApiError> {
     ensure_enabled(&s)?;
-    let Some(account) = s.media_session.clone() else {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "not available"));
+    let account = if let Some(account) = &s.media_session {
+        account.clone()
+    } else {
+        // The live demo stays guest-accessible, but background provisioning
+        // requires a valid account, not merely the presence of a cookie.
+        let token = account_token(&headers)
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not available"))?;
+        s.auth.authenticate(token, s.database.as_ref()).await?;
+        Sha256::digest(token.as_bytes()).to_vec()
     };
     if [&input.main, &input.receive]
         .iter()

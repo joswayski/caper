@@ -18,6 +18,7 @@ export default function AccountNav({ account: initialAccount, profileLabel }: { 
   if (account === null) return <a className="text-sm font-bold text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 max-[560px]:text-[.78rem]" href="/login">Sign in</a>;
 
   return <div className="flex min-w-0 items-center gap-4 max-[560px]:gap-2.5">
+    <a className="shrink-0 text-sm font-bold text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 max-[560px]:text-[.78rem]" href="/spaces">Spaces</a>
     <a className="min-w-0 truncate text-sm font-bold text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 max-[560px]:text-[.78rem]" href="/profile">
       {profileLabel ?? (account.username ? `@${account.username}` : "Finish account")}
     </a>
