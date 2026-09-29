@@ -6389,6 +6389,10 @@ fn main() -> eframe::Result {
     } else {
         [1440.0, 900.0]
     };
+    let icon = image::load_from_memory(include_bytes!("../resources/caper-icon.png"))
+        .expect("bundled Caper icon is valid PNG")
+        .to_rgba8();
+    let (width, height) = icon.dimensions();
     eframe::run_native(
         "Caper",
         eframe::NativeOptions {
@@ -6396,7 +6400,12 @@ fn main() -> eframe::Result {
             persist_window: fixture.is_none(),
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size(viewport_size)
-                .with_min_inner_size([320.0, 560.0]),
+                .with_min_inner_size([320.0, 560.0])
+                .with_icon(egui::IconData {
+                    rgba: icon.into_raw(),
+                    width,
+                    height,
+                }),
             ..Default::default()
         },
         Box::new(move |creation| {
