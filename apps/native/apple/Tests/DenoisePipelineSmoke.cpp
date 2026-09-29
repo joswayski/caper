@@ -67,14 +67,15 @@ int main(int argc, char **argv) {
 
     engine = CaperDenoisePipelineCreate(fallbackOnly ? nullptr : argv[1], rate);
     assert(engine);
-    // A stalled worker must fail closed rather than leaking unprocessed PCM.
-    for (int i = 0; i < 100 && !CaperDenoisePipelineFailed(engine); ++i) {
+    // A stalled worker sheds blocks as silence: it never leaks unprocessed PCM
+    // and never mutes the microphone for the rest of the call.
+    for (int i = 0; i < 100; ++i) {
         input.fill(3000);
-        CaperDenoisePipelineProcess(engine, input.data(), input.data(), epochs.data(), frames, 150, 13);
+        assert(CaperDenoisePipelineProcess(engine, input.data(), input.data(), epochs.data(), frames, 150, 13));
+        for (unsigned j = 0; j < frames; ++j) assert(input[j] != 3000);
     }
-    input.fill(3000);
-    assert(!CaperDenoisePipelineProcess(engine, input.data(), input.data(), epochs.data(), frames, 150, 13));
-    for (unsigned i = 0; i < frames; ++i) assert(input[i] == 0 && epochs[i] == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    assert(!CaperDenoisePipelineFailed(engine));
     CaperDenoisePipelineDestroy(engine);
     std::printf("native pipeline %d Hz: %d hops, %d audible samples, failed=%d, mode=%d, mean=%.2f ms, max=%.2f ms\n",
         rate, hops, audible, failed, stats.mode,

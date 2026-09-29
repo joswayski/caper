@@ -12,6 +12,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import chat.caper.android.MainActivity
@@ -71,7 +72,12 @@ class VoiceCallService : Service() {
     // Android service lifecycle and explicit stop run on Main. Resume all
     // asynchronous results here too, so ownership checks and state commits
     // cannot interleave with a synchronous stop/replacement.
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    // An exception escaping a launch here would crash the whole app; end the
+    // call instead, as web does when a voice operation fails.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + CoroutineExceptionHandler { _, error ->
+        Log.e("CaperVoice", "Voice task failed", error)
+        engine?.let { failCall(it, error) }
+    })
     private val attempts = CallAttemptGate()
     private var engine: VoiceEngine? = null
     private var activeAttempt: Long? = null
@@ -98,8 +104,15 @@ class VoiceCallService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!BuildConfig.ENABLE_NATIVE_VOICE) {
+        // startForegroundService() requires startForeground() before any stop,
+        // or Android kills the app. Satisfy it before every early exit.
+        if (intent?.action == ACTION_START && !startForegroundSafely()) {
+            update { it.copy(phase = VoiceState.Phase.FAILED, error = "Voice could not start.", speakingParticipants = emptySet()) }
             stopSelf()
+            return START_NOT_STICKY
+        }
+        if (!BuildConfig.ENABLE_NATIVE_VOICE) {
+            stopForegroundAndSelf()
             return START_NOT_STICKY
         }
         when (intent?.action) {
@@ -110,7 +123,7 @@ class VoiceCallService : Service() {
                 requireNotNull(intent.getStringExtra(EXTRA_SPACE_NAME)),
                 requireNotNull(intent.getStringExtra(EXTRA_DISPLAY_NAME)),
                 intent.getBooleanExtra(EXTRA_DEMO, false),
-            ) else if (engine == null) stopSelf()
+            ) else if (engine == null) stopForegroundAndSelf()
             ACTION_MUTE -> scope.launch {
                 if (state.value.monitoring) return@launch
                 val (current, attempt) = currentCall() ?: return@launch
@@ -154,7 +167,7 @@ class VoiceCallService : Service() {
         if (engine != null) return
         invalidateJoinAuthorization()
         val token = TokenStore(this).read()
-        if (!demo && token == null) return stopSelf()
+        if (!demo && token == null) return stopForegroundAndSelf()
         val attempt = attempts.begin()
         activeAttempt = attempt
         val preferences = getSharedPreferences("audio", MODE_PRIVATE)
@@ -357,7 +370,25 @@ class VoiceCallService : Service() {
                 }
         }
         wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Caper:voice").apply { acquire() }
+        chooseDefaultRoute()
         updateRoutes()
+    }
+
+    /** Communication mode starts on the earpiece; like iPhone, use a headset when
+     * one is connected and otherwise the loudspeaker. */
+    private fun chooseDefaultRoute() {
+        val headsets = setOf(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_USB_HEADSET)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 31) {
+                val devices = audio.availableCommunicationDevices
+                val choice = devices.firstOrNull { it.type in headsets } ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (choice != null && audio.communicationDevice?.id != choice.id) audio.setCommunicationDevice(choice)
+            } else {
+                @Suppress("DEPRECATION")
+                audio.isSpeakerphoneOn = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).none { it.type in headsets }
+            }
+        }.onFailure { Log.w("CaperVoice", "Could not choose an audio route", it) }
     }
 
     private fun updateRoutes() {
@@ -388,8 +419,20 @@ class VoiceCallService : Service() {
     private fun releaseAudio() {
         focus?.let(audio::abandonAudioFocusRequest); focus = null
         if (Build.VERSION.SDK_INT >= 31) audio.clearCommunicationDevice()
+        else {
+            @Suppress("DEPRECATION")
+            audio.isSpeakerphoneOn = false
+        }
         audio.mode = AudioManager.MODE_NORMAL
         wakeLock?.takeIf { it.isHeld }?.release(); wakeLock = null
+    }
+
+    private fun startForegroundSafely(): Boolean = try { startForegroundNotification(); true }
+        catch (error: Exception) { Log.e("CaperVoice", "Could not start the call notification", error); false }
+
+    private fun stopForegroundAndSelf() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     private fun startForegroundNotification() {
@@ -419,8 +462,10 @@ class VoiceCallService : Service() {
     }
 
     override fun onDestroy() {
-        if (active === this) active = null
-        invalidateJoinAuthorization()
+        if (active === this) {
+            active = null
+            invalidateJoinAuthorization()
+        }
         attempts.end()
         connectJob?.cancel(); heartbeat?.cancel(); speaking?.cancel(); turnRenewal?.cancel(); recovery?.cancel(); mediaEvents?.close(); mediaEvents = null
         val current = engine; engine = null
