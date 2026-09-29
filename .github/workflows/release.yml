@@ -194,7 +194,8 @@ jobs:
     name: iOS / TestFlight
     needs: resolve
     runs-on: macos-15
-    timeout-minutes: 60
+    # Includes waiting for Apple to process the build before handing it to testers.
+    timeout-minutes: 110
     permissions:
       contents: read
       id-token: write
@@ -238,6 +239,16 @@ jobs:
           # Unique and increasing across runs and re-runs, e.g. 12.1 then 12.2.
           BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
         run: bash apps/native/apple/upload-testflight.sh
+      - name: Give the build to every TestFlight tester group
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'pyjwt[crypto]==2.10.1'
+          export WHAT_TO_TEST="$(bash scripts/release-notes.sh "$RELEASE_SHA")"
+          python scripts/testflight-distribute.py
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/asc.p8" "$RUNNER_TEMP/apple.json"
@@ -288,6 +299,17 @@ jobs:
             echo "CAPER_ANDROID_KEY_PASSWORD=$(jq -r .key_password "$secret")"
           } >>"$GITHUB_ENV"
           rm -f "$secret"
+          # Optional until stored: the Play service account that uploads releases.
+          aws secretsmanager get-secret-value --secret-id production/signing/release \
+            --query SecretString --output text \
+            | jq -er '.google_play.service_account_json | strings' >"$RUNNER_TEMP/play.json" 2>/dev/null || true
+          if [[ -s "$RUNNER_TEMP/play.json" ]] && jq -e '.client_email' "$RUNNER_TEMP/play.json" >/dev/null 2>&1; then
+            chmod 0600 "$RUNNER_TEMP/play.json"
+            echo "GOOGLE_PLAY_SERVICE_ACCOUNT=$RUNNER_TEMP/play.json" >>"$GITHUB_ENV"
+          else
+            rm -f "$RUNNER_TEMP/play.json"
+            echo "::warning::production/signing/release has no google_play section; upload the google-play-bundle artifact in Play Console by hand."
+          fi
       - name: Test and build the signed release APK and Play bundle
         working-directory: apps/native/android
         run: |
@@ -311,17 +333,28 @@ jobs:
           path: apps/native/android/dist/Caper-Android.apk
           if-no-files-found: error
           retention-days: 7
-      # Not a public download: upload it in Google Play Console (Testing →
-      # Internal testing → Create new release) until Play uploads are automated.
+      # Not a public download. Kept for manual Play Console uploads when the
+      # Play service account is not stored.
       - uses: actions/upload-artifact@v4
         with:
           name: google-play-bundle
           path: apps/native/android/play/Caper-Android-Play.aab
           if-no-files-found: error
           retention-days: 30
+      - name: Roll out to Google Play internal testers
+        if: env.GOOGLE_PLAY_SERVICE_ACCOUNT != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'pyjwt[crypto]==2.10.1'
+          export PLAY_RELEASE_NAME="0.1.${CAPER_BUILD_NUMBER}"
+          export PLAY_RELEASE_NOTES="$(bash scripts/release-notes.sh "$RELEASE_SHA")"
+          python scripts/play-upload.py apps/native/android/play/Caper-Android-Play.aab
       - name: Remove signing material
         if: always()
-        run: rm -f "$RUNNER_TEMP/caper-release.jks" "$RUNNER_TEMP/android.json"
+        run: rm -f "$RUNNER_TEMP/caper-release.jks" "$RUNNER_TEMP/android.json" "$RUNNER_TEMP/play.json"
 
   desktop:
     name: Desktop / ${{ matrix.target }}
