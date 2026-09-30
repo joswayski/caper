@@ -257,14 +257,15 @@
 .sidebar-channels { container: channels / inline-size; }
 .voice-stack { height: 28px; display: flex; align-items: center; padding: 0 5px 0 4px; border: 0; border-radius: 999px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .voice-stack-faces { display: flex; align-items: center; }
-.channel-join.voice-button { min-height: 28px; gap: 5px; padding: 0 9px; font-size: .72rem; }
+.channel-join.voice-button { min-height: 28px; gap: 5px; padding: 0 9px; font-size: .72rem; transition: opacity .16s ease, visibility 0s; }
 .channel-join.voice-button > svg { width: 14px; height: 14px; }
 .channel-join.voice-button[aria-busy="true"] { cursor: progress; }
+.channel-join.voice-button[data-connected] { visibility: hidden; opacity: 0; pointer-events: none; transition: opacity .16s ease, visibility 0s .16s; }
 /* Other channels' Join appears on hover or keyboard focus. It keeps its
    space, so nothing shifts under the cursor. */
 @media (hover: hover) {
-  .channel-join[data-hover-only] { visibility: hidden; opacity: 0; transition: opacity .12s ease, visibility 0s .12s; }
-  :is(.channel-item, .channel-navigation li):is(:hover, :focus-within) .channel-join[data-hover-only] { visibility: visible; opacity: 1; transition: opacity .12s ease; }
+  .channel-join[data-hover-only]:not([data-connected]) { visibility: hidden; opacity: 0; transition: opacity .12s ease, visibility 0s .12s; }
+  :is(.channel-item, .channel-navigation li):is(:hover, :focus-within) .channel-join[data-hover-only]:not([data-connected]) { visibility: visible; opacity: 1; transition: opacity .12s ease; }
 }
 @media (hover: none) {
   .channel-join[data-hover-only] { display: none; }
@@ -280,7 +281,11 @@
 .voice-stack > svg { width: 11px; height: 11px; margin-left: 2px; transition: transform .2s ease; }
 .voice-stack[aria-expanded="false"] > svg { transform: rotate(-90deg); }
 .voice-stack:focus-visible { outline: 2px solid var(--terracotta-bright); outline-offset: 1px; }
-.voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid var(--surface-sidebar); border-radius: var(--radius-avatar); color: #fff; background: #354027; font-size: .55rem; font-weight: 900; }
+.voice-stack-avatar { width: 20px; height: 20px; display: grid; place-items: center; border: 2px solid var(--surface-sidebar); border-radius: var(--radius-avatar); color: #fff; background: #354027; font-size: .55rem; font-weight: 900; animation: voice-avatar-enter .16s ease; }
+@keyframes voice-avatar-enter {
+  from { opacity: 0; transform: scale(.9); }
+  to { opacity: 1; transform: scale(1); }
+}
 .voice-stack-avatar + .voice-stack-avatar { margin-left: -6px; }
 .voice-stack-avatar.speaking { border-color: var(--caper); box-shadow: 0 0 0 1px var(--caper); }
 .voice-stack-faces small { margin-left: 4px; font-size: .7rem; font-weight: 750; font-variant-numeric: tabular-nums; }
@@ -314,5 +319,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .voice-occupants { transition: none; }
+  .channel-join.voice-button, .channel-join.voice-button[data-connected], .channel-join[data-hover-only]:not([data-connected]),
+  :is(.channel-item, .channel-navigation li):is(:hover, :focus-within) .channel-join[data-hover-only]:not([data-connected]) { transition: none; }
+  .voice-stack-avatar { animation: none; }
   .channel-join[data-live] { animation: none; box-shadow: 0 0 0 1px rgb(140 178 98 / .24), 0 0 6px rgb(140 178 98 / .1); }
 }
