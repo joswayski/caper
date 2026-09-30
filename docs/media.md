@@ -9,6 +9,21 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
+Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
+errors, pending states and member loading do not resize or recenter them. Channel
+settings reserve the hidden save bar, and profile forms reserve error space so
+retrying a save does not move its button. Channel and space settings dismiss on
+outside click/tap; nested delete confirmation dismissal leaves settings open.
+Run `MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-space-controls.mjs`
+against Vite for desktop, narrow and short-viewport geometry, overflow reachability
+and backdrop regression checks with mocked APIs. Android, Apple and Rust desktop
+use independently implemented stable shells; browser results do not validate
+native rendering. Rust desktop has headless egui geometry/backdrop regression
+checks. Android and Apple compilation/device checks, and rendered desktop
+inspection, remain pending (this Linux orb has no JDK/Android device, Swift
+toolchain or graphical display). The desktop suite has an unrelated existing
+leave-space assertion expecting the retired General channel; this also fails on
+the unchanged base revision.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 Input/output device lists open directly beside the profile's microphone/headphone
