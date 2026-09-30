@@ -724,20 +724,21 @@ function SpacesLoading() {
   </main>;
 }
 
-export default function Spaces({ embedded = false, initialAccount, engaged = true, onChatOnlineChange }: {
+export default function Spaces({ embedded = false, initialAccount, initialSpaceList, engaged = true, onChatOnlineChange }: {
   embedded?: boolean;
   initialAccount?: Account;
+  initialSpaceList?: { spaces: Space[]; limits: SpaceLimits };
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
 } = {}) {
   const [account, setAccount] = useState<Account | undefined>(initialAccount);
-  const [spaces, setSpaces] = useState<Space[]>([]);
-  const [limits, setLimits] = useState<SpaceLimits>();
+  const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
+  const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace>();
   const detail = view?.detail;
   const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState(() => embedded ? {} : selectedFromUrl());
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [dialog, setDialog] = useState<
@@ -794,7 +795,7 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
           return void window.location.assign("/profile");
         if (!nextAccount) return void window.location.replace("/login");
-        const result = await listSpaces();
+        const result = initialSpaceList ?? await listSpaces();
         if (!current) return;
         setAccount(nextAccount);
         setSpaces(result.spaces);
@@ -907,11 +908,9 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
       <main className="spaces-empty">
         <Wordmark />
         <section>
-          <p className="eyebrow">YOUR SPACES</p>
-          <h1>Start a conversation.</h1>
+          <h1>Name your space</h1>
           <p>
-            Create a space for your people. Every space begins with one unified
-            text and voice channel.
+            Choose something you will recognize easily. You can always change it later!
           </p>
           <button
             type="button"
