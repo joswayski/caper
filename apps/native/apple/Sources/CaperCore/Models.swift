@@ -300,7 +300,7 @@ struct ReactionSnapshots: Sendable {
     mutating func apply(messageID: String, seq: String?, reactions: [MessageReaction]) -> Bool {
         guard let seq, (try? Sequence.compare(seq, "0")) != nil else { return false }
         if let current = values[messageID], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
-        let unseenCount = values.keys.lazy.filter { !knownMessageIDs.contains($0) }.count
+        let unseenCount = values.keys.filter { !knownMessageIDs.contains($0) }.count
         guard knownMessageIDs.contains(messageID) || values[messageID] != nil || unseenCount < Self.maximumUnseen else {
             unseenOverflowed = true
             return false

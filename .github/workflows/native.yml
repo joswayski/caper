@@ -297,6 +297,7 @@ jobs:
             apps/native/android/app/build/test-results/
             apps/native/android/app/build/reports/androidTests/
             apps/native/android/app/build/outputs/androidTest-results/
+            apps/native/android/app/build/outputs/connected_android_test_additional_output/
           if-no-files-found: warn
           retention-days: 14
       - name: Stop the parity fixture
