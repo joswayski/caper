@@ -31,6 +31,7 @@ packages=(
   libasound2-dev
   libdbus-1-dev
   libegl1-mesa-dev
+  libgl1-mesa-dri
   libglib2.0-dev
   libpulse0
   libssl-dev
@@ -39,10 +40,14 @@ packages=(
   libxcursor-dev
   libxi-dev
   libxkbcommon-dev
+  libxkbcommon-x11-0
   libxrandr-dev
   lld-21
   pkg-config
   postgresql
+  xauth
+  xdotool
+  xvfb
 )
 missing_packages=()
 for package in "${packages[@]}"; do

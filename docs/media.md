@@ -696,8 +696,8 @@ message snapshots, sequence allocation, and outbox commit together.
    reaction-capable API/web to recover the saved reactions. Merging alone deploys
    none of these components; the commands above require operator authorization.
 
-Validation in the orb: `npm run check` and all 293 web tests passed. Rust
-formatting, Clippy with warnings denied, and workspace tests passed (106 passed,
+Validation in the orb: `npm run check` and all 292 web tests passed. Rust
+formatting, Clippy with warnings denied, and workspace tests passed (110 passed,
 24 ignored); the separately executed disposable Postgres/Valkey chat suite passed
 all 7 tests, including persistence, duplicate/concurrent adds, removals, account
 identity, authorization/revocation, outbox rollback, mutation limits, and both
