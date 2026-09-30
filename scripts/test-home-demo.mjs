@@ -16,6 +16,7 @@ const wait = code => browser('wait', '--fn', `Boolean(${code})`);
 const nextMoments = count => evaluate(`for (let i = 0; i < ${count}; i++) { document.querySelector('[aria-label="Next demo moment"]').click(); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); }`);
 const members = () => evaluate('return [...document.querySelectorAll(".sim-member strong")].map(el => el.textContent)');
 const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
+const speakers = () => evaluate('return [...document.querySelectorAll(".sim-person[data-speaking] strong")].map(el => el.textContent)');
 
 try {
   browser('open', origin.href);
@@ -35,6 +36,16 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), '30%');
   assert.equal(evaluate('return document.querySelector(".sim-composer").getAttribute("href")'), '/spaces');
   assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".sim-members")).display'), 'none');
+  assert.ok(evaluate('return !!document.querySelector(".sim-people").closest("li[data-voice]")?.querySelector(".channel-select[aria-current=page]")'), 'Voice participants belong beneath their channel');
+  assert.ok(!evaluate('return document.querySelector(".sim-sidebar").textContent.includes("In voice")'));
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-person .avatar")).width'), '20px');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-person")).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Production indicates speech on the avatar, not a green row');
+  assert.deepEqual(speakers(), ['Maya', 'Theo', 'June'], 'Multiple people speak simultaneously');
+  browser('click', '.sim-sidebar .voice-stack');
+  assert.equal(evaluate('return document.querySelector(".sim-sidebar .voice-stack").getAttribute("aria-expanded")'), 'false');
+  assert.ok(evaluate('return document.querySelector(".voice-occupants-inner").inert'));
+  assert.equal(evaluate('return document.querySelectorAll(".voice-stack-avatar.speaking").length'), 3);
+  browser('click', '.sim-sidebar .voice-stack');
 
   const chip = '.sim-message:last-of-type .sim-reactions button[aria-pressed]';
   const count = evaluate(`return Number(document.querySelector('${chip} span').textContent)`);
@@ -61,13 +72,22 @@ try {
   assert.deepEqual(members(), ['Maya', 'Theo', 'June', 'Leo']);
   assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
   assert.equal(evaluate('return document.querySelector(".sim-arrival").textContent'), 'Leo joined the channel');
-  nextMoments(4); // 8
+  assert.deepEqual(speakers(), ['Maya', 'Theo', 'June']);
+  nextMoments(1); // 5: Maya stops while Theo and June continue
+  assert.deepEqual(speakers(), ['Theo', 'June']);
+  nextMoments(3); // 8
   assert.ok(members().includes('Noor'));
   assert.ok(!voices().includes('Noor'));
   assert.equal(evaluate('return document.querySelector(".sim-typing").textContent.trim()'), 'Noor and Theo are typing');
+  assert.deepEqual(speakers(), ['Maya', 'Theo']);
   nextMoments(2); // 10
   assert.ok(voices().includes('Leo'));
-  nextMoments(5); // 15
+  nextMoments(1); // 11
+  assert.deepEqual(speakers(), ['June', 'Leo']);
+  nextMoments(1); // 12: two messages arrive in the same second
+  assert.deepEqual(evaluate('return [...document.querySelectorAll(".sim-message p")].slice(-2).map(el => el.textContent)'), ['already here. bringing the playlist 🎶', 'save me a spot']);
+  assert.deepEqual(speakers(), ['Maya', 'June', 'Leo']);
+  nextMoments(3); // 15
   assert.equal(members().length, 6);
   assert.ok(!voices().includes('Sam'));
   nextMoments(7); // 22
@@ -85,7 +105,7 @@ try {
   nextMoments(4); // 0: reset presence as well as messages
   assert.deepEqual(members(), ['Maya', 'Theo', 'June']);
   assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
-  console.log('PASS: six-person join/leave/rejoin sequence, separate voice membership, multi-person typing, manual stepping and cycle reset');
+  console.log('PASS: production-style nested/collapsible roster, simultaneous speakers, burst messages, six-person join/leave/rejoin sequence, multi-person typing and cycle reset');
 
   // Mock only clipboard rejection: browsers may deny it, and we must not claim success.
   evaluate('navigator.clipboard.writeText = async () => { throw new Error("Test denial"); };');

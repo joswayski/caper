@@ -1,41 +1,48 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
-import { Hash, Mic, Pause, Play, SkipForward, SmilePlus } from "lucide-react";
+import { ChevronDown, Hash, Pause, Play, SkipForward, SmilePlus } from "lucide-react";
+import usFlag from "flag-icons/flags/4x3/us.svg?url";
+import gbFlag from "flag-icons/flags/4x3/gb.svg?url";
+import caFlag from "flag-icons/flags/4x3/ca.svg?url";
+import jpFlag from "flag-icons/flags/4x3/jp.svg?url";
+import frFlag from "flag-icons/flags/4x3/fr.svg?url";
 import { attachLiveMotion } from "./liveMotion";
+import "../pages/call.css";
+import "../spaces/spaces.css";
 import "./live-window.css";
 
 const people = [
-  { name: "Maya", avatar: "0% 0%", hue: 0, note: "collecting tiny hats" },
-  { name: "Theo", avatar: "100% 0%", hue: 0, note: "on aux duty" },
-  { name: "June", avatar: "0% 100%", hue: 0, note: "here for the memes" },
-  { name: "Leo", avatar: "100% 100%", hue: 0, note: "one more game?" },
-  { name: "Noor", avatar: "0% 0%", hue: 100, note: "snack coordinator" },
-  { name: "Sam", avatar: "0% 100%", hue: 175, note: "always has a fun fact" },
+  { name: "Maya", avatar: "0% 0%", hue: 0, note: "collecting tiny hats", flag: usFlag, country: "United States", speech: [[0, 4.25], [6.5, 9], [12, 13.75], [18.25, 20.5], [26, 29.25], [40.25, 43]] },
+  { name: "Theo", avatar: "100% 0%", hue: 0, note: "on aux duty", flag: gbFlag, country: "United Kingdom", speech: [[1.5, 5.5], [8, 10.75], [14.5, 18], [27.25, 30.5], [35.5, 37.25], [43, 46]] },
+  { name: "June", avatar: "0% 100%", hue: 0, note: "here for the memes", flag: caFlag, country: "Canada", speech: [[2.75, 6.25], [10.5, 12.75], [15.75, 16.5], [22.5, 25], [33, 36.25], [44.25, 46.5]] },
+  { name: "Leo", avatar: "100% 100%", hue: 0, note: "one more game?", flag: jpFlag, country: "Japan", speech: [[10.25, 13], [15.5, 19.25], [23, 27.5], [30.25, 32.5], [36, 39.25], [46, 48.5]] },
+  { name: "Noor", avatar: "0% 0%", hue: 100, note: "snack coordinator", flag: frFlag, country: "France", speech: [[18.5, 22.75], [25.5, 28], [29, 33.5], [37.25, 40.75], [44, 47]] },
+  { name: "Sam", avatar: "0% 100%", hue: 175, note: "always has a fun fact", flag: usFlag, country: "United States", speech: [[38.5, 40.5], [42.25, 45.75], [47.25, 48.25]] },
 ];
 
 const messages = [
   { person: 0, at: 0, text: "okay, this made my entire morning", meme: true, emoji: 0 },
-  { person: 1, at: 1, text: "the tiny hat is doing a lot of work here", emoji: 2 },
+  { person: 1, at: 1.25, text: "the tiny hat is doing a lot of work here", emoji: 2 },
   { person: 2, at: 3, text: "new group photo. no objections please", emoji: 1 },
-  { person: 3, at: 5, text: "i leave for TWO minutes 😂", emoji: 4 },
-  { person: 0, at: 7, text: "anyway… who’s up for a game?", emoji: 3 },
-  { person: 4, at: 9, text: "did someone say game night? 👀", emoji: 2 },
-  { person: 1, at: 11, text: "already here. bringing the playlist 🎶", emoji: 1 },
-  { person: 3, at: 12, text: "joining voice. save me a spot", emoji: 3 },
-  { person: 2, at: 14, text: "rule one: nobody lets me choose the map", emoji: 0 },
-  { person: 5, at: 16, text: "hello hello! what did i miss?", emoji: 1 },
-  { person: 4, at: 18, text: "a tiny hat and some very serious planning", emoji: 0 },
-  { person: 5, at: 20, text: "excellent. i brought snacks 🍿", emoji: 2 },
+  { person: 3, at: 4.75, text: "i leave for TWO minutes 😂", emoji: 4 },
+  { person: 0, at: 7.5, text: "anyway… who’s up for a game?", emoji: 3 },
+  { person: 4, at: 9.25, text: "did someone say game night? 👀", emoji: 2 },
+  { person: 1, at: 11.25, text: "already here. bringing the playlist 🎶", emoji: 1 },
+  { person: 3, at: 11.75, text: "save me a spot", emoji: 3 },
+  { person: 2, at: 12.5, text: "rule one: nobody lets me choose the map", emoji: 0 },
+  { person: 5, at: 16.25, text: "hello hello! what did i miss?", emoji: 1 },
+  { person: 4, at: 16.75, text: "a tiny hat and some very serious planning", emoji: 0 },
+  { person: 5, at: 20.25, text: "excellent. i brought snacks 🍿", emoji: 2 },
   { person: 0, at: 22, text: "brb, getting tea. please behave", emoji: 4 },
   { person: 3, at: 24, text: "no promises", emoji: 0 },
-  { person: 0, at: 26, text: "back! the kettle was faster than this lobby", emoji: 3 },
-  { person: 2, at: 28, text: "we’re waiting for theo’s 400-song playlist", emoji: 0 },
-  { person: 1, at: 30, text: "it’s called having range", emoji: 2 },
-  { person: 4, at: 32, text: "i’m requesting exactly one ridiculous song", emoji: 1 },
-  { person: 5, at: 34, text: "fun fact: capybaras are excellent swimmers", emoji: 3 },
-  { person: 3, at: 36, text: "so our mascot can carry us on the water map?", emoji: 0 },
+  { person: 0, at: 26.5, text: "back! the kettle was faster than this lobby", emoji: 3 },
+  { person: 2, at: 28.25, text: "we’re waiting for theo’s 400-song playlist", emoji: 0 },
+  { person: 1, at: 30.5, text: "it’s called having range", emoji: 2 },
+  { person: 4, at: 32.25, text: "i’m requesting exactly one ridiculous song", emoji: 1 },
+  { person: 5, at: 34.75, text: "fun fact: capybaras are excellent swimmers", emoji: 3 },
+  { person: 3, at: 36.25, text: "so our mascot can carry us on the water map?", emoji: 0 },
   { person: 5, at: 38, text: "joining voice to defend this theory", emoji: 2 },
-  { person: 0, at: 40, text: "this is now a capybara appreciation channel", meme: true, emoji: 1 },
-  { person: 4, at: 42, text: "the hat really ties the whole team together", emoji: 2 },
+  { person: 0, at: 40.5, text: "this is now a capybara appreciation channel", meme: true, emoji: 1 },
+  { person: 4, at: 42.75, text: "the hat really ties the whole team together", emoji: 2 },
   { person: 2, at: 45, text: "back with cookies. let’s gooo", emoji: 3 },
 ];
 
@@ -77,6 +84,7 @@ export default function LiveWindow() {
   const [interacting, setInteracting] = useState(false);
   const [focused, setFocused] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
+  const [rosterOpen, setRosterOpen] = useState(true);
   const [picker, setPicker] = useState<number>();
   const [reactions, setReactions] = useState<Record<string, boolean>>({});
 
@@ -104,20 +112,22 @@ export default function LiveWindow() {
 
   useEffect(() => {
     if (paused || interacting || focused || reducedMotion || picker !== undefined) return;
-    const timer = window.setInterval(() => setPhase((current) => (current + 1) % cycleLength), 1600);
+    // Speaking windows, message bursts, typing and arrivals overlap on this
+    // clock. Nobody waits for the previous person's turn to finish.
+    const timer = window.setInterval(() => setPhase((current) => (current + .25) % cycleLength), 250);
     return () => window.clearInterval(timer);
   }, [paused, interacting, focused, reducedMotion, picker]);
 
   const present = people.map((person, index) => {
     const last = activity.filter((event) => event.person === index && event.at <= phase).at(-1);
-    return { ...person, online: last?.online ?? index < 3, voice: last?.voice ?? index < 2 };
+    const voice = last?.voice ?? index < 2;
+    return { ...person, online: last?.online ?? index < 3, voice, speaking: voice && person.speech.some(([start, end]) => phase >= start && phase < end) };
   });
   const onlinePeople = present.filter((person) => person.online);
   const voicePeople = present.filter((person) => person.voice);
   const latestActivity = activity.filter((event) => event.at <= phase).at(-1)!;
   const visibleMessages = messages.filter((message) => message.at <= phase).slice(-3);
-  const typingPeople = [...new Set(messages.filter((message) => message.at > phase && message.at <= phase + 3 && present[message.person].online).map((message) => people[message.person].name))];
-  const speaking = phase % voicePeople.length;
+  const typingPeople = [...new Set(messages.filter((message) => message.at > phase && message.at <= phase + 3.5 && present[message.person].online).map((message) => people[message.person].name))];
   const toggle = (key: string) => setReactions((current) => ({ ...current, [key]: !current[key] }));
 
   return (
@@ -132,21 +142,37 @@ export default function LiveWindow() {
             onFocusCapture={(event) => setFocused(!!event.target.closest(".sim-reactions, .sim-emoji-picker"))} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
             onKeyDown={(event) => { if (event.key === "Escape") { setPicker(undefined); event.currentTarget.querySelector<HTMLButtonElement>(`[data-picker-for="${picker}"]`)?.focus(); } }}>
             <aside className="sim-rail" aria-label="Demo space"><span>C</span></aside>
-            <aside className="sim-sidebar">
-              <div className="sim-brand">Caper</div>
-              <div className="sim-section-title">Channels</div>
-              <div className="sim-channel"><Hash aria-hidden="true" /> general</div>
-              <p>In voice</p>
-              <div className="sim-people">
-                {voicePeople.map((person, index) => (
-                  <div className="sim-person" data-speaking={index === speaking ? "" : undefined} key={person.name}>
-                    <Avatar person={person} />
-                    <strong>{person.name}</strong>
-                    <Mic aria-label={index === speaking ? `${person.name} is speaking` : undefined} aria-hidden={index !== speaking} />
-                  </div>
-                ))}
+            <aside className="sim-sidebar people-panel spaces-room">
+              <div className="sidebar-channels">
+                <nav className="channel-navigation" aria-label="Simulated channels">
+                  <header><div className="sim-brand">Caper<ChevronDown aria-hidden="true" /></div></header>
+                  <div className="channel-section-heading sim-section-title"><ChevronDown aria-hidden="true" />Channels<span className="section-count">2</span></div>
+                  <ul>
+                    <li data-voice="">
+                      <div className="channel-line">
+                        <div className="channel-select sim-channel" aria-current="page"><Hash aria-hidden="true" /><span>general</span></div>
+                        <span className="channel-voice" data-live-control>
+                          <button className="voice-stack" type="button" aria-expanded={rosterOpen} aria-controls="sim-voice-roster" aria-label={`${voicePeople.length} in demo voice. ${rosterOpen ? "Hide" : "Show"} participants.`} onClick={() => setRosterOpen(!rosterOpen)}>
+                            <span className="voice-stack-faces" aria-hidden="true">{voicePeople.slice(0, 3).map((person) => <span className={`voice-stack-avatar${person.speaking && !rosterOpen ? " speaking" : ""}`} key={person.name}>{person.name[0]}</span>)}{voicePeople.length > 3 && <small>+{voicePeople.length - 3}</small>}</span>
+                            <ChevronDown aria-hidden="true" />
+                          </button>
+                        </span>
+                      </div>
+                      <div className="voice-occupants" data-open={rosterOpen ? "" : undefined} id="sim-voice-roster">
+                        <div className="voice-occupants-inner" inert={!rosterOpen}>
+                          <ul className="sim-people" aria-label="People in demo voice in general">
+                            {voicePeople.map((person) => <li className="sim-person participant" data-speaking={person.speaking ? "" : undefined} key={person.name} aria-label={`${person.name}${person.speaking ? ", speaking" : ""}`}>
+                              <span className="participant-avatar"><span className={`avatar sim-voice-avatar ${person.speaking ? "speaking" : "quiet"}`}><Avatar person={person} /></span></span>
+                              <span className="participant-name"><strong>{person.name}</strong><img className="participant-country" src={person.flag} alt={`From ${person.country}`} title={person.country} /></span>
+                            </li>)}
+                          </ul>
+                        </div>
+                      </div>
+                    </li>
+                    <li><div className="channel-select"><Hash aria-hidden="true" /><span>tomato-soup</span></div></li>
+                  </ul>
+                </nav>
               </div>
-              <div className="sim-speaking-caption">{voicePeople[speaking].name} is talking</div>
             </aside>
             <section className="sim-chat">
               <header><div><Hash aria-hidden="true" /><strong>general</strong></div><span className="sim-label">Simulated demo</span></header>
@@ -160,7 +186,7 @@ export default function LiveWindow() {
                         {emoji.map((item, index) => {
                           const key = `${message.at}:${index}`;
                           const mine = !!reactions[key];
-                          const count = (index === message.emoji ? 1 + Math.min(3, Math.floor((phase - message.at) / 2)) : 0) + Number(mine);
+                          const count = (index === message.emoji ? 1 + Math.min(3, Math.floor((phase - message.at) / (1.5 + message.person % 3 * .75))) : 0) + Number(mine);
                           return count > 0 && <button type="button" key={item.code} aria-pressed={mine} aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}${mine ? ", including you" : ""}`} title={mine ? "Remove your reaction" : "Add your reaction"} onClick={() => toggle(key)}><img src={`/images/demo-emoji/${item.code}.svg`} alt="" /><span>{count}</span></button>;
                         })}
                         <button type="button" className="sim-add-reaction" data-picker-for={message.at} aria-label={`Add reaction to ${people[message.person].name}'s message`} aria-expanded={picker === message.at} onClick={() => setPicker(picker === message.at ? undefined : message.at)}><SmilePlus aria-hidden="true" /></button>
