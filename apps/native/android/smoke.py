@@ -288,26 +288,13 @@ def main() -> None:
     launch()
 
     # The first launch after a fresh install also compiles and warms the app,
-    # which can take well over 20 s on a loaded CI emulator.
-    guest = capture("caper-android-guest-populated-desktop", "TEST FIXTURE", seconds=60)
-    assert find(guest, contains="The same conversation") is not None
-    assert find(guest, description="Channel options") is None
-    assert find(guest, description="Create channel") is None
-    assert find(guest, text="Caper") is not None
-    general = find(guest, text="general")
-    join = find(guest, text="Join")
-    assert general is not None and join is not None
-    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
-    tap(description="Collapse channels")
-    guest_collapsed = wait_for(description="Expand channels")
-    assert find(guest_collapsed, text="general") is None
-    assert find(guest_collapsed, contains="Message #general") is not None
-    tap(description="Expand channels")
-    wait_for(text="general")
-    tap(text="Guest")
-    login = capture("caper-android-login", "Come on in.")
+    # which can take well over 20 s on a loaded CI emulator. Public guest chat
+    # was retired; a fresh install must gate conversations behind sign-in.
+    login = capture("caper-android-login", "Come on in.", seconds=60)
     for required in ("WELCOME TO CAPER", "Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
+    assert find(login, contains="Message #") is None
+    assert find(login, text="Join") is None
 
     fixture({"failure": {"path": "/api/auth/email/request", "method": "POST", "status": 503}})
     enter_first_field("fixture@example.test")
@@ -321,10 +308,15 @@ def main() -> None:
     wait_for(description="Fixture Studio")
     tap(description="Fixture Studio")
     wait_for(text="design")
+    wait_for(contains="TEST FIXTURE")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
     for required in ("Channels", "general", "design", "planning", "Members", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
+    general = find(desktop, text="general")
+    join = find(desktop, text="Join")
+    assert general is not None and join is not None
+    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
 
     # Hide the list while reading a non-default channel: collapsing must not
     # silently select General, disconnect chat, or expose hidden row actions.
