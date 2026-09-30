@@ -8,6 +8,7 @@ const SECRET_KEYS: &[&str] = &[
     "MIGRATION_DATABASE_URL",
     "AUTH_SECRET",
     "DEBUG_USERS",
+    "RESERVED_USERNAMES",
     "AUTH_CODE_ATTEMPTS",
     "AUTH_EMAIL_15M_LIMIT",
     "AUTH_EMAIL_DAILY_LIMIT",
@@ -143,6 +144,7 @@ mod tests {
             r#"{
                 "AUTH_SECRET":"remote-secret",
                 "DEBUG_USERS":"alice,bob",
+                "RESERVED_USERNAMES":"support,mod",
                 "MEDIA_ENABLED":"true",
                 "DATABASE_URL":"postgres://runtime",
                 "MIGRATION_DATABASE_URL":"postgres://migration",
@@ -160,6 +162,10 @@ mod tests {
             Some("remote-secret")
         );
         assert_eq!(environment.get("DEBUG_USERS").as_deref(), Some("alice,bob"));
+        assert_eq!(
+            environment.get("RESERVED_USERNAMES").as_deref(),
+            Some("support,mod")
+        );
         assert_eq!(environment.get("MEDIA_ENABLED").as_deref(), Some("true"));
         assert_eq!(
             environment.get("DATABASE_URL").as_deref(),
