@@ -46,6 +46,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -818,25 +819,36 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun MessageRow(message: ChatMessage, state: AppUiState, viewModel: CaperViewModel) {
     var picker by remember { mutableStateOf(false) }
     val own = state.chatAuthorId ?: state.account?.id
+    val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
+    val saving = saves.firstOrNull { it.saving }
     Column {
         MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false)
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
-                val save = state.reactionSaves["${message.id}:${reaction.emoji}"]
                 OutlinedButton(
-                    onClick = { viewModel.setReaction(message.id, reaction.emoji, !selected) }, enabled = save?.saving != true,
+                    onClick = { viewModel.setReaction(message.id, reaction.emoji, !selected) }, enabled = saving == null,
                     shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, if (selected) Terracotta else Border),
                     colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp), modifier = Modifier.heightIn(min = 34.dp),
-                ) { EmojiImage(reaction.emoji, reaction.emoji, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
-                if (save?.error != null) TextButton({ viewModel.retryReaction(message.id, reaction.emoji) }) { Text("Retry", color = Terracotta, fontSize = 10.sp) }
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.heightIn(min = 48.dp).semantics {
+                        this.selected = selected
+                        contentDescription = "${reaction.emoji} reaction, ${reaction.authorIds.size}"
+                    },
+                ) { EmojiImage(reaction.emoji, null, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
             }
-            state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values.filter { it.error != null && message.reactions.none { reaction -> reaction.emoji == it.emoji } }.forEach { save ->
-                TextButton({ viewModel.retryReaction(message.id, save.emoji) }) { Text("Reaction failed · Retry", color = Terracotta, fontSize = 10.sp) }
-            }
-            OutlinedButton({ picker = true }, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), contentPadding = PaddingValues(6.dp), modifier = Modifier.sizeIn(minWidth = 34.dp, minHeight = 34.dp).semantics { contentDescription = "Add reaction" }) {
+            OutlinedButton({ picker = true }, enabled = saving == null, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), contentPadding = PaddingValues(6.dp), modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Add reaction" }) {
                 EmojiImage("🙂", null, Modifier.size(19.dp))
+            }
+        }
+        if (saving != null) Text("Saving ${saving.emoji} reaction…", Modifier.padding(start = 62.dp, top = 4.dp), color = TextMuted, fontSize = 11.sp)
+        saves.filter { it.error != null }.forEach { save ->
+            Column(Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
+                Text(save.error ?: "Reaction could not be saved.", color = Terracotta, fontSize = 11.sp)
+                Row {
+                    TextButton({ viewModel.retryReaction(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
+                    TextButton({ viewModel.dismissReactionError(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Dismiss") }
+                }
             }
         }
     }
@@ -862,7 +874,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
                 else LazyVerticalGrid(GridCells.Adaptive(44.dp), modifier = Modifier.heightIn(max = 390.dp)) {
                     gridItems(shown, key = { it.id }) { entry ->
-                        IconButton({ select(entry.emoji) }, Modifier.semantics { contentDescription = entry.name }) { EmojiImage(entry.emoji, null, Modifier.size(30.dp)) }
+                        IconButton({ select(entry.emoji) }, Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = entry.name }) { EmojiImage(entry.emoji, null, Modifier.size(30.dp)) }
                     }
                 }
             }

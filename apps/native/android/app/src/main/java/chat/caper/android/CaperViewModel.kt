@@ -109,6 +109,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
         chatToken = null
         chatAuthor = null
+        mutable.value = mutable.value.copy(chatAuthorId = null)
         createChatSession(accountGeneration)
         onSuccess()
     }
@@ -226,7 +227,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 val newer = mutable.value.messages
                 mutable.value = mutable.value.copy(
-                    messages = (mergeReactions(history.messages, unloadedReactions) + newer).distinctBy { it.id }, hasMoreMessages = history.hasMore,
+                    messages = mergeMessages(newer, history.messages, unloadedReactions), hasMoreMessages = history.hasMore,
                     loadingOlder = false,
                 )
             } catch (error: Throwable) {
@@ -289,13 +290,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun setReaction(messageId: String, emoji: String, active: Boolean) {
         val channel = mutable.value.selectedChannel ?: return
         val request = generation
+        val requestAccountGeneration = accountGeneration
+        val token = accountToken
         val key = "$messageId:$emoji"
-        if (mutable.value.reactionSaves[key]?.saving == true) return
+        if (mutable.value.reactionSaves.any { (saveKey, save) -> save.saving && saveKey.startsWith("$messageId:") }) return
         mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active)))
         viewModelScope.launch {
             try {
-                val capability = chatToken ?: createChatSession(accountGeneration) ?: throw IllegalStateException("Chat session is unavailable.")
-                val update = api.setReaction(accountToken, capability, channel.id, messageId, emoji, active)
+                val capability = chatToken ?: createChatSession(requestAccountGeneration) ?: throw IllegalStateException("Chat session is unavailable.")
+                if (requestAccountGeneration != accountGeneration || token != accountToken || request != generation ||
+                    mutable.value.selectedChannel?.id != channel.id) return@launch
+                val update = api.setReaction(token, capability, channel.id, messageId, emoji, active)
                 if (request != generation || mutable.value.selectedChannel?.id != channel.id) return@launch
                 receiveReaction(update)
                 mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
@@ -311,6 +316,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun retryReaction(messageId: String, emoji: String) {
         val save = mutable.value.reactionSaves["$messageId:$emoji"] ?: return
         setReaction(messageId, emoji, save.active)
+    }
+
+    fun dismissReactionError(messageId: String, emoji: String) {
+        val key = "$messageId:$emoji"
+        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
     }
 
     internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
@@ -483,8 +493,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun addMessage(message: ChatMessage) {
         if (message.channelId != mutable.value.selectedChannel?.id) return
         val messages = mutable.value.messages
-        if (messages.none { it.id == message.id }) {
-            mutable.value = mutable.value.copy(messages = (messages + message).sortedWith(compareBy { java.math.BigInteger(it.seq) }))
+        val isNew = messages.none { it.id == message.id }
+        mutable.value = mutable.value.copy(messages = mergeMessages(messages, listOf(message), unloadedReactions))
+        if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
@@ -495,9 +506,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (update.channelId != mutable.value.selectedChannel?.id) return
         val index = mutable.value.messages.indexOfFirst { it.id == update.messageId }
         if (index < 0) {
-            val old = unloadedReactions[update.messageId]
-            if (old == null || update.seq.toBigIntegerOrNull()?.let { it > (old.seq.toBigIntegerOrNull() ?: java.math.BigInteger.valueOf(-1)) } == true)
-                unloadedReactions[update.messageId] = update
+            if (!cacheUnseenReaction(unloadedReactions, update)) {
+                mutable.value.selectedChannel?.id?.let(::resyncChannel)
+                return
+            }
             return
         }
         mutable.value = mutable.value.copy(messages = mutable.value.messages.map { mergeReaction(it, update) })
@@ -706,7 +718,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         else -> "Something went wrong. Please try again."
     }
 
-    private companion object { const val PRESENCE_PAGE_SIZE = 25 }
+    private companion object {
+        const val PRESENCE_PAGE_SIZE = 25
+    }
 }
 
 internal class ProfileSaveException(override val message: String) : Exception(message)

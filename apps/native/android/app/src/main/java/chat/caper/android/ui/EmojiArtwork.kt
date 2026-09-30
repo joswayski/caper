@@ -19,6 +19,7 @@ import kotlinx.serialization.json.Json
 
 internal object EmojiArtwork {
     private val crops = LruCache<String, Bitmap>(192)
+    private val pages = LruCache<Int, Bitmap>(4)
     private var catalog: List<EmojiEntry>? = null
 
     fun catalog(context: Context): List<EmojiEntry> = synchronized(this) {
@@ -37,10 +38,11 @@ internal object EmojiArtwork {
         val id = id(emoji)
         crops.get(id)?.let { return it }
         val entry = catalog(context).firstOrNull { it.id == id } ?: return null
-        val sheet = context.assets.open("sheet-${entry.sheet}.png").use { BitmapFactory.decodeStream(it) }
+        val sheet = pages.get(entry.sheet) ?: context.assets.open("sheet-${entry.sheet}.png").use {
+            BitmapFactory.decodeStream(it)
+        }.also { pages.put(entry.sheet, it) }
         return Bitmap.createBitmap(sheet, entry.x, entry.y, 64, 64).also {
             crops.put(id, it)
-            sheet.recycle()
         }
     }
 }

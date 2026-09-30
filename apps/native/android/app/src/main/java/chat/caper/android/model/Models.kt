@@ -21,7 +21,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class ChatContent(val version: Int, val type: String, val text: String)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 @Serializable data class ReactionUpdate(
-    val type: String = "message.reactions",
+    val type: String,
     val schemaVersion: Int,
     val channelId: String,
     val seq: String,

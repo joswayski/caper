@@ -24,9 +24,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.intOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -34,15 +32,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 
 internal fun reactionSequence(event: JsonObject, channelId: String): String {
-    require(event["schemaVersion"]?.jsonPrimitive?.intOrNull == 1) { "Invalid reaction schema." }
-    require(event["channelId"]?.jsonPrimitive?.content == channelId) { "Gateway reaction channel mismatch." }
-    require(event["messageId"]?.jsonPrimitive?.content?.isNotEmpty() == true) { "Invalid reaction message." }
-    require(event["reactions"]?.jsonArray?.all { raw ->
-        val reaction = raw.jsonObject
-        reaction["emoji"]?.jsonPrimitive?.content?.isNotEmpty() == true &&
-            reaction["authorIds"]?.jsonArray?.all { it.jsonPrimitive.content.isNotEmpty() } == true
-    } == true) { "Invalid reactions." }
-    return event["seq"]?.jsonPrimitive?.content ?: error("Missing reaction sequence.")
+    return Json.decodeFromJsonElement(ReactionUpdate.serializer(), event).validated(channelId).seq
 }
 
 class GatewayClient(
@@ -197,7 +187,7 @@ class GatewayClient(
                         val nextSequence = next.toBigIntegerOrNull()
                         val cursorSequence = cursor.toBigIntegerOrNull()
                         if (nextSequence != null && cursorSequence != null && nextSequence == cursorSequence + BigInteger.ONE) {
-                            onReaction(json.decodeFromJsonElement(ReactionUpdate.serializer(), event))
+                            onReaction(json.decodeFromJsonElement(ReactionUpdate.serializer(), event).validated(channelId))
                             cursor = next
                         } else if (nextSequence != null && cursorSequence != null && nextSequence > cursorSequence) {
                             fail(webSocket, terminal = false)

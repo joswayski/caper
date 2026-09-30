@@ -82,8 +82,7 @@ class CaperApi(
             buildJsonObject { put("emoji", emoji); put("active", active) }.toString(),
             mapOf("x-caper-chat-token" to chatToken),
         )
-        require(update.schemaVersion == 1 && update.channelId == channel && update.messageId == message && update.seq.toBigIntegerOrNull() != null)
-        return update
+        return update.validated(channel, message)
     }
 
     suspend fun createSpace(token: String, name: String): Space = post(

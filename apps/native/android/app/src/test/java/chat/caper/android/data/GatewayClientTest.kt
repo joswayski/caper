@@ -23,9 +23,38 @@ class GatewayClientTest {
         assertEquals("duplicate frames remain valid", "2", reactionSequence(event(), "channel"))
         assertEquals("gap handling uses the parsed sequence", "4", reactionSequence(event("4"), "channel"))
         assertThrows(IllegalArgumentException::class.java) { reactionSequence(event(channel = "other"), "channel") }
+        assertThrows(IllegalArgumentException::class.java) { reactionSequence(event("02"), "channel") }
+        assertThrows(IllegalArgumentException::class.java) {
+            reactionSequence(Json.parseToJsonElement("""{"type":"message.reactions","schemaVersion":1,"channelId":"channel","seq":"2","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author","author"]}]}""").jsonObject, "channel")
+        }
         assertThrows(IllegalArgumentException::class.java) {
             reactionSequence(Json.parseToJsonElement("""{"type":"message.reactions","schemaVersion":2,"channelId":"channel","seq":"2","messageId":"message","reactions":[]}""").jsonObject, "channel")
         }
+    }
+
+    @Test fun `reaction followed by message advances stream exactly once`() {
+        val server = MockWebServer()
+        val incoming = ArrayBlockingQueue<String>(4)
+        val opened = ArrayBlockingQueue<WebSocket>(1)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { opened.add(webSocket); webSocket.send("""{"type":"hello","serverTime":1}""") }
+            override fun onMessage(webSocket: WebSocket, text: String) { incoming.add(text) }
+        }))
+        val deliveries = ArrayBlockingQueue<String>(4)
+        val gateway = GatewayClient(server.url("/").toString().trimEnd('/'), null, "channel", "0",
+            onMessage = { deliveries.add("message:${it.seq}") }, onReaction = { deliveries.add("reaction:${it.seq}") },
+            onAccessDenied = {}, onResync = {})
+        try {
+            gateway.start()
+            val socket = opened.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("socket did not open")
+            val subscription = Json.parseToJsonElement(incoming.poll(2, TimeUnit.SECONDS)!!).jsonObject
+            val id = subscription.getValue("id").jsonPrimitive.content
+            socket.send("""{"type":"event","id":"$id","event":{"type":"message.reactions","schemaVersion":1,"channelId":"channel","seq":"1","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author"]}]}}""")
+            socket.send("""{"type":"event","id":"$id","event":{"type":"message.created","seq":"2","message":{"id":"message00000002","channelId":"channel","seq":"2","author":{"id":"author","name":"A","isGuest":false},"content":{"version":1,"type":"text","text":"hi"},"createdAt":"2026-01-01T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000001"}}}""")
+            assertEquals("reaction:1", deliveries.poll(2, TimeUnit.SECONDS))
+            assertEquals("message:2", deliveries.poll(2, TimeUnit.SECONDS))
+            assertNull(deliveries.poll(250, TimeUnit.MILLISECONDS))
+        } finally { gateway.close(); server.close() }
     }
 
     @Test fun `watch registered on open socket waits for hello and subscribes only once`() {
