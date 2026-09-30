@@ -131,7 +131,7 @@ export default function LiveWindow() {
             </section>
           </div>
         </div>
-        <a className="live-activator" data-live-activator data-live-control href="/login" aria-label="Sign in with email to join Caper. Arrow keys tilt the window.">
+        <a className="live-activator" data-live-activator data-live-control href="/spaces" aria-label="Join Caper. Arrow keys tilt the window.">
           <span className="live-invite"><i aria-hidden="true" /><span className="live-invite-fine">Click to join</span><span className="live-invite-coarse">Tap to join</span></span>
         </a>
       </div>
