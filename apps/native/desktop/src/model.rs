@@ -90,6 +90,25 @@ pub struct Content {
     pub text: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Reaction {
+    pub emoji: String,
+    pub author_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReactionUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message_id: String,
+    pub reactions: Vec<Reaction>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -100,6 +119,10 @@ pub struct Message {
     pub client_message_id: String,
     pub author: Author,
     pub content: Content,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
+    #[serde(default)]
+    pub reaction_seq: Option<String>,
 }
 
 impl Message {
@@ -107,6 +130,14 @@ impl Message {
         sequence(&self.seq)?;
         if self.content.version != 1 || self.content.kind != "text" {
             return Err("unsupported message content".into());
+        }
+        if let Some(revision) = &self.reaction_seq {
+            sequence(revision)?;
+        }
+        if self.reactions.iter().any(|reaction| {
+            reaction.emoji.is_empty() || reaction.author_ids.iter().any(String::is_empty)
+        }) {
+            return Err("invalid message reactions".into());
         }
         Ok(())
     }
@@ -213,6 +244,40 @@ impl Timeline {
         Ok(Apply::Applied)
     }
 
+    pub fn apply_reactions(&mut self, update: ReactionUpdate) -> Result<Apply, String> {
+        self.merge_reactions(&update)?;
+        self.apply_sequence(&update.seq)
+    }
+
+    /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
+    pub fn merge_reaction_ack(&mut self, update: ReactionUpdate) -> Result<(), String> {
+        self.merge_reactions(&update)
+    }
+
+    fn merge_reactions(&mut self, update: &ReactionUpdate) -> Result<(), String> {
+        let seq = sequence(&update.seq)?;
+        if update.kind != "message.reactions" || update.schema_version != 1 {
+            return Err("unsupported reaction update".into());
+        }
+        if let Some(message) = self
+            .messages
+            .values_mut()
+            .find(|item| item.id == update.message_id)
+        {
+            let current = message
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if seq > current {
+                message.reactions.clone_from(&update.reactions);
+                message.reaction_seq = Some(update.seq.clone());
+            }
+        }
+        Ok(())
+    }
+
     pub fn merge_sent(&mut self, message: Message) -> Result<(), String> {
         self.merge(message)
     }
@@ -232,10 +297,32 @@ impl Timeline {
         self.messages.values()
     }
 
-    fn merge(&mut self, message: Message) -> Result<(), String> {
+    fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
         let seq = sequence(&message.seq)?;
-        if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
+        if let Some(existing) = self
+            .messages
+            .get_mut(&seq)
+            .filter(|item| item.id == message.id)
+        {
+            let old_revision = existing
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            let new_revision = message
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if old_revision > new_revision {
+                message.reactions = std::mem::take(&mut existing.reactions);
+                message.reaction_seq = existing.reaction_seq.take();
+            }
+            *existing = message;
+        } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
             self.messages.insert(seq, message);
         }
         Ok(())
@@ -276,6 +363,8 @@ mod tests {
                 kind: "text".into(),
                 text: id.into(),
             },
+            reactions: Vec::new(),
+            reaction_seq: None,
         }
     }
 
@@ -361,5 +450,53 @@ mod tests {
             2,
             "reaction does not manufacture a message"
         );
+    }
+
+    #[test]
+    fn reaction_updates_are_revisioned_and_http_ack_does_not_move_cursor() {
+        let mut timeline = Timeline::default();
+        timeline.apply(message("one", 1)).unwrap();
+        let update = |seq: &str, authors: &[&str]| ReactionUpdate {
+            kind: "message.reactions".into(),
+            schema_version: 1,
+            channel_id: "channel".into(),
+            seq: seq.into(),
+            message_id: "one".into(),
+            reactions: vec![Reaction {
+                emoji: "👍".into(),
+                author_ids: authors.iter().map(|id| (*id).into()).collect(),
+            }],
+        };
+        timeline.merge_reaction_ack(update("3", &["me"])).unwrap();
+        assert_eq!(timeline.cursor(), "1");
+        timeline
+            .merge_reaction_ack(update("2", &["other"]))
+            .unwrap();
+        let reaction = &timeline.messages().next().unwrap().reactions[0];
+        assert_eq!(reaction.author_ids, ["me"]);
+        assert_eq!(timeline.apply_sequence("2"), Ok(Apply::Applied));
+        assert_eq!(
+            timeline.apply_reactions(update("3", &["me"])),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(timeline.cursor(), "3");
+    }
+
+    #[test]
+    fn stale_history_cannot_erase_newer_reactions() {
+        let mut timeline = Timeline::default();
+        let mut current = message("one", 1);
+        current.reaction_seq = Some("8".into());
+        current.reactions = vec![Reaction {
+            emoji: "❤️".into(),
+            author_ids: vec!["me".into()],
+        }];
+        timeline.reset(vec![current], "8").unwrap();
+        timeline.prepend(vec![message("one", 1)]).unwrap();
+        assert_eq!(
+            timeline.messages().next().unwrap().reaction_seq.as_deref(),
+            Some("8")
+        );
+        assert_eq!(timeline.messages().next().unwrap().reactions.len(), 1);
     }
 }

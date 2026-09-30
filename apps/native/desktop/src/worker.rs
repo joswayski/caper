@@ -93,6 +93,15 @@ pub enum Command {
         client_id: String,
         text: String,
     },
+    React {
+        generation: u64,
+        token: Option<String>,
+        chat_token: String,
+        channel: String,
+        message: String,
+        emoji: String,
+        active: bool,
+    },
     Typing {
         token: Option<String>,
         chat_token: String,
@@ -250,6 +259,14 @@ pub enum Event {
         channel: String,
         client_id: String,
         result: Result<Message, SendFailure>,
+    },
+    Reacted {
+        generation: u64,
+        channel: String,
+        message: String,
+        emoji: String,
+        active: bool,
+        result: Result<crate::model::ReactionUpdate, SendFailure>,
     },
     Credential {
         generation: u64,
@@ -772,6 +789,34 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             let _ = api.typing(token.as_deref(), &chat_token, &channel, typing);
             return;
         }
+        Command::React {
+            generation,
+            token,
+            chat_token,
+            channel,
+            message,
+            emoji,
+            active,
+        } => Event::Reacted {
+            generation,
+            channel: channel.clone(),
+            message: message.clone(),
+            emoji: emoji.clone(),
+            active,
+            result: api
+                .react(
+                    token.as_deref(),
+                    &chat_token,
+                    &channel,
+                    &message,
+                    &emoji,
+                    active,
+                )
+                .map_err(|error| SendFailure {
+                    status: error.status.map(|status| status.as_u16()),
+                    message: error.to_string(),
+                }),
+        },
         Command::Admin {
             generation,
             token,

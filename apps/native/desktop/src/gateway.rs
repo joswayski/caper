@@ -1,4 +1,4 @@
-use crate::model::{Author, Message, Presence, VoiceOccupant, sequence};
+use crate::model::{Author, Message, Presence, ReactionUpdate, VoiceOccupant, sequence};
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
@@ -36,10 +36,10 @@ pub enum GatewayEvent {
         channel: String,
         message: Box<Message>,
     },
-    Sequence {
+    Reactions {
         generation: u64,
         channel: String,
-        seq: String,
+        update: ReactionUpdate,
     },
     Typing {
         generation: u64,
@@ -399,29 +399,24 @@ fn connect_once(
                         });
                     }
                     Some("message.reactions") => {
-                        let valid = event["schemaVersion"].as_u64() == Some(1)
-                            && event["channelId"].as_str() == Some(channel)
-                            && event["messageId"].as_str().is_some_and(|id| !id.is_empty())
-                            && event["reactions"].as_array().is_some_and(|reactions| {
-                                reactions.iter().all(|reaction| {
-                                    reaction["emoji"]
-                                        .as_str()
-                                        .is_some_and(|emoji| !emoji.is_empty())
-                                        && reaction["authorIds"].as_array().is_some_and(|authors| {
-                                            authors.iter().all(|author| {
-                                                author.as_str().is_some_and(|id| !id.is_empty())
-                                            })
-                                        })
-                                })
-                            });
-                        if !valid {
+                        let update: ReactionUpdate = serde_json::from_value(event.clone())
+                            .map_err(|_| {
+                                Failure::Retry("The gateway returned invalid reactions.".into())
+                            })?;
+                        if update.channel_id != channel
+                            || update.kind != "message.reactions"
+                            || update.schema_version != 1
+                            || update.message_id.is_empty()
+                            || update.reactions.iter().any(|reaction| {
+                                reaction.emoji.is_empty()
+                                    || reaction.author_ids.iter().any(String::is_empty)
+                            })
+                        {
                             return Err(Failure::Retry(
                                 "The gateway returned invalid reactions.".into(),
                             ));
                         }
-                        let seq = event["seq"]
-                            .as_str()
-                            .ok_or_else(|| Failure::Retry("Invalid gateway cursor".into()))?;
+                        let seq = &update.seq;
                         let previous = sequence(cursor).map_err(Failure::Retry)?;
                         let next = sequence(seq).map_err(Failure::Retry)?;
                         if next > previous + 1 {
@@ -434,11 +429,11 @@ fn connect_once(
                         if next <= previous {
                             continue;
                         }
-                        *cursor = seq.into();
-                        let _ = events.send(GatewayEvent::Sequence {
+                        *cursor = seq.clone();
+                        let _ = events.send(GatewayEvent::Reactions {
                             generation,
                             channel: channel.into(),
-                            seq: seq.into(),
+                            update,
                         });
                     }
                     Some("resync_required") => {

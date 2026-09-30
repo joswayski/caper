@@ -3,6 +3,7 @@
 mod api;
 mod credentials;
 mod effects;
+mod emoji;
 mod gateway;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -140,6 +141,12 @@ struct NavigationTarget {
     channel: Option<String>,
 }
 
+#[derive(Clone)]
+struct PendingReaction {
+    desired: bool,
+    sent: bool,
+}
+
 struct CaperApp {
     worker: Worker,
     voice: Voice,
@@ -185,6 +192,11 @@ struct CaperApp {
     display_name: String,
     draft: String,
     pending: Option<PendingSend>,
+    reaction_picker: Option<String>,
+    reaction_search: String,
+    reaction_textures: emoji::Textures,
+    pending_reactions: BTreeMap<(String, String), PendingReaction>,
+    reaction_errors: BTreeMap<String, String>,
     typers: BTreeMap<String, Typer>,
     typing_sent: bool,
     typing_edited: Instant,
@@ -271,6 +283,11 @@ impl CaperApp {
             display_name: String::new(),
             draft: String::new(),
             pending: None,
+            reaction_picker: None,
+            reaction_search: String::new(),
+            reaction_textures: emoji::Textures::default(),
+            pending_reactions: BTreeMap::new(),
+            reaction_errors: BTreeMap::new(),
             typers: BTreeMap::new(),
             typing_sent: false,
             typing_edited: now,
@@ -648,6 +665,8 @@ impl CaperApp {
                     kind: "text".into(),
                     text: text.into(),
                 },
+                reactions: Vec::new(),
+                reaction_seq: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -878,6 +897,51 @@ impl CaperApp {
                     .is_some_and(|pending| pending.id == client_id) =>
                 {
                     self.sent(result)
+                }
+                Event::Reacted {
+                    generation,
+                    channel,
+                    message,
+                    emoji,
+                    active,
+                    result,
+                } if current(
+                    generation,
+                    self.generation,
+                    Some(&channel),
+                    self.selected_channel.as_deref(),
+                ) =>
+                {
+                    let key = (message.clone(), emoji.clone());
+                    match result {
+                        Ok(update)
+                            if update.channel_id == channel && update.message_id == message =>
+                        {
+                            if self.timeline.merge_reaction_ack(update).is_err() {
+                                self.reload_channel();
+                            }
+                            self.reaction_errors.remove(&message);
+                            let desired = self
+                                .pending_reactions
+                                .get(&key)
+                                .map_or(active, |pending| pending.desired);
+                            self.pending_reactions.remove(&key);
+                            if desired != active {
+                                self.set_reaction(&message, &emoji, desired);
+                            }
+                        }
+                        Ok(_) => self.reload_channel(),
+                        Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
+                            self.pending_reactions.remove(&key);
+                            self.clear_channel(&error.message);
+                        }
+                        Err(error) => {
+                            if let Some(pending) = self.pending_reactions.get_mut(&key) {
+                                pending.sent = false;
+                            }
+                            self.reaction_errors.insert(message, error.message);
+                        }
+                    }
                 }
                 Event::Admin { generation, result } if generation == self.generation => {
                     self.loading = false;
@@ -1262,6 +1326,9 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.reaction_picker = None;
+        self.pending_reactions.clear();
+        self.reaction_errors.clear();
         self.draft.clear();
         self.typers.clear();
         self.error = None;
@@ -1461,10 +1528,10 @@ impl CaperApp {
                     _ => {}
                 }
             }
-            GatewayEvent::Sequence {
+            GatewayEvent::Reactions {
                 generation,
                 channel,
-                seq,
+                update,
             } if current(
                 generation,
                 self.generation,
@@ -1473,7 +1540,7 @@ impl CaperApp {
             ) =>
             {
                 if matches!(
-                    self.timeline.apply_sequence(&seq),
+                    self.timeline.apply_reactions(update),
                     Ok(model::Apply::Resync) | Err(_)
                 ) {
                     self.reload_channel();
@@ -1682,6 +1749,9 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.reaction_picker = None;
+        self.pending_reactions.clear();
+        self.reaction_errors.clear();
         self.draft.clear();
         self.typers.clear();
         self.live = "Offline".into();
@@ -4563,6 +4633,7 @@ impl CaperApp {
                         });
                     }
                 });
+            self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
     }
@@ -4676,7 +4747,7 @@ impl CaperApp {
         }
     }
 
-    fn message(&self, ui: &mut egui::Ui, message: &model::Message) {
+    fn message(&mut self, ui: &mut egui::Ui, message: &model::Message) {
         let time = display_time(&message.created_at);
         message_row(
             ui,
@@ -4686,6 +4757,192 @@ impl CaperApp {
             message.author.is_guest,
             false,
         );
+        let author = self
+            .session
+            .as_ref()
+            .map(|session| session.author.id.clone());
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 62,
+                right: 18,
+                top: 2,
+                bottom: 5,
+            })
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for reaction in &message.reactions {
+                        let owned = author
+                            .as_ref()
+                            .is_some_and(|id| reaction.author_ids.iter().any(|entry| entry == id));
+                        let pending = self
+                            .pending_reactions
+                            .get(&(message.id.clone(), reaction.emoji.clone()));
+                        let shown_owned = pending.map_or(owned, |pending| pending.desired);
+                        let Some(entry) = emoji::find(&reaction.emoji) else {
+                            continue;
+                        };
+                        let frame = egui::Frame::new()
+                            .fill(if shown_owned {
+                                Color32::from_rgb(57, 35, 30)
+                            } else {
+                                RAISED
+                            })
+                            .stroke(Stroke::new(
+                                1.0,
+                                if shown_owned {
+                                    TERRACOTTA_BRIGHT
+                                } else {
+                                    BORDER
+                                },
+                            ))
+                            .corner_radius(8)
+                            .inner_margin(egui::Margin::symmetric(7, 4));
+                        let response = frame
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let clicked =
+                                        self.reaction_textures.image(ui, entry, 18.0).clicked();
+                                    let count = reaction.author_ids.len() as isize
+                                        + isize::from(shown_owned)
+                                        - isize::from(owned);
+                                    let label = ui.add(
+                                        egui::Label::new(
+                                            RichText::new(count.max(0).to_string()).size(11.0),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    );
+                                    clicked || label.clicked()
+                                })
+                                .inner
+                            })
+                            .inner;
+                        if response {
+                            self.set_reaction(&message.id, &reaction.emoji, !shown_owned);
+                        }
+                    }
+                    if self.session.is_some()
+                        && ui
+                            .small_button("＋")
+                            .on_hover_text("Add reaction")
+                            .clicked()
+                    {
+                        self.reaction_picker = Some(message.id.clone());
+                        self.reaction_search.clear();
+                    }
+                });
+                if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(ERROR, error);
+                        if ui.small_button("Retry").clicked()
+                            && let Some(((message, emoji), pending)) = self
+                                .pending_reactions
+                                .iter()
+                                .find(|((id, _), pending)| id == &message.id && !pending.sent)
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                        {
+                            self.set_reaction(&message, &emoji, pending.desired);
+                        }
+                    });
+                }
+            });
+    }
+
+    fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
+        let key = (message.to_owned(), emoji.to_owned());
+        if let Some(pending) = self.pending_reactions.get_mut(&key) {
+            pending.desired = active;
+            if pending.sent {
+                return;
+            }
+        }
+        let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
+            return;
+        };
+        self.pending_reactions.insert(
+            key,
+            PendingReaction {
+                desired: active,
+                sent: true,
+            },
+        );
+        self.worker.send(Command::React {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token: session.token.clone(),
+            channel: channel.clone(),
+            message: message.to_owned(),
+            emoji: emoji.to_owned(),
+            active,
+        });
+    }
+
+    fn emoji_picker(&mut self, context: &egui::Context) {
+        let Some(message) = self.reaction_picker.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut close_requested = false;
+        let mut selected = None;
+        egui::Window::new("Add reaction")
+            .id(egui::Id::new("emoji-picker"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .show(context, |ui| {
+                let search_id = egui::Id::new("emoji-picker-search");
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut self.reaction_search)
+                        .id(search_id)
+                        .hint_text("Search emoji…")
+                        .desired_width(f32::INFINITY),
+                );
+                if search.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    close_requested = true;
+                }
+                if !search.has_focus() {
+                    ui.memory_mut(|memory| memory.request_focus(search_id));
+                }
+                ui.add_space(6.0);
+                let query = self.reaction_search.trim().to_lowercase();
+                let choices: Vec<_> = emoji::catalog()
+                    .iter()
+                    .filter(|entry| {
+                        entry.selectable
+                            && (query.is_empty()
+                                || entry.name.to_lowercase().contains(&query)
+                                || entry.keywords.to_lowercase().contains(&query)
+                                || entry.category.to_lowercase().contains(&query))
+                    })
+                    .take(160)
+                    .collect();
+                if choices.is_empty() {
+                    ui.label(RichText::new("No emoji found").color(MUTED));
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(330.0)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for entry in choices {
+                                if self
+                                    .reaction_textures
+                                    .image(ui, entry, 30.0)
+                                    .on_hover_text(&entry.name)
+                                    .clicked()
+                                {
+                                    selected = Some(entry.emoji.clone());
+                                }
+                            }
+                        });
+                    });
+            });
+        if let Some(emoji) = selected {
+            self.set_reaction(&message, &emoji, true);
+            close_requested = true;
+        }
+        if !open || close_requested {
+            self.reaction_picker = None;
+        }
     }
 
     fn channel_name(&self) -> &str {
@@ -8189,6 +8446,8 @@ mod tests {
                 kind: "text".into(),
                 text: pending.text.clone(),
             },
+            reactions: Vec::new(),
+            reaction_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
