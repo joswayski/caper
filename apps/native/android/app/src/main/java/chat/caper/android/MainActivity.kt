@@ -3,6 +3,7 @@ package chat.caper.android
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.graphics.BitmapFactory
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -11,6 +12,7 @@ import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -38,6 +40,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -373,7 +379,7 @@ internal data class VoiceJoinIntent(
                             .semantics { contentDescription = "${people.size} in voice in ${channel.name}. ${if (rosterOpen) "Hide" else "Show"} who is in voice" }) {
                             Box(Modifier.width((24 + 16 * (people.size.coerceAtMost(3) - 1)).dp).height(24.dp)) {
                                 people.take(3).forEachIndexed { index, person ->
-                                    Avatar(person.name, 24.dp, Modifier.offset(x = (16 * index).dp).zIndex((3 - index).toFloat()),
+                                    Avatar(person.name, 24.dp, Modifier.offset(x = (16 * index).dp).zIndex((3 - index).toFloat()), person.avatarId,
                                         speaking = activeChannel == channel.id && person.id in voice.speakingParticipants)
                                 }
                             }
@@ -395,7 +401,7 @@ internal data class VoiceJoinIntent(
                         if (activeChannel == channel.id) VoiceRoster(voice)
                         else people.forEach { participant ->
                             Row(Modifier.fillMaxWidth().padding(start = 42.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(participant.name, 28.dp)
+                                Avatar(participant.name, 28.dp, avatarId = participant.avatarId)
                                 Spacer(Modifier.width(8.dp))
                                 Text(participant.name, fontSize = 12.sp)
                                 // Web: MicOff and/or HeadphoneOff, announced as one status.
@@ -445,7 +451,7 @@ internal data class VoiceJoinIntent(
             Row(Modifier.fillMaxWidth().heightIn(min = 38.dp)
                 .then(if (menuAvailable) Modifier.combinedClickable(onClick = {}, onLongClick = { audioOpen = true }, onLongClickLabel = "Audio controls for ${participant.name}") else Modifier)
                 .padding(start = 42.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Avatar(participant.name, 24.dp, speaking = participant.id in voice.speakingParticipants)
+                Avatar(participant.name, 24.dp, avatarId = participant.avatarId, speaking = participant.id in voice.speakingParticipants)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -553,7 +559,7 @@ internal data class VoiceJoinIntent(
             items(shown, key = { it.id }) { member ->
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
-                        Avatar(member.displayName, 30.dp)
+                        Avatar(member.displayName, 30.dp, avatarId = member.avatarId)
                         PresenceDot(state.presence[member.id], state.gateway == GatewayStatus.LIVE, SurfaceSidebar, Modifier.align(Alignment.BottomEnd))
                     }
                     Spacer(Modifier.width(10.dp)); Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -577,7 +583,7 @@ internal data class VoiceJoinIntent(
         while (true) { local = viewModel.localPresence(); kotlinx.coroutines.delay(1_000) }
     }
     Box {
-        Avatar(name, 30.dp)
+        Avatar(name, 30.dp, avatarId = state.account?.avatarId)
         PresenceDot(if (accountPresence) state.presence[state.account?.id] else local,
             live = !accountPresence || state.gateway == GatewayStatus.LIVE, SurfaceRaised, Modifier.align(Alignment.BottomEnd))
     }
@@ -784,7 +790,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 if (state.messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
                 }
-                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true)
+                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId)
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
         } }
@@ -811,10 +817,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageRow(message: ChatMessage) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false)
-@Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean) {
+@Composable private fun MessageRow(message: ChatMessage) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId)
+@Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
-        Avatar(author, 34.dp)
+        Avatar(author, 34.dp, avatarId = avatarId)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -870,7 +876,15 @@ internal fun counterTone(count: Int): Color = when {
     else -> TextMuted
 }
 
-@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, speaking: Boolean = false) = Box(
+// Share the decoded atlas instead of allocating one for every visible avatar.
+private object AvatarAtlas {
+    private var image: ImageBitmap? = null
+    fun load(context: android.content.Context): ImageBitmap = image ?: context.assets
+        .open("capers-v1.png").use { BitmapFactory.decodeStream(it).asImageBitmap() }
+        .also { image = it }
+}
+
+@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) = Box(
     modifier
         // Web: caper-green border with a soft outer ring while speaking.
         .size(size)
@@ -880,7 +894,15 @@ internal fun counterTone(count: Int): Color = when {
         .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
     contentAlignment = Alignment.Center,
 ) {
-    Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
+    val index = caperAvatarIndex(avatarId)
+    if (index == null) Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
+    else {
+        val context = LocalContext.current
+        val atlas = remember { AvatarAtlas.load(context) }
+        Canvas(Modifier.fillMaxSize()) {
+            drawImage(atlas, IntOffset((index % 32) * 64, (index / 32) * 64), IntSize(64, 64), IntOffset.Zero, IntSize(this.size.width.toInt(), this.size.height.toInt()))
+        }
+    }
 }
 
 @Composable private fun AuthFrame(content: @Composable ColumnScope.() -> Unit) {
@@ -1040,7 +1062,7 @@ internal fun counterTone(count: Int): Color = when {
     error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
     members.forEach { member ->
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(member.displayName, 30.dp); Spacer(Modifier.width(9.dp))
+            Avatar(member.displayName, 30.dp, avatarId = member.avatarId); Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
                 Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text("@${member.username}${if (member.owner) " · Owner" else ""}", color = TextMuted, fontSize = 10.sp)

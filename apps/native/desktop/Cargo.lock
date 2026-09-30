@@ -1524,6 +1524,7 @@ dependencies = [
  "ahash",
  "egui",
  "enum-map",
+ "image",
  "log",
  "profiling",
  "resvg",

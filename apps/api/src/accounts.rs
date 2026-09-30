@@ -31,6 +31,7 @@ impl DebugUsers {
 pub struct User {
     pub id: i64,
     pub external_id: String,
+    pub avatar_id: i16,
     pub email: Option<String>,
     pub username: Option<String>,
     pub display_name: Option<String>,
@@ -40,6 +41,7 @@ pub struct User {
 #[serde(rename_all = "camelCase")]
 pub struct PublicAccount<'a> {
     pub id: &'a str,
+    pub avatar_id: i16,
     pub username: Option<&'a str>,
     pub display_name: Option<&'a str>,
 }
@@ -56,6 +58,7 @@ impl User {
     pub fn public(&self) -> PublicAccount<'_> {
         PublicAccount {
             id: &self.external_id,
+            avatar_id: self.avatar_id,
             username: self.username.as_deref(),
             display_name: self.display_name.as_deref(),
         }
@@ -81,7 +84,8 @@ pub async fn set_profile(
 ) -> Result<Option<User>, sqlx::Error> {
     sqlx::query_as(
         "UPDATE public.users SET username = $2, display_name = $3, updated_at = now()
-         WHERE id = $1 AND deleted_at IS NULL RETURNING *",
+         WHERE id = $1 AND deleted_at IS NULL
+         RETURNING id, external_id, avatar_id, email, username, display_name",
     )
     .bind(user_id)
     .bind(username.trim().to_ascii_lowercase())
@@ -121,6 +125,7 @@ mod tests {
         let user = User {
             id: 1,
             external_id: "public-id".into(),
+            avatar_id: 42,
             email: None,
             username: Some("alice".into()),
             display_name: Some("Alice".into()),

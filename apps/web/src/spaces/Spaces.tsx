@@ -21,6 +21,7 @@ import { getAccount, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
 import Wordmark from "../components/Wordmark";
+import Avatar from "../components/Avatar";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
@@ -455,7 +456,7 @@ function MemberManager({
           <li key={member.id}>
             {/* TODO show status indicator */}
             <span className="member-avatar" aria-hidden="true">
-              {member.displayName.slice(0, 1).toUpperCase()}
+              <Avatar avatarId={member.avatarId} name={member.displayName} />
             </span>
             <span>
               <strong>{member.displayName}</strong>
@@ -1138,7 +1139,7 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
               <div className="sidebar-channels">{channelNavigation(() => null)}</div>
               <div className="empty-channel-account">
                 <span className="account-avatar" aria-hidden="true">
-                  {account?.displayName?.slice(0, 1).toUpperCase()}
+                  <Avatar avatarId={account?.avatarId} name={account?.displayName ?? ""} />
                 </span>
                 <strong>{account?.displayName}</strong>
               </div>

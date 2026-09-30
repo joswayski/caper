@@ -862,6 +862,9 @@ struct Participant {
     token: String,
     #[serde(default)]
     account_session: Option<Vec<u8>>,
+    /// Stable saved account avatar. Absent for guests and older stored state.
+    #[serde(default)]
+    avatar_id: Option<i16>,
     name: String,
     country_code: Option<String>,
     session: String,
@@ -1712,6 +1715,7 @@ async fn join(
             .map(|principal| {
                 (
                     principal.user.display_name,
+                    principal.user.avatar_id,
                     Sha256::digest(token.as_bytes()).to_vec(),
                 )
             })
@@ -1720,9 +1724,10 @@ async fn join(
     };
     let name = account
         .as_ref()
-        .and_then(|(name, _)| name.as_deref())
+        .and_then(|(name, _, _)| name.as_deref())
         .unwrap_or(submitted_name)
         .trim();
+    let avatar_id = account.as_ref().map(|(_, avatar_id, _)| *avatar_id);
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
@@ -1743,7 +1748,7 @@ async fn join(
             let identity = s
                 .media_session
                 .as_ref()
-                .or_else(|| account.as_ref().map(|(_, hash)| hash));
+                .or_else(|| account.as_ref().map(|(_, _, hash)| hash));
             let verified = match (identity, &input.monitor, &input.publish) {
                 (Some(account), None, Some(_)) => verify_warm(&s.config, account, ticket),
                 _ => None,
@@ -1941,6 +1946,7 @@ async fn join(
         id,
         token: token_hash(&token),
         account_session: s.media_session.clone(),
+        avatar_id,
         name: name.into(),
         country_code,
         session,
@@ -2797,6 +2803,8 @@ async fn release_join_reservation(s: &AppState, reservation: Uuid) {
 #[derive(Serialize)]
 struct View<'a> {
     id: Uuid,
+    #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
+    avatar_id: Option<i16>,
     name: &'a str,
     #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
     country_code: Option<&'a str>,
@@ -2830,6 +2838,7 @@ fn public_snapshot(r: &Registry) -> Value {
             tracks.sort_by_key(|t| t.id);
             View {
                 id: p.id,
+                avatar_id: p.avatar_id,
                 name: &p.name,
                 country_code: p.country_code.as_deref(),
                 muted: p.muted,
@@ -2843,6 +2852,8 @@ fn public_snapshot(r: &Registry) -> Value {
 #[derive(Serialize)]
 struct PresenceView<'a> {
     id: Uuid,
+    #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
+    avatar_id: Option<i16>,
     name: &'a str,
     #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
     country_code: Option<&'a str>,
@@ -2860,6 +2871,7 @@ fn presence_snapshot(r: &Registry) -> Value {
         .filter(|p| p.monitor.is_none())
         .map(|p| PresenceView {
             id: p.id,
+            avatar_id: p.avatar_id,
             name: &p.name,
             country_code: p.country_code.as_deref(),
             muted: p.muted,
