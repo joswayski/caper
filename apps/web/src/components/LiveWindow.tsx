@@ -1,22 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, Hash, Pause, Play, SkipForward, SmilePlus } from "lucide-react";
-import usFlag from "flag-icons/flags/4x3/us.svg?url";
-import gbFlag from "flag-icons/flags/4x3/gb.svg?url";
-import caFlag from "flag-icons/flags/4x3/ca.svg?url";
-import jpFlag from "flag-icons/flags/4x3/jp.svg?url";
-import frFlag from "flag-icons/flags/4x3/fr.svg?url";
 import { attachLiveMotion } from "./liveMotion";
 import "../pages/call.css";
 import "../spaces/spaces.css";
 import "./live-window.css";
 
 const people = [
-  { name: "Maya", avatar: "0% 0%", hue: 0, note: "collecting tiny hats", flag: usFlag, country: "United States", speech: [[0, 4.25], [6.5, 9], [12, 13.75], [18.25, 20.5], [26, 29.25], [40.25, 43]] },
-  { name: "Theo", avatar: "100% 0%", hue: 0, note: "on aux duty", flag: gbFlag, country: "United Kingdom", speech: [[1.5, 5.5], [8, 10.75], [14.5, 18], [27.25, 30.5], [35.5, 37.25], [43, 46]] },
-  { name: "June", avatar: "0% 100%", hue: 0, note: "here for the memes", flag: caFlag, country: "Canada", speech: [[2.75, 6.25], [10.5, 12.75], [15.75, 16.5], [22.5, 25], [33, 36.25], [44.25, 46.5]] },
-  { name: "Leo", avatar: "100% 100%", hue: 0, note: "one more game?", flag: jpFlag, country: "Japan", speech: [[10.25, 13], [15.5, 19.25], [23, 27.5], [30.25, 32.5], [36, 39.25], [46, 48.5]] },
-  { name: "Noor", avatar: "0% 0%", hue: 100, note: "snack coordinator", flag: frFlag, country: "France", speech: [[18.5, 22.75], [25.5, 28], [29, 33.5], [37.25, 40.75], [44, 47]] },
-  { name: "Sam", avatar: "0% 100%", hue: 175, note: "always has a fun fact", flag: usFlag, country: "United States", speech: [[38.5, 40.5], [42.25, 45.75], [47.25, 48.25]] },
+  { name: "Maya", avatar: "0% 0%", hue: 0, note: "collecting tiny hats", speech: [[0, 4.25], [6.5, 9], [12, 13.75], [18.25, 20.5], [26, 29.25], [40.25, 43]] },
+  { name: "Theo", avatar: "100% 0%", hue: 0, note: "on aux duty", speech: [[1.5, 5.5], [8, 10.75], [14.5, 18], [27.25, 30.5], [35.5, 37.25], [43, 46]] },
+  { name: "June", avatar: "0% 100%", hue: 0, note: "here for the memes", speech: [[2.75, 6.25], [10.5, 12.75], [15.75, 16.5], [22.5, 25], [33, 36.25], [44.25, 46.5]] },
+  { name: "Leo", avatar: "100% 100%", hue: 0, note: "one more game?", speech: [[10.25, 13], [15.5, 19.25], [23, 27.5], [30.25, 32.5], [36, 39.25], [46, 48.5]] },
+  { name: "Noor", avatar: "0% 0%", hue: 100, note: "snack coordinator", speech: [[18.5, 22.75], [25.5, 28], [29, 33.5], [37.25, 40.75], [44, 47]] },
+  { name: "Sam", avatar: "0% 100%", hue: 175, note: "always has a fun fact", speech: [[38.5, 40.5], [42.25, 45.75], [47.25, 48.25]] },
 ];
 
 const messages = [
@@ -163,7 +158,7 @@ export default function LiveWindow() {
                           <ul className="sim-people" aria-label="People in demo voice in general">
                             {voicePeople.map((person) => <li className="sim-person participant" data-speaking={person.speaking ? "" : undefined} key={person.name} aria-label={`${person.name}${person.speaking ? ", speaking" : ""}`}>
                               <span className="participant-avatar"><span className={`avatar sim-voice-avatar ${person.speaking ? "speaking" : "quiet"}`}><Avatar person={person} /></span></span>
-                              <span className="participant-name"><strong>{person.name}</strong><img className="participant-country" src={person.flag} alt={`From ${person.country}`} title={person.country} /></span>
+                              <span className="participant-name"><strong>{person.name}</strong></span>
                             </li>)}
                           </ul>
                         </div>

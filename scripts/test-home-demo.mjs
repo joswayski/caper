@@ -40,6 +40,7 @@ try {
   assert.ok(!evaluate('return document.querySelector(".sim-sidebar").textContent.includes("In voice")'));
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-person .avatar")).width'), '20px');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-person")).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Production indicates speech on the avatar, not a green row');
+  assert.equal(evaluate('return document.querySelectorAll(".live-window .participant-country").length'), 0, 'The simulation has no country flags');
   assert.deepEqual(speakers(), ['Maya', 'Theo', 'June'], 'Multiple people speak simultaneously');
   browser('click', '.sim-sidebar .voice-stack');
   assert.equal(evaluate('return document.querySelector(".sim-sidebar .voice-stack").getAttribute("aria-expanded")'), 'false');
@@ -101,6 +102,7 @@ try {
   nextMoments(6); // 45
   assert.equal(members().length, 6);
   assert.equal(voices().length, 6);
+  assert.equal(evaluate('return document.querySelectorAll(".sim-person .participant-country").length'), 0, 'Joining/rejoining demo participants have no flags');
   assert.ok(evaluate('return document.querySelector(".sim-messages").textContent.includes("back with cookies. let’s gooo")'));
   nextMoments(4); // 0: reset presence as well as messages
   assert.deepEqual(members(), ['Maya', 'Theo', 'June']);

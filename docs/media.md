@@ -38,7 +38,11 @@ live call state is shared in Valkey; without it, development uses process memory
 Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
 Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
-the registry keeps that code for the call and shares it in roster snapshots. Caper
+the registry keeps that code only for guest participants and shares it in roster
+snapshots. Signed-in participants, including account-channel joins, omit country
+codes, so web, Android, Apple, and Rust desktop clients render no flag for them.
+The local homepage simulation also has no country flags. Existing call records
+retain their stored country until participants leave and rejoin after the API update. Caper
 does not retain the visitor IP itself. Unknown and Tor locations are omitted.
 Visitors see the public roster before joining through a `media` subscription on
 the application WebSocket, without joining voice. That projection
@@ -2414,7 +2418,7 @@ The API accepts guest names of 1–64 Unicode characters after trimming,
 with no control characters. Guest names are unverified, nonunique, and not reserved.
 When a valid account bearer token or browser session cookie accompanies a join, the
 API uses the stored display name instead of the submitted name. Country flags use
-the API-provided Cloudflare country code; no flag is invented when location is
+the API-provided Cloudflare country code for guests only; no flag is invented when location is
 unavailable. The web login page sends email codes and then requires a unique
 username and display name. Account login is enabled when `AUTH_SECRET`, the database
 URLs, and SES settings are configured. Native development account screens use the
