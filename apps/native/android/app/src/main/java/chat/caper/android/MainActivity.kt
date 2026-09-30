@@ -781,7 +781,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            MessageRow(message, state, viewModel)
+            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError)
         }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -816,7 +816,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 }
 
 @OptIn(ExperimentalLayoutApi::class)
-@Composable private fun MessageRow(message: ChatMessage, state: AppUiState, viewModel: CaperViewModel) {
+@Composable internal fun ReactionMessageRow(
+    message: ChatMessage, state: AppUiState,
+    setReaction: (String, String, Boolean) -> Unit,
+    retryReaction: (String, String) -> Unit,
+    dismissReactionError: (String, String) -> Unit,
+) {
     var picker by remember { mutableStateOf(false) }
     val own = state.chatAuthorId ?: state.account?.id
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
@@ -827,7 +832,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
                 OutlinedButton(
-                    onClick = { viewModel.setReaction(message.id, reaction.emoji, !selected) }, enabled = saving == null,
+                    onClick = { setReaction(message.id, reaction.emoji, !selected) }, enabled = saving == null,
                     shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, if (selected) Terracotta else Border),
                     colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -846,15 +851,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             Column(Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
                 Text(save.error ?: "Reaction could not be saved.", color = Terracotta, fontSize = 11.sp)
                 Row {
-                    TextButton({ viewModel.retryReaction(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
-                    TextButton({ viewModel.dismissReactionError(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Dismiss") }
+                    TextButton({ retryReaction(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
+                    TextButton({ dismissReactionError(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Dismiss") }
                 }
             }
         }
     }
     if (picker) EmojiPicker(onDismiss = { picker = false }) { emoji ->
         picker = false
-        viewModel.setReaction(message.id, emoji, true)
+        setReaction(message.id, emoji, true)
     }
 }
 

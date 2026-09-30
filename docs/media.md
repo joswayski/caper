@@ -604,7 +604,7 @@ constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
 
-## Message reactions (first web release)
+## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus. On
 narrow/touch browser layouts it stays visible, and the searchable picker opens
@@ -614,13 +614,22 @@ removes your contribution. Choosing an emoji in the picker only adds it. Pending
 messages cannot be reacted to. Failed saves show an explicit retry of the same
 desired state rather than an ambiguous toggle.
 
+Android, iOS/macOS, and Rust desktop also provide searchable standard-emoji
+pickers, counted chips, own-contribution highlighting, add/remove, and save-error
+retry. Native/mobile actions remain visible without hover. Clients preserve
+per-message reaction revisions independently of the channel replay cursor.
+
 The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
 and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
 build/dev preparation verifies artwork for every offered emoji. It makes no
 emoji-CDN requests and loads the picker code on demand. These are images, not
 the operating system's emoji font, so supported reactions look consistent across
-web platforms. Message-body emoji are unchanged. Custom uploads, frequently
-used/top-five lists, a skin-tone selector, and native reaction UI are deferred.
+all clients. Native apps bundle raster sprite sheets generated from the same
+artwork with `node scripts/native-emoji.mjs` (requires npm dependencies and
+ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generated
+copy inside its target, checked byte-for-byte by CI, including licenses.
+Message-body emoji are unchanged. Custom uploads, frequently used/top-five lists,
+and a skin-tone selector are deferred.
 
 `PUT /api/chat/channels/{channel}/messages/{message}/reactions` accepts
 `{emoji,active}` and `X-Caper-Chat-Token`. It checks the same channel/member/private
@@ -628,7 +637,7 @@ grant and session permissions as sending. Unicode qualification variants are
 canonicalized; arbitrary text, multiple emoji, and emoji newer than 15.0 are
 rejected. Membership is unique by message, canonical emoji, and stable public
 author ID; separate account chat sessions therefore cannot inflate counts.
-Guest contributions belong to their persisted guest identity.
+Account membership is required; the retired public General demo is not writable.
 
 The response and transactional outbox use
 `{type:"message.reactions",schemaVersion:1,channelId,seq,messageId,reactions}`.
@@ -637,7 +646,7 @@ as message-author IDs already are. `seq` participates in the existing ordered
 channel stream. History contains the current `reactions` and `reactionSeq`
 snapshot; original message `seq`, timestamp, and content do not change. A no-op
 returns the current snapshot revision (or `"0"`) without allocating an event.
-HTTP snapshots never advance the browser's replay cursor. Per-message revisions
+HTTP snapshots never advance a client's replay cursor. Per-message revisions
 prevent stale replies or older pages from overwriting newer reactions. A full
 history resync drops older cached pages so missed reactions cannot remain stale;
 those pages can be loaded again. Normal reconnects replay missing events.
@@ -653,19 +662,21 @@ message snapshots, sequence allocation, and outbox commit together.
    feature flag, or secret is required. Keep the existing PostgreSQL/Valkey/chat
    configuration. Obtain the immutable merged revision as `MERGED_SHA`; wait for
    that revision's API/web images and native build artifacts before deployment.
-2. **Native compatibility first:** release the updated native clients before
-   exposing web reactions. They consume reaction sequence positions without
-   displaying reactions. From the Caper repository:
-   `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"`.
-   Watch that exact run and have native testers update. Older clients may fail to
-   advance across reaction events; this is not a native feature-parity release.
-3. **Database/API:**
+2. **Database/API first:**
    `gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"`.
    Watch the exact workflow run, then
    `kubectl -n default rollout status deployment/caper-api --timeout=15m`.
    API startup applies `202609290001_message_reactions.sql` and runtime grants
    before serving. No manual database writes or separate migration job are needed.
    Verify `/readyz` and that existing history/sends still work.
+3. **Native clients:** after the API is ready, release Android, Apple, and Rust
+   desktop clients from the same revision:
+   `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"`.
+   Watch that exact run and have native testers update before exposing web
+   reactions. Older clients may fail to advance across reaction events; they
+   must update. Check add/remove, search, own/other chips, persistence, errors,
+   reconnect, and account/channel switching on each platform. Native builds
+   against the fixture do not prove physical-device or production behavior.
 4. **Gateway:** no new gateway-side event handling is needed; existing gateways
    relay sequenced outbox payloads. Gateway deployment is independent of this
    feature and can be omitted. Do not change replicas or shared media state.
@@ -676,8 +687,10 @@ message snapshots, sequence allocation, and outbox commit together.
    Reload pre-release browser tabs. Verify two users adding/removing the same
    emoji, one user's highlight, counts after refresh and reconnect, and denied
    access to private messages. Check desktop hover/keyboard and narrow layouts.
-6. **Rollback:** roll back the web first to stop exposing reaction writes. Keep
-   the compatible native clients. The migration is additive: do not drop reaction
+6. **Rollback:** roll back the web first to reduce reaction writes. Updated
+   native apps also expose writes; retain the compatible API while preparing
+   corrective client releases. Do not restore old clients that cannot consume
+   reaction events. The migration is additive: do not drop reaction
    data or rewrite stored events. An API rollback can leave the tables in place;
    older clients may resync when retained reaction events replay. Restore the
    reaction-capable API/web to recover the saved reactions. Merging alone deploys
@@ -688,8 +701,8 @@ formatting, Clippy with warnings denied, and workspace tests passed (106 passed,
 24 ignored); the separately executed disposable Postgres/Valkey chat suite passed
 all 7 tests, including persistence, duplicate/concurrent adds, removals, account
 identity, authorization/revocation, outbox rollback, mutation limits, and both
-reaction-cap boundaries. Rust desktop tests passed after rebasing onto the latest
-native fixes (117 passed, 9 ignored). `cargo build --locked --release --package
+reaction-cap boundaries. Rust desktop tests passed after integrating the native
+reaction UI (124 passed, 9 ignored). `cargo build --locked --release --package
 caper-api` passed. Docker had no daemon, so API/web build stages were validated
 directly rather than building container images.
 Chromium desktop and 390px narrow-layout checks used the real local API, Postgres,
@@ -697,10 +710,12 @@ and gateway: two-viewer updates, refresh persistence, chip ownership/removal,
 search/empty state, and Escape/focus return passed. A deliberately simulated HTTP
 503 verified the visible save error and successful retry after restoring the API.
 Screenshots were inspected; the narrow capture is browser layout coverage, not
-a physical phone or touch/Safari test. Apple/Android compilation and device checks
-were unavailable in this Linux orb. Native protocol changes are separate from
-native UI; native release verification and production rollout checks remain
-required. No deployment or production database write was performed.
+a physical phone or touch/Safari test. Those browser checks predate the subsequent
+merge retiring public General. Apple/Android compilation and simulator checks
+run in GitHub CI; they are unavailable in this Linux orb. Check the current PR's
+CI results and native screenshots before release. Physical devices, native live
+cross-client reactions, and production rollout checks remain required. No
+deployment or production database write was performed.
 
 ## Shared call state and rolling deployments
 

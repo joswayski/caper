@@ -344,7 +344,35 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name == "parity-admin" {
+                if name == "parity-reactions" {
+                    app.session = Some(ChatSession {
+                        token: "fixture-token".into(),
+                        author: Author {
+                            id: "fixture-owner".into(),
+                            name: "Fixture Owner".into(),
+                            is_guest: false,
+                        },
+                    });
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    messages[1].reactions = vec![
+                        model::Reaction {
+                            emoji: "👍".into(),
+                            author_ids: vec!["fixture-owner".into(), "fixture-maya".into()],
+                        },
+                        model::Reaction {
+                            emoji: "❤️".into(),
+                            author_ids: vec!["fixture-maya".into()],
+                        },
+                        model::Reaction {
+                            emoji: "🎉".into(),
+                            author_ids: vec!["fixture-alex".into()],
+                        },
+                    ];
+                    messages[1].reaction_seq = Some("4".into());
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid reaction fixture");
+                } else if name == "parity-admin" {
                     app.form_name = "Fixture Studio".into();
                     app.managed_members = app
                         .detail
@@ -4775,7 +4803,10 @@ impl CaperApp {
             })
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    let saving = self.pending_reactions.values().any(|pending| pending.sent);
+                    let saving = self
+                        .pending_reactions
+                        .iter()
+                        .any(|((id, _), pending)| id == &message.id && pending.sent);
                     for reaction in &message.reactions {
                         let owned = author
                             .as_ref()
