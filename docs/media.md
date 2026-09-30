@@ -2716,6 +2716,8 @@ or service; this single allowlist intentionally has no flag SDK or table.
 
 ### Saved default avatars
 
+An avatar is the user's profile picture, not a separate cosmetic identity. The
+mascot is the default picture everywhere: account, members, chat and voice.
 `users.avatar_id` is a persisted smallint (0–799), assigned by PostgreSQL once on
 account creation. Migration `202609300001_user_avatars.sql` also assigns existing
 accounts a random default. Login, username/display-name edits and voice rejoining
@@ -2739,15 +2741,19 @@ Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved tile. Missin
 invalid IDs render initials; presence dots and speaking rings remain separate.
 
 Custom photo/GIF uploads, avatar selection and a public collection page are future
-work. A future validated uploaded-media reference can override this default; this
-change neither accepts arbitrary image URLs nor exposes upload-looking controls.
+work. A future validated uploaded-media reference should replace the displayed
+mascot everywhere, not create a second independent picture. The saved default can
+remain as a fallback if the user removes their upload. This change neither accepts
+arbitrary image URLs nor exposes upload-looking controls.
 
 Validation: migration/backfill/profile stability and repeat email-login tests run
 against disposable Postgres. Chat tests cover missing-avatar historical payloads,
 outbox and gateway replay; voice tests check trusted assignments and old Valkey
 state. `node scripts/test-avatars.mjs http://localhost:30701 .amp/in/artifacts`
 checks real browser components with a labelled API/gateway mock, including desktop
-and narrow layouts, tile boundaries, legacy initials, presence and profile rename.
+and narrow layouts, tile boundaries, presence and profile rename. Normal screenshots
+give every account a saved picture, including existing accounts. A separate
+incomplete-response test checks initials; it does not represent migrated accounts.
 This browser fixture is not live signup, SFU, physical phone or native evidence.
 Rust desktop was separately built and visually inspected in its labelled static
 fixture (chat, account, member and voice avatars); atlas selection and voice-stack

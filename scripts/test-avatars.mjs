@@ -14,11 +14,14 @@ const scratch = mkdtempSync(join(tmpdir(), 'avatar-test-'));
 const init = join(scratch, 'fixture.js');
 function fixture() {
   if (location.protocol === 'about:') return;
+  // Missing fields represent an old/incomplete response, not an existing account
+  // after migration. Keep that compatibility case separate from normal screenshots.
+  const missingAvatar = new URLSearchParams(location.search).has('missing-avatar-test');
   const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Alex', avatarId: 0 };
-  const members = [account, ...[31, 32, 799, null].map((avatarId, i) => ({ id: `member00000${i}`, username: `member_${i}`, displayName: ['Maya', 'June', 'Theo', 'Legacy'][i], avatarId }))].map((m, i) => ({ ...m, owner: i === 0 }));
+  const members = [account, ...[31, 32, 799, missingAvatar ? null : 143].map((avatarId, i) => ({ id: `member00000${i}`, username: `member_${i}`, displayName: ['Maya', 'June', 'Theo', missingAvatar ? 'Missing avatar (test)' : 'Avery'][i], avatarId }))].map((m, i) => ({ ...m, owner: i === 0 }));
   const space = { id: 'space1234567', name: 'Avatar test fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'general', private: false };
-  const messages = members.map((m, i) => ({ id: `message${i}`, clientMessageId: `client${i}`, channelId: channel.id, seq: String(i + 1), author: { id: m.id, name: m.displayName, isGuest: false, avatarId: m.avatarId }, content: { version: 1, type: 'text', text: ['Explicit test fixture — these are not real accounts or messages.', 'The same saved avatar appears beside my name everywhere.', 'Tile 32 starts the second row of the collection.', 'Tile 799 is the final avatar in the collection.', 'Older clients and missing avatars fall back to initials.'][i] }, createdAt: '2026-09-30T12:00:00Z' }));
+  const messages = members.map((m, i) => ({ id: `message${i}`, clientMessageId: `client${i}`, channelId: channel.id, seq: String(i + 1), author: { id: m.id, name: m.displayName, isGuest: false, avatarId: m.avatarId }, content: { version: 1, type: 'text', text: ['Explicit test fixture — these are not real accounts or messages.', 'The same saved avatar appears beside my name everywhere.', 'Tile 32 starts the second row of the collection.', 'Tile 799 is the final avatar in the collection.', missingAvatar ? 'Deliberately incomplete response to test the initials fallback.' : 'Existing accounts get a saved default profile picture too.'][i] }, createdAt: '2026-09-30T12:00:00Z' }));
   const history = { space, channel, messages, cursor: '5', hasMore: false };
   const author = () => ({ id: account.id, name: account.displayName, isGuest: false, avatarId: account.avatarId });
   const original = window.fetch.bind(window);
@@ -60,20 +63,19 @@ const wait = condition => browser('wait', '--fn', condition);
 try {
   browser('open', `${origin}spaces?space=space1234567&channel=channel12345`);
   browser('set', 'viewport', '1280', '900', '2');
-  wait('!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar [data-avatar-id]").length === 4 && document.querySelectorAll(".participant-avatar [data-avatar-id]").length === 3');
-  assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799]);
-  assert.deepEqual(evaluate('[...document.querySelectorAll(".member-presence-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799]);
+  wait('!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar [data-avatar-id]").length === 5 && document.querySelectorAll(".participant-avatar [data-avatar-id]").length === 3');
+  assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
+  assert.deepEqual(evaluate('[...document.querySelectorAll(".member-presence-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
   assert.deepEqual(evaluate('[...document.querySelectorAll(".voice-stack-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32]);
   assert.equal(evaluate('document.querySelector(".account-avatar [data-avatar-id]").dataset.avatarId'), '0');
-  assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].at(-1).textContent'), 'L');
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].every(e => e.querySelector("[data-avatar-id]"))'), true, 'Every account has a saved profile picture');
   assert.equal(evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'), 'Online');
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true, 'Image avatars and their containers must have transparent backing');
-  assert.notEqual(evaluate('getComputedStyle([...document.querySelectorAll(".chat-avatar")].at(-1).firstElementChild).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Initials retain a readable neutral backing');
   browser('eval', 'new Promise((resolve,reject) => { const image = new Image(); image.onload=()=>image.width===2048&&image.height===1600?resolve(true):reject(Error("Wrong atlas size")); image.onerror=reject; image.src="/images/avatars/capers-v1.webp"; })');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-desktop.png'));
   browser('click', '.space-menu summary');
   browser('click', '.space-actions button');
-  wait('document.querySelectorAll(".member-avatar [data-avatar-id]").length === 4');
+  wait('document.querySelectorAll(".member-avatar [data-avatar-id]").length === 5');
   assert.equal(evaluate('[...document.querySelectorAll(".member-avatar [data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-members-settings.png'));
   browser('click', '[aria-label="Close Manage space"]');
@@ -84,13 +86,19 @@ try {
   assert.equal(evaluate('document.querySelector(".account-avatar [data-avatar-id]").dataset.avatarId'), '0');
   browser('set', 'viewport', '390', '844', '2');
   browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
-  assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799]);
+  assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799, 143]);
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow-members.png'));
   browser('click', '.member-list-toggle');
   wait('!document.querySelector(".space-member-presence")');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow.png'));
-  console.log('PASS: saved IDs in chat, members, voice roster/stack and account; zero/row/end tiles; transparent image backing; legacy initials; presence; profile rename; desktop and narrow Chromium. Mock API, no live voice.');
+
+  browser('open', `${origin}spaces?space=space1234567&channel=channel12345&missing-avatar-test=1`);
+  wait('!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar").length === 5');
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].at(-1).textContent'), 'M');
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].at(-1).querySelector("[data-avatar-id]")'), null);
+  assert.notEqual(evaluate('getComputedStyle([...document.querySelectorAll(".chat-avatar")].at(-1).firstElementChild).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Initials retain a readable neutral backing for incomplete responses');
+  console.log('PASS: every normal account has a saved profile picture; saved IDs in chat, members, voice roster/stack and account; zero/row/end tiles; transparent image backing; separate missing-response fallback; presence; profile rename; desktop and narrow Chromium. Mock API, no live voice.');
 } catch (error) {
   console.error(browser('snapshot'));
   throw error;
