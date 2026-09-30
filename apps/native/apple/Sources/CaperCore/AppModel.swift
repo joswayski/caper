@@ -772,11 +772,20 @@ public final class ChatModel {
             spaceName = history.space?.name ?? "Caper"
             session = chatSession
             if CaperRuntime.isChatPreview("reaction-chips"), let ownID = chatSession?.author.id, !messages.isEmpty {
-                messages[0].reactions = [
-                    MessageReaction(emoji: "👍", authorIds: [ownID, "fixture-other"]),
-                    MessageReaction(emoji: "❤️", authorIds: ["fixture-other"]),
-                ]
+                let fixtureEmoji = ["👍", "❤️", "😂", "🎉", "🚀", "👀", "🔥", "✅", "👏", "🤔", "💯", "🙌", "😄", "🥳", "🤝", "✨", "💚", "😮", "🤯", "👩‍💻"]
+                messages[0].reactions = fixtureEmoji.enumerated().map {
+                    MessageReaction(emoji: $0.element, authorIds: $0.offset == 0 ? [ownID, "fixture-other"] : ["fixture-other"])
+                }
                 messages[0].reactionSeq = history.cursor
+                if messages.count > 1 {
+                    messages[1].reactions = []
+                } else {
+                    let source = messages[0]
+                    messages.append(ChatMessage(id: "reaction-empty-fixture", channelId: source.channelId, seq: source.seq,
+                                                author: source.author, content: ChatContent(version: 1, type: "text", text: "No reactions yet"),
+                                                createdAt: source.createdAt, clientMessageId: "reaction-empty-fixture", reactions: [],
+                                                reactionSeq: history.cursor))
+                }
                 reactionSnapshots.seed(messages)
             }
             guard let actualChannel = resolvedChannelID else { throw APIError(status: 502, message: "Channel metadata is missing.") }
@@ -879,12 +888,12 @@ public final class ChatModel {
     public func setReaction(messageID: String, emoji: String, active: Bool) async {
         guard let channelID, let session, !reactionSaving.contains(messageID) else { return }
         let requestGeneration = generation
-        reactionSaving.insert(messageID); reactionErrors[messageID] = nil; failedReactions[messageID] = nil
+        reactionSaving.insert(messageID)
         defer { if generation == requestGeneration { reactionSaving.remove(messageID) } }
         do {
             let event = try await api.setReaction(channelID: channelID, messageID: messageID, sessionToken: session.token, emoji: emoji, active: active)
             guard generation == requestGeneration, self.channelID == channelID else { return }
-            applyReactions(event)
+            applyReactions(event, clearsOwnFailure: true)
         } catch {
             guard generation == requestGeneration, self.channelID == channelID else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
@@ -959,6 +968,10 @@ public final class ChatModel {
                 return
             }
             applyReactions(reactionEvent)
+            if reactionSnapshots.unseenOverflowed {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
             if let subscriptionID {
                 let cursor = delivery.cursor
                 Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
@@ -1017,11 +1030,13 @@ public final class ChatModel {
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
     }
 
-    private func applyReactions(_ event: MessageReactionsEvent) {
+    private func applyReactions(_ event: MessageReactionsEvent, clearsOwnFailure: Bool = false) {
+        if clearsOwnFailure {
+            reactionErrors[event.messageId] = nil
+            failedReactions[event.messageId] = nil
+        }
         guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
         messages = messages.map { reactionSnapshots.overlay($0) }
-        reactionErrors[event.messageId] = nil
-        failedReactions[event.messageId] = nil
     }
 
     private func flushTyping() {

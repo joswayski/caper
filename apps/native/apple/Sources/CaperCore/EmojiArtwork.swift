@@ -17,12 +17,14 @@ struct EmojiCatalogEntry: Codable, Identifiable, Sendable {
 private final class EmojiBundleToken {}
 
 enum EmojiArtwork {
-    static let choices: [EmojiCatalogEntry] = {
+    private static let entries: [EmojiCatalogEntry] = {
         guard let url = resourceURL(name: "catalog", extension: "json"),
               let data = try? Data(contentsOf: url),
               let entries = try? JSONDecoder().decode([EmojiCatalogEntry].self, from: data) else { return [] }
-        return entries.filter(\.selectable)
+        return entries
     }()
+    static let choices = entries.filter(\.selectable)
+    private static let entriesByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
 
     static func id(for emoji: String) -> String {
         emoji.unicodeScalars.filter { $0.value != 0xfe0f || emoji.unicodeScalars.contains(where: { $0.value == 0x200d }) }
@@ -30,7 +32,7 @@ enum EmojiArtwork {
     }
 
     static func entry(for emoji: String) -> EmojiCatalogEntry? {
-        choices.first { $0.id == id(for: emoji) }
+        entriesByID[id(for: emoji)]
     }
 
     static func image(for entry: EmojiCatalogEntry) -> CGImage? {
@@ -65,8 +67,8 @@ enum EmojiArtwork {
                       let loaded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
                 sheets[entry.sheet] = loaded; sheet = loaded
             }
-            // Catalog coordinates start at the top-left; Core Graphics crops from the bottom-left.
-            let rect = CGRect(x: entry.x * 64, y: sheet.height - ((entry.y + 1) * 64), width: 64, height: 64)
+            // The catalog contains CGImage pixel coordinates, not grid indices.
+            let rect = CGRect(x: entry.x, y: entry.y, width: 64, height: 64)
             guard let cropped = sheet.cropping(to: rect) else { return nil }
             cache.setObject(CGImageBox(cropped), forKey: entry.id as NSString)
             return cropped

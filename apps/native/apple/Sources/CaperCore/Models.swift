@@ -123,7 +123,12 @@ public struct MessageReactionsEvent: Codable, Equatable, Sendable {
     public var isValid: Bool {
         type == "message.reactions" && schemaVersion == 1 && !channelId.isEmpty && !messageId.isEmpty
             && (try? Sequence.compare(seq, "0")) != nil
-            && reactions.allSatisfy { !$0.emoji.isEmpty && $0.authorIds.allSatisfy { !$0.isEmpty } }
+            && Set(reactions.map(\.emoji)).count == reactions.count
+            && reactions.allSatisfy {
+                !$0.emoji.isEmpty && !$0.authorIds.isEmpty
+                    && Set($0.authorIds).count == $0.authorIds.count
+                    && $0.authorIds.allSatisfy { !$0.isEmpty }
+            }
     }
 }
 
@@ -275,10 +280,11 @@ enum ReactionEvent {
               let reactions = event["reactions"] as? [[String: Any]],
               reactions.allSatisfy({ reaction in
                   guard let emoji = reaction["emoji"] as? String, !emoji.isEmpty,
-                        let authorIDs = reaction["authorIds"] as? [String] else { return false }
-                  return authorIDs.allSatisfy { !$0.isEmpty }
-              }) else { return nil }
-        return event["seq"] as? String
+                        let authorIDs = reaction["authorIds"] as? [String], !authorIDs.isEmpty else { return false }
+                  return Set(authorIDs).count == authorIDs.count && authorIDs.allSatisfy { !$0.isEmpty }
+              }), Set(reactions.compactMap { $0["emoji"] as? String }).count == reactions.count,
+              let seq = event["seq"] as? String, (try? Sequence.compare(seq, "0")) != nil else { return nil }
+        return seq
     }
 }
 
@@ -287,16 +293,24 @@ enum ReactionEvent {
 /// history pages fill missing messages without reverting a newer replay.
 struct ReactionSnapshots: Sendable {
     private var values: [String: (seq: String, reactions: [MessageReaction])] = [:]
+    private var knownMessageIDs: Set<String> = []
+    private(set) var unseenOverflowed = false
+    static let maximumUnseen = 256
 
     mutating func apply(messageID: String, seq: String?, reactions: [MessageReaction]) -> Bool {
         guard let seq, (try? Sequence.compare(seq, "0")) != nil else { return false }
         if let current = values[messageID], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
-        guard values[messageID] != nil || values.count < 512 else { return false }
+        let unseenCount = values.keys.lazy.filter { !knownMessageIDs.contains($0) }.count
+        guard knownMessageIDs.contains(messageID) || values[messageID] != nil || unseenCount < Self.maximumUnseen else {
+            unseenOverflowed = true
+            return false
+        }
         values[messageID] = (seq, reactions)
         return true
     }
 
     mutating func seed(_ messages: [ChatMessage]) {
+        knownMessageIDs.formUnion(messages.map(\.id))
         for message in messages { _ = apply(messageID: message.id, seq: message.reactionSeq, reactions: message.reactions ?? []) }
     }
 
@@ -308,7 +322,11 @@ struct ReactionSnapshots: Sendable {
         return result
     }
 
-    mutating func reset() { values.removeAll(keepingCapacity: false) }
+    mutating func reset() {
+        values.removeAll(keepingCapacity: false)
+        knownMessageIDs.removeAll(keepingCapacity: false)
+        unseenOverflowed = false
+    }
 }
 
 /// Accepts only snapshots that cannot move an already-versioned view

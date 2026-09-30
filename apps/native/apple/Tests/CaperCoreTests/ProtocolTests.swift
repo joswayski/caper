@@ -158,6 +158,16 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(delivery.receive(seq: "3"), "message after reaction remains contiguous")
         XCTAssertFalse(delivery.receive(seq: "5"), "reaction gap is rejected")
         XCTAssertNil(ReactionEvent.sequence(event(channel: "other"), channelID: "channel"))
+        XCTAssertNil(ReactionEvent.sequence(event("02"), channelID: "channel"), "sequence must be canonical")
+        var invalid = event()
+        invalid["reactions"] = [["emoji": "👍", "authorIds": []]]
+        XCTAssertNil(ReactionEvent.sequence(invalid, channelID: "channel"))
+        invalid["reactions"] = [["emoji": "👍", "authorIds": ["author", "author"]]]
+        XCTAssertNil(ReactionEvent.sequence(invalid, channelID: "channel"))
+        XCTAssertFalse(MessageReactionsEvent(type: "message.reactions", schemaVersion: 1, channelId: "channel", seq: "02",
+                                             messageId: "message", reactions: [MessageReaction(emoji: "👍", authorIds: ["author"])]).isValid)
+        XCTAssertFalse(MessageReactionsEvent(type: "message.reactions", schemaVersion: 1, channelId: "channel", seq: "2",
+                                             messageId: "message", reactions: [MessageReaction(emoji: "👍", authorIds: [])]).isValid)
     }
 
     func testReactionSnapshotsRejectStaleAckAndOverlayOlderPage() {
@@ -179,6 +189,45 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(EmojiArtwork.id(for: "❤️"), "2764")
         XCTAssertEqual(EmojiArtwork.id(for: "👨‍👩‍👧‍👦"), "1f468-200d-1f469-200d-1f467-200d-1f466")
         XCTAssertNotNil(EmojiArtwork.entry(for: "👍"))
+        XCTAssertNotNil(EmojiArtwork.entry(for: "👍🏽"), "non-picker variants still need reaction artwork")
+    }
+
+    func testEmojiArtworkCropsPixelCoordinatesAtAsymmetricPosition() {
+        let entry = EmojiArtwork.entry(for: "👍")
+        XCTAssertEqual(entry?.x, 64)
+        XCTAssertEqual(entry?.y, 128)
+        guard let entry, let image = EmojiArtwork.image(for: entry) else {
+            return XCTFail("Expected bundled thumbs-up artwork")
+        }
+        XCTAssertEqual(image.width, 64)
+        XCTAssertEqual(image.height, 64)
+        var pixels = [UInt8](repeating: 0, count: 64 * 64 * 4)
+        pixels.withUnsafeMutableBytes { bytes in
+            let context = CGContext(data: bytes.baseAddress, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 64 * 4,
+                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            context?.draw(image, in: CGRect(x: 0, y: 0, width: 64, height: 64))
+        }
+        XCTAssertTrue(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] != 0 }, "crop must contain visible pixels")
+    }
+
+    func testReactionSnapshotsRetainLoadedMessagesAndBoundOnlyUnseen() {
+        let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
+        let content = ChatContent(version: 1, type: "text", text: "hello")
+        let messages = (0..<600).map { index in
+            ChatMessage(id: "message-\(index)", channelId: "channel", seq: "\(index + 1)", author: author,
+                        content: content, createdAt: "now", clientMessageId: "client-\(index)",
+                        reactions: [], reactionSeq: "1")
+        }
+        var snapshots = ReactionSnapshots()
+        snapshots.seed(messages)
+        XCTAssertTrue(snapshots.apply(messageID: messages[599].id, seq: "2", reactions: [MessageReaction(emoji: "👍", authorIds: ["author"])]))
+        XCTAssertEqual(snapshots.overlay(messages[599]).reactions?.first?.emoji, "👍")
+
+        for index in 0..<ReactionSnapshots.maximumUnseen {
+            XCTAssertTrue(snapshots.apply(messageID: "unseen-\(index)", seq: "3", reactions: []))
+        }
+        XCTAssertFalse(snapshots.apply(messageID: "unseen-overflow", seq: "3", reactions: []))
+        XCTAssertTrue(snapshots.unseenOverflowed, "ChatModel uses this marker to request a resync")
     }
 
     func testUnknownOutcomeRetriesExactCommandAndResetPreventsResurrection() {

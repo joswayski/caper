@@ -165,12 +165,21 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(own.waitForExistence(timeout: 10))
         let other = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "not selected by you")).firstMatch
         XCTAssertTrue(other.exists)
+        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
+        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        capture("reaction-chips-wrapped-fixture", app: app)
         let add = app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).firstMatch
         XCTAssertTrue(add.exists); add.tap()
+        #if os(iOS)
+        let search = app.textFields["reaction-picker-search"]
+        #else
         let search = app.searchFields.firstMatch
+        #endif
         XCTAssertTrue(search.waitForExistence(timeout: 5))
+        capture("reaction-picker-open-fixture", app: app)
         type("definitely-no-such-emoji", into: search)
         XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
+        capture("reaction-picker-empty-fixture", app: app)
     }
 
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
