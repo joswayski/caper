@@ -149,6 +149,11 @@ body {
 .made-by a,
 .experimental-note a { color: var(--text); text-underline-offset: 4px; }
 .hero-copy > .experimental-note { max-width: 380px; margin-top: 12px; color: var(--text-muted); font-size: .8125rem; font-weight: 400; line-height: 1.55; }
+.experimental-note .contact-action { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; vertical-align: middle; padding: 0 4px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.contact-action svg { width: 14px; height: 14px; }
+.contact-action:hover { color: var(--terracotta-bright); }
+.contact-action:focus-visible { outline: 2px solid var(--terracotta); outline-offset: 2px; }
+.contact-feedback { display: block; overflow-wrap: anywhere; font-size: .75rem; }
 .not-found { min-height: 100vh; display: grid; place-content: center; text-align: center; padding: 24px; }
 .not-found p { color: var(--terracotta); font-weight: 700; }
 .not-found h1 { font-size: clamp(3rem, 8vw, 6rem); }

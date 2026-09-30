@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
@@ -72,8 +73,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
           </div>
           <p className="experimental-note">
             Caper is a work in progress and may contain bugs or incomplete features. Mobile apps are available. If you&apos;d like access or have feedback, reach out on{" "}
-            <a href={xUrl} target="_blank" rel="noreferrer">X</a>{" "}
-            or <a href={`mailto:${contactEmail}`}>email</a>.
+            <ContactLinks />
           </p>
           <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
         </div>
@@ -100,6 +100,30 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
       </section>
     </main>
   );
+}
+
+function ContactLinks() {
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (status !== "copied") return;
+    const timer = window.setTimeout(() => setStatus("idle"), 2500);
+    return () => window.clearTimeout(timer);
+  }, [status]);
+
+  async function copyEmail() {
+    try {
+      await navigator.clipboard.writeText(contactEmail);
+      setStatus("copied");
+    } catch {
+      setStatus("failed");
+    }
+  }
+
+  return <>
+    <a className="contact-action" href={xUrl} target="_blank" rel="noreferrer" aria-label="Jose on X"><svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" /></svg></a>{" "}
+    or <button type="button" className="contact-action" onClick={() => void copyEmail()} title={contactEmail}>{status === "copied" ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}<span>{status === "copied" ? "Copied!" : "Copy email"}</span></button>.
+    <span className="contact-feedback" role="status">{status === "copied" ? "Email address copied to clipboard." : status === "failed" ? `Couldn’t copy. ${contactEmail}` : ""}</span>
+  </>;
 }
 
 function formatRelativeTime(committedAt: string, now: number) {

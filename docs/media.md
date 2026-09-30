@@ -214,6 +214,20 @@ subscription. Reduced-motion visitors get a static illustration. Click/Tap to
 join opens `/login`, the existing email-code account flow. This illustration
 does not claim that image uploads are implemented in account chat.
 
+The centered join CTA leaves the reaction chips and quick emoji picker usable.
+Demo reactions toggle locally, never persist, and never call the real reactions
+API. Scripted counts grow as the conversation progresses; hover, keyboard focus,
+an open picker, and Pause stop the script. The four profile pictures in
+`public/images/demo-avatars.webp` were generated using `caper-face.svg` as the
+reference (beanie, headphones, glasses, and a star variation). The five bundled
+Twemoji 15.0 SVGs carry their CC BY 4.0 attribution in `images/demo-emoji`.
+The homepage contact actions link to X and copy the email address, with success
+feedback or a visible address when the browser denies clipboard access.
+`node scripts/test-home-demo.mjs http://localhost:30701` checks the real local
+homepage's 3D hit testing, reaction toggles, picker/Escape, reduced motion,
+clipboard-denial fallback, and join → email entry. Mobile touch emulation is
+browser-only coverage, not native-client or physical-device verification.
+
 The API no longer seeds General or exposes `/api/chat/general` or unscoped
 `/api/media/*`. Chat session creation requires an account. Shared authorization
 rejects every demo-space channel for history, sends, typing, and subscriptions,
