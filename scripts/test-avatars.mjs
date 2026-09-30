@@ -86,6 +86,9 @@ try {
   browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799]);
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow-members.png'));
+  browser('click', '.member-list-toggle');
+  wait('!document.querySelector(".space-member-presence")');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow.png'));
   console.log('PASS: saved IDs in chat, members, voice roster/stack and account; zero/row/end tiles; transparent image backing; legacy initials; presence; profile rename; desktop and narrow Chromium. Mock API, no live voice.');
 } catch (error) {
