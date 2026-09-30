@@ -19,8 +19,7 @@ import {
 } from "lucide-react";
 import { getAccount, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
-import { ChatHistoryError, loadChatHistory } from "../chat/client";
-import type { GeneralChatHistory } from "../chat/types";
+import { ChatHistoryError } from "../chat/client";
 import Wordmark from "../components/Wordmark";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
@@ -725,10 +724,9 @@ function SpacesLoading() {
   </main>;
 }
 
-export default function Spaces({ embedded = false, initialAccount, initialHistory, engaged = true, onChatOnlineChange }: {
+export default function Spaces({ embedded = false, initialAccount, engaged = true, onChatOnlineChange }: {
   embedded?: boolean;
   initialAccount?: Account;
-  initialHistory?: GeneralChatHistory;
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
 } = {}) {
@@ -795,21 +793,15 @@ export default function Spaces({ embedded = false, initialAccount, initialHistor
         if (!current) return;
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
           return void window.location.assign("/profile");
-        // The public channel lives on the homepage; spaces are for accounts.
-        if (!nextAccount) return void window.location.replace("/");
-        const [result, demoHistory] = await Promise.all([
-          nextAccount ? listSpaces() : Promise.resolve({ spaces: [], limits: undefined }),
-          initialHistory ? Promise.resolve(initialHistory) : loadChatHistory().catch((reason) => { if (!nextAccount) throw reason; return undefined; }),
-        ]);
+        if (!nextAccount) return void window.location.replace("/login");
+        const result = await listSpaces();
         if (!current) return;
-        const demo = demoHistory ? navigation.current.setDemo(demoHistory) : undefined;
-        const available = [...(demo ? [demo.detail.space] : []), ...result.spaces];
-        setAccount(nextAccount ?? undefined);
-        setSpaces(available);
+        setAccount(nextAccount);
+        setSpaces(result.spaces);
         setLimits(result.limits);
         setLoading(false);
-        if (!available.some((space) => space.id === selected.spaceId))
-          choose(available[0]?.id, undefined, true);
+        if (!result.spaces.some((space) => space.id === selected.spaceId))
+          choose(result.spaces[0]?.id, undefined, true);
       })
       .catch((reason) => {
         if (current) {

@@ -367,11 +367,6 @@ fn prepare_navigation(
             Some(history) => Some(history),
             None => Some(api.history(token, &selected.id, None)?),
         }
-    } else if space.is_none() {
-        Some(match cached {
-            Some(history) => history,
-            None => api.general_history(token)?,
-        })
     } else {
         None
     };
@@ -458,8 +453,6 @@ fn prepare_navigation_read(
     }
     let history = if let Some(selected) = selected {
         Some(api.history(token, &selected.id, None)?)
-    } else if space.is_none() {
-        Some(api.general_history(token)?)
     } else {
         None
     };

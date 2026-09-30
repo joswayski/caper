@@ -583,13 +583,15 @@ async fn room(
     identity: &Identity,
     channel: Option<&str>,
 ) -> Result<AppState, ApiError> {
+    let channel =
+        channel.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     identity.check(state).await?;
     let mut room = state
         .application
         .state
         .clone()
         .ok_or_else(chat::unavailable)?;
-    room.media_channel = channel.map(str::to_owned);
+    room.media_channel = Some(channel.to_owned());
     room.media_session = identity.hash.clone();
     room.check_media_access().await?;
     crate::ensure_enabled(&room)?;
@@ -717,6 +719,10 @@ async fn execute(
     identity: &Identity,
     command: &Command,
 ) -> Result<(u16, Value), ApiError> {
+    // Retired demo commands must not replay capability-bearing receipts either.
+    if command.channel_id.is_none() {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "channel not found"));
+    }
     identity.check(state).await?;
     if *state.drain.borrow() {
         return Err(

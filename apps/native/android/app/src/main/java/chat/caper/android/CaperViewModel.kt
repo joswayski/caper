@@ -54,22 +54,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = AppUiState(screen = SessionScreen.Profile(account), account = account)
                     return@launch
                 }
-                val general = api.general()
-                val room = requireNotNull(general.space) { "General space is missing." }
-                val channelRoom = requireNotNull(general.channel) { "General channel is missing." }
-                val list = account?.let { api.spaces(requireNotNull(accountToken)) }
+                if (account == null) {
+                    mutable.value = AppUiState(screen = SessionScreen.SignedOut)
+                    return@launch
+                }
+                val list = api.spaces(requireNotNull(accountToken))
                 if (requestAccountGeneration != accountGeneration) return@launch
-                val demo = Space(room.id, room.name, demo = true)
-                val channel = Channel(channelRoom.id, room.id, channelRoom.name, false)
-                val detail = SpaceDetail(demo, listOf(channel), emptyList())
                 mutable.value = AppUiState(
                     screen = SessionScreen.Home, account = account,
-                    spaces = listOf(demo) + (list?.spaces ?: emptyList()), limits = list?.limits,
-                    selectedSpace = detail, selectedChannel = channel, messages = general.messages,
-                    hasMoreMessages = general.hasMore,
+                    spaces = list.spaces, limits = list.limits,
                 )
-                openGateway(channel.id, general.cursor, ++generation)
-                createChatSession(requestAccountGeneration)
+                list.spaces.firstOrNull()?.let { selectSpace(it.id) }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
                     mutable.value = AppUiState(screen = SessionScreen.Home, error = message(error))
@@ -79,7 +74,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun showLogin() { mutable.value = mutable.value.copy(screen = SessionScreen.SignedOut, error = null) }
-    fun cancelAccountFlow() { if (mutable.value.selectedChannel != null) mutable.value = mutable.value.copy(screen = SessionScreen.Home, error = null) else loadHome() }
 
     fun requestCode(email: String) = launchAccountAction { request ->
         val challenge = api.requestCode(email)
@@ -133,8 +127,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectSpace(id: String) {
-        val existing = mutable.value.spaces.find { it.id == id } ?: return
-        if (existing.demo) return selectDemo()
+        if (mutable.value.spaces.none { it.id == id }) return
         ++spaceAccessGeneration
         val request = ++generation
         closeChannel(clearPending = true)
@@ -148,31 +141,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 detail.channels.firstOrNull()?.let(::selectChannel)
             } catch (error: Throwable) {
                 if (request == generation) { retryOpen = { selectSpace(id) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
-            }
-        }
-    }
-
-    private fun selectDemo() {
-        ++spaceAccessGeneration
-        val request = ++generation
-        closeChannel(clearPending = true)
-        mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null, openError = null)
-        viewModelScope.launch {
-            try {
-                val history = api.general()
-                if (request != generation) return@launch
-                val room = requireNotNull(history.space)
-                val channelRoom = requireNotNull(history.channel)
-                val space = mutable.value.spaces.first { it.demo }
-                val channel = Channel(channelRoom.id, room.id, channelRoom.name, false)
-                mutable.value = mutable.value.copy(
-                    selectedSpace = SpaceDetail(space, listOf(channel), emptyList()), selectedChannel = channel,
-                    messages = history.messages, hasMoreMessages = history.hasMore, busy = false,
-                )
-                openGateway(channel.id, history.cursor, request)
-            } catch (error: Throwable) {
-                if (request == generation) { retryOpen = { selectDemo() }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
             }
         }
     }
@@ -325,9 +293,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 // The cached sidebar listing is not an authorization decision. Check fresh
                 // server access before start() synchronously replaces a healthy current call.
-                val accessible = if (intent.demo) {
-                    setOfNotNull(api.general().channel?.id)
-                } else api.space(checkNotNull(token), intent.spaceId).let { detail ->
+                val accessible = api.space(checkNotNull(token), intent.spaceId).let { detail ->
                     if (detail.space.id != intent.spaceId) emptySet() else detail.channels.mapTo(mutableSetOf()) { it.id }
                 }
                 if (request != voiceAuthorizationRequest || spaceRequest != spaceAccessGeneration ||
@@ -719,12 +685,6 @@ internal data class VoiceDestination(val detail: SpaceDetail, val channel: Chann
 
 internal suspend fun readVoiceDestination(api: CaperApi, token: String?, spaces: List<Space>, spaceId: String, channelId: String): VoiceDestination? {
     val space = spaces.firstOrNull { it.id == spaceId } ?: return null
-    if (space.demo) {
-        val history = api.general()
-        if (history.space?.id != spaceId || history.channel?.id != channelId) return null
-        val channel = Channel(channelId, spaceId, history.channel.name, false)
-        return VoiceDestination(SpaceDetail(space, listOf(channel), emptyList()), channel, history)
-    }
     val detail = api.space(checkNotNull(token), spaceId)
     if (detail.space.id != spaceId) return null
     val channel = detail.channels.firstOrNull { it.id == channelId } ?: return null
