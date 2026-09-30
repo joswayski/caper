@@ -65,6 +65,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     spaces = list.spaces, limits = list.limits,
                 )
                 list.spaces.firstOrNull()?.let { selectSpace(it.id) }
+                // Sending needs this account's chat session. General used to
+                // create it at startup; without it every send was refused.
+                createChatSession(requestAccountGeneration)
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
                     mutable.value = AppUiState(screen = SessionScreen.Home, error = message(error))
@@ -320,7 +323,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun send(text: String, confirmed: () -> Unit = {}) {
         if (text.isBlank()) return
         val channel = mutable.value.selectedChannel ?: return
-        val author = chatAuthor ?: return fail(IllegalStateException("Chat session is unavailable."))
+        val author = chatAuthor ?: run {
+            // The session is still being created (or failed earlier): create
+            // it now and send once it exists, instead of refusing the message.
+            viewModelScope.launch {
+                if (createChatSession(accountGeneration) != null && chatAuthor != null) send(text, confirmed)
+                else fail(IllegalStateException("Chat session is unavailable."))
+            }
+            return
+        }
         val request = generation
         val operation = pendingSends.begin(channel.id, author, text, confirmed)
         mutable.value = mutable.value.copy(pendingMessage = PendingMessageUi(
