@@ -2742,9 +2742,13 @@ invalid IDs render initials; presence dots and speaking rings remain separate.
 
 Custom photo/GIF uploads, avatar selection and a public collection page are future
 work. A future validated uploaded-media reference should replace the displayed
-mascot everywhere, not create a second independent picture. The saved default can
-remain as a fallback if the user removes their upload. This change neither accepts
-arbitrary image URLs nor exposes upload-looking controls.
+mascot everywhere, not create a second independent picture. Uploading, replacing
+or removing a custom picture must preserve `users.avatar_id`. Removing the upload
+must clear only the custom-media reference and restore that same saved mascot in
+account, member, chat and voice views; it must not reroll the mascot or show initials.
+This is the contract for the future upload feature, not implemented upload/delete
+functionality. This change neither accepts arbitrary image URLs nor exposes
+upload-looking controls.
 
 Validation: migration/backfill/profile stability and repeat email-login tests run
 against disposable Postgres. Chat tests cover missing-avatar historical payloads,
