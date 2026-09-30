@@ -26,6 +26,7 @@ try {
   browser('reload');
   wait('document.querySelector(".sim-footer button:disabled")');
   const before = evaluate('return document.querySelector(".sim-messages").textContent');
+  assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reactions button[aria-pressed]").length'), 0, 'A newly posted message starts without reactions');
   browser('wait', '2500');
   assert.equal(evaluate('return document.querySelector(".sim-messages").textContent'), before, 'Reduced motion freezes the script');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-activator")).placeItems'), 'center');
@@ -47,7 +48,7 @@ try {
   assert.equal(evaluate('return document.querySelectorAll(".voice-stack-avatar.speaking").length'), 3);
   browser('click', '.sim-sidebar .voice-stack');
 
-  const chip = '.sim-message:last-of-type .sim-reactions button[aria-pressed]';
+  const chip = '.sim-message:first-of-type .sim-reactions button[aria-pressed]';
   const count = evaluate(`return Number(document.querySelector('${chip} span').textContent)`);
   assert.ok(evaluate(`const el = document.querySelector('${chip}'); const r = el.getBoundingClientRect(); return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button') === el;`), '3D panel must not intercept reaction hit testing');
   browser('click', chip);
@@ -75,7 +76,12 @@ try {
   assert.deepEqual(speakers(), ['Maya', 'Theo', 'June']);
   nextMoments(1); // 5: Maya stops while Theo and June continue
   assert.deepEqual(speakers(), ['Theo', 'June']);
-  nextMoments(3); // 8
+  assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reactions button[aria-pressed]").length'), 0, 'Leo posted at 4.75; no bundled reaction');
+  nextMoments(1); // 6: Leo's message is 1.25 seconds old
+  assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reactions button[aria-pressed]").length'), 0, 'Readers have not reacted yet');
+  nextMoments(1); // 7: Leo's message is 2.25 seconds old
+  assert.deepEqual(evaluate('return [...document.querySelectorAll(".sim-message:last-of-type .sim-reactions button[aria-pressed] span")].map(el => Number(el.textContent))'), [1], 'First reaction arrives after the message');
+  nextMoments(1); // 8
   assert.ok(members().includes('Noor'));
   assert.ok(!voices().includes('Noor'));
   assert.equal(evaluate('return document.querySelector(".sim-typing").textContent.trim()'), 'Noor and Theo are typing');
@@ -105,6 +111,10 @@ try {
   nextMoments(4); // 0: reset presence as well as messages
   assert.deepEqual(members(), ['Maya', 'Theo', 'June']);
   assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
+  assert.equal(evaluate('return document.querySelectorAll(".sim-reactions button[aria-pressed]").length'), 0, 'Loop starts with a fresh message and no reactions');
+  nextMoments(3); // June posts again; earlier viewer reaction must not carry over
+  assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reactions button[aria-pressed]").length'), 0);
+  console.log('PASS: new messages have no reactions; first reaction is delayed; viewer reactions respond immediately and reset on the next loop');
   console.log('PASS: production-style nested/collapsible roster, simultaneous speakers, burst messages, six-person join/leave/rejoin sequence, multi-person typing and cycle reset');
 
   // Mock only clipboard rejection: browsers may deny it, and we must not claim success.
