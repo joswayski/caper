@@ -88,8 +88,10 @@ export default function LiveWindow() {
             onMouseEnter={() => setInteracting(true)} onMouseLeave={() => setInteracting(false)}
             onFocusCapture={() => setFocused(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
             onKeyDown={(event) => { if (event.key === "Escape") { setPicker(undefined); event.currentTarget.querySelector<HTMLButtonElement>(`[data-picker-for="${picker}"]`)?.focus(); } }}>
+            <aside className="sim-rail" aria-label="Demo space"><span>C</span></aside>
             <aside className="sim-sidebar">
               <div className="sim-brand">Caper</div>
+              <div className="sim-section-title">Channels</div>
               <div className="sim-channel"><Hash aria-hidden="true" /> general</div>
               <p>In voice</p>
               <div className="sim-people">
@@ -127,8 +129,12 @@ export default function LiveWindow() {
                 ))}
                 <div className="sim-typing">{typing && <><i /><i /><i /> {people[nextMessage.person].name} is typing</>}</div>
               </div>
-              <footer className="sim-footer" data-live-control><span>Try a reaction · just for fun</span><button type="button" disabled={reducedMotion} aria-label={paused ? "Play demo" : "Pause demo"} aria-pressed={paused || reducedMotion} onClick={() => setPaused(!paused)}>{paused || reducedMotion ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}{reducedMotion ? "Reduced motion" : paused ? "Play" : "Pause"}</button></footer>
+              <footer className="sim-footer" data-live-control><a className="sim-composer" href="/spaces">Join to message #general</a><span>Try a reaction · just for fun</span><button type="button" disabled={reducedMotion} aria-label={paused ? "Play demo" : "Pause demo"} aria-pressed={paused || reducedMotion} onClick={() => setPaused(!paused)}>{paused || reducedMotion ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}{reducedMotion ? "Reduced motion" : paused ? "Play" : "Pause"}</button></footer>
             </section>
+            <aside className="sim-members" aria-label="Simulated members">
+              <div className="sim-members-heading">Members <span>{visiblePeople}</span></div>
+              {people.slice(0, visiblePeople).map((person) => <div className="sim-member" key={person.name}><Avatar person={person} /><strong>{person.name}</strong></div>)}
+            </aside>
           </div>
         </div>
         <a className="live-activator" data-live-activator data-live-control href="/spaces" aria-label="Join Caper. Arrow keys tilt the window.">
