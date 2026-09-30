@@ -19,6 +19,15 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class SpaceDetail(val space: Space, val channels: List<Channel>, val members: List<Member>)
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean)
 @Serializable data class ChatContent(val version: Int, val type: String, val text: String)
+@Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
+@Serializable data class ReactionUpdate(
+    val type: String = "message.reactions",
+    val schemaVersion: Int,
+    val channelId: String,
+    val seq: String,
+    val messageId: String,
+    val reactions: List<MessageReaction>,
+)
 @Serializable data class ChatMessage(
     val id: String,
     val channelId: String,
@@ -27,6 +36,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val content: ChatContent,
     val createdAt: String,
     val clientMessageId: String,
+    val reactions: List<MessageReaction> = emptyList(),
+    val reactionSeq: String? = null,
 )
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
@@ -134,6 +145,8 @@ data class AppUiState(
     val channelGrants: List<Member> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
+    val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
+    val chatAuthorId: String? = null,
     val busy: Boolean = false,
     val error: String? = null,
 ) {
@@ -151,3 +164,5 @@ data class PendingMessageUi(
     val error: String? = null,
     val rejected: Boolean = false,
 )
+
+data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

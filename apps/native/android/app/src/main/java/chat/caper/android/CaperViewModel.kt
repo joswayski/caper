@@ -35,6 +35,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal val accountEpoch: Long get() = accountGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
+    private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
 
     init { loadHome() }
 
@@ -225,7 +226,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 val newer = mutable.value.messages
                 mutable.value = mutable.value.copy(
-                    messages = (history.messages + newer).distinctBy { it.id }, hasMoreMessages = history.hasMore,
+                    messages = (mergeReactions(history.messages, unloadedReactions) + newer).distinctBy { it.id }, hasMoreMessages = history.hasMore,
                     loadingOlder = false,
                 )
             } catch (error: Throwable) {
@@ -284,6 +285,33 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun reportActivity() { gateway?.reportActivity() }
     fun localPresence(): String = gateway?.localPresence() ?: "offline"
     fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
+
+    fun setReaction(messageId: String, emoji: String, active: Boolean) {
+        val channel = mutable.value.selectedChannel ?: return
+        val request = generation
+        val key = "$messageId:$emoji"
+        if (mutable.value.reactionSaves[key]?.saving == true) return
+        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active)))
+        viewModelScope.launch {
+            try {
+                val capability = chatToken ?: createChatSession(accountGeneration) ?: throw IllegalStateException("Chat session is unavailable.")
+                val update = api.setReaction(accountToken, capability, channel.id, messageId, emoji, active)
+                if (request != generation || mutable.value.selectedChannel?.id != channel.id) return@launch
+                receiveReaction(update)
+                mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
+            } catch (error: Throwable) {
+                if (request == generation) {
+                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                    else mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active, false, message(error))))
+                }
+            }
+        }
+    }
+
+    fun retryReaction(messageId: String, emoji: String) {
+        val save = mutable.value.reactionSaves["$messageId:$emoji"] ?: return
+        setReaction(messageId, emoji, save.active)
+    }
 
     internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
         val request = ++voiceAuthorizationRequest
@@ -373,7 +401,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (account != null) require(session.author.id == account.id && !session.author.isGuest) { "Chat identity mismatch." }
             chatToken = session.token
             chatAuthor = session.author
-            mutable.value = mutable.value.copy(sessionError = null)
+            mutable.value = mutable.value.copy(sessionError = null, chatAuthorId = session.author.id)
             session.token
         } catch (error: Throwable) {
             if (requestAccountGeneration == accountGeneration) mutable.value = mutable.value.copy(sessionError = message(error))
@@ -388,6 +416,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
             onMessage = { value -> viewModelScope.launch { if (generation == request) addMessage(value) } },
+            onReaction = { value -> viewModelScope.launch { if (generation == request) receiveReaction(value) } },
             onTyping = { author, active, revision -> viewModelScope.launch { if (generation == request) receiveTyping(author, active, revision) } },
             onPresence = { snapshot -> viewModelScope.launch {
                 if (generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
@@ -462,6 +491,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         confirmPending(message)
     }
 
+    private fun receiveReaction(update: ReactionUpdate) {
+        if (update.channelId != mutable.value.selectedChannel?.id) return
+        val index = mutable.value.messages.indexOfFirst { it.id == update.messageId }
+        if (index < 0) {
+            val old = unloadedReactions[update.messageId]
+            if (old == null || update.seq.toBigIntegerOrNull()?.let { it > (old.seq.toBigIntegerOrNull() ?: java.math.BigInteger.valueOf(-1)) } == true)
+                unloadedReactions[update.messageId] = update
+            return
+        }
+        mutable.value = mutable.value.copy(messages = mutable.value.messages.map { mergeReaction(it, update) })
+    }
+
     private fun confirmPending(message: ChatMessage) {
         pendingSends.confirm(message)?.let {
             mutable.value = mutable.value.copy(pendingMessage = null)
@@ -472,6 +513,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun resyncChannel(channelId: String) {
         val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
         val request = ++generation
+        unloadedReactions.clear()
         val previous = mutable.value
         closeChannel(clearPending = false)
         // Keep the conversation readable while it reloads, as the web does.
@@ -613,12 +655,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         gateway?.close(); gateway = null
         gatewayStatus?.cancel(); gatewayStatus = null
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
+        unloadedReactions.clear()
         if (clearPending) pendingSends.clear()
         mutable.value = mutable.value.copy(
             selectedChannel = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
+            reactionSaves = emptyMap(),
         )
     }
 

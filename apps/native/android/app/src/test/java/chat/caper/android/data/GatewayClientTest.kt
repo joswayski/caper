@@ -20,8 +20,8 @@ class GatewayClientTest {
             """{"type":"message.reactions","schemaVersion":1,"channelId":"$channel","seq":"$seq","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author"]}]}""",
         ).jsonObject
         assertEquals("2", reactionSequence(event(), "channel"))
-        assertEquals("2", reactionSequence(event(), "channel"), "duplicate frames remain valid")
-        assertEquals("4", reactionSequence(event("4"), "channel"), "gap handling uses the parsed sequence")
+        assertEquals("duplicate frames remain valid", "2", reactionSequence(event(), "channel"))
+        assertEquals("gap handling uses the parsed sequence", "4", reactionSequence(event("4"), "channel"))
         assertThrows(IllegalArgumentException::class.java) { reactionSequence(event(channel = "other"), "channel") }
         assertThrows(IllegalArgumentException::class.java) {
             reactionSequence(Json.parseToJsonElement("""{"type":"message.reactions","schemaVersion":2,"channelId":"channel","seq":"2","messageId":"message","reactions":[]}""").jsonObject, "channel")

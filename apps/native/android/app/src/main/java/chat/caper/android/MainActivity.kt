@@ -23,6 +23,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -777,7 +780,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            MessageRow(message)
+            MessageRow(message, state, viewModel)
         }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -811,7 +814,61 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
-@Composable private fun MessageRow(message: ChatMessage) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false)
+@OptIn(ExperimentalLayoutApi::class)
+@Composable private fun MessageRow(message: ChatMessage, state: AppUiState, viewModel: CaperViewModel) {
+    var picker by remember { mutableStateOf(false) }
+    val own = state.chatAuthorId ?: state.account?.id
+    Column {
+        MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false)
+        FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            message.reactions.forEach { reaction ->
+                val selected = own != null && own in reaction.authorIds
+                val save = state.reactionSaves["${message.id}:${reaction.emoji}"]
+                OutlinedButton(
+                    onClick = { viewModel.setReaction(message.id, reaction.emoji, !selected) }, enabled = save?.saving != true,
+                    shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, if (selected) Terracotta else Border),
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp), modifier = Modifier.heightIn(min = 34.dp),
+                ) { EmojiImage(reaction.emoji, reaction.emoji, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
+                if (save?.error != null) TextButton({ viewModel.retryReaction(message.id, reaction.emoji) }) { Text("Retry", color = Terracotta, fontSize = 10.sp) }
+            }
+            state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values.filter { it.error != null && message.reactions.none { reaction -> reaction.emoji == it.emoji } }.forEach { save ->
+                TextButton({ viewModel.retryReaction(message.id, save.emoji) }) { Text("Reaction failed · Retry", color = Terracotta, fontSize = 10.sp) }
+            }
+            OutlinedButton({ picker = true }, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), contentPadding = PaddingValues(6.dp), modifier = Modifier.sizeIn(minWidth = 34.dp, minHeight = 34.dp).semantics { contentDescription = "Add reaction" }) {
+                EmojiImage("🙂", null, Modifier.size(19.dp))
+            }
+        }
+    }
+    if (picker) EmojiPicker(onDismiss = { picker = false }) { emoji ->
+        picker = false
+        viewModel.setReaction(message.id, emoji, true)
+    }
+}
+
+@Composable private fun EmojiPicker(onDismiss: () -> Unit, select: (String) -> Unit) {
+    val context = LocalContext.current
+    val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable } }
+    var query by rememberSaveable { mutableStateOf("") }
+    val shown = remember(query, catalog) {
+        val needle = query.trim().lowercase(Locale.ROOT)
+        if (needle.isEmpty()) catalog else catalog.filter { it.name.lowercase(Locale.ROOT).contains(needle) || it.keywords.lowercase(Locale.ROOT).contains(needle) }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) { Text("Add reaction", Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss) { Text("Close") } }
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
+                if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
+                else LazyVerticalGrid(GridCells.Adaptive(44.dp), modifier = Modifier.heightIn(max = 390.dp)) {
+                    gridItems(shown, key = { it.id }) { entry ->
+                        IconButton({ select(entry.emoji) }, Modifier.semantics { contentDescription = entry.name }) { EmojiImage(entry.emoji, null, Modifier.size(30.dp)) }
+                    }
+                }
+            }
+        }
+    }
+}
 @Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
         Avatar(author, 34.dp)

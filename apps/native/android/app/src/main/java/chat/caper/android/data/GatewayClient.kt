@@ -5,6 +5,7 @@ import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.GatewayStatus
 import chat.caper.android.model.PresenceSnapshot
 import chat.caper.android.model.Participant
+import chat.caper.android.model.ReactionUpdate
 import chat.caper.android.model.SpectatorSnapshot
 import java.util.UUID
 import java.math.BigInteger
@@ -50,6 +51,7 @@ class GatewayClient(
     private val channelId: String,
     initialCursor: String,
     private val onMessage: (ChatMessage) -> Unit,
+    private val onReaction: (ReactionUpdate) -> Unit = {},
     private val onTyping: (ChatAuthor, Boolean, String) -> Unit = { _, _, _ -> },
     private val onPresence: (PresenceSnapshot) -> Unit = {},
     private val onMedia: (String, List<Participant>) -> Unit = { _, _ -> },
@@ -195,6 +197,7 @@ class GatewayClient(
                         val nextSequence = next.toBigIntegerOrNull()
                         val cursorSequence = cursor.toBigIntegerOrNull()
                         if (nextSequence != null && cursorSequence != null && nextSequence == cursorSequence + BigInteger.ONE) {
+                            onReaction(json.decodeFromJsonElement(ReactionUpdate.serializer(), event))
                             cursor = next
                         } else if (nextSequence != null && cursorSequence != null && nextSequence > cursorSequence) {
                             fail(webSocket, terminal = false)
