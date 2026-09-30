@@ -360,8 +360,22 @@ async fn profile_rejects_reserved_names_before_database_access() {
     );
     let router = app(state);
     for username in [
-        " CaPeR ", "CAPERS", "ADMIN", "admins", "feedback", "SUPPORT", "mod", "mods", "SECURITY",
-        "staff", "TRUST", "team",
+        " CaPeR ",
+        "CAPERS",
+        "ADMIN",
+        "admins",
+        "feedback",
+        "SUPPORT",
+        "mod",
+        "mods",
+        "SECURITY",
+        "staff",
+        "JOSE",
+        "caperchat",
+        "aaron",
+        "joswayski",
+        "TRUST",
+        "team",
     ] {
         let (status, body) = call(
             router.clone(),

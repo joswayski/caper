@@ -34,8 +34,20 @@ impl Default for ReservedUsernames {
     fn default() -> Self {
         Self(
             [
-                "caper", "capers", "admin", "admins", "mod", "mods", "support", "feedback",
-                "security", "staff",
+                "caper",
+                "capers",
+                "admin",
+                "admins",
+                "mod",
+                "mods",
+                "support",
+                "feedback",
+                "security",
+                "staff",
+                "jose",
+                "caperchat",
+                "aaron",
+                "joswayski",
             ]
             .map(str::to_owned)
             .into(),
@@ -156,8 +168,20 @@ mod tests {
     fn reserved_names_include_defaults_and_trimmed_case_insensitive_additions() {
         let defaults = ReservedUsernames::from_env(&RuntimeEnvironment::default());
         for name in [
-            "caper", "capers", "admin", "admins", "mod", "mods", "support", "feedback", "security",
+            "caper",
+            "capers",
+            "admin",
+            "admins",
+            "mod",
+            "mods",
+            "support",
+            "feedback",
+            "security",
             "staff",
+            "jose",
+            "caperchat",
+            "aaron",
+            "joswayski",
         ] {
             assert!(defaults.contains(name));
         }
@@ -167,8 +191,22 @@ mod tests {
                 " Trust, TEAM , ,caper",
             )]));
         for name in [
-            "caper", "capers", "admin", "admins", "mod", "mods", "support", "feedback", "security",
-            "staff", "trust", "team",
+            "caper",
+            "capers",
+            "admin",
+            "admins",
+            "mod",
+            "mods",
+            "support",
+            "feedback",
+            "security",
+            "staff",
+            "jose",
+            "caperchat",
+            "aaron",
+            "joswayski",
+            "trust",
+            "team",
         ] {
             assert!(configured.contains(name));
         }
