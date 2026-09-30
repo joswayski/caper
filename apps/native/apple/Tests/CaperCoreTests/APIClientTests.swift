@@ -536,10 +536,6 @@ final class APIClientTests: XCTestCase {
         MockURLProtocol.handler = { request in
             switch (request.httpMethod, request.url?.path) {
             case ("POST", "/api/auth/logout"): return (204, Data())
-            case ("GET", "/api/chat/general"):
-                return (200, Data(#"{"space":{"id":"demo00000001","name":"Caper"},"channel":{"id":"demo00000002","name":"general"},"messages":[],"cursor":"0","hasMore":false}"#.utf8))
-            case ("POST", "/api/chat/session"):
-                return (200, Data(#"{"token":"guest-chat","author":{"id":"guest0000001","name":"Guest","isGuest":true}}"#.utf8))
             default: throw URLError(.badURL)
             }
         }

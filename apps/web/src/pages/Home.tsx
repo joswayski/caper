@@ -4,7 +4,6 @@ import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
-import type { GeneralChatHistory } from "../chat/types";
 import { detectDownloadPlatform, downloads, type DownloadPlatform } from "../downloads";
 
 const repositoryUrl = "https://github.com/joswayski/caper";
@@ -14,7 +13,6 @@ const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
   account: Account | null;
-  history: GeneralChatHistory | null;
   initialNow: number;
   latestChanges: readonly LatestChange[];
   downloadPlatform: DownloadPlatform | null;
@@ -22,9 +20,8 @@ type HomeProps = {
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", { numeric: "always" });
 
-export default function Home({ account, history, initialNow, latestChanges, downloadPlatform }: HomeProps) {
+export default function Home({ account, initialNow, latestChanges, downloadPlatform }: HomeProps) {
   const [now, setNow] = useState(initialNow);
-  const [open, setOpen] = useState(false);
   const [platform, setPlatform] = useState(downloadPlatform);
   const download = platform ? downloads[platform] : null;
 
@@ -54,8 +51,8 @@ export default function Home({ account, history, initialNow, latestChanges, down
         </div>
       </header>
 
-      <section className="hero shell" data-live-bounds data-live-open={open ? "" : undefined}>
-        <div className="hero-copy" inert={open}>
+      <section className="hero shell" data-live-bounds>
+        <div className="hero-copy">
           <h1 aria-label="A place for your people">
             <span className="hero-title-line">A place for</span>
             <span className="hero-title-line">
@@ -81,7 +78,7 @@ export default function Home({ account, history, initialNow, latestChanges, down
           <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
         </div>
 
-        <LiveWindow account={account} history={history} active={open} onActiveChange={setOpen} />
+        <LiveWindow />
       </section>
       {/* Runs during parsing, once the hero it measures is complete. */}
       <script dangerouslySetInnerHTML={{ __html: liveRestScript }} suppressHydrationWarning />

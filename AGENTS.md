@@ -6,7 +6,7 @@ Adapted from the conventions in `joswayski/captures`.
 
 - Caper is an early-stage space for conversations. Distinguish working features from roadmap ideas; do not describe mockups as shipped functionality.
 - `apps/web`: TanStack Start browser app and same-origin development API adapter.
-- `apps/api`: Rust media control, accounts, spaces and unified text/voice channels. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. The public General demo remains guest-accessible; account spaces require membership, and private channels have explicit member grants. Owners manage spaces/channels and add existing accounts by username. Text uses Postgres/outbox and the independently deployed `--gateway` WebSocket role with Valkey fanout. No invite links, custom roles, camera, or screen sharing.
+- `apps/api`: Rust media control, accounts, spaces and unified text/voice channels. Cloudflare Realtime SFU/TURN carries audio; AWS carries control traffic. The public General demo is retired; the homepage shows a labelled local simulation linking to email sign-in. Account spaces require membership, and private channels have explicit member grants. Owners manage spaces/channels and add existing accounts by username. Text uses Postgres/outbox and the independently deployed `--gateway` WebSocket role with Valkey fanout. No invite links, custom roles, camera, or screen sharing.
 - `shared/design.css`: shared visual tokens. `docs/brand` contains the owner's reference images and style guidance.
 - `docs/media.md`: configuration, deployment, privacy, validation matrix, and call runbook.
 
@@ -23,7 +23,7 @@ Adapted from the conventions in `joswayski/captures`.
 
 - Use shared tokens: blackout #0C0D0F, surface #151719, border #34383B, text #F3F4F5, terracotta #B64D32, caper green #637A43. Satoshi typography; restrained borders and 8px control corners.
 - Terracotta is for primary actions, selection, and focus. Green primarily belongs to the character, with restrained presence/status use. Keep general chrome neutral.
-- Build hierarchy with typography, spacing, and clear layouts rather than large color fields. Do not add fake participants, messages, or working-looking controls for unimplemented features.
+- Build hierarchy with typography, spacing, and clear layouts rather than large color fields. Fictional participants/messages belong only in the explicitly labelled homepage simulation; never use them in real account spaces or add working-looking controls for unimplemented features.
 - Inspect rendered desktop/mobile and affected non-default browser states before claiming visual completion. Use real browser interactions or explicitly labeled test mocks.
 
 ## Documentation and validation

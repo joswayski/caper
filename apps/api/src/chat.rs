@@ -60,9 +60,6 @@ impl Chat {
             std::env::var("VALKEY_ALLOW_INSECURE").is_ok_and(|v| v == "true" || v == "1");
         crate::media_store::validate_url(&url, insecure).map_err(|_| "invalid chat VALKEY_URL")?;
         let broker = redis::Client::open(url).map_err(|_| "invalid chat VALKEY_URL")?;
-        seed(&pool)
-            .await
-            .map_err(|_| "failed to initialize public chat")?;
         Ok(Some(Self {
             pool,
             broker,
@@ -72,6 +69,7 @@ impl Chat {
 }
 
 /// Serialized startup seeding, with random external IDs generated only once.
+#[cfg(test)]
 pub(crate) async fn seed(pool: &PgPool) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(731902, 1)")
@@ -86,7 +84,6 @@ pub(crate) async fn seed(pool: &PgPool) -> Result<(), sqlx::Error> {
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/chat/general", get(general))
         .route("/api/chat/session", post(session))
         .route(
             "/api/chat/channels/{channel}/messages",
@@ -97,18 +94,6 @@ pub(crate) fn routes() -> Router<AppState> {
 
 fn enabled(state: &AppState) -> Result<&Chat, ApiError> {
     state.chat.as_ref().ok_or_else(unavailable)
-}
-
-async fn general(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let chat = enabled(&state)?;
-    let (space, name, channel, channel_name): (String, String, String, String) = sqlx::query_as(
-        "SELECT s.external_id, s.name, c.external_id, lower(c.name) FROM public.spaces s JOIN public.channels c ON c.space_id = s.id WHERE s.demo AND lower(c.name) = 'general'")
-        .fetch_one(&chat.pool).await.map_err(database_error)?;
-    let mut result = history_page(&chat.pool, &channel, None, None).await?;
-    // Keep the original demo endpoint's exact metadata source and shape.
-    result["space"] = json!({"id":space,"name":name});
-    result["channel"] = json!({"id":channel,"name":channel_name});
-    Ok(Json(result))
 }
 
 #[derive(Deserialize)]
@@ -152,11 +137,10 @@ async fn history_page(
 ) -> Result<Value, ApiError> {
     let access = channel_access(pool, channel, user).await?;
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
-        "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND s.demo=$3 AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
+        "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND NOT s.demo AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
     )
     .bind(access.id)
     .bind(access.space_id)
-    .bind(access.demo)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
@@ -183,14 +167,12 @@ async fn session(
     Json(input): Json<SessionInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let account = if let Some(token) = account_token(&headers) {
-        Some(state.auth.authenticate(token, Some(&chat.pool)).await?.user)
-    } else {
-        None
-    };
+    let token = account_token(&headers)
+        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "sign in required"))?;
+    let account = state.auth.authenticate(token, Some(&chat.pool)).await?.user;
     let name = account
-        .as_ref()
-        .and_then(|u| u.display_name.as_deref())
+        .display_name
+        .as_deref()
         .unwrap_or(&input.name)
         .trim();
     if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
@@ -216,12 +198,12 @@ async fn session(
         ));
     }
     sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, user_id, name, account_session_hash) VALUES ($1, $2, $3, $4, $5)")
-        .bind(&id).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(account.as_ref().map(|u| u.id)).bind(name)
+        .bind(&id).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(account.id).bind(name)
         .bind(account_token(&headers).map(|token| Sha256::digest(token.as_bytes()).to_vec()))
         .execute(&mut *tx).await.map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok(Json(
-        json!({"token":token,"author":{"id":account.as_ref().map_or(id.as_str(), |u| u.external_id.as_str()),"name":name,"isGuest":account.is_none()}}),
+        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false}}),
     ))
 }
 
@@ -385,10 +367,9 @@ async fn persist(
     let row: Option<(i64, i64)> = sqlx::query_as(
         "SELECT c.id,c.last_seq FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
          WHERE c.external_id=$1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-           AND ((s.demo AND lower(c.name)='general') OR
-                ($2::bigint IS NOT NULL
+           AND NOT s.demo AND $2::bigint IS NOT NULL
                  AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
-                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))))
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
          FOR UPDATE OF c",
     )
     .bind(channel)

@@ -14,7 +14,6 @@ export interface PreparedSpace {
 export function createSpaceNavigation() {
   const entries = new Map<string, { expires: number; result: Promise<PreparedSpace> }>();
   const visited = new Map<string, PreparedSpace>();
-  let demo: SpaceDetail | undefined;
   const peek = (spaceId: string, channelId?: string) => {
     const match = [...visited.values()].reverse().find((view) => view.detail.space.id === spaceId && (!channelId || view.channelId === channelId));
     return match;
@@ -34,7 +33,7 @@ export function createSpaceNavigation() {
     const cached = entries.get(key);
     if (cached && cached.expires > Date.now()) return cached.result;
     const result = (async () => {
-      const detail = spaceId === demo?.space.id ? demo : await getSpace(spaceId);
+      const detail = await getSpace(spaceId);
       const previous = peek(spaceId, channelId);
       if (previous?.channelId && !detail.channels.some((channel) => channel.id === previous.channelId)) {
         forget(spaceId);
@@ -69,16 +68,6 @@ export function createSpaceNavigation() {
     peek,
     remember,
     forget,
-    setDemo(history: GeneralChatHistory) {
-      demo = {
-        space: { ...history.space, ownerId: "", demo: true },
-        channels: [{ ...history.channel, spaceId: history.space.id, private: false }],
-        members: [],
-      };
-      const view = { detail: demo, channelId: history.channel.id, history };
-      remember(view);
-      return view;
-    },
     rememberHistory(history: GeneralChatHistory) {
       const view = peek(history.space.id, history.channel.id);
       if (view) remember({ ...view, history, historyError: undefined });

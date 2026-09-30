@@ -2,14 +2,13 @@
 
 ## Scope and architecture
 
-The **Public demo / General** channel remains available to guests while the
-service is enabled. Account-owned spaces contain unified text/voice channels;
-their history, live messages, presence and calls require membership. See
-[spaces and channel access](#spaces-and-channel-access). Signed-in participants
-use their account display name; guests receive a random name. This is not an
-outgoing-call flow. No camera, screen sharing, or server-side voice recording.
-The independently enabled [public text demo](#public-text-demo) shares the public `general` channel on the homepage;
-demo reads and sends do not require an account or joining voice.
+The homepage shows a labelled, client-only simulated conversation. Its join
+button opens email-code sign-in/sign-up; it does not connect to a real channel.
+The former **Public demo / General** is retired. Account-owned spaces contain
+unified text/voice channels; history, live messages, presence and calls require
+membership. See [spaces and channel access](#spaces-and-channel-access).
+Participants use their account display name. This is not an outgoing-call flow.
+No camera, screen sharing, or server-side voice recording.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 Input/output device lists open directly beside the profile's microphone/headphone
@@ -206,39 +205,67 @@ Validation for this transport change:
 
 ### Public text demo
 
-Implemented behind `CHAT_ENABLED=true`; production activation is separate. The
-temporary **Public demo** space contains one **General** unified channel. Account
-spaces are separate from this guest demo. Rich content, message edits/deletion,
-moderation rules, and message notifications are not implemented. Typing indicators are
-best-effort ephemeral presence, not saved messages. This demo is not a
-permanent public space when the product launches. Voice control shares the
-application gateway; audio remains WebRTC.
+Retired September 2026. `LiveWindow.tsx` now renders a bounded, local scripted
+conversation with fictional participants, typing, visual speaking indicators,
+and a bundled AI-generated capybara meme (`public/images/demo-tiny-hat.webp`).
+The visible “Simulated demo” label distinguishes the illustration from live
+activity. It plays no audio and requests no chat/media capability or gateway
+subscription. Reduced-motion visitors get a static illustration. Click/Tap to
+join opens `/login`, the existing email-code account flow. This illustration
+does not claim that image uploads are implemented in account chat.
 
-The homepage hero is this channel. `LiveWindow.tsx` embeds the same room as
-the demo page (`pages/Call.tsx` without a `channel`: chat, voice roster, and
-mic/deafen/settings controls) in a tilting 3D window. Clicking the window opens
-it: on screens at least 1024px wide it flattens to full size over the hero; on
-narrower screens it opens full screen. The server render reuses the existing
-`GET /api/chat/general` call and keeps the newest 16 messages. Each visitor
-opens one application-gateway socket with a read-only chat subscription and a
-spectator voice-roster subscription. Until the window is opened, the room is
-read-only: no guest chat session (session creation is limited to 60 per minute
-across all guests), no noise-model downloads, and no sounds. Anything posted
-to General is visible on the homepage, and moderation and deletion do not
-exist yet. Spectators see who is in voice and who is muted, not who is
-speaking; speaking is detected only by call participants. When the channel
-cannot be loaded, the same real room shows its loading or unavailable state,
-and can still be opened to retry. No scripted conversations or participants
-replace unavailable data. Each channel line in the sidebar shows who is in that channel's voice
-and a Join button. At 760px and narrower, `/spaces` keeps the viewed channel's
-line (its voice roster and Join) and the voice panel above the conversation,
-as the homepage room does; Browse opens the full space and channel list.
-In `/spaces` the browser opens one spectator voice-roster
-subscription per channel, up to 24 per space, on the same gateway connection
-(within its 32-subscription limit). A space-level voice presence feed on the
-server would replace these. `/spaces` is for accounts: it sends logged-out visitors to the homepage,
-and the login page's guest link points there too. Signed-in people still see
-the public space in their `/spaces` rail.
+The API no longer seeds General or exposes `/api/chat/general` or unscoped
+`/api/media/*`. Chat session creation requires an account. Shared authorization
+rejects every demo-space channel for history, sends, typing, and subscriptions,
+even for authenticated users with an explicit membership. Existing demo data
+is retained, not deleted. `CHAT_ENABLED` and `MEDIA_ENABLED` still control account
+features and must not be disabled to retire the demo. Web, Android, Apple, and
+Rust desktop bootstrap from account spaces without inserting General. `/spaces`
+sends signed-out visitors to `/login`.
+
+#### Demo retirement deployment order
+
+1. No infrastructure, secret/configuration change, or new database migration is
+   required. Wait for immutable API and web images for the merged commit. Set
+   `MERGED_SHA` to that full commit SHA; run operator commands from an authenticated
+   checkout with the production Kubernetes context. Merging does not deploy.
+2. Deploy **API, then gateway**, waiting for each new-image workflow to finish
+   successfully before checking rollout. All old replicas must be replaced:
+
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the run for this SHA to complete, then:
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the run for this SHA to complete, then:
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+
+   Old gateways embed the old media router, so API deployment alone does not
+   revoke all access. Existing demo calls cannot renew through updated services;
+   their 45-second leases expire and the five-second sweep schedules provider
+   cleanup. Provider cleanup is asynchronous and may retry: rollout is not proof
+   of immediate SFU disconnection. Verify the retired roster empties and cleanup
+   completes without interrupting account calls; never clear shared Valkey state.
+3. Deploy web after both server roles, then publish updated Android, Apple, and
+   desktop clients through their normal release workflows. Native releases can
+   proceed independently of one another after the server rollout. Old clients
+   cannot access General but may need an update to load account spaces.
+
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the run for this SHA to complete, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+
+4. Verify `/api/chat/general` and `/api/media/status` return 404, old demo channel
+   IDs reject history and gateway subscriptions, and an account member can still
+   read, send, and join voice in an account-owned space. Verify homepage CTA →
+   email entry → code flow. Browser rendering is not native-device verification.
+5. Rollback: web/native presentation can roll back independently, but older
+   clients expect retired routes. Rolling back API or gateway authorization
+   restores public access and is incompatible with keeping the demo retired;
+   prefer a forward fix. No data restoration is needed because demo data remains.
 
 The same Rust image has two independently deployable roles:
 
@@ -253,8 +280,8 @@ Both need Postgres, the **same** authenticated TLS `VALKEY_URL`, and
 `CHAT_ENABLED=true`. The flag defaults off outside Compose. Compose defaults it
 on when no override exists; change the example `.env`'s false value to true to
 enable it. Secrets Manager overrides process environment settings. API startup
-runs the additive migration and runtime grants; startup seeding allocates stable
-random IDs under a transaction lock. Start the API before the gateway. The
+runs migrations and runtime grants but no longer seeds a public demo.
+Start the API before the gateway. The
 gateway retries startup in Compose if migrations are not ready yet.
 
 IDs follow the existing random alphanumeric convention: **12 characters** for
@@ -266,18 +293,18 @@ in commit order. There is no cross-channel ordering or sharding in this demo.
 
 HTTP contract (same origin, no cache):
 
-- `GET /api/chat/general`: space/channel IDs, latest 50 messages oldest-first,
-  `cursor`, and `hasMore`.
+- `GET /api/chat/general`: retired; returns 404.
 - `POST /api/chat/session {name}`: opaque sender token and public author. Login
-  is optional; a valid account supplies the authoritative name. Guest names are
-  not verified. Tokens are stored hashed in Postgres and expire after 30 days.
+  is required; a valid account supplies the authoritative name.
+  Tokens are stored hashed in Postgres and expire after 30 days.
   Account-linked chat tokens also stop working after parent logout/expiry.
 - `POST /api/chat/channels/{id}/messages {clientMessageId,text}` with
   `X-Caper-Chat-Token`: returns the committed message. The browser retries the
   same UUID and original text after ambiguous errors, using Enter or Retry send.
   A reused key with different text or a different sender returns conflict.
 - `GET /api/chat/channels/{id}/messages?before={seq}`: earlier history, up to
-  50 messages. Only the demo's General channel is accessible through these APIs.
+  50 messages. Requires account membership and any private-channel grant;
+  retired demo channels are inaccessible.
 - `POST /api/chat/channels/{id}/typing {typing:boolean}` with
   `X-Caper-Chat-Token`: checks the same sender/channel permissions as sending;
   returns 204 after best-effort publication, 429 when throttled. No draft text is
@@ -292,11 +319,11 @@ An eventual transformation feature must separately retain the submitted original
 in restricted audit storage while publishing only the transformed content. The
 current hash is not an audit copy. Stable message IDs and channel event sequences
 permit later same-ID updates; audit history, integrations and edits are not implemented.
-Message bodies, guest capabilities, and account credentials are never logged.
-Messages and author snapshots are saved in Postgres and visible to everyone;
-there is no automatic retention purge in this demo. Browser tokens use local
+Message bodies, chat capabilities, and account credentials are never logged.
+Messages and author snapshots are saved in Postgres and visible to authorized
+channel members; there is no automatic retention purge. Browser tokens use local
 storage; drafts/pending sends survive reconnects but not closing/reloading a tab.
-Guests reuse their saved identity; signed-in startup obtains a fresh capability
+Signed-in startup obtains a fresh capability
 from the current account session rather than identifying an account by its name.
 
 History opens at the latest 50 messages. Scrolling to the oldest loaded rows
@@ -346,8 +373,8 @@ Delivery and recovery:
    The event remains in Postgres for replay. A crash in between may republish it;
    gateway/client sequence deduplication prevents a second visible message.
 4. `GET /api/chat/events` upgrades to the application WebSocket. The browser sends
-   `subscribe {id,kind:"chat",channelId,after}`. The public demo requires no login;
-   account channels require current membership. Each subscription buffers
+   `subscribe {id,kind:"chat",channelId,after}`. Channels require a signed-in
+   account and current membership; demo channels are denied. Each subscription buffers
    before reading the committed high-water mark, replays through it, emits
    `ready {cursor}`, then merges live events in order. Sends still use HTTP.
 5. One DB head check per gateway every two seconds repairs missed events even if
@@ -1560,8 +1587,8 @@ once when its Join button first becomes visible (an `IntersectionObserver` on
 that one button, not the sidebar's). Real Chromium with touch emulation and the
 UI fixture sent exactly one `prepare`, for the viewed channel; desktop sent none
 from visibility alone. A tap more than about 10 seconds after opening the channel
-joins the ordinary way. The public demo still
-creates on join, and `prepare` returns 404 there. Real Chromium with the UI
+joins the ordinary way. The retired public demo's unscoped media routes now
+return 404. Real Chromium with the UI
 fixture confirmed: no request from far away, one when approaching within 100 px
 without touching the button, and none again on the hover that follows.
 

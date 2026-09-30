@@ -78,6 +78,41 @@ async fn local_fanout_does_not_wake_unrelated_channels() {
     ));
 }
 
+#[tokio::test]
+async fn retired_unscoped_media_cannot_subscribe_or_replay_commands() {
+    let gateway = Gateway::new(Chat {
+        pool: PgPoolOptions::new()
+            .connect_lazy("postgres://localhost:1/unused")
+            .unwrap(),
+        broker: redis::Client::open("redis://localhost:1").unwrap(),
+        wake: Arc::new(tokio::sync::Notify::new()),
+    });
+    for hash in [None, Some(vec![1])] {
+        let identity = Identity {
+            headers: HeaderMap::new(),
+            user: hash.as_ref().map(|_| 1),
+            external_id: None,
+            hash,
+        };
+        let error = room(&gateway, &identity, None).await.err().unwrap();
+        assert_eq!(error.status, StatusCode::NOT_FOUND);
+        for method in ["media.join", "media.snapshot", "media.state", "typing"] {
+            let command: Command = serde_json::from_value(json!({
+                "id": Uuid::new_v4(), "issuedAt": chrono::Utc::now().timestamp_millis(),
+                "method": method, "token": "existing-demo-capability", "body": {}
+            }))
+            .unwrap();
+            assert_eq!(
+                execute(&gateway, &identity, &command)
+                    .await
+                    .unwrap_err()
+                    .status,
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
+}
+
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 

@@ -416,10 +416,8 @@ final class CaperParityUITests: XCTestCase {
     func testLogin() {
         let app = launch(fixture: "login", signedIn: false)
         assertStaticText("Come on in.", in: app)
-        XCTAssertTrue(app.buttons["guest-general-button"].label.contains("Join #general as a guest."))
         let email = app.textFields["Email address"]
         XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
-        XCTAssertTrue(app.windows.firstMatch.frame.contains(app.buttons["guest-general-button"].frame))
         capture("login", app: app)
         email.tap(); email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()

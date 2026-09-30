@@ -12,6 +12,12 @@ mod reliability;
 mod renewal;
 mod shared;
 
+// Keep exercising the retired demo media state machine without exposing its
+// unscoped routes from the production router.
+fn app(state: AppState) -> Router {
+    test_app(state)
+}
+
 struct Mock {
     next: AtomicUsize,
     next_turn: AtomicUsize,
@@ -428,6 +434,24 @@ async fn public_api_rejects_cookies_legacy_headers_and_media_tokens_as_account_a
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+}
+
+#[tokio::test]
+async fn production_router_does_not_expose_demo_media_or_general_chat() {
+    let (state, _) = state();
+    let router = super::app(state);
+    for (method, path) in [
+        ("GET", "/api/media/status"),
+        ("POST", "/api/media/join"),
+        ("GET", "/api/media/events"),
+        ("GET", "/api/chat/general"),
+    ] {
+        assert_eq!(
+            call(router.clone(), method, path, None, json!({})).await.0,
+            StatusCode::NOT_FOUND,
+            "{method} {path} must remain unscoped and closed"
+        );
     }
 }
 

@@ -740,10 +740,9 @@ impl CaperApp {
                         Ok(Some((token, account, spaces))) => {
                             self.establish(token, account, spaces)
                         }
-                        Ok(None) => self.open_general(),
+                        Ok(None) => {}
                         Err(error) => {
                             self.warning = Some(error);
-                            self.open_general();
                         }
                     }
                 }
@@ -907,6 +906,9 @@ impl CaperApp {
 
     fn establish(&mut self, token: String, account: Account, spaces: Spaces) {
         self.invalidate_navigation_cache();
+        self.detail = None;
+        self.selected_space = None;
+        self.clear_channel_state();
         self.token = Some(token);
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
@@ -917,8 +919,12 @@ impl CaperApp {
         self.dialog = None;
         if needs_profile {
             self.dialog = Some(Dialog::Profile);
+        } else if let Some(space) = self.spaces.first() {
+            self.select_space(space.id.clone());
         } else {
-            self.open_general();
+            self.detail = None;
+            self.selected_space = None;
+            self.clear_channel_state();
         }
     }
 
@@ -927,33 +933,18 @@ impl CaperApp {
         self.account = Some(account);
         self.set_spaces(spaces);
         self.dialog = None;
-        self.open_general();
+        if let Some(space) = self.spaces.first() {
+            self.select_space(space.id.clone());
+        } else {
+            self.detail = None;
+            self.selected_space = None;
+            self.clear_channel_state();
+        }
     }
 
     fn set_spaces(&mut self, spaces: Spaces) {
-        self.spaces.retain(|space| space.demo);
-        self.spaces.extend(spaces.spaces);
+        self.spaces = spaces.spaces;
         self.limits = spaces.limits;
-    }
-
-    fn open_general(&mut self) {
-        self.navigation += 1;
-        self.opening = false;
-        self.navigation_target = None;
-        self.navigation_error = None;
-        self.voice.state.browse("general".into());
-        self.generation += 1;
-        self.loading = true;
-        self.clear_channel_state();
-        self.selected_space = Some("general".into());
-        self.selected_channel = Some("general".into());
-        self.worker.send(Command::LoadChannel {
-            generation: self.generation,
-            token: self.token.clone(),
-            channel: "general".into(),
-            name: self.identity_name(),
-            general: true,
-        });
     }
 
     fn accept_channel(
@@ -1054,13 +1045,6 @@ impl CaperApp {
     }
 
     fn select_space(&mut self, id: String) {
-        if self.spaces.iter().any(|space| space.id == id && space.demo) {
-            self.navigate(NavigationTarget {
-                space: None,
-                channel: None,
-            });
-            return;
-        }
         if self.token.is_none() {
             self.dialog = Some(Dialog::SignIn);
             return;
@@ -1703,9 +1687,11 @@ impl CaperApp {
         self.invalidate_navigation_cache();
         self.spaces.clear();
         self.detail = None;
+        self.selected_space = None;
+        self.selected_channel = None;
+        self.clear_channel_state();
         self.error = None;
         self.dialog = None;
-        self.open_general();
     }
 
     fn send_message(&mut self) {
@@ -1853,10 +1839,8 @@ impl CaperApp {
                 self.detail = None;
                 self.managed_members.clear();
                 self.presence.clear();
-                // Web opens the first remaining space; General leads the list.
-                match self.spaces.first() {
-                    Some(space) if !space.demo => self.select_space(space.id.clone()),
-                    _ => self.open_general(),
+                if let Some(space) = self.spaces.first() {
+                    self.select_space(space.id.clone());
                 }
             }
             AdminResult::ChannelCreated(channel) => {
@@ -2321,34 +2305,6 @@ impl CaperApp {
                                     email: self.email.trim().into(),
                                 });
                             }
-                        }
-                        // Web offers the guest room on the email step only.
-                        if self.challenge.is_none() {
-                            ui.add_space(12.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    RichText::new(
-                                        "We only send a code when you ask. Prefer to look around first?",
-                                    )
-                                    .size(14.0)
-                                    .color(MUTED),
-                                );
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("Join #general as a guest.")
-                                                .size(14.0)
-                                                .color(TEXT),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .clicked()
-                                {
-                                    self.dialog = None;
-                                    self.error = None;
-                                    self.open_general();
-                                }
-                            });
                         }
                     });
                 });
@@ -8038,12 +7994,14 @@ mod tests {
     }
 
     #[test]
-    fn verification_requires_profile_and_profile_completion_reopens_account_chat() {
+    fn verification_requires_profile_and_empty_account_stays_without_chat() {
         let context = eframe::egui::Context::default();
         let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
         let mut app = CaperApp::new(&context, api, Some("signed-out"));
         app.session = Some(session());
         app.draft = "guest draft".into();
+        app.selected_space = Some("stale-space".into());
+        app.selected_channel = Some("stale-channel".into());
 
         app.establish("account-token".into(), account(false), spaces());
         assert!(matches!(app.dialog, Some(Dialog::Profile)));
@@ -8054,12 +8012,44 @@ mod tests {
 
         app.profiled(account(true), spaces());
         assert!(app.dialog.is_none());
-        assert_eq!(app.selected_channel.as_deref(), Some("general"));
+        assert!(app.selected_space.is_none());
+        assert!(app.selected_channel.is_none());
         assert!(app.session.is_none(), "guest capability must be discarded");
         assert!(
             app.draft.is_empty(),
             "guest draft must not cross auth transition"
         );
+    }
+
+    #[test]
+    fn established_account_opens_its_first_space() {
+        let context = eframe::egui::Context::default();
+        let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
+        let mut app = CaperApp::new(&context, api, Some("signed-out"));
+        let first = Space {
+            id: "first-account-space".into(),
+            name: "First".into(),
+            owner_id: "account".into(),
+            demo: false,
+        };
+
+        app.establish(
+            "account-token".into(),
+            account(true),
+            Spaces {
+                spaces: vec![first.clone()],
+                limits: None,
+            },
+        );
+
+        assert!(app.opening);
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.space.as_ref()),
+            Some(&first.id)
+        );
+        assert!(app.selected_channel.is_none());
     }
 
     #[test]

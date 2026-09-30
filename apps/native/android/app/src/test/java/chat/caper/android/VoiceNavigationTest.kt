@@ -67,18 +67,16 @@ class VoiceNavigationTest {
         } finally { server.close() }
     }
 
-    @Test fun `demo opens its actual General channel without account token`() = runTest {
+    @Test fun `destination without account token is unavailable even for stale demo space`() = runTest {
         val server = MockWebServer()
         try {
             val demo = Space("demospac0001", "General", demo = true)
             val channel = "demochan0001"
-            server.enqueue(MockResponse().setBody("""{"space":{"id":"${demo.id}","name":"General"},"channel":{"id":"$channel","name":"general"},"messages":[],"cursor":"0","hasMore":false}"""))
-            val destination = readVoiceDestination(CaperApi(baseUrl = server.url("/").toString()), null, listOf(space, demo), demo.id, channel)
-            assertEquals(channel, destination?.channel?.id)
-            assertEquals(demo.id, destination?.detail?.space?.id)
-            val request = server.takeRequest()
-            assertEquals("/api/chat/general", request.path)
-            assertNull(request.headers["Authorization"])
+            val result = runCatching {
+                readVoiceDestination(CaperApi(baseUrl = server.url("/").toString()), null, listOf(space, demo), demo.id, channel)
+            }
+            assertTrue(result.exceptionOrNull() is IllegalStateException)
+            assertEquals(0, server.requestCount)
         } finally { server.close() }
     }
 

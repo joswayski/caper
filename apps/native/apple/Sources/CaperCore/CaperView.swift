@@ -1385,13 +1385,6 @@ private struct LoginPage: View {
                     Button { Task { await model.requestCode(email: email) } } label: {
                         HStack { Text(model.busy ? "Sending…" : "Email me a code"); Spacer(); Image(systemName: "arrow.right") }
                     }.buttonStyle(LoginActionButton()).disabled(model.busy || email.isEmpty).padding(.top, model.error == nil ? 28 : 28)
-                    Button(action: close) {
-                        (Text("We only send a code when you ask. Prefer to look around first? ")
-                            .foregroundStyle(CaperTheme.muted)
-                         + Text("Join #general as a guest.").fontWeight(.bold).foregroundStyle(CaperTheme.text))
-                            .font(CaperTheme.font(14)).multilineTextAlignment(.leading)
-                    }.buttonStyle(.plain).padding(.top, 22)
-                        .accessibilityIdentifier("guest-general-button")
                 } else {
                     CaperField(title: "Sign-in code", text: $code)
                         .disabled(model.loginAttemptsRemaining == 0)

@@ -1,136 +1,92 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
-import { Minimize2, X } from "lucide-react";
-import type { Account } from "../account/client";
-import type { GeneralChatHistory } from "../chat/types";
-import Call from "../pages/Call";
-import Spaces from "../spaces/Spaces";
+import { Hash, Mic } from "lucide-react";
 import { attachLiveMotion } from "./liveMotion";
 import "./live-window.css";
 
-export type LiveStatus = "live" | "connecting";
+const people = [
+  { name: "Maya", initials: "MK", color: "#b64d32" },
+  { name: "Theo", initials: "TR", color: "#637a43" },
+  { name: "June", initials: "JL", color: "#6f667d" },
+];
 
-type LiveWindowProps = {
-  account: Account | null;
-  history: GeneralChatHistory | null;
-  active: boolean;
-  onActiveChange: (active: boolean) => void;
-  onStatusChange?: (status: LiveStatus) => void;
-};
+const messages = [
+  { name: "Maya", text: "okay, this made my entire morning", meme: true },
+  { name: "Theo", text: "the tiny hat is doing a lot of work here" },
+  { name: "June", text: "sending this to the group chat immediately" },
+];
 
-/**
- * The homepage's 3D window always renders the real #general room, including its
- * loading and unavailable states. Opening it enables chat and voice interaction.
- */
-export default function LiveWindow({ account, history, active, onActiveChange, onStatusChange }: LiveWindowProps) {
+/** A local-only, deliberately labelled illustration of a lively Caper room. */
+export default function LiveWindow() {
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
-  const activatorRef = useRef<HTMLButtonElement>(null);
-  const controller = useRef<ReturnType<typeof attachLiveMotion> | undefined>(undefined);
-  const activeRef = useRef(active);
-  const change = useRef(onActiveChange);
-  change.current = onActiveChange;
   const [ready, setReady] = useState(false);
-  const [sheet, setSheet] = useState(false);
-  const [engaged, setEngaged] = useState(false);
-  const [online, setOnline] = useState(false);
-  const [touched, setTouched] = useState(false);
-  const status: LiveStatus = online ? "live" : "connecting";
+  const [phase, setPhase] = useState(2);
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
     const scene = sceneRef.current;
     if (!stage || !scene) return;
-    controller.current = attachLiveMotion(stage, scene, {
+    const motion = attachLiveMotion(stage, scene, {
       bounds: () => stage.closest<HTMLElement>("[data-live-bounds]"),
-      activate: () => change.current(true),
-      deactivate: () => change.current(false),
-      interacted: () => setTouched(true),
+      activate: () => window.location.assign("/login"),
+      deactivate: () => undefined,
+      interacted: () => undefined,
     });
     setReady(true);
-    return () => { controller.current?.detach(); controller.current = undefined; };
+    return () => motion.detach();
   }, []);
 
-  useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
-
   useEffect(() => {
-    const motion = controller.current;
-    if (!motion) return;
-    const opening = active && !activeRef.current;
-    const closing = !active && activeRef.current;
-    activeRef.current = active;
-    motion.setActive(active);
-    const fullScreen = active && motion.mode === "sheet";
-    setSheet(fullScreen);
-    if (active) setEngaged(true);
-    document.documentElement.classList.toggle("live-sheet-open", fullScreen);
-    if (opening) {
-      if (fullScreen) sceneRef.current?.focus({ preventScroll: true });
-      else {
-        // Bring the hero into view, then put the cursor in the composer.
-        const bounds = stageRef.current?.closest<HTMLElement>("[data-live-bounds]");
-        const top = bounds?.getBoundingClientRect().top ?? 0;
-        if (Math.abs(top) > 4) window.scrollTo({ top: window.scrollY + top, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-        setTimeout(() => document.getElementById("chat-message")?.focus({ preventScroll: true }), 420);
-      }
-    } else if (closing) {
-      activatorRef.current?.focus({ preventScroll: true });
-    }
-    return () => document.documentElement.classList.remove("live-sheet-open");
-  }, [active]);
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const timer = window.setInterval(() => setPhase((current) => (current + 1) % 6), 2600);
+    return () => window.clearInterval(timer);
+  }, []);
 
-  useEffect(() => {
-    if (!active) return;
-    // Crossing the expand breakpoint while open switches between the two forms.
-    const resized = () => {
-      const fullScreen = controller.current?.mode === "sheet";
-      setSheet(fullScreen);
-      document.documentElement.classList.toggle("live-sheet-open", fullScreen);
-    };
-    window.addEventListener("resize", resized);
-    return () => window.removeEventListener("resize", resized);
-  }, [active]);
+  const visiblePeople = Math.min(people.length, 1 + Math.floor(phase / 2));
+  const visibleMessages = Math.min(messages.length, 1 + Math.floor(phase / 2));
+  const typing = phase === 1 || phase === 3 || phase === 5;
+  const speaking = phase % visiblePeople;
 
   return (
-    // liveRestScript (Home) lays out and reveals the window before hydration,
-    // so the stage and scene carry attributes React did not render.
-    <div className="live-stage" ref={stageRef} suppressHydrationWarning data-ready={ready ? "" : undefined} data-sheet={sheet ? "" : undefined} data-active={active ? "" : undefined}>
+    <div className="live-stage" ref={stageRef} suppressHydrationWarning data-ready={ready ? "" : undefined}>
       <div className="live-glow" aria-hidden="true" />
-      <div
-        className="live-scene"
-        ref={sceneRef}
-        suppressHydrationWarning
-        tabIndex={-1}
-        data-active={active ? "" : undefined}
-        role={sheet ? "dialog" : undefined}
-        aria-modal={sheet ? true : undefined}
-        aria-label={sheet ? "Caper conversations" : undefined}
-      >
+      <div className="live-scene" ref={sceneRef} suppressHydrationWarning tabIndex={-1}>
         <div className="live-shadow" aria-hidden="true" />
         {[5, 4, 3, 2, 1].map((depth) => <div key={depth} className="live-slab" style={{ "--z": -depth * 5 } as CSSProperties} aria-hidden="true" />)}
         <div className="live-window">
-          {active && <button className="live-close" type="button" data-live-control onClick={() => onActiveChange(false)} aria-label="Exit demo" title="Exit demo">
-            {sheet ? <X aria-hidden="true" /> : <Minimize2 aria-hidden="true" />}
-          </button>}
-          <div className="live-app" inert={!active}>
-            {account
-              ? <Spaces embedded engaged={engaged} initialAccount={account} initialHistory={history ?? undefined} onChatOnlineChange={setOnline} />
-              : <Call embedded engaged={engaged} initialHistory={history ?? undefined} onChatOnlineChange={setOnline} />}
+          <div className="sim-demo" aria-label="Simulated Caper conversation">
+            <aside className="sim-sidebar">
+              <div className="sim-brand">Caper</div>
+              <div className="sim-channel"><Hash aria-hidden="true" /> general</div>
+              <p>In voice</p>
+              <div className="sim-people">
+                {people.slice(0, visiblePeople).map((person, index) => (
+                  <div className="sim-person" data-speaking={index === speaking ? "" : undefined} key={person.name}>
+                    <span className="sim-avatar" style={{ "--avatar": person.color } as CSSProperties}>{person.initials}</span>
+                    <strong>{person.name}</strong>
+                    <Mic aria-label={index === speaking ? `${person.name} is speaking` : undefined} aria-hidden={index !== speaking} />
+                  </div>
+                ))}
+              </div>
+            </aside>
+            <section className="sim-chat">
+              <header><div><Hash aria-hidden="true" /><strong>general</strong></div><span className="sim-label">Simulated demo</span></header>
+              <div className="sim-messages" aria-live="off">
+                {messages.slice(0, visibleMessages).map((message, index) => (
+                  <article className="sim-message" key={message.name}>
+                    <span className="sim-avatar" style={{ "--avatar": people[index].color } as CSSProperties}>{people[index].initials}</span>
+                    <div><strong>{message.name}</strong><p>{message.text}</p>{message.meme && <img className="sim-meme" src="/images/demo-tiny-hat.webp" width="384" height="384" alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy." />}</div>
+                  </article>
+                ))}
+                {typing && <div className="sim-typing"><i /><i /><i /> {people[visiblePeople % people.length].name} is typing</div>}
+              </div>
+              <div className="sim-join-space" aria-hidden="true" />
+            </section>
           </div>
         </div>
-        {!active && <button
-          ref={activatorRef}
-          className="live-activator"
-          type="button"
-          data-live-activator
-          aria-label={account ? "Open your spaces and channels. Arrow keys tilt the window." : "Open the public #general channel. Arrow keys tilt the window."}
-          onClick={() => onActiveChange(true)}
-        >
-          <span className="live-invite" data-touched={touched ? "" : undefined}>
-            <i aria-hidden="true" />
-            <span className="live-invite-fine">Click to join</span>
-            <span className="live-invite-coarse">Tap to join</span>
-          </span>
-        </button>}
+        <a className="live-activator" data-live-activator href="/login" aria-label="Sign in with email to join Caper. Arrow keys tilt the window.">
+          <span className="live-invite"><i aria-hidden="true" /><span className="live-invite-fine">Click to join</span><span className="live-invite-coarse">Tap to join</span></span>
+        </a>
       </div>
     </div>
   );
