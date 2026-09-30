@@ -67,11 +67,7 @@ impl AppState {
             .as_deref()
             .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "sign in required"))?;
         let user = crate::spaces::session_user(pool, session).await?;
-        let access = crate::spaces::channel_access(pool, channel, Some(user)).await?;
-        // The guest demo has exactly one media room, on its original endpoints.
-        if access.demo {
-            return Err(ApiError::new(StatusCode::NOT_FOUND, "channel not found"));
-        }
+        crate::spaces::channel_access(pool, channel, Some(user)).await?;
         Ok(())
     }
 

@@ -123,8 +123,8 @@ internal data class VoiceJoinIntent(
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val screen = state.screen) {
                 SessionScreen.Loading -> BrandLoading()
-                SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::requestCode)
-                is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::cancelAccountFlow, viewModel::verify) { viewModel.requestCode(screen.email) }
+                SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
+                is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::showLogin, viewModel::verify) { viewModel.requestCode(screen.email) }
                 is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
                 SessionScreen.Home, is SessionScreen.Spaces -> HomeScreen(
                     state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
@@ -897,7 +897,7 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun LoginScreen(busy: Boolean, error: String?, clearError: () -> Unit, back: () -> Unit, submit: (String) -> Unit) {
+@Composable private fun LoginScreen(busy: Boolean, error: String?, clearError: () -> Unit, submit: (String) -> Unit) {
     var email by remember { mutableStateOf("") }
     AuthFrame {
         Text("WELCOME TO CAPER", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
@@ -917,8 +917,6 @@ internal fun counterTone(count: Int): Color = when {
             Text(if (busy) "Sending…" else "Email me a code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
             if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
         }
-        Text("We only send a code when you ask. Prefer to look around first?", Modifier.padding(top = 10.dp), color = TextMuted, fontSize = 13.sp, lineHeight = 20.sp)
-        TextButton(back, contentPadding = PaddingValues(0.dp)) { Text("Join #general as a guest.", color = Text) }
     }
 }
 

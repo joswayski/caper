@@ -4,7 +4,7 @@ import Wordmark from "../components/Wordmark";
 
 // Mailbox that answers privacy and account-deletion requests.
 const CONTACT = "privacy@caper.chat";
-const UPDATED = "September 28, 2026";
+const UPDATED = "September 30, 2026";
 
 export const Route = createFileRoute("/privacy")({
   head: () => ({ meta: [{ title: "Privacy - Caper" }] }),
@@ -23,7 +23,7 @@ function Privacy() {
         <ul className="list-disc space-y-2 pl-5">
           <li><b className="text-content">Your email address</b>, if you sign in. We use it only to send you one-time sign-in codes.</li>
           <li><b className="text-content">Your username and display name</b>, which other people see in conversations.</li>
-          <li><b className="text-content">Messages you send</b>, stored so the people in that channel can read them. Anyone can read the public general channel, including people who aren't signed in.</li>
+          <li><b className="text-content">Messages you send</b>, stored so the people in that channel can read them.</li>
           <li><b className="text-content">Your spaces and channels</b>: what you create, join, and who you add.</li>
           <li><b className="text-content">Your approximate country</b>, taken from your connection when you join voice, and shown as a flag next to your name.</li>
           <li><b className="text-content">Basic service logs</b>, such as errors and connection timings, used to keep Caper working. Sign-in requests record a one-way hash of your IP address to limit abuse.</li>
@@ -47,7 +47,7 @@ function Privacy() {
       </Section>
 
       <Section title="How long we keep it">
-        <p>Messages and your account stay until they're deleted. Sign-in sessions are removed a week after they expire. Guest names in the public channel aren't linked to an account.</p>
+        <p>Messages and your account stay until they're deleted. Sign-in sessions are removed a week after they expire.</p>
       </Section>
 
       <Section title="Your choices">

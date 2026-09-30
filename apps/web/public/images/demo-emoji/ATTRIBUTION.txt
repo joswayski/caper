@@ -1,0 +1,6 @@
+Emoji artwork: Twemoji, Copyright Twitter, Inc. and other contributors.
+Source: https://github.com/jdecked/twemoji/tree/v15.0.3/assets/svg
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+These five SVG images are unmodified and used in Caper's simulated homepage demo.

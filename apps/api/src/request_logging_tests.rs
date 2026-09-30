@@ -36,7 +36,7 @@ async fn http_logs_include_route_status_and_numeric_timing_but_not_request_secre
         .header("authorization", "Bearer SECRET_HEADER")
         .body(axum::body::Body::from("SECRET_BODY"))
         .unwrap();
-    let response = app(state).oneshot(request).await.unwrap();
+    let response = test_app(state).oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let text = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
     assert!(!text.contains("SECRET"));

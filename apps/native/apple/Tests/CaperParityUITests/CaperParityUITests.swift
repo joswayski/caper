@@ -163,6 +163,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }
 
+    /// The sidebar handle is a slider to accessibility: AppKit reports its
+    /// width as a number, the spoken description as "N pixels".
+    private func sidebarWidth(of handle: XCUIElement) -> Int? {
+        if let number = handle.value as? NSNumber { return number.intValue }
+        return (handle.value as? String).flatMap { Double($0.split(separator: " ").first ?? "") }.map { Int($0.rounded()) }
+    }
+
     private func outputGain(of slider: XCUIElement) -> Int? {
         #if os(macOS)
         // AppKit exposes the domain value as NSNumber, not the spoken value.
@@ -304,7 +311,7 @@ final class CaperParityUITests: XCTestCase {
         let channelTitle = app.descendants(matching: .any)["selected-channel-name"]
         XCTAssertTrue(handle.waitForExistence(timeout: 5))
         handle.doubleClick()
-        XCTAssertEqual(handle.value as? String, "280 pixels")
+        XCTAssertEqual(sidebarWidth(of: handle), 280)
         let initialEdge = channelTitle.frame.minX
         // The handle moves during resize. Anchor the synthesized pointer path
         // to the stationary window, not a lazily resolved moving element.
@@ -314,27 +321,27 @@ final class CaperParityUITests: XCTestCase {
             dx: handleFrame.midX - window.frame.minX, dy: handleFrame.midY - window.frame.minY
         ))
         start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
-        let dragged = Int((handle.value as? String ?? "").split(separator: " ").first ?? "") ?? 0
+        let dragged = sidebarWidth(of: handle) ?? 0
         XCTAssertTrue((310...320).contains(dragged), "35-point drag should produce width 315, got \(dragged)")
         XCTAssertEqual(channelTitle.frame.minX - initialEdge, CGFloat(dragged - 280), accuracy: 2,
                        "the actual conversation edge must follow the reported sidebar width")
         handle.doubleClick()
         handle.click()
         handle.typeKey(.rightArrow, modifierFlags: [])
-        XCTAssertEqual(handle.value as? String, "290 pixels")
+        XCTAssertEqual(sidebarWidth(of: handle), 290)
         handle.typeKey(.home, modifierFlags: [])
-        XCTAssertEqual(handle.value as? String, "220 pixels")
+        XCTAssertEqual(sidebarWidth(of: handle), 220)
         handle.typeKey(.end, modifierFlags: [])
-        XCTAssertEqual(handle.value as? String, "440 pixels")
+        XCTAssertEqual(sidebarWidth(of: handle), 440)
         handle.doubleClick()
-        XCTAssertEqual(handle.value as? String, "280 pixels", "double-click resets after a keyboard resize")
+        XCTAssertEqual(sidebarWidth(of: handle), 280, "double-click resets after a keyboard resize")
         handle.typeKey(.rightArrow, modifierFlags: [])
-        XCTAssertEqual(handle.value as? String, "290 pixels", "reset keeps the resize handle focused")
+        XCTAssertEqual(sidebarWidth(of: handle), 290, "reset keeps the resize handle focused")
         app.terminate()
         let reopened = launch()
         let saved = reopened.descendants(matching: .any)["channel-sidebar-resize"]
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
-        XCTAssertEqual(saved.value as? String, "290 pixels", "resized width survives relaunch")
+        XCTAssertEqual(sidebarWidth(of: saved), 290, "resized width survives relaunch")
         XCTAssertEqual(reopened.descendants(matching: .any)["selected-channel-name"].frame.minX - initialEdge, 10, accuracy: 2)
         capture("sidebar-resized", app: reopened)
         saved.doubleClick()
@@ -416,10 +423,8 @@ final class CaperParityUITests: XCTestCase {
     func testLogin() {
         let app = launch(fixture: "login", signedIn: false)
         assertStaticText("Come on in.", in: app)
-        XCTAssertTrue(app.buttons["guest-general-button"].label.contains("Join #general as a guest."))
         let email = app.textFields["Email address"]
         XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
-        XCTAssertTrue(app.windows.firstMatch.frame.contains(app.buttons["guest-general-button"].frame))
         capture("login", app: app)
         email.tap(); email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
@@ -448,6 +453,13 @@ final class CaperParityUITests: XCTestCase {
         let app = launch(fixture: "manage-space")
         let delete = app.buttons["Delete space"]
         XCTAssertTrue(delete.waitForExistence(timeout: 10))
+        #if os(macOS)
+        // The dialog is capped to the window, so Delete sits below its fold. A
+        // Mac click is not scrolled into view: it would land on the backdrop,
+        // which dismisses the dialog. Scroll to it as a person would.
+        app.scrollViews["space-settings-scroll"].scroll(byDeltaX: 0, deltaY: -600)
+        XCTAssertTrue(delete.isHittable, "Delete space must be reachable by scrolling the dialog")
+        #endif
         delete.tap()
         let confirm = app.buttons["confirm-destructive-action"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))

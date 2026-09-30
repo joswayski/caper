@@ -162,15 +162,3 @@ test("returning restores each channel snapshot, rechecks access, and forgets rev
   navigation.rememberHistory(liveSnapshot);
   assert.equal(navigation.peek("space1234567"), undefined, "cleanup must not resurrect revoked snapshots");
 });
-
-test("public demo uses real history IDs and shares navigation without account-space requests", async (t) => {
-  t.mock.method(globalThis, "fetch", () => { throw new Error("Public demo must not call the membership-only API"); });
-  const navigation = createSpaceNavigation();
-  const demo = navigation.setDemo(history("demoChannel1"));
-  assert.equal(demo.detail.space.demo, true);
-  assert.equal(demo.detail.space.id, "space1234567");
-  assert.equal(demo.detail.channels[0].private, false);
-  assert.deepEqual((await navigation.take("space1234567")).history, history("demoChannel1"));
-  navigation.clear();
-  assert.equal(navigation.peek("space1234567"), undefined);
-});

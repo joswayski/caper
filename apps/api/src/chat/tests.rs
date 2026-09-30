@@ -66,20 +66,37 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     seed(&pool).await.unwrap();
-    let channel: String = sqlx::query_scalar("SELECT external_id FROM public.channels")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    // Keep the original actor IDs while exercising account-only channels.
     for token in ["guest-one", "guest-two"] {
-        sqlx::query(
-            "INSERT INTO public.chat_sessions(external_id,token_hash,name) VALUES($1,$2,$1)",
-        )
-        .bind(token)
-        .bind(Sha256::digest(token.as_bytes()).as_slice())
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id")
+            .bind(token).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(token).bind(&hash).bind(user).execute(&pool).await.unwrap();
+    }
+    let reader: i64 =
+        sqlx::query_scalar("SELECT id FROM public.users WHERE external_id='guest-one'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let shared_space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('reaction-space','Reactions',$1) RETURNING id")
+        .bind(reader).fetch_one(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO public.space_members(space_id,user_id) SELECT $1,id FROM public.users",
+    )
+    .bind(shared_space)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let channel = "reaction-channel".to_string();
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'reactions')")
+        .bind(&channel)
+        .bind(shared_space)
         .execute(&pool)
         .await
         .unwrap();
-    }
     let original = persist(
         &pool,
         &channel,
@@ -152,7 +169,9 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
     pool.execute("ALTER TABLE public.channel_events DROP CONSTRAINT reject_next")
         .await
         .unwrap();
-    let page = history_page(&pool, &channel, None, None).await.unwrap();
+    let page = history_page(&pool, &channel, None, Some(reader))
+        .await
+        .unwrap();
     assert_eq!(page["cursor"], "4");
     assert_eq!(page["messages"][0]["seq"], "1");
     assert_eq!(page["messages"][0]["reactionSeq"], "4");
@@ -178,6 +197,12 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
 
     // Multiple capabilities for one account are one actor, not two votes.
     let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES('account','reactor','Reactor') RETURNING id").fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(shared_space)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
         .bind(b"parent".as_slice()).bind(user).execute(&pool).await.unwrap();
     for token in ["account-one", "account-two"] {
@@ -441,6 +466,14 @@ async fn wait_closed(socket: &mut Socket) {
     .expect("socket was not revoked");
 }
 
+fn account_socket(url: String, cookie: &str) -> axum::http::Request<()> {
+    let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("cookie", format!("caper_session={cookie}").parse().unwrap());
+    request
+}
+
 async fn typing_command(
     app: &Router,
     channel: &str,
@@ -467,7 +500,7 @@ async fn typing_command(
 
 #[tokio::test]
 #[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL and CHAT_TEST_VALKEY_URL"]
-async fn durable_guest_delivery_replay_and_handoff() {
+async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     let url = std::env::var("CHAT_TEST_DATABASE_URL").expect("disposable test database required");
     let options = PgConnectOptions::from_str(&url).unwrap();
     assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
@@ -485,8 +518,26 @@ async fn durable_guest_delivery_replay_and_handoff() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     seed(&pool).await.unwrap();
     seed(&pool).await.unwrap();
-    let channel: String = sqlx::query_scalar("SELECT external_id FROM public.channels")
-        .fetch_one(&pool)
+    let user_external = random_id(12);
+    let user: i64 = sqlx::query_scalar("INSERT INTO public.users (external_id, display_name, username) VALUES ($1,'Account Name','chat_test') RETURNING id")
+        .bind(&user_external).fetch_one(&pool).await.unwrap();
+    let account_cookie = "durable-account-cookie";
+    let account_hash = Sha256::digest(account_cookie.as_bytes()).to_vec();
+    sqlx::query("INSERT INTO public.account_sessions (token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')")
+        .bind(&account_hash).bind(user).execute(&pool).await.unwrap();
+    let space_id: i64 = sqlx::query_scalar("INSERT INTO public.spaces (external_id,name,owner_id) VALUES ($1,'Account space',$2) RETURNING id")
+        .bind(random_id(12)).bind(user).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.space_members (space_id,user_id) VALUES ($1,$2)")
+        .bind(space_id)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let channel = random_id(12);
+    sqlx::query("INSERT INTO public.channels (external_id,space_id,name) VALUES ($1,$2,'general')")
+        .bind(&channel)
+        .bind(space_id)
+        .execute(&pool)
         .await
         .unwrap();
     assert_eq!(channel.len(), 12);
@@ -498,11 +549,13 @@ async fn durable_guest_delivery_replay_and_handoff() {
             .unwrap();
     assert_eq!(seeded_name, "general");
     assert_eq!(
-        history_page(&pool, &channel, None, None).await.unwrap()["channel"]["name"],
+        history_page(&pool, &channel, None, Some(user))
+            .await
+            .unwrap()["channel"]["name"],
         "general"
     );
-    let token = "test-guest-capability";
-    sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name) VALUES ($1,$2,'Guest One')").bind(random_id(12)).bind(Sha256::digest(token.as_bytes()).as_slice()).execute(&pool).await.unwrap();
+    let token = "test-account-capability";
+    sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name, user_id, account_session_hash) VALUES ($1,$2,'Account Name',$3,$4)").bind(random_id(12)).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(user).bind(&account_hash).execute(&pool).await.unwrap();
     assert_eq!(
         persist(&pool, &channel, "wrong", Uuid::new_v4(), "no")
             .await
@@ -546,7 +599,9 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .await
         .unwrap();
     assert_eq!(
-        history_page(&pool, &channel, None, None).await.unwrap()["cursor"],
+        history_page(&pool, &channel, None, Some(user))
+            .await
+            .unwrap()["cursor"],
         "1"
     );
     let (two, three) = tokio::join!(
@@ -559,7 +614,9 @@ async fn durable_guest_delivery_replay_and_handoff() {
     ];
     positions.sort();
     assert_eq!(positions, ["2", "3"]);
-    let history = history_page(&pool, &channel, Some(3), None).await.unwrap();
+    let history = history_page(&pool, &channel, Some(3), Some(user))
+        .await
+        .unwrap();
     assert_eq!(history["messages"].as_array().unwrap().len(), 2);
     assert_eq!(history["messages"][0]["seq"], "1");
     assert_eq!(history["messages"][1]["seq"], "2");
@@ -647,8 +704,9 @@ async fn durable_guest_delivery_replay_and_handoff() {
     let new_server = tokio::spawn(
         axum::serve(new_listener, crate::gateway::router(replacement.clone())).into_future(),
     );
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{old_address}/api/chat/events?channelId={channel}&after=0"
+    let (mut socket, _) = tokio_tungstenite::connect_async(account_socket(
+        format!("ws://{old_address}/api/chat/events?channelId={channel}&after=0"),
+        account_cookie,
     ))
     .await
     .unwrap();
@@ -675,13 +733,15 @@ async fn durable_guest_delivery_replay_and_handoff() {
     })
     .await
     .unwrap();
-    let (mut typing_old, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{old_address}/api/chat/events?channelId={channel}&after=3&typing=true"
+    let (mut typing_old, _) = tokio_tungstenite::connect_async(account_socket(
+        format!("ws://{old_address}/api/chat/events?channelId={channel}&after=3&typing=true"),
+        account_cookie,
     ))
     .await
     .unwrap();
-    let (mut typing_new, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{new_address}/api/chat/events?channelId={channel}&after=3&typing=true"
+    let (mut typing_new, _) = tokio_tungstenite::connect_async(account_socket(
+        format!("ws://{new_address}/api/chat/events?channelId={channel}&after=3&typing=true"),
+        account_cookie,
     ))
     .await
     .unwrap();
@@ -722,7 +782,9 @@ async fn durable_guest_delivery_replay_and_handoff() {
         StatusCode::TOO_MANY_REQUESTS
     );
     assert_eq!(
-        history_page(&pool, &channel, None, None).await.unwrap()["cursor"],
+        history_page(&pool, &channel, None, Some(user))
+            .await
+            .unwrap()["cursor"],
         "3"
     );
     assert_eq!(
@@ -756,8 +818,9 @@ async fn durable_guest_delivery_replay_and_handoff() {
     assert_eq!(event(&mut socket).await["type"], "ready");
     old.begin_shutdown();
     assert_eq!(event(&mut socket).await["type"], "migrating");
-    let (mut next, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{new_address}/api/chat/events?channelId={channel}&after=3"
+    let (mut next, _) = tokio_tungstenite::connect_async(account_socket(
+        format!("ws://{new_address}/api/chat/events?channelId={channel}&after=3"),
+        account_cookie,
     ))
     .await
     .unwrap();
@@ -770,28 +833,60 @@ async fn durable_guest_delivery_replay_and_handoff() {
     assert_eq!(event(&mut socket).await["message"], fifth);
     assert_eq!(event(&mut next).await["message"], fifth);
     assert!(
-        tokio_tungstenite::connect_async(format!(
-            "ws://{old_address}/api/chat/events?channelId={channel}&after=5"
+        tokio_tungstenite::connect_async(account_socket(
+            format!("ws://{old_address}/api/chat/events?channelId={channel}&after=5"),
+            account_cookie,
         ))
         .await
         .is_err()
     );
     socket.close(None).await.unwrap();
     // Explicitly reject an impossible cursor; never pretend missing history was read.
-    let (mut invalid, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{new_address}/api/chat/events?channelId={channel}&after=999"
+    let (mut invalid, _) = tokio_tungstenite::connect_async(account_socket(
+        format!("ws://{new_address}/api/chat/events?channelId={channel}&after=999"),
+        account_cookie,
     ))
     .await
     .unwrap();
     assert_eq!(event(&mut invalid).await["type"], "resync_required");
     next.close(None).await.unwrap();
+
+    let demo_channel: String = sqlx::query_scalar("SELECT c.external_id FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE s.demo")
+        .fetch_one(&pool).await.unwrap();
+    let demo_space: i64 =
+        sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
+            .bind(&demo_channel)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(demo_space)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        tokio_tungstenite::connect_async(format!(
+            "ws://{new_address}/api/chat/events?channelId={demo_channel}&after=0"
+        ))
+        .await
+        .is_err()
+    );
+    assert!(
+        tokio_tungstenite::connect_async(account_socket(
+            format!("ws://{new_address}/api/chat/events?channelId={demo_channel}&after=0"),
+            account_cookie,
+        ))
+        .await
+        .is_err()
+    );
     old_server.abort();
     new_server.abort();
 
-    // Renewing a guest credential must not turn a retry into a second message.
-    let other_token = "another-test-guest";
-    sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name) VALUES ($1,$2,'Guest Two')")
-        .bind(random_id(12)).bind(Sha256::digest(other_token.as_bytes()).as_slice()).execute(&pool).await.unwrap();
+    // Renewing an account chat credential must not turn a retry into a second message.
+    let other_token = "another-account-chat-token";
+    sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name, user_id, account_session_hash) VALUES ($1,$2,'Account Name',$3,$4)")
+        .bind(random_id(12)).bind(Sha256::digest(other_token.as_bytes()).as_slice()).bind(user).bind(&account_hash).execute(&pool).await.unwrap();
     assert_eq!(
         persist(&pool, &channel, other_token, id, "one")
             .await
@@ -800,23 +895,29 @@ async fn durable_guest_delivery_replay_and_handoff() {
         StatusCode::CONFLICT
     );
     // A signed-in chat capability cannot outlive logout of its parent session.
-    let user: i64 = sqlx::query_scalar("INSERT INTO public.users (external_id, display_name, username) VALUES ($1,'Account Name','chat_test') RETURNING id")
+    let logout_user: i64 = sqlx::query_scalar("INSERT INTO public.users (external_id, display_name, username) VALUES ($1,'Logout Account','chat_logout') RETURNING id")
         .bind(random_id(12)).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO public.account_sessions (token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')")
-        .bind(b"parent-session".as_slice()).bind(user).execute(&pool).await.unwrap();
+        .bind(b"parent-session".as_slice()).bind(logout_user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.space_members (space_id,user_id) VALUES ($1,$2)")
+        .bind(space_id)
+        .bind(logout_user)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name, user_id, account_session_hash) VALUES ($1,$2,'Not authoritative',$3,$4)")
-        .bind(random_id(12)).bind(Sha256::digest(b"account-chat").as_slice()).bind(user).bind(b"parent-session".as_slice()).execute(&pool).await.unwrap();
+        .bind(random_id(12)).bind(Sha256::digest(b"account-chat").as_slice()).bind(logout_user).bind(b"parent-session".as_slice()).execute(&pool).await.unwrap();
     let account_message = persist(&pool, &channel, "account-chat", Uuid::new_v4(), "signed in")
         .await
         .unwrap();
-    assert_eq!(account_message["author"]["name"], "Account Name");
+    assert_eq!(account_message["author"]["name"], "Logout Account");
     assert_eq!(account_message["author"]["isGuest"], false);
     assert_eq!(
         typing_command(&app, &channel, Some("account-chat"), json!({"typing":true})).await,
         StatusCode::NO_CONTENT
     );
     sqlx::query("UPDATE public.account_sessions SET revoked_at = now() WHERE user_id = $1")
-        .bind(user)
+        .bind(logout_user)
         .execute(&pool)
         .await
         .unwrap();
@@ -837,7 +938,7 @@ async fn durable_guest_delivery_replay_and_handoff() {
         typing_command(&app, &channel, Some("account-chat"), json!({"typing":true})).await,
         StatusCode::UNAUTHORIZED
     );
-    // Boundary: 30 new sends/minute per guest; an already committed retry still
+    // Boundary: 30 new sends/minute per chat session; an already committed retry still
     // succeeds at the limit and does not consume another rate-limit slot.
     for index in 5..30 {
         persist(
@@ -872,12 +973,16 @@ async fn durable_guest_delivery_replay_and_handoff() {
         .await
         .unwrap();
     }
-    let latest = history_page(&pool, &channel, None, None).await.unwrap();
+    let latest = history_page(&pool, &channel, None, Some(user))
+        .await
+        .unwrap();
     assert_eq!(latest["messages"].as_array().unwrap().len(), 50);
     assert_eq!(latest["messages"][0]["seq"], "4");
     assert_eq!(latest["cursor"], "53");
     assert_eq!(latest["hasMore"], true);
-    let older = history_page(&pool, &channel, Some(4), None).await.unwrap();
+    let older = history_page(&pool, &channel, Some(4), Some(user))
+        .await
+        .unwrap();
     assert_eq!(older["messages"].as_array().unwrap().len(), 3);
     assert_eq!(older["hasMore"], false);
     // Existing non-demo channels must be denied, not just unknown identifiers.
@@ -908,8 +1013,8 @@ async fn durable_guest_delivery_replay_and_handoff() {
         typing_command(&app, &private_channel, Some(token), json!({"typing":true})).await,
         StatusCode::NOT_FOUND
     );
-    // Existing deployments retain their original row/ID; mixed-version readers
-    // can still use it while the new API exposes the canonical lowercase name.
+    // Existing deployments retain their original row/ID and demo data, but no
+    // principal can regain access to it through a membership grant.
     sqlx::query("UPDATE public.channels SET name='General' WHERE external_id=$1")
         .bind(&channel)
         .execute(&pool)
@@ -919,8 +1024,55 @@ async fn durable_guest_delivery_replay_and_handoff() {
     let demo_channels: i64 = sqlx::query_scalar("SELECT count(*) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE s.demo")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(demo_channels, 1);
+    for principal in [None, Some(user)] {
+        assert_eq!(
+            history_page(&pool, &demo_channel, None, principal)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let guest_token = "retired-demo-guest";
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name) VALUES($1,$2,'Retired guest')")
+        .bind(random_id(12)).bind(Sha256::digest(guest_token.as_bytes()).as_slice()).execute(&pool).await.unwrap();
+    for denied_token in [guest_token, token] {
+        assert_eq!(
+            persist(&pool, &demo_channel, denied_token, Uuid::new_v4(), "denied")
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            typing_command(
+                &app,
+                &demo_channel,
+                Some(denied_token),
+                json!({"typing":true})
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+    }
     assert_eq!(
-        history_page(&pool, &channel, None, None).await.unwrap()["channel"]["name"],
+        typing_command(&app, &demo_channel, None, json!({"typing":true})).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let guest_session = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/chat/session")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(r#"{"name":"Guest"}"#))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(guest_session).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        history_page(&pool, &channel, None, Some(user))
+            .await
+            .unwrap()["channel"]["name"],
         "general"
     );
     assert_eq!(

@@ -1052,6 +1052,10 @@ impl From<ProviderError> for ApiError {
 }
 
 pub fn app(state: AppState) -> Router {
+    app_router(state, Router::new())
+}
+
+fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
     let protected = Router::new()
         .route("/api/account/me", get(account_me))
         .route("/api/account/profile", post(account_profile))
@@ -1064,16 +1068,15 @@ pub fn app(state: AppState) -> Router {
     let account_login = Router::new()
         .route("/api/auth/email/request", post(auth_email_request))
         .route("/api/auth/email/verify", post(auth_email_verify));
-    let media = media_routes();
     Router::new()
         .route("/health", get(|| async { StatusCode::NO_CONTENT }))
         .route("/readyz", get(ready))
         .route("/api/health", get(|| async { StatusCode::NO_CONTENT }))
         .merge(account_login)
         .merge(protected)
-        .merge(media)
         .merge(channel_media::routes())
         .merge(chat::routes())
+        .merge(test_only_routes)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(
@@ -1118,6 +1121,11 @@ pub fn app(state: AppState) -> Router {
             },
         ))
         .with_state(state)
+}
+
+#[cfg(test)]
+fn test_app(state: AppState) -> Router {
+    app_router(state, media_routes())
 }
 
 fn media_routes() -> Router<AppState> {

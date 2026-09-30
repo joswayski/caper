@@ -66,7 +66,6 @@ fn limit(value: Option<String>, default: i64, name: &str) -> Result<i64, String>
 pub(crate) struct ChannelAccess {
     pub(crate) id: i64,
     pub(crate) last_seq: i64,
-    pub(crate) demo: bool,
 }
 
 fn database_error(_: sqlx::Error) -> ApiError {
@@ -107,26 +106,21 @@ pub(crate) async fn channel_access(
     channel: &str,
     user: Option<i64>,
 ) -> Result<ChannelAccess, ApiError> {
-    sqlx::query_as::<_, (i64, i64, bool)>(
-        "SELECT c.id, c.last_seq, s.demo
+    sqlx::query_as::<_, (i64, i64)>(
+        "SELECT c.id, c.last_seq
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-           AND ((s.demo AND lower(c.name) = 'general') OR
-                ($2::bigint IS NOT NULL
+           AND NOT s.demo AND $2::bigint IS NOT NULL
                  AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)
                  AND (s.owner_id = $2 OR NOT c.private OR
-                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))))",
+                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))",
     )
     .bind(channel)
     .bind(user)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
-    .map(|(id, last_seq, demo)| ChannelAccess {
-        id,
-        last_seq,
-        demo,
-    })
+    .map(|(id, last_seq)| ChannelAccess { id, last_seq })
     .ok_or_else(not_found)
 }
 
@@ -899,7 +893,13 @@ mod tests {
         );
         let demo: String = sqlx::query_scalar("SELECT c.external_id FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE s.demo")
             .fetch_one(&pool).await.unwrap();
-        assert!(channel_access(&pool, &demo, None).await.unwrap().demo);
+        assert_eq!(
+            channel_access(&pool, &demo, Some(member.user.id))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
 
         let mut config = Config::test(false);
         config.space_limits = Limits {
