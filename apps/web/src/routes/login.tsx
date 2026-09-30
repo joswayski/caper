@@ -72,8 +72,7 @@ function Login() {
   return <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
     <section className="w-full max-w-[440px]">
       <Wordmark />
-      <p className="mt-14 text-[.7rem] font-bold tracking-[.14em] text-content-muted max-[480px]:mt-[42px]">WELCOME TO CAPER</p>
-      <h1 className="my-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em]">{challengeId ? "Check your email." : "Come on in."}</h1>
+      <h1 className="mt-14 mb-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] max-[480px]:mt-[42px]">{challengeId ? "Check your email." : "Come on in."}</h1>
       {challengeId ? <>
         <p className="leading-[1.65] text-content-muted">Enter the six-character code sent to <strong className="wrap-anywhere text-content">{email.trim()}</strong>. It expires in 10 minutes.</p>
         <form onSubmit={(event) => void verifyCode(event)}>
@@ -87,14 +86,13 @@ function Login() {
           <button className="cursor-pointer border-0 bg-transparent py-4 text-[.85rem] text-content-muted focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" type="button" disabled={pending} onClick={() => { setChallengeId(undefined); setError(undefined); setAttemptsRemaining(undefined); }}>Use a different email</button>
         </form>
       </> : <>
-        <p className="leading-[1.65] text-content-muted">Use your email to create an account or return to one. No password needed.</p>
+        <p className="leading-[1.65] text-content-muted">Use your email to create an account or return to one. We’ll send a code to your email.</p>
         <form onSubmit={(event) => void requestCode(event)}>
           <label className="my-2 mt-6 block text-[.9rem] font-bold" htmlFor="email">Email address</label>
           <input className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55" id="email" name="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="you@example.com" required autoFocus />
           {error && <p className="mt-5 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">{error}</p>}
           <button className="mt-7 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" type="submit" disabled={pending}>{pending ? "Sending…" : <>Email me a code <span aria-hidden="true">→</span></>}</button>
         </form>
-        <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">We only send a code when you ask.</small>
       </>}
     </section>
   </main>;

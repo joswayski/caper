@@ -208,7 +208,8 @@ body {
   .hero-copy > h1 { font-size: clamp(2.2rem, 10vw, 3rem); }
   .hero-copy > .hero-lede { margin-top: 18px; font-size: 1.08rem; }
   .hero-copy > .made-by { margin-top: 22px; }
-  .hero .live-stage { aspect-ratio: .8; margin-top: 12px; margin-inline: -8px; width: calc(100% + 16px); }
+  /* Leave room for the tilted card's projected edge and upward idle motion. */
+  .hero .live-stage { aspect-ratio: .8; margin-top: 40px; margin-inline: -8px; width: calc(100% + 16px); }
   .latest-changes { padding-bottom: 64px; }
   .latest-changes h2 { margin-top: 32px; }
 }
