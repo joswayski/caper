@@ -53,7 +53,17 @@ try {
   browser('click', '.live-invite');
   wait('document.querySelector("#email")');
   assert.equal(evaluate('return location.pathname'), '/login');
+  const login = evaluate('return document.querySelector("main").textContent');
+  assert.ok(login.includes('We’ll send a code to your email.'));
+  assert.ok(!/WELCOME TO CAPER|We only send a code when you ask|No password needed/.test(login));
+  browser('set', 'viewport', '390', '844', '2');
+  browser('open', origin.href);
+  wait('document.querySelector(".live-stage[data-ready]")');
+  evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+  const gap = evaluate('return document.querySelector(".live-scene").getBoundingClientRect().top - document.querySelector(".hero-lede").getBoundingClientRect().bottom');
+  assert.ok(gap >= 40, `Mobile demo needs clearance above its projected edge; got ${gap}px`);
   console.log('PASS: centered CTA, reduced motion, 3D reaction hit testing, count toggles, picker/Escape, clipboard failure, no chat/media requests, email login');
+  console.log('PASS: simplified login copy and mobile demo clearance');
 } finally {
   browser('close');
 }
