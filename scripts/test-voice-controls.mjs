@@ -218,24 +218,68 @@ try {
       evaluate(`voiceFixture.publishPresence([{ id: 'self', name: 'UI fixture', muted: false, deafened: false, tracks: [] }]);`);
       wait(`document.querySelector('.voice-stack-avatar')`);
       const position = () => evaluate(`const r = document.querySelector('.voice-stack').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width };`);
+      browser('hover', '.channel-select[aria-current="page"]');
+      browser('wait', '250');
       const before = position();
       screenshot(`channel-${width}-before-join`);
+      evaluate(`
+        voiceFixture.joinMotion = [];
+        const stack = document.querySelector('.voice-stack');
+        const start = performance.now();
+        const sample = () => { voiceFixture.joinMotion.push(stack.getBoundingClientRect().left); if (performance.now() - start < 1000) requestAnimationFrame(sample); };
+        requestAnimationFrame(sample);
+      `);
       click('Join voice');
       wait(`document.querySelector('[aria-label="Leave voice"]')`);
       wait(`getComputedStyle(document.querySelector('.channel-join')).visibility === 'hidden'`);
-      assert.deepEqual(position(), before, 'An early spectator roster must not move when Join disappears');
+      wait(`document.querySelector('.channel-join-slot').getBoundingClientRect().width < 1`);
+      assert.ok(position().left > before.left + 20, 'Avatars must slide right into the removed Join slot');
+      assert.ok(evaluate(`return new Set(voiceFixture.joinMotion.map(x => Math.round(x))).size > 3;`), 'Join collapse must animate through intermediate avatar positions');
       assert.ok(evaluate(`const join = document.querySelector('.channel-join'); join.focus(); return join.inert && join.getAttribute('aria-hidden') === 'true' && document.activeElement !== join && !join.hasAttribute('aria-describedby');`), 'Connected Join must be inert and have no tooltip');
       browser('hover', '.channel-select[aria-current="page"]');
       assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join')).opacity;`), '0', 'Hover must not reveal connected Join');
       screenshot(`channel-${width}-joined`);
+      if (evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`)) {
+        const hovered = position();
+        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); const gap = line.querySelector('.channel-manage').getBoundingClientRect().left - line.querySelector('.voice-stack').getBoundingClientRect().right; return gap >= 0 && gap <= 8;`), 'Connected dropdown must sit immediately beside the Settings gear');
+        const motion = evaluate(`
+          const line = document.querySelector('.channel-line');
+          const stack = line.querySelector('.voice-stack');
+          const samples = [];
+          // Move the real pointer outside the channel in the next command.
+          voiceFixture.sampleMotion = samples;
+          const start = performance.now();
+          const sample = () => { samples.push(stack.getBoundingClientRect().left); if (performance.now() - start < 800) requestAnimationFrame(sample); };
+          requestAnimationFrame(sample);
+          return getComputedStyle(line).paddingRight;
+        `);
+        assert.equal(motion, '34px');
+        browser('mouse', 'move', '5', '5');
+        browser('wait', '850');
+        assert.ok(position().left > hovered.left + 30, 'Hidden settings must release its layout space');
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '0px');
+        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); return line.getBoundingClientRect().right - line.querySelector('.voice-stack').getBoundingClientRect().right < 8;`), 'Unhovered dropdown must reach the row right edge');
+        assert.ok(evaluate(`return new Set(voiceFixture.sampleMotion.map(x => Math.round(x))).size > 3;`), 'Settings reveal/hide must move through intermediate positions, not snap');
+        screenshot(`channel-${width}-joined-no-hover`);
+        browser('focus', '.channel-manage');
+        browser('wait', '250');
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '34px', 'Keyboard focus reveals settings space');
+        browser('hover', '.channel-select[aria-current="page"]');
+      } else {
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '48px', 'Always-visible touch-style settings keeps its full hit target');
+        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); return line.querySelector('.voice-stack').getBoundingClientRect().right <= line.querySelector('.channel-manage').getBoundingClientRect().left;`), 'Touch-style settings must not overlap the dropdown');
+      }
       browser('set', 'media', 'reduced-motion');
       assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join')).transitionDuration;`), '0s');
       assert.equal(evaluate(`return getComputedStyle(document.querySelector('.voice-stack-avatar')).animationName;`), 'none');
+      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join-slot')).transitionDuration;`), '0s');
       browser('set', 'media', 'no-preference');
       click('Leave voice');
       wait(`document.querySelector('[aria-label="Join voice"]')`);
       wait(`getComputedStyle(document.querySelector('.channel-join')).opacity === '1'`);
-      assert.deepEqual(position(), before, 'A stale spectator roster must not move when Join returns');
+      browser('hover', '.channel-select[aria-current="page"]');
+      browser('wait', '250');
+      assert.deepEqual(position(), before, 'Join returns to its original slot after leaving');
       assert.equal(evaluate(`return document.querySelector('.channel-join').inert;`), false);
       screenshot(`channel-${width}-left`);
       evaluate(`voiceFixture.publishPresence([]);`);
@@ -243,16 +287,19 @@ try {
       // Also exercise connection-first ordering with no early public roster.
       click('Join voice');
       wait(`document.querySelector('[aria-label="Leave voice"]') && document.querySelector('.voice-stack')`);
+      wait(`document.querySelector('.channel-join-slot').getBoundingClientRect().width < 1`);
       const connected = position();
       evaluate(`voiceFixture.publishPresence(voiceFixture.people);`);
       click('Leave voice');
       wait(`document.querySelector('[aria-label="Join voice"]')`);
-      assert.deepEqual(position(), connected, 'Connection-first updates must retain the same avatar position');
+      browser('hover', '.channel-select[aria-current="page"]');
+      browser('wait', '250');
+      assert.ok(position().left < connected.left - 20, 'Connection-first disconnect must reopen the Join slot');
       evaluate(`voiceFixture.publishPresence([]);`);
       wait(`!document.querySelector('.voice-stack')`);
     }
     evaluate(`await voiceFixture.cleanup();`);
-    console.log('PASS channel join/leave geometry at 1280px and 390px, both roster timing orders, hidden Join accessibility/hover, and reduced motion (mock signaling/WebRTC)');
+    console.log('PASS collapsing Join slot at 1280px and 390px, both roster timing orders, animated hover/focus settings space, hidden Join accessibility, and reduced motion (mock signaling/WebRTC)');
   } else {
   for (const label of ['Input Options', 'Output Options', 'User Settings']) {
     click(label);

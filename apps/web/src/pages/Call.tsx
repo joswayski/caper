@@ -699,8 +699,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     </button>;
     // Join shows on the channel being viewed, and on channels with people in
     // voice when you hover or focus their line (hidden on touch screens).
-    // Keep its footprint while connected: roster and connection updates arrive
-    // independently, so removing Join makes the avatars jump in both directions.
+    // Animate the slot closed rather than unmounting Join: independent roster
+    // and connection updates should move the avatars smoothly, not snap them.
     const viewed = channelId === channel?.id;
     const joinedHere = inVoiceHere(channelId);
     const join = (viewed || people.length > 0 || joinedHere) && <Tooltip content={joinedHere ? undefined : joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
@@ -708,7 +708,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     </Tooltip>;
     if (!stack && !join) return null;
     return {
-      summary: <span className="channel-voice">{stack}{join}</span>,
+      summary: <span className="channel-voice">{stack}{join && <span className="channel-join-slot" data-connected={joinedHere ? "" : undefined} data-hover-only={viewed ? undefined : ""}><span className="channel-join-slot-inner">{join}</span></span>}</span>,
       list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
       </div> : null,
