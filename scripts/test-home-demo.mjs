@@ -13,6 +13,9 @@ function browser(...args) {
 }
 const evaluate = code => browser('eval', `(async () => { ${code} })()`).result;
 const wait = code => browser('wait', '--fn', `Boolean(${code})`);
+const nextMoments = count => evaluate(`for (let i = 0; i < ${count}; i++) { document.querySelector('[aria-label="Next demo moment"]').click(); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); }`);
+const members = () => evaluate('return [...document.querySelectorAll(".sim-member strong")].map(el => el.textContent)');
+const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
 
 try {
   browser('open', origin.href);
@@ -20,7 +23,7 @@ try {
   browser('set', 'viewport', '1280', '800', '2');
   browser('set', 'media', 'dark', 'reduced-motion');
   browser('reload');
-  wait('document.querySelector(".sim-footer button")?.disabled');
+  wait('document.querySelector(".sim-footer button:disabled")');
   const before = evaluate('return document.querySelector(".sim-messages").textContent');
   browser('wait', '2500');
   assert.equal(evaluate('return document.querySelector(".sim-messages").textContent'), before, 'Reduced motion freezes the script');
@@ -50,6 +53,39 @@ try {
   browser('press', 'Escape');
   assert.equal(evaluate('return !!document.querySelector(".sim-emoji-picker")'), false);
   assert.ok(evaluate('return document.activeElement.matches(".sim-add-reaction")'));
+
+  // Advance with the public control, even under reduced motion. Joining a
+  // channel must not automatically join voice; leaving voice keeps membership.
+  assert.deepEqual(members(), ['Maya', 'Theo', 'June']);
+  browser('click', '[aria-label="Next demo moment"]'); // 4
+  assert.deepEqual(members(), ['Maya', 'Theo', 'June', 'Leo']);
+  assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
+  assert.equal(evaluate('return document.querySelector(".sim-arrival").textContent'), 'Leo joined the channel');
+  nextMoments(4); // 8
+  assert.ok(members().includes('Noor'));
+  assert.ok(!voices().includes('Noor'));
+  assert.equal(evaluate('return document.querySelector(".sim-typing").textContent.trim()'), 'Noor and Theo are typing');
+  nextMoments(2); // 10
+  assert.ok(voices().includes('Leo'));
+  nextMoments(5); // 15
+  assert.equal(members().length, 6);
+  assert.ok(!voices().includes('Sam'));
+  nextMoments(7); // 22
+  assert.ok(members().includes('Maya'));
+  assert.ok(!voices().includes('Maya'));
+  nextMoments(16); // 38
+  assert.equal(voices().length, 6);
+  nextMoments(1); // 39
+  assert.ok(!members().includes('June'));
+  assert.ok(!voices().includes('June'));
+  nextMoments(6); // 45
+  assert.equal(members().length, 6);
+  assert.equal(voices().length, 6);
+  assert.ok(evaluate('return document.querySelector(".sim-messages").textContent.includes("back with cookies. let’s gooo")'));
+  nextMoments(4); // 0: reset presence as well as messages
+  assert.deepEqual(members(), ['Maya', 'Theo', 'June']);
+  assert.deepEqual(voices(), ['Maya', 'Theo', 'June']);
+  console.log('PASS: six-person join/leave/rejoin sequence, separate voice membership, multi-person typing, manual stepping and cycle reset');
 
   // Mock only clipboard rejection: browsers may deny it, and we must not claim success.
   evaluate('navigator.clipboard.writeText = async () => { throw new Error("Test denial"); };');
