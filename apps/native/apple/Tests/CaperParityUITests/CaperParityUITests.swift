@@ -73,10 +73,26 @@ final class CaperParityUITests: XCTestCase {
     /// button under the keyboard. macOS clicks the button.
     private func save(_ button: XCUIElement, from field: XCUIElement) {
         #if os(iOS)
-        type("\n", into: field)
+        // A slow simulator sometimes won't refocus the field after a rejected
+        // save; with no keyboard up, tap the button instead.
+        if focus(field) {
+            field.typeText("\n")
+        } else if button.isHittable {
+            button.tap()
+        } else {
+            XCTFail("\(field.label) never took keyboard focus")
+        }
         #else
         button.tap()
         #endif
+    }
+
+    private func focus(_ field: XCUIElement) -> Bool {
+        for _ in 0..<3 {
+            field.tap()
+            if hasKeyboardFocus(field) { return true }
+        }
+        return false
     }
 
     private func type(_ text: String, into field: XCUIElement) {
@@ -84,14 +100,11 @@ final class CaperParityUITests: XCTestCase {
         field.tap()
         field.typeText(text)
         #else
-        for _ in 0..<3 {
-            field.tap()
-            if hasKeyboardFocus(field) {
-                field.typeText(text)
-                return
-            }
+        if focus(field) {
+            field.typeText(text)
+        } else {
+            XCTFail("\(field.label) never took keyboard focus")
         }
-        XCTFail("\(field.label) never took keyboard focus")
         #endif
     }
 
