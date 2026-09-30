@@ -209,17 +209,19 @@ private struct WorkspaceView: View {
                                         .focusable()
                                         .focusEffectDisabled()
                                         .focused($sidebarFocused)
+                                        // A plain view is a generic group to AppKit accessibility,
+                                        // which carries no value. Present the handle as a slider
+                                        // so VoiceOver and tests read and adjust the width.
+                                        .accessibilityRepresentation {
+                                            Slider(value: Binding(
+                                                get: { min(sidebarWidth, sidebarMaximum(for: geometry.size.width)) },
+                                                set: { resizeSidebar($0, viewport: geometry.size.width) }
+                                            ), in: 220...max(230, sidebarMaximum(for: geometry.size.width)), step: 10)
+                                        }
                                         .accessibilityLabel("Channel sidebar width")
                                         .accessibilityIdentifier("channel-sidebar-resize")
                                         .accessibilityValue("\(Int(min(sidebarWidth, sidebarMaximum(for: geometry.size.width)))) pixels")
                                         .accessibilityHint("Drag to resize. Arrow keys adjust by 10 pixels; Home and End select the bounds. Double-click resets.")
-                                        .accessibilityAdjustableAction { direction in
-                                            switch direction {
-                                            case .increment: resizeSidebar(sidebarWidth + 10, viewport: geometry.size.width)
-                                            case .decrement: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
-                                            @unknown default: break
-                                            }
-                                        }
                                         .onKeyPress { press in
                                             switch press.key {
                                             case .leftArrow: resizeSidebar(sidebarWidth - 10, viewport: geometry.size.width)
@@ -332,27 +334,16 @@ private struct SpaceRail: View {
     @Bindable var model: AppModel
     let showLogin: () -> Void
     let create: () -> Void
+    private var createHelp: String {
+        if model.account == nil { return "Sign in to create a space" }
+        if model.canCreateSpace { return "Create space" }
+        return "Space limit reached (\(model.limits?.ownedSpaces ?? 20) owned, \(model.limits?.totalSpaces ?? 100) total)"
+    }
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
                 ForEach(model.spaces) { space in
-                    Button { Task { await model.select(space: space) } } label: {
-                        Text(space.demo ? "C" : String(space.name.prefix(1)).uppercased())
-                            .font(CaperTheme.font(13, weight: .black))
-                            .frame(width: 40, height: 40)
-                            .background(model.selectedSpaceID == space.id ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: model.selectedSpaceID == space.id ? 8 : 12))
-                            .overlay(RoundedRectangle(cornerRadius: model.selectedSpaceID == space.id ? 8 : 12).stroke(model.selectedSpaceID == space.id ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border))
-                    }
-                    .buttonStyle(.plain).help(space.demo ? "Caper" : space.name)
-                    .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
-                    .accessibilityLabel(space.demo ? "Caper" : space.name)
-                    .accessibilityValue(model.openingSpaceID == space.id ? "Opening" : model.selectedSpaceID == space.id ? "Selected" : "")
-                    .overlay(alignment: .leading) {
-                        if model.selectedSpaceID == space.id {
-                            RoundedRectangle(cornerRadius: 2).fill(CaperTheme.terracottaBright).frame(width: 3, height: 24).offset(x: -10)
-                        }
-                    }
+                    SpaceRailButton(model: model, space: space)
                 }
                 Button(action: model.account == nil ? showLogin : create) {
                     CaperIcon(name: "plus", size: 20).foregroundStyle(CaperTheme.terracottaBright)
@@ -362,12 +353,44 @@ private struct SpaceRail: View {
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border, style: StrokeStyle(lineWidth: 1, dash: [4])))
                 }
                 .buttonStyle(.plain).disabled(model.account != nil && !model.canCreateSpace)
-                .help(model.account == nil ? "Sign in to create a space" : model.canCreateSpace ? "Create space"
-                      : "Space limit reached (\(model.limits?.ownedSpaces ?? 20) owned, \(model.limits?.totalSpaces ?? 100) total)")
+                .help(createHelp)
             }.padding(.vertical, 14).frame(maxWidth: .infinity)
         }
         .background(CaperTheme.blackout)
         .overlay(alignment: .trailing) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+    }
+}
+
+/// One space in the rail. Kept out of SpaceRail's body so the Swift type
+/// checker handles each piece in reasonable time.
+private struct SpaceRailButton: View {
+    @Bindable var model: AppModel
+    let space: Space
+    private var selected: Bool { model.selectedSpaceID == space.id }
+    private var name: String { space.demo == true ? "Caper" : space.name }
+    private var corner: CGFloat { selected ? 8 : 12 }
+    private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
+    private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
+    private var state: String { model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : "" }
+
+    var body: some View {
+        Button { Task { await model.select(space: space) } } label: {
+            Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
+                .font(CaperTheme.font(13, weight: .black))
+                .frame(width: 40, height: 40)
+                .background(fill)
+                .clipShape(RoundedRectangle(cornerRadius: corner))
+                .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
+        }
+        .buttonStyle(.plain).help(name)
+        .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
+        .accessibilityLabel(name)
+        .accessibilityValue(state)
+        .overlay(alignment: .leading) {
+            if selected {
+                RoundedRectangle(cornerRadius: 2).fill(CaperTheme.terracottaBright).frame(width: 3, height: 24).offset(x: -10)
+            }
+        }
     }
 }
 
@@ -990,6 +1013,16 @@ private struct ChatView: View {
     let toggleMembers: () -> Void
     /// Web shows Connecting…/Offline only after a second without the gateway.
     @State private var showConnectionStatus = false
+
+    /// Scroll the unsent message into view after the current layout pass, so a
+    /// row that just grew (its error and actions appeared) is fully visible.
+    private func revealPending(_ proxy: ScrollViewProxy) {
+        guard let id = chat.pendingMessage?.id else { return }
+        Task { @MainActor in
+            await Task.yield()
+            proxy.scrollTo("pending-\(id)", anchor: .bottom)
+        }
+    }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
         self.model = model; chat = model.chat; voice = model.voice; self.narrow = narrow; self.browse = browse
         self.membersVisible = membersVisible; self.toggleMembers = toggleMembers
@@ -1084,9 +1117,11 @@ private struct ChatView: View {
                 }
                 #endif
                 .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
-                .onChange(of: chat.pendingMessage?.id, initial: true) { _, id in
-                    if let id { proxy.scrollTo("pending-\(id)", anchor: .bottom) }
-                }
+                .onChange(of: chat.pendingMessage?.id, initial: true) { _, _ in revealPending(proxy) }
+                // A rejection adds the "Not sent" line with Edit and Dismiss after
+                // the first scroll, so the row grows below the viewport; reveal it again.
+                .onChange(of: chat.sendRejected) { _, _ in revealPending(proxy) }
+                .onChange(of: chat.error) { _, _ in revealPending(proxy) }
             }
 
             HStack(spacing: 7) {
@@ -1523,7 +1558,7 @@ private struct SpaceEditor: View {
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
-            }
+            }.accessibilityIdentifier("space-settings-scroll")
         }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : "" }
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
@@ -1719,50 +1754,22 @@ private struct CaperSecondaryButton: ButtonStyle {
     }
 }
 
-/// One track/thumb treatment across Apple platforms, with keyboard and VoiceOver adjustment.
+/// Caper's slider: the platform's own control in Caper's colour. It keeps native
+/// keyboard, VoiceOver and pointer behaviour. A drawn track and thumb only
+/// imitated a slider to accessibility, which could not report its geometry, so
+/// VoiceOver adjustment and UI automation could not move it.
 private struct CaperSlider: View {
     @Binding var value: Double
     let bounds: ClosedRange<Double>
     let step: Double
-    @Environment(\.isEnabled) private var enabled
-    @FocusState private var focused: Bool
     init(value: Binding<Double>, in bounds: ClosedRange<Double>, step: Double) {
         _value = value; self.bounds = bounds; self.step = step
     }
-    private func set(_ proposed: Double) {
-        guard enabled else { return }
-        value = min(bounds.upperBound, max(bounds.lowerBound, bounds.lowerBound + ((proposed - bounds.lowerBound) / step).rounded() * step))
-    }
     var body: some View {
-        GeometryReader { geometry in
-            let width = max(1, geometry.size.width - 16)
-            let fraction = min(1, max(0, (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)))
-            ZStack(alignment: .leading) {
-                Capsule().fill(CaperTheme.border).frame(height: 4)
-                Capsule().fill(CaperTheme.terracottaBright).frame(width: 8 + width * fraction, height: 4)
-                Circle().fill(CaperTheme.text).frame(width: 16, height: 16)
-                    .overlay(Circle().stroke(focused ? CaperTheme.terracottaBright : CaperTheme.border, lineWidth: 2))
-                    .offset(x: width * fraction)
-            }.frame(height: 32).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { gesture in
-                    focused = true
-                    set(bounds.lowerBound + Double((gesture.location.x - 8) / width) * (bounds.upperBound - bounds.lowerBound))
-                })
-        }.frame(height: 32).opacity(enabled ? 1 : 0.45)
-            .focusable().focusEffectDisabled().focused($focused)
-            .accessibilityRepresentation {
-                Slider(value: $value, in: bounds, step: step).accessibilityValue("\(Int(value))%")
-            }
-            .onKeyPress { press in
-                switch press.key {
-                case .leftArrow, .downArrow: set(value - step)
-                case .rightArrow, .upArrow: set(value + step)
-                case .home: set(bounds.lowerBound)
-                case .end: set(bounds.upperBound)
-                default: return .ignored
-                }
-                return .handled
-            }
+        Slider(value: $value, in: bounds, step: step)
+            .tint(CaperTheme.terracottaBright)
+            .frame(height: 32)
+            .accessibilityValue("\(Int(value))%")
     }
 }
 

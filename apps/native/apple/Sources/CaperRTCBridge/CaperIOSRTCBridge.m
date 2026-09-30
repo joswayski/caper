@@ -33,7 +33,10 @@ BOOL CaperIOSNativeDenoiseWorkersRunWithoutHardware(void) {
         int16_t input[480], output[480];
         uint32_t epochs[480];
         unsigned frames = (unsigned)rate / 100;
-        for (int hop = 0; hop < 20; ++hop) {
+        // Feed 10 ms blocks every 30 ms until ten hops are processed. A busy
+        // simulator can stall the first model run for seconds; that is slow,
+        // not broken, so wait up to 30 seconds as long as nothing fails.
+        for (int hop = 0; hop < 1000 && CaperDenoisePipelineStatistics(pipeline).processedHops < 10; ++hop) {
             for (unsigned i = 0; i < frames; ++i)
                 input[i] = (int16_t)(6000 * sin(2 * M_PI * (hop * frames + i) * 180 / rate));
             if (!CaperDenoisePipelineProcess(pipeline, input, output, epochs, frames, 100, 1)) {
