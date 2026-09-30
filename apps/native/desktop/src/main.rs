@@ -1839,7 +1839,12 @@ impl CaperApp {
                 self.detail = None;
                 self.managed_members.clear();
                 self.presence.clear();
-                if let Some(space) = self.spaces.first() {
+                // The left or deleted space's conversation must not stay on
+                // screen while (or instead of) opening the next space. General
+                // is retired, so only an account space can follow.
+                self.selected_space = None;
+                self.clear_channel_state();
+                if let Some(space) = self.spaces.iter().find(|space| !space.demo) {
                     self.select_space(space.id.clone());
                 }
             }
@@ -6933,7 +6938,10 @@ mod tests {
         app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
         assert!(!app.spaces.iter().any(|entry| entry.id == space));
         assert!(app.detail.is_none());
-        assert_eq!(app.selected_channel.as_deref(), Some("general"));
+        // General is retired: with no other account space, nothing is open
+        // and the left space's conversation is gone.
+        assert_eq!(app.selected_space, None);
+        assert_eq!(app.selected_channel, None);
         assert!(app.timeline.messages().next().is_none());
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
