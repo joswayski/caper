@@ -27,6 +27,12 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-activator")).placeItems'), 'center');
   assert.equal(evaluate('return document.querySelector(".live-activator").getAttribute("href")'), '/spaces');
 
+  // Production surfaces from shared/design.css; don't derive expectations from the demo.
+  assert.deepEqual(evaluate('return [".sim-sidebar", ".sim-chat", ".sim-composer"].map(s => getComputedStyle(document.querySelector(s)).backgroundColor)'), ['rgb(21, 28, 30)', 'rgb(25, 33, 35)', 'rgb(40, 49, 51)']);
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), '30%');
+  assert.equal(evaluate('return document.querySelector(".sim-composer").getAttribute("href")'), '/spaces');
+  assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".sim-members")).display'), 'none');
+
   const chip = '.sim-message:last-of-type .sim-reactions button[aria-pressed]';
   const count = evaluate(`return Number(document.querySelector('${chip} span').textContent)`);
   assert.ok(evaluate(`const el = document.querySelector('${chip}'); const r = el.getBoundingClientRect(); return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('button') === el;`), '3D panel must not intercept reaction hit testing');

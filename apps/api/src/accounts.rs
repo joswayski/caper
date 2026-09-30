@@ -27,6 +27,54 @@ impl DebugUsers {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ReservedUsernames(HashSet<String>);
+
+impl Default for ReservedUsernames {
+    fn default() -> Self {
+        Self(
+            [
+                "caper",
+                "capers",
+                "admin",
+                "admins",
+                "mod",
+                "mods",
+                "support",
+                "feedback",
+                "security",
+                "staff",
+                "jose",
+                "caperchat",
+                "aaron",
+                "joswayski",
+            ]
+            .map(str::to_owned)
+            .into(),
+        )
+    }
+}
+
+impl ReservedUsernames {
+    pub(crate) fn from_env(environment: &RuntimeEnvironment) -> Self {
+        let mut reserved = Self::default();
+        if let Some(extra) = environment.get("RESERVED_USERNAMES") {
+            reserved.0.extend(
+                extra
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|username| !username.is_empty())
+                    .map(str::to_ascii_lowercase),
+            );
+        }
+        reserved
+    }
+
+    pub(crate) fn contains(&self, username: &str) -> bool {
+        self.0.contains(&username.to_ascii_lowercase())
+    }
+}
+
 #[derive(Clone, Debug, FromRow)]
 pub struct User {
     pub id: i64,
@@ -114,6 +162,56 @@ mod tests {
         assert!(!DebugUsers::from_env(&RuntimeEnvironment::default()).contains(Some("alice")));
         assert!(!DebugUsers::from_env(&environment(" ,  ,")).contains(Some("alice")));
         assert!(!DebugUsers::from_env(&environment("*")).contains(Some("alice")));
+    }
+
+    #[test]
+    fn reserved_names_include_defaults_and_trimmed_case_insensitive_additions() {
+        let defaults = ReservedUsernames::from_env(&RuntimeEnvironment::default());
+        for name in [
+            "caper",
+            "capers",
+            "admin",
+            "admins",
+            "mod",
+            "mods",
+            "support",
+            "feedback",
+            "security",
+            "staff",
+            "jose",
+            "caperchat",
+            "aaron",
+            "joswayski",
+        ] {
+            assert!(defaults.contains(name));
+        }
+        let configured =
+            ReservedUsernames::from_env(&RuntimeEnvironment::from_values_for_test([(
+                "RESERVED_USERNAMES",
+                " Trust, TEAM , ,caper",
+            )]));
+        for name in [
+            "caper",
+            "capers",
+            "admin",
+            "admins",
+            "mod",
+            "mods",
+            "support",
+            "feedback",
+            "security",
+            "staff",
+            "jose",
+            "caperchat",
+            "aaron",
+            "joswayski",
+            "trust",
+            "team",
+        ] {
+            assert!(configured.contains(name));
+        }
+        assert!(!configured.contains("security_team"));
+        assert!(!configured.contains("alice"));
     }
 
     #[test]
