@@ -515,6 +515,15 @@ def main() -> None:
     send_left = list(map(int, re.findall(r"\d+", send.attrib["bounds"])))[0]
     assert send_left > composer_right, "Send must be a separate button to the right of the composer"
     tap(description="Send")
+    # Reaction controls make the seeded conversation taller than the narrow
+    # viewport. Scroll the timeline instead of assuming every row fits on screen.
+    after_send = hierarchy()
+    if find(after_send, text=sent_text) is None:
+        timeline = next(node for node in nodes(after_send) if node.get("scrollable") == "true")
+        left, top, right, bottom = map(int, re.findall(r"\d+", timeline.attrib["bounds"]))
+        x = str((left + right) // 2)
+        adb("shell", "input", "swipe", x, str(top + (bottom - top) * 3 // 4),
+            x, str(top + (bottom - top) // 4), "400")
     delivered = wait_for(text=sent_text)
     assert sum(1 for node in nodes(delivered) if node.get("text") == sent_text) == 1, "Sent message rendered more than once"
     composer = next((node for node in nodes(delivered) if node.get("class") == "android.widget.EditText"), None)
