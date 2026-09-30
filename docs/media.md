@@ -2750,10 +2750,9 @@ and narrow layouts, tile boundaries, legacy initials, presence and profile renam
 This browser fixture is not live signup, SFU, physical phone or native evidence.
 Rust desktop was separately built and visually inspected in its labelled static
 fixture (chat, account, member and voice avatars); atlas selection and voice-stack
-interaction tests pass. The full desktop suite (`--test-threads=2`) reports 118
-passed, nine ignored, and one pre-existing failure in
-`leave_space_is_nonowner_only_and_clears_private_conversation` (expects retired
-`general`, gets `chan00000001`), reproduced on the unchanged base commit.
+interaction tests pass. The full desktop suite (`--test-threads=2`) reports 120
+passed and nine ignored. Leaving/deleting a space clears private conversation
+state immediately, without a retired public-General fallback.
 Desktop application clippy passes with `--no-deps`; unrestricted clippy fails
 on existing warnings in vendored `webrtc-sys`.
 Android and Apple source/tests/resource packaging were updated but require

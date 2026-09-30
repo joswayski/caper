@@ -1843,6 +1843,10 @@ impl CaperApp {
             }
             AdminResult::SpaceDeleted(id) | AdminResult::SpaceLeft(id) => {
                 self.voice.revoke_space(&id);
+                self.generation += 1;
+                self.invalidate_navigation_cache();
+                self.clear_channel_state();
+                self.selected_space = None;
                 self.spaces.retain(|space| space.id != id);
                 self.dialog = None;
                 self.detail = None;
@@ -6991,17 +6995,54 @@ mod tests {
         assert!(!app.owner());
         assert!(app.can_leave_space());
         let space = app.selected_space.clone().unwrap();
+        // There is no public General fallback after leaving the last space.
+        app.spaces.retain(|entry| !entry.demo);
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
         assert!(app.timeline.messages().next().is_some());
         app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
         assert!(!app.spaces.iter().any(|entry| entry.id == space));
         assert!(app.detail.is_none());
-        assert_eq!(app.selected_channel.as_deref(), Some("general"));
+        assert!(app.selected_space.is_none());
+        assert!(app.selected_channel.is_none());
+        assert!(app.session.is_none());
         assert!(app.timeline.messages().next().is_none());
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
         assert!(!app.can_leave_space());
+    }
+
+    #[test]
+    fn leaving_space_clears_private_state_before_opening_remaining_space() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-token".into());
+        app.spaces.retain(|entry| !entry.demo);
+        let mut remaining = app.spaces[0].clone();
+        remaining.id = "remaining-space".into();
+        app.spaces.push(remaining);
+        let space = app.selected_space.clone().unwrap();
+        let generation = app.generation;
+        app.session = Some(session());
+        app.draft = "private draft".into();
+        app.admin_result(crate::worker::AdminResult::SpaceLeft(space));
+
+        assert!(app.generation > generation);
+        assert!(app.selected_space.is_none());
+        assert!(app.selected_channel.is_none());
+        assert!(app.session.is_none());
+        assert!(app.timeline.messages().next().is_none());
+        assert!(app.draft.is_empty());
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.space.as_deref()),
+            Some("remaining-space")
+        );
     }
 
     #[test]

@@ -289,25 +289,16 @@ def main() -> None:
 
     # The first launch after a fresh install also compiles and warms the app,
     # which can take well over 20 s on a loaded CI emulator.
-    guest = capture("caper-android-guest-populated-desktop", "TEST FIXTURE", seconds=60)
-    assert find(guest, contains="The same conversation") is not None
-    assert find(guest, description="Channel options") is None
-    assert find(guest, description="Create channel") is None
-    assert find(guest, text="Caper") is not None
-    general = find(guest, text="general")
-    join = find(guest, text="Join")
-    assert general is not None and join is not None
-    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
-    tap(description="Collapse channels")
-    guest_collapsed = wait_for(description="Expand channels")
-    assert find(guest_collapsed, text="general") is None
-    assert find(guest_collapsed, contains="Message #general") is not None
-    tap(description="Expand channels")
-    wait_for(text="general")
-    tap(text="Guest")
-    login = capture("caper-android-login", "Come on in.")
+    # Signed-out users now land at authentication. The retired public General
+    # demo must not be reconstructed by the fixture; authenticate before
+    # exercising the populated account-space coverage below.
+    login = capture("caper-android-login", "Come on in.", seconds=60)
     for required in ("WELCOME TO CAPER", "Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
+    for retired in ("general", "Join", "TEST FIXTURE"):
+        assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
+    assert find(login, description="Channel options") is None
+    assert find(login, description="Create channel") is None
 
     fixture({"failure": {"path": "/api/auth/email/request", "method": "POST", "status": 503}})
     enter_first_field("fixture@example.test")

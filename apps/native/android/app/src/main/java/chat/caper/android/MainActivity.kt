@@ -884,23 +884,28 @@ private object AvatarAtlas {
         .also { image = it }
 }
 
-@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) = Box(
-    modifier
-        // Web: caper-green border with a soft outer ring while speaking.
-        .size(size)
-        .then(if (speaking) Modifier.drawBehind {
-            drawCircle(CaperGreen.copy(alpha = .2f), radius = this.size.minDimension / 2 + 1.5.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()))
-        } else Modifier).clip(CircleShape).background(if (size > 32.dp) SurfaceRaised else SurfaceComposer)
-        .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
-    contentAlignment = Alignment.Center,
-) {
+@Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) {
     val index = caperAvatarIndex(avatarId)
-    if (index == null) Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
-    else {
-        val context = LocalContext.current
-        val atlas = remember { AvatarAtlas.load(context) }
-        Canvas(Modifier.fillMaxSize()) {
-            drawImage(atlas, IntOffset((index % 32) * 64, (index / 32) * 64), IntSize(64, 64), IntOffset.Zero, IntSize(this.size.width.toInt(), this.size.height.toInt()))
+    Box(
+        modifier
+            // Web: caper-green border with a soft outer ring while speaking.
+            .size(size)
+            .then(if (speaking) Modifier.drawBehind {
+                drawCircle(CaperGreen.copy(alpha = .2f), radius = this.size.minDimension / 2 + 1.5.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()))
+            } else Modifier).clip(CircleShape)
+            // Bundled image avatars retain their transparent backing. Initials
+            // still need contrast against every surface.
+            .then(if (index == null) Modifier.background(if (size > 32.dp) SurfaceRaised else SurfaceComposer) else Modifier)
+            .then(if (speaking) Modifier.border(2.dp, CaperGreen, CircleShape) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (index == null) Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
+        else {
+            val context = LocalContext.current
+            val atlas = remember { AvatarAtlas.load(context) }
+            Canvas(Modifier.fillMaxSize()) {
+                drawImage(atlas, IntOffset((index % 32) * 64, (index / 32) * 64), IntSize(64, 64), IntOffset.Zero, IntSize(this.size.width.toInt(), this.size.height.toInt()))
+            }
         }
     }
 }

@@ -337,16 +337,16 @@ private struct SpaceRail: View {
             VStack(spacing: 10) {
                 ForEach(model.spaces) { space in
                     Button { Task { await model.select(space: space) } } label: {
-                        Text(space.demo ? "C" : String(space.name.prefix(1)).uppercased())
+                        Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
                             .font(CaperTheme.font(13, weight: .black))
                             .frame(width: 40, height: 40)
                             .background(model.selectedSpaceID == space.id ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface)
                             .clipShape(RoundedRectangle(cornerRadius: model.selectedSpaceID == space.id ? 8 : 12))
                             .overlay(RoundedRectangle(cornerRadius: model.selectedSpaceID == space.id ? 8 : 12).stroke(model.selectedSpaceID == space.id ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border))
                     }
-                    .buttonStyle(.plain).help(space.demo ? "Caper" : space.name)
+                    .buttonStyle(.plain).help(space.demo == true ? "Caper" : space.name)
                     .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
-                    .accessibilityLabel(space.demo ? "Caper" : space.name)
+                    .accessibilityLabel(space.demo == true ? "Caper" : space.name)
                     .accessibilityValue(model.openingSpaceID == space.id ? "Opening" : model.selectedSpaceID == space.id ? "Selected" : "")
                     .overlay(alignment: .leading) {
                         if model.selectedSpaceID == space.id {

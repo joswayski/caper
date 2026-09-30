@@ -67,8 +67,16 @@ try {
   assert.equal(evaluate('document.querySelector(".account-avatar [data-avatar-id]").dataset.avatarId'), '0');
   assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].at(-1).textContent'), 'L');
   assert.equal(evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'), 'Online');
+  assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true, 'Image avatars and their containers must have transparent backing');
+  assert.notEqual(evaluate('getComputedStyle([...document.querySelectorAll(".chat-avatar")].at(-1).firstElementChild).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Initials retain a readable neutral backing');
   browser('eval', 'new Promise((resolve,reject) => { const image = new Image(); image.onload=()=>image.width===2048&&image.height===1600?resolve(true):reject(Error("Wrong atlas size")); image.onerror=reject; image.src="/images/avatars/capers-v1.webp"; })');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-desktop.png'));
+  browser('click', '.space-menu summary');
+  browser('click', '.space-actions button');
+  wait('document.querySelectorAll(".member-avatar [data-avatar-id]").length === 4');
+  assert.equal(evaluate('[...document.querySelectorAll(".member-avatar [data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-members-settings.png'));
+  browser('click', '[aria-label="Close Manage space"]');
   browser('click', '.account-profile');
   browser('fill', '#display-name', 'Renamed Alex');
   browser('click', 'button[type="submit"]');
@@ -77,8 +85,9 @@ try {
   browser('set', 'viewport', '390', '844', '2');
   browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
   assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'), [0, 31, 32, 799]);
+  assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true);
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow.png'));
-  console.log('PASS: saved IDs in chat, members, voice roster/stack and account; zero/row/end tiles; legacy initials; presence; profile rename; desktop and narrow Chromium. Mock API, no live voice.');
+  console.log('PASS: saved IDs in chat, members, voice roster/stack and account; zero/row/end tiles; transparent image backing; legacy initials; presence; profile rename; desktop and narrow Chromium. Mock API, no live voice.');
 } catch (error) {
   console.error(browser('snapshot'));
   throw error;
