@@ -194,6 +194,7 @@ struct CaperApp {
     pending: Option<PendingSend>,
     reaction_picker: Option<String>,
     reaction_search: String,
+    reaction_search_focus: bool,
     reaction_textures: emoji::Textures,
     pending_reactions: BTreeMap<(String, String), PendingReaction>,
     reaction_errors: BTreeMap<String, String>,
@@ -285,6 +286,7 @@ impl CaperApp {
             pending: None,
             reaction_picker: None,
             reaction_search: String::new(),
+            reaction_search_focus: false,
             reaction_textures: emoji::Textures::default(),
             pending_reactions: BTreeMap::new(),
             reaction_errors: BTreeMap::new(),
@@ -1925,6 +1927,9 @@ impl CaperApp {
                 self.spaces.retain(|space| space.id != id);
                 self.dialog = None;
                 self.detail = None;
+                self.selected_space = None;
+                self.generation += 1;
+                self.clear_channel_state();
                 self.managed_members.clear();
                 self.presence.clear();
                 if let Some(space) = self.spaces.first() {
@@ -4770,64 +4775,76 @@ impl CaperApp {
             })
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    let saving = self.pending_reactions.values().any(|pending| pending.sent);
                     for reaction in &message.reactions {
                         let owned = author
                             .as_ref()
                             .is_some_and(|id| reaction.author_ids.iter().any(|entry| entry == id));
-                        let pending = self
-                            .pending_reactions
-                            .get(&(message.id.clone(), reaction.emoji.clone()));
-                        let shown_owned = pending.map_or(owned, |pending| pending.desired);
                         let Some(entry) = emoji::find(&reaction.emoji) else {
                             continue;
                         };
-                        let frame = egui::Frame::new()
-                            .fill(if shown_owned {
+                        let image = self.reaction_textures.image(ui, entry, 18.0);
+                        let label = format!(
+                            "{}, {} {}{}",
+                            entry.name,
+                            reaction.author_ids.len(),
+                            if reaction.author_ids.len() == 1 {
+                                "reaction"
+                            } else {
+                                "reactions"
+                            },
+                            if owned { ", including you" } else { "" }
+                        );
+                        let response = ui.add_enabled(
+                            !saving,
+                            egui::Button::image_and_text(
+                                image,
+                                RichText::new(reaction.author_ids.len().to_string()).size(11.0),
+                            )
+                            .fill(if owned {
                                 Color32::from_rgb(57, 35, 30)
                             } else {
                                 RAISED
                             })
                             .stroke(Stroke::new(
                                 1.0,
-                                if shown_owned {
-                                    TERRACOTTA_BRIGHT
-                                } else {
-                                    BORDER
-                                },
+                                if owned { TERRACOTTA_BRIGHT } else { BORDER },
                             ))
-                            .corner_radius(8)
-                            .inner_margin(egui::Margin::symmetric(7, 4));
-                        let response = frame
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let clicked =
-                                        self.reaction_textures.image(ui, entry, 18.0).clicked();
-                                    let count = reaction.author_ids.len() as isize
-                                        + isize::from(shown_owned)
-                                        - isize::from(owned);
-                                    let label = ui.add(
-                                        egui::Label::new(
-                                            RichText::new(count.max(0).to_string()).size(11.0),
-                                        )
-                                        .sense(egui::Sense::click()),
-                                    );
-                                    clicked || label.clicked()
-                                })
-                                .inner
-                            })
-                            .inner;
-                        if response {
-                            self.set_reaction(&message.id, &reaction.emoji, !shown_owned);
+                            .corner_radius(8),
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                !saving,
+                                label.clone(),
+                            )
+                        });
+                        if response.clicked() {
+                            self.set_reaction(&message.id, &reaction.emoji, !owned);
                         }
                     }
                     if self.session.is_some()
-                        && ui
-                            .small_button("＋")
-                            .on_hover_text("Add reaction")
-                            .clicked()
+                        && let Some(entry) = emoji::find("🙂")
                     {
-                        self.reaction_picker = Some(message.id.clone());
-                        self.reaction_search.clear();
+                        let image = self.reaction_textures.image(ui, entry, 18.0);
+                        let add = ui
+                            .add_enabled(!saving, egui::Button::image(image).small())
+                            .on_hover_text("Add reaction");
+                        add.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                !saving,
+                                "Add reaction",
+                            )
+                        });
+                        if add.clicked() {
+                            self.reaction_picker = Some(message.id.clone());
+                            self.reaction_search.clear();
+                            self.reaction_search_focus = true;
+                        }
+                    }
+                    if saving {
+                        ui.label(RichText::new("Saving reaction…").size(11.0).color(MUTED));
                     }
                 });
                 if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
@@ -4841,6 +4858,11 @@ impl CaperApp {
                                 .map(|(key, value)| (key.clone(), value.clone()))
                         {
                             self.set_reaction(&message, &emoji, pending.desired);
+                        }
+                        if ui.small_button("Dismiss").clicked() {
+                            self.reaction_errors.remove(&message.id);
+                            self.pending_reactions
+                                .retain(|(id, _), _| id != &message.id);
                         }
                     });
                 }
@@ -4881,7 +4903,7 @@ impl CaperApp {
             return;
         };
         let mut open = true;
-        let mut close_requested = false;
+        let mut close_requested = context.input(|input| input.key_pressed(egui::Key::Escape));
         let mut selected = None;
         egui::Window::new("Add reaction")
             .id(egui::Id::new("emoji-picker"))
@@ -4891,17 +4913,15 @@ impl CaperApp {
             .default_width(360.0)
             .show(context, |ui| {
                 let search_id = egui::Id::new("emoji-picker-search");
-                let search = ui.add(
+                let _search = ui.add(
                     egui::TextEdit::singleline(&mut self.reaction_search)
                         .id(search_id)
                         .hint_text("Search emoji…")
                         .desired_width(f32::INFINITY),
                 );
-                if search.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                    close_requested = true;
-                }
-                if !search.has_focus() {
+                if self.reaction_search_focus {
                     ui.memory_mut(|memory| memory.request_focus(search_id));
+                    self.reaction_search_focus = false;
                 }
                 ui.add_space(6.0);
                 let query = self.reaction_search.trim().to_lowercase();
@@ -4914,27 +4934,37 @@ impl CaperApp {
                                 || entry.keywords.to_lowercase().contains(&query)
                                 || entry.category.to_lowercase().contains(&query))
                     })
-                    .take(160)
                     .collect();
                 if choices.is_empty() {
                     ui.label(RichText::new("No emoji found").color(MUTED));
                 }
-                egui::ScrollArea::vertical()
-                    .max_height(330.0)
-                    .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            for entry in choices {
-                                if self
-                                    .reaction_textures
-                                    .image(ui, entry, 30.0)
-                                    .on_hover_text(&entry.name)
-                                    .clicked()
-                                {
-                                    selected = Some(entry.emoji.clone());
+                egui::ScrollArea::vertical().max_height(330.0).show_rows(
+                    ui,
+                    38.0,
+                    choices.len().div_ceil(8),
+                    |ui, rows| {
+                        for row in rows {
+                            ui.horizontal(|ui| {
+                                for entry in choices.iter().skip(row * 8).take(8) {
+                                    let image = self.reaction_textures.image(ui, entry, 30.0);
+                                    let response = ui
+                                        .add(egui::Button::image(image).frame(false))
+                                        .on_hover_text(&entry.name);
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            &entry.name,
+                                        )
+                                    });
+                                    if response.clicked() {
+                                        selected = Some(entry.emoji.clone());
+                                    }
                                 }
-                            }
-                        });
-                    });
+                            });
+                        }
+                    },
+                );
             });
         if let Some(emoji) = selected {
             self.set_reaction(&message, &emoji, true);
@@ -6779,9 +6809,9 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingSend, Phase, endpoint, media,
-        member_page_ids, normalize_channel, permanent_send_rejection, take_date_divider,
-        timestamp_parts, voice,
+        CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingReaction, PendingSend, Phase,
+        endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
+        take_date_divider, timestamp_parts, voice,
     };
     use crate::model::{
         Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
@@ -7202,16 +7232,43 @@ mod tests {
         assert!(!app.owner());
         assert!(app.can_leave_space());
         let space = app.selected_space.clone().unwrap();
+        app.spaces.retain(|entry| entry.id == space);
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
+        app.pending_reactions.insert(
+            ("message".into(), "👍".into()),
+            PendingReaction {
+                desired: true,
+                sent: true,
+            },
+        );
+        app.reaction_errors
+            .insert("message".into(), "failed".into());
         assert!(app.timeline.messages().next().is_some());
+        let old_generation = app.generation;
         app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
         assert!(!app.spaces.iter().any(|entry| entry.id == space));
         assert!(app.detail.is_none());
-        assert_eq!(app.selected_channel.as_deref(), Some("general"));
+        assert!(app.selected_space.is_none());
+        assert!(app.selected_channel.is_none());
         assert!(app.timeline.messages().next().is_none());
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
+        assert!(app.pending_reactions.is_empty());
+        assert!(app.reaction_errors.is_empty());
+        app.accept_navigation(
+            old_generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("old-private"), Ok(session()))),
+            }),
+        );
+        assert!(
+            app.selected_channel.is_none(),
+            "late old generation ignored"
+        );
+        assert!(app.timeline.messages().next().is_none());
         assert!(!app.can_leave_space());
     }
 

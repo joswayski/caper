@@ -134,9 +134,7 @@ impl Message {
         if let Some(revision) = &self.reaction_seq {
             sequence(revision)?;
         }
-        if self.reactions.iter().any(|reaction| {
-            reaction.emoji.is_empty() || reaction.author_ids.iter().any(String::is_empty)
-        }) {
+        if !valid_reactions(&self.reactions) {
             return Err("invalid message reactions".into());
         }
         Ok(())
@@ -183,6 +181,7 @@ pub struct Timeline {
     messages: BTreeMap<u64, Message>,
     ids: BTreeSet<String>,
     buffered: BTreeMap<u64, Message>,
+    unseen_reactions: BTreeMap<String, ReactionUpdate>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -199,6 +198,7 @@ impl Timeline {
         self.messages.clear();
         self.ids.clear();
         self.buffered.clear();
+        self.unseen_reactions.clear();
         for message in messages {
             self.merge(message)?;
         }
@@ -245,25 +245,46 @@ impl Timeline {
     }
 
     pub fn apply_reactions(&mut self, update: ReactionUpdate) -> Result<Apply, String> {
-        self.merge_reactions(&update)?;
-        self.apply_sequence(&update.seq)
+        if !self.merge_reactions(&update)? {
+            self.unseen_reactions.clear();
+            return Ok(Apply::Resync);
+        }
+        let applied = self.apply_sequence(&update.seq)?;
+        if applied == Apply::Resync {
+            self.unseen_reactions.clear();
+        }
+        Ok(applied)
     }
 
     /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
     pub fn merge_reaction_ack(&mut self, update: ReactionUpdate) -> Result<(), String> {
-        self.merge_reactions(&update)
+        if self.merge_reactions(&update)? {
+            Ok(())
+        } else {
+            self.unseen_reactions.clear();
+            Err("too many reactions for unloaded messages".into())
+        }
     }
 
-    fn merge_reactions(&mut self, update: &ReactionUpdate) -> Result<(), String> {
+    fn merge_reactions(&mut self, update: &ReactionUpdate) -> Result<bool, String> {
         let seq = sequence(&update.seq)?;
         if update.kind != "message.reactions" || update.schema_version != 1 {
             return Err("unsupported reaction update".into());
+        }
+        if update.channel_id.is_empty()
+            || update.message_id.is_empty()
+            || !valid_reactions(&update.reactions)
+        {
+            return Err("invalid reaction update".into());
         }
         if let Some(message) = self
             .messages
             .values_mut()
             .find(|item| item.id == update.message_id)
         {
+            if message.channel_id != update.channel_id {
+                return Err("reaction update is for another channel".into());
+            }
             let current = message
                 .reaction_seq
                 .as_deref()
@@ -274,8 +295,29 @@ impl Timeline {
                 message.reactions.clone_from(&update.reactions);
                 message.reaction_seq = Some(update.seq.clone());
             }
+        } else {
+            if self
+                .messages
+                .values()
+                .next()
+                .is_some_and(|message| message.channel_id != update.channel_id)
+            {
+                return Err("reaction update is for another channel".into());
+            }
+            if let Some(current) = self.unseen_reactions.get(&update.message_id) {
+                if seq > sequence(&current.seq)? {
+                    self.unseen_reactions
+                        .insert(update.message_id.clone(), update.clone());
+                }
+            } else {
+                if self.unseen_reactions.len() >= 256 {
+                    return Ok(false);
+                }
+                self.unseen_reactions
+                    .insert(update.message_id.clone(), update.clone());
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn merge_sent(&mut self, message: Message) -> Result<(), String> {
@@ -299,6 +341,22 @@ impl Timeline {
 
     fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        if let Some(update) = self.unseen_reactions.remove(&message.id) {
+            if update.channel_id != message.channel_id {
+                return Err("reaction update is for another channel".into());
+            }
+            let update_revision = sequence(&update.seq)?;
+            let message_revision = message
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if update_revision > message_revision {
+                message.reactions = update.reactions;
+                message.reaction_seq = Some(update.seq);
+            }
+        }
         let seq = sequence(&message.seq)?;
         if let Some(existing) = self
             .messages
@@ -327,6 +385,18 @@ impl Timeline {
         }
         Ok(())
     }
+}
+
+fn valid_reactions(reactions: &[Reaction]) -> bool {
+    let mut emojis = BTreeSet::new();
+    reactions.iter().all(|reaction| {
+        !reaction.emoji.is_empty()
+            && !reaction.author_ids.is_empty()
+            && emojis.insert(reaction.emoji.as_str())
+            && reaction.author_ids.iter().all(|author| !author.is_empty())
+            && reaction.author_ids.iter().collect::<BTreeSet<_>>().len()
+                == reaction.author_ids.len()
+    })
 }
 
 pub fn sequence(value: &str) -> Result<u64, String> {
@@ -498,5 +568,81 @@ mod tests {
             Some("8")
         );
         assert_eq!(timeline.messages().next().unwrap().reactions.len(), 1);
+    }
+
+    fn reaction_update(message_id: &str, seq: u64, author: &str) -> ReactionUpdate {
+        ReactionUpdate {
+            kind: "message.reactions".into(),
+            schema_version: 1,
+            channel_id: "channel".into(),
+            seq: seq.to_string(),
+            message_id: message_id.into(),
+            reactions: vec![Reaction {
+                emoji: "👍".into(),
+                author_ids: vec![author.into()],
+            }],
+        }
+    }
+
+    #[test]
+    fn reaction_arriving_before_older_page_is_overlaid() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("newer", 10)], "10").unwrap();
+        assert_eq!(
+            timeline
+                .apply_reactions(reaction_update("older", 11, "live"))
+                .unwrap(),
+            Apply::Applied
+        );
+        timeline.prepend(vec![message("older", 1)]).unwrap();
+        let older = timeline
+            .messages()
+            .find(|message| message.id == "older")
+            .unwrap();
+        assert_eq!(older.reaction_seq.as_deref(), Some("11"));
+        assert_eq!(older.reactions[0].author_ids, ["live"]);
+    }
+
+    #[test]
+    fn stale_older_page_does_not_erase_unseen_reaction() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("newer", 10)], "10").unwrap();
+        timeline
+            .merge_reaction_ack(reaction_update("older", 15, "live"))
+            .unwrap();
+        let mut stale = message("older", 1);
+        stale.reaction_seq = Some("12".into());
+        stale.reactions = vec![Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["stale".into()],
+        }];
+        timeline.prepend(vec![stale]).unwrap();
+        let older = timeline
+            .messages()
+            .find(|message| message.id == "older")
+            .unwrap();
+        assert_eq!(older.reaction_seq.as_deref(), Some("15"));
+        assert_eq!(older.reactions[0].author_ids, ["live"]);
+    }
+
+    #[test]
+    fn too_many_unseen_reactions_trigger_resync_and_clear_cache() {
+        let mut timeline = Timeline::default();
+        for seq in 1..=256 {
+            assert_eq!(
+                timeline
+                    .apply_reactions(reaction_update(&format!("message-{seq}"), seq, "author"))
+                    .unwrap(),
+                Apply::Applied
+            );
+        }
+        assert_eq!(
+            timeline
+                .apply_reactions(reaction_update("overflow", 257, "author"))
+                .unwrap(),
+            Apply::Resync
+        );
+        timeline.prepend(vec![message("message-1", 1)]).unwrap();
+        assert!(timeline.messages().next().unwrap().reactions.is_empty());
     }
 }

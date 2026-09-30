@@ -49,7 +49,7 @@ pub fn unicode_id(value: &str) -> String {
 pub struct Textures(BTreeMap<usize, egui::TextureHandle>);
 
 impl Textures {
-    pub fn image(&mut self, ui: &mut egui::Ui, entry: &Entry, size: f32) -> egui::Response {
+    pub fn image(&mut self, ui: &mut egui::Ui, entry: &Entry, size: f32) -> egui::Image<'static> {
         let texture = self.0.entry(entry.sheet).or_insert_with(|| {
             let decoded = image::load_from_memory(sheet(entry.sheet))
                 .expect("embedded emoji sheet is valid")
@@ -68,11 +68,7 @@ impl Textures {
                 (entry.y + 64) as f32 / 1024.0,
             ),
         );
-        ui.add(
-            egui::Image::new((texture.id(), egui::vec2(size, size)))
-                .uv(uv)
-                .sense(egui::Sense::click()),
-        )
+        egui::Image::new((texture.id(), egui::vec2(size, size))).uv(uv)
     }
 }
 
