@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, Hash, Pause, Play, SkipForward, SmilePlus } from "lucide-react";
 import { attachLiveMotion } from "./liveMotion";
+import { createDemoTiming } from "./demoTiming";
 import "../pages/call.css";
 import "../spaces/spaces.css";
 import "./live-window.css";
@@ -74,17 +75,21 @@ export default function LiveWindow() {
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
-  const [{ phase, reactions }, setDemo] = useState<{ phase: number; reactions: Record<string, boolean> }>({ phase: 3, reactions: {} });
+  const [{ phase, cycle, reactions }, setDemo] = useState<{ phase: number; cycle: number; reactions: Record<string, boolean> }>({ phase: 3, cycle: 0, reactions: {} });
   const [paused, setPaused] = useState(false);
   const [interacting, setInteracting] = useState(false);
   const [focused, setFocused] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [rosterOpen, setRosterOpen] = useState(true);
   const [picker, setPicker] = useState<number>();
+  // Stable server/first-client render; randomize only once the local demo is
+  // ready, then once per loop, never on ordinary React renders.
+  const timing = useMemo(() => createDemoTiming(people.map((person) => person.speech), messages.map((message) => message.at), ready ? Math.random : () => .5), [ready, cycle]);
   const advance = useCallback((seconds: number) => {
     setDemo((current) => {
-      const phase = (current.phase + seconds) % cycleLength;
-      return { phase, reactions: phase < current.phase ? {} : current.reactions };
+      const elapsed = current.phase + seconds;
+      const loops = Math.floor(elapsed / cycleLength);
+      return { phase: elapsed % cycleLength, cycle: current.cycle + loops, reactions: loops > 0 ? {} : current.reactions };
     });
   }, []);
 
@@ -112,22 +117,27 @@ export default function LiveWindow() {
 
   useEffect(() => {
     if (paused || interacting || focused || reducedMotion || picker !== undefined) return;
-    // Speaking windows, message bursts, typing and arrivals overlap on this
-    // clock. Nobody waits for the previous person's turn to finish.
-    const timer = window.setInterval(() => advance(.25), 250);
+    // Sample elapsed time rather than snapping every effect to a shared beat.
+    let previous = performance.now();
+    const timer = window.setInterval(() => {
+      const now = performance.now();
+      advance((now - previous) / 1000);
+      previous = now;
+    }, 75);
     return () => window.clearInterval(timer);
   }, [paused, interacting, focused, reducedMotion, picker, advance]);
 
   const present = people.map((person, index) => {
     const last = activity.filter((event) => event.person === index && event.at <= phase).at(-1);
     const voice = last?.voice ?? index < 2;
-    return { ...person, online: last?.online ?? index < 3, voice, speaking: voice && person.speech.some(([start, end]) => phase >= start && phase < end) };
+    return { ...person, online: last?.online ?? index < 3, voice, speaking: voice && timing.speech[index].some(([start, end]) => phase >= start && phase < end) };
   });
   const onlinePeople = present.filter((person) => person.online);
   const voicePeople = present.filter((person) => person.voice);
   const latestActivity = activity.filter((event) => event.at <= phase).at(-1)!;
-  const visibleMessages = messages.filter((message) => message.at <= phase).slice(-3);
-  const typingPeople = [...new Set(messages.filter((message) => message.at > phase && message.at <= phase + 3.5 && present[message.person].online).map((message) => people[message.person].name))];
+  const timedMessages = messages.map((message, index) => ({ ...message, ...timing.messages[index] }));
+  const visibleMessages = timedMessages.filter((message) => message.at <= phase).slice(-3);
+  const typingPeople = [...new Set(timedMessages.filter((message) => message.at > phase && message.typing <= phase && present[message.person].online).map((message) => people[message.person].name))];
   const toggle = (key: string) => setDemo((current) => ({ ...current, reactions: { ...current.reactions, [key]: !current.reactions[key] } }));
 
   return (
@@ -189,7 +199,7 @@ export default function LiveWindow() {
                           // Simulated readers react after the message appears,
                           // never bundled with its first frame. Viewer clicks
                           // still take effect immediately.
-                          const count = (index === message.emoji ? Math.min(4, Math.floor((phase - message.at) / (1.5 + message.person % 3 * .75))) : 0) + Number(mine);
+                          const count = (index === message.emoji ? message.reactions.filter((at) => at <= phase).length : 0) + Number(mine);
                           return count > 0 && <button type="button" key={item.code} aria-pressed={mine} aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}${mine ? ", including you" : ""}`} title={mine ? "Remove your reaction" : "Add your reaction"} onClick={() => toggle(key)}><img src={`/images/demo-emoji/${item.code}.svg`} alt="" /><span>{count}</span></button>;
                         })}
                         <button type="button" className="sim-add-reaction" data-picker-for={message.at} aria-label={`Add reaction to ${people[message.person].name}'s message`} aria-expanded={picker === message.at} onClick={() => setPicker(picker === message.at ? undefined : message.at)}><SmilePlus aria-hidden="true" /></button>

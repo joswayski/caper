@@ -2,12 +2,19 @@
 // Run against local Vite: node scripts/test-home-demo.mjs http://localhost:30701
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const origin = new URL(process.argv[2] ?? 'http://localhost:5174');
 assert.ok(['localhost', '127.0.0.1'].includes(origin.hostname), 'Local development only');
 const session = `home-${process.pid}`;
+// Pin only this browser fixture; production draws fresh independent timings.
+const fixture = mkdtempSync(join(tmpdir(), 'caper-demo-'));
+const initScript = join(fixture, 'timing.js');
+writeFileSync(initScript, 'Math.random = () => 0.5;');
 function browser(...args) {
-  const result = JSON.parse(execFileSync('agent-browser', ['--session', session, ...args, '--json'], { encoding: 'utf8', timeout: 60000 }));
+  const result = JSON.parse(execFileSync('agent-browser', ['--session', session, '--init-script', initScript, ...args, '--json'], { encoding: 'utf8', timeout: 60000 }));
   assert.ok(result.success, result.error);
   return result.data;
 }
@@ -157,4 +164,5 @@ try {
   console.log('PASS: signed-in join bypasses login; incomplete accounts reach profile setup (mocked accounts)');
 } finally {
   browser('close');
+  rmSync(fixture, { recursive: true, force: true });
 }
