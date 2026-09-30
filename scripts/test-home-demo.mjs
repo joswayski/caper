@@ -16,6 +16,7 @@ const wait = code => browser('wait', '--fn', `Boolean(${code})`);
 
 try {
   browser('open', origin.href);
+  browser('network', 'route', '**/api/account/me', '--body', 'null');
   browser('set', 'viewport', '1280', '800', '2');
   browser('set', 'media', 'dark', 'reduced-motion');
   browser('reload');
@@ -24,7 +25,13 @@ try {
   browser('wait', '2500');
   assert.equal(evaluate('return document.querySelector(".sim-messages").textContent'), before, 'Reduced motion freezes the script');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-activator")).placeItems'), 'center');
-  assert.equal(evaluate('return document.querySelector(".live-activator").getAttribute("href")'), '/login');
+  assert.equal(evaluate('return document.querySelector(".live-activator").getAttribute("href")'), '/spaces');
+
+  // Production surfaces from shared/design.css; don't derive expectations from the demo.
+  assert.deepEqual(evaluate('return [".sim-sidebar", ".sim-chat", ".sim-composer"].map(s => getComputedStyle(document.querySelector(s)).backgroundColor)'), ['rgb(21, 28, 30)', 'rgb(25, 33, 35)', 'rgb(40, 49, 51)']);
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), '30%');
+  assert.equal(evaluate('return document.querySelector(".sim-composer").getAttribute("href")'), '/spaces');
+  assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".sim-members")).display'), 'none');
 
   const chip = '.sim-message:last-of-type .sim-reactions button[aria-pressed]';
   const count = evaluate(`return Number(document.querySelector('${chip} span').textContent)`);
@@ -53,7 +60,33 @@ try {
   browser('click', '.live-invite');
   wait('document.querySelector("#email")');
   assert.equal(evaluate('return location.pathname'), '/login');
+  const login = evaluate('return document.querySelector("main").textContent');
+  assert.ok(login.includes('We’ll send a code to your email.'));
+  assert.ok(!/WELCOME TO CAPER|We only send a code when you ask|No password needed/.test(login));
+  browser('set', 'viewport', '390', '844', '2');
+  browser('open', origin.href);
+  wait('document.querySelector(".live-stage[data-ready]")');
+  evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+  const gap = evaluate('return document.querySelector(".live-scene").getBoundingClientRect().top - document.querySelector(".hero-lede").getBoundingClientRect().bottom');
+  assert.ok(gap >= 40, `Mobile demo needs clearance above its projected edge; got ${gap}px`);
+  // Local account fixtures: a returning member must never visit the login route.
+  browser('network', 'unroute', '**/api/account/me');
+  browser('network', 'route', '**/api/account/me', '--body', JSON.stringify({ id: 'demo-test', username: 'demo-test', displayName: 'Demo test' }));
+  browser('network', 'route', '**/api/spaces', '--body', JSON.stringify({ spaces: [], limits: { ownedSpaces: 10, totalSpaces: 10, channelsPerSpace: 10 } }));
+  browser('network', 'route', '**/login', '--body', '<h1>Unexpected login navigation</h1>');
+  browser('click', '.live-invite');
+  wait('document.querySelector(".spaces-empty")');
+  assert.equal(evaluate('return location.pathname'), '/spaces');
+  assert.equal(evaluate('return !!document.querySelector("#email")'), false);
+  browser('network', 'unroute', '**/api/account/me');
+  browser('network', 'route', '**/api/account/me', '--body', JSON.stringify({ id: 'demo-test', username: null, displayName: null }));
+  browser('open', origin.href);
+  wait('document.querySelector(".live-stage[data-ready]")');
+  browser('click', '.live-invite');
+  wait('location.pathname === "/profile"');
   console.log('PASS: centered CTA, reduced motion, 3D reaction hit testing, count toggles, picker/Escape, clipboard failure, no chat/media requests, email login');
+  console.log('PASS: simplified login copy and mobile demo clearance');
+  console.log('PASS: signed-in join bypasses login; incomplete accounts reach profile setup (mocked accounts)');
 } finally {
   browser('close');
 }

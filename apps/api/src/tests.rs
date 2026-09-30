@@ -359,6 +359,53 @@ async fn profile_format_validation_happens_in_the_app_before_database_access() {
 }
 
 #[tokio::test]
+async fn profile_rejects_reserved_names_before_database_access() {
+    let (mut state, _) = state();
+    state.reserved_usernames = accounts::ReservedUsernames::from_env(
+        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", " Trust,team ")]),
+    );
+    let router = app(state);
+    for username in [
+        " CaPeR ",
+        "CAPERS",
+        "ADMIN",
+        "admins",
+        "feedback",
+        "SUPPORT",
+        "mod",
+        "mods",
+        "SECURITY",
+        "staff",
+        "JOSE",
+        "caperchat",
+        "aaron",
+        "joswayski",
+        "TRUST",
+        "team",
+    ] {
+        let (status, body) = call(
+            router.clone(),
+            "POST",
+            "/api/account/profile",
+            None,
+            json!({"username":username,"displayName":"Someone"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{username}");
+        assert_eq!(body["error"], "username unavailable");
+    }
+    let (status, _) = call(
+        router,
+        "POST",
+        "/api/account/profile",
+        None,
+        json!({"username":"supporter","displayName":"Someone"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn deployed_auth_policy_keeps_health_public_and_fails_closed() {
     let (mut state, _) = state();
     state.auth = auth::AuthVerifier::new();

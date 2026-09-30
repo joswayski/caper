@@ -738,6 +738,7 @@ pub struct AppState {
     expiry_lock: Arc<Mutex<()>>,
     auth: auth::AuthVerifier,
     debug_users: accounts::DebugUsers,
+    reserved_usernames: accounts::ReservedUsernames,
     notifications_webhook: notifications::NotificationsWebhook,
 }
 impl AppState {
@@ -778,6 +779,7 @@ impl AppState {
             expiry_lock: Arc::new(Mutex::new(())),
             auth,
             debug_users: accounts::DebugUsers::default(),
+            reserved_usernames: accounts::ReservedUsernames::default(),
             notifications_webhook: notifications::NotificationsWebhook::from_env(
                 &RuntimeEnvironment::default(),
             ),
@@ -808,6 +810,7 @@ impl AppState {
     ) -> Result<(), String> {
         self.auth = auth::AuthVerifier::from_env(environment).await?;
         self.debug_users = accounts::DebugUsers::from_env(environment);
+        self.reserved_usernames = accounts::ReservedUsernames::from_env(environment);
         self.notifications_webhook = notifications::NotificationsWebhook::from_env(environment);
         Ok(())
     }
@@ -1326,6 +1329,9 @@ async fn account_profile(
         || display_name.chars().any(char::is_control)
     {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid profile"));
+    }
+    if state.reserved_usernames.contains(&username) {
+        return Err(ApiError::new(StatusCode::CONFLICT, "username unavailable"));
     }
     let pool = state.database.as_ref().ok_or_else(|| {
         ApiError::new(
