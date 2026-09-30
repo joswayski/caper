@@ -56,6 +56,8 @@ pub struct Member {
 pub struct Spaces {
     pub spaces: Vec<Space>,
     #[serde(default)]
+    pub invitations: Vec<Space>,
+    #[serde(default)]
     pub limits: Option<SpaceLimits>,
 }
 
@@ -242,6 +244,16 @@ pub fn sequence(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spaces_default_missing_invitations_to_empty() {
+        let spaces: Spaces = serde_json::from_value(serde_json::json!({
+            "spaces": [],
+            "limits": null
+        }))
+        .unwrap();
+        assert!(spaces.invitations.is_empty());
+    }
 
     fn message(id: &str, seq: u64) -> Message {
         Message {

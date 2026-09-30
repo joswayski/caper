@@ -5,6 +5,14 @@ export interface Account {
   debugEnabled?: boolean;
 }
 
+export function normalizeUsername(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
+}
+
+export function usernameError(value: string) {
+  if (!/^[a-z0-9_]{3,32}$/.test(value)) return "Use 3–32 lowercase letters, numbers, or underscores.";
+}
+
 export class AccountApiError extends Error {
   readonly status: number;
   readonly attemptsRemaining?: number;

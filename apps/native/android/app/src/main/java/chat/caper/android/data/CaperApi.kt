@@ -97,6 +97,16 @@ class CaperApi(
     suspend fun addSpaceMember(token: String, space: String, username: String): Member = post(
         "/api/spaces/${space.pathId()}/members", buildJsonObject { put("username", username.trim()) }, token,
     )
+    suspend fun spaceInvitations(token: String, space: String): MemberList =
+        get("/api/spaces/${space.pathId()}/invitations", token)
+    suspend fun cancelSpaceInvitation(token: String, space: String, user: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/invitations/${user.pathId()}", "DELETE", token)
+    }
+    suspend fun acceptSpaceInvitation(token: String, space: String): Space =
+        post("/api/spaces/${space.pathId()}/invitation", token = token)
+    suspend fun declineSpaceInvitation(token: String, space: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/invitation", "DELETE", token)
+    }
     suspend fun removeSpaceMember(token: String, space: String, member: String) {
         request<Unit>("/api/spaces/${space.pathId()}/members/${member.pathId()}", "DELETE", token)
     }

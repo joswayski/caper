@@ -1318,10 +1318,7 @@ async fn account_profile(
 ) -> Result<Json<Value>, ApiError> {
     let username = input.username.trim().to_ascii_lowercase();
     let display_name = input.display_name.trim();
-    if !(3..=32).contains(&username.len())
-        || !username
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    if !accounts::valid_username(&username)
         || !(1..=64).contains(&display_name.chars().count())
         || display_name.chars().any(char::is_control)
     {

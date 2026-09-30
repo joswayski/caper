@@ -36,7 +36,19 @@ public struct SpaceLimits: Codable, Equatable, Sendable {
 
 public struct SpacesResponse: Codable, Sendable {
     public let spaces: [Space]
+    public let invitations: [Space]
     public let limits: SpaceLimits
+
+    private enum CodingKeys: String, CodingKey { case spaces, invitations, limits }
+    public init(spaces: [Space], invitations: [Space] = [], limits: SpaceLimits) {
+        self.spaces = spaces; self.invitations = invitations; self.limits = limits
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        spaces = try values.decode([Space].self, forKey: .spaces)
+        invitations = try values.decodeIfPresent([Space].self, forKey: .invitations) ?? []
+        limits = try values.decode(SpaceLimits.self, forKey: .limits)
+    }
 }
 
 public struct SpaceDetail: Codable, Sendable {
@@ -53,6 +65,16 @@ public struct PresenceMember: Codable, Equatable, Sendable {
 }
 
 public enum WorkspaceValidation {
+    public static func normalizeUsername(_ value: String) -> String {
+        String(value.lowercased().filter { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "_") }.prefix(32))
+    }
+
+    public static func usernameError(_ value: String) -> String? {
+        (3...32).contains(value.utf8.count) && value.utf8.allSatisfy({
+            (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+        }) ? nil : "Username must be 3–32 lowercase letters, numbers, or underscores."
+    }
+
     public static func spaceNameError(_ value: String) -> String? {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Enter a space name." }

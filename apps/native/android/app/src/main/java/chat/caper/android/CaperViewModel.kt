@@ -62,7 +62,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (requestAccountGeneration != accountGeneration) return@launch
                 mutable.value = AppUiState(
                     screen = SessionScreen.Home, account = account,
-                    spaces = list.spaces, limits = list.limits,
+                    spaces = list.spaces, invitations = list.invitations, limits = list.limits,
                 )
                 list.spaces.firstOrNull()?.let { selectSpace(it.id) }
             } catch (error: Throwable) {
@@ -132,7 +132,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null, openError = null)
+        mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList())
         viewModelScope.launch {
             try {
                 val detail = api.space(requireAccountToken(), id)
@@ -140,9 +140,22 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
                 detail.channels.firstOrNull()?.let(::selectChannel)
             } catch (error: Throwable) {
-                if (request == generation) { retryOpen = { selectSpace(id) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+                if (request == generation) {
+                    if (error is ApiException && error.status == 404) removeUnavailableSpace(id)
+                    else { retryOpen = { selectSpace(id) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+                }
             }
         }
+    }
+
+    private fun removeUnavailableSpace(id: String) {
+        VoiceCallService.stopIfSpace(getApplication(), id)
+        ++spaceAccessGeneration
+        closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(
+            spaces = mutable.value.spaces.filter { it.id != id }, selectedSpace = null,
+            busy = false, openError = null, error = "This space is no longer available.",
+        )
     }
 
     private var retryOpen: (() -> Unit)? = null
@@ -560,7 +573,36 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val context = AdminMutationContext(request, detail.space.id)
         val member = api.addSpaceMember(requireAccountToken(), detail.space.id, username)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id } + member))
+        mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
+    }
+    fun loadSpaceInvitations() = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        val invitations = api.spaceInvitations(requireAccountToken(), detail.space.id).members
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+            mutable.value = mutable.value.copy(pendingSpaceInvitations = invitations)
+    }
+    fun cancelSpaceInvitation(member: Member) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        api.cancelSpaceInvitation(requireAccountToken(), detail.space.id, member.id)
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+            mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id })
+    }
+    fun acceptInvitation(invitation: Space, done: () -> Unit = {}) = launchAction { request ->
+        val accepted = api.acceptSpaceInvitation(requireAccountToken(), invitation.id)
+        if (request != accountGeneration || mutable.value.invitations.none { it.id == invitation.id }) return@launchAction
+        mutable.value = mutable.value.copy(
+            invitations = mutable.value.invitations.filter { it.id != invitation.id },
+            spaces = mutable.value.spaces.filter { it.id != accepted.id } + accepted,
+        )
+        done(); selectSpace(accepted.id)
+    }
+    fun declineInvitation(invitation: Space, done: () -> Unit = {}) = launchAction { request ->
+        api.declineSpaceInvitation(requireAccountToken(), invitation.id)
+        if (request != accountGeneration || mutable.value.invitations.none { it.id == invitation.id }) return@launchAction
+        mutable.value = mutable.value.copy(invitations = mutable.value.invitations.filter { it.id != invitation.id })
+        done()
     }
     fun removeSpaceMember(member: Member) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)

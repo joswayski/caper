@@ -7,6 +7,8 @@ public final class AppModel {
     public var phase: Phase = .loading
     public var account: Account?
     public var spaces: [Space] = []
+    public var invitations: [Space] = []
+    public var pendingMembers: [Member] = []
     public var detail: SpaceDetail?
     public var selectedSpaceID: String?
     public var selectedChannelID: String?
@@ -154,7 +156,7 @@ public final class AppModel {
         voiceJoinGeneration += 1
         clearNavigationCache()
         voice.leaveImmediately()
-        account = nil; spaces = []; detail = nil
+        account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
@@ -176,6 +178,7 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.limits = response.limits
             self.spaces = response.spaces
+            self.invitations = response.invitations
             if let selected = self.spaces.first(where: { $0.id == self.selectedSpaceID })
                 ?? self.spaces.first(where: { $0.id == self.preferredInitialSpaceID })
                 ?? self.spaces.first {
@@ -319,7 +322,13 @@ public final class AppModel {
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
         } catch {
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
-            navigationError = error.localizedDescription
+            let missingSpace = (error as? APIError)?.status == 404 && !spaceVerified
+            navigationError = missingSpace ? "This space is no longer available." : error.localizedDescription
+            if missingSpace {
+                spaces.removeAll { $0.id == space.id }
+                invitations.removeAll { $0.id == space.id }
+                invalidateNavigation(spaceID: space.id)
+            }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status),
                selectedSpaceID == space.id, !spaceVerified || channelID == nil || selectedChannelID == channelID {
                 if !spaceVerified { detail = nil; selectedSpaceID = nil }
@@ -429,13 +438,45 @@ public final class AppModel {
     }
 
     public func addSpaceMember(username: String) async throws {
-        guard var detail else { return }
-        clearNavigationCache()
+        guard let detail else { return }
+        if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         let attempt = generation
         let member = try await api.addSpaceMember(spaceID: detail.space.id, username: username)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id } + [member])
-        replace(detail: detail)
+        pendingMembers.removeAll { $0.id == member.id }
+        pendingMembers.append(member)
+    }
+
+    public func loadSpaceInvitations() async throws {
+        guard let id = detail?.space.id, isOwner else { pendingMembers = []; return }
+        let attempt = generation
+        let members = try await api.spaceInvitations(spaceID: id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        pendingMembers = members
+    }
+
+    public func cancelSpaceInvitation(_ member: Member) async throws {
+        guard let id = detail?.space.id else { return }
+        let attempt = generation
+        try await api.cancelSpaceInvitation(spaceID: id, userID: member.id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        pendingMembers.removeAll { $0.id == member.id }
+    }
+
+    public func acceptInvitation(_ invitation: Space) async throws {
+        let attempt = generation
+        let accepted = try await api.acceptSpaceInvitation(spaceID: invitation.id)
+        guard generation == attempt else { throw CancellationError() }
+        invitations.removeAll { $0.id == invitation.id }
+        spaces.removeAll { $0.id == accepted.id }; spaces.append(accepted)
+        await select(space: accepted)
+    }
+
+    public func declineInvitation(_ invitation: Space) async throws {
+        let attempt = generation
+        try await api.declineSpaceInvitation(spaceID: invitation.id)
+        guard generation == attempt else { throw CancellationError() }
+        invitations.removeAll { $0.id == invitation.id }
     }
 
     public func removeSpaceMember(_ member: Member) async throws {
@@ -502,6 +543,7 @@ public final class AppModel {
 
     public func addChannelMember(_ channel: Channel, username: String) async throws -> Member {
         guard let spaceID = detail?.space.id else { throw APIError(status: 400, message: "No space is selected.") }
+        if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         clearNavigationCache()
         let attempt = generation
         let member = try await api.addChannelMember(spaceID: spaceID, channelID: channel.id, username: username)

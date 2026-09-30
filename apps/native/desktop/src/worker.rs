@@ -154,6 +154,19 @@ pub enum AdminOperation {
         space: String,
         channel: Option<String>,
     },
+    LoadInvitations {
+        space: String,
+    },
+    CancelInvitation {
+        space: String,
+        user: String,
+    },
+    AcceptInvitation {
+        space: String,
+    },
+    DeclineInvitation {
+        space: String,
+    },
     AddMember {
         space: String,
         channel: Option<String>,
@@ -182,10 +195,15 @@ pub enum AdminResult {
         channel: Option<String>,
         member: Member,
     },
+    InvitationCreated(Member),
     MemberRemoved {
         channel: Option<String>,
         member: String,
     },
+    Invitations(Vec<Member>),
+    InvitationCancelled(String),
+    InvitationAccepted(Space),
+    InvitationDeclined(String),
 }
 
 pub enum Event {
@@ -326,8 +344,12 @@ fn prepare_navigation(
         .map(|space| api.space(token.unwrap_or_default(), space))
         .transpose()
         .map_err(|error| {
+            let missing = error.status == Some(reqwest::StatusCode::NOT_FOUND);
             let mut error = LoadError::from(error);
             error.space_access_denied = error.access_denied;
+            if missing {
+                error.message = "This space is no longer available.".into();
+            }
             error
         })?;
     if let Some(detail) = &detail
@@ -436,8 +458,12 @@ fn prepare_navigation_read(
         .map(|space| api.space(token.unwrap_or_default(), space))
         .transpose()
         .map_err(|error| {
+            let missing = error.status == Some(reqwest::StatusCode::NOT_FOUND);
             let mut error = LoadError::from(error);
             error.space_access_denied = error.access_denied;
+            if missing {
+                error.message = "This space is no longer available.".into();
+            }
             error
         })?;
     let selected = detail.as_ref().and_then(|detail| match channel {
@@ -834,14 +860,34 @@ fn execute_admin(
             channel: channel.clone(),
             members: api.members(token, &space, channel.as_deref())?.members,
         },
+        AdminOperation::LoadInvitations { space } => {
+            AdminResult::Invitations(api.invitations(token, &space)?.members)
+        }
+        AdminOperation::CancelInvitation { space, user } => {
+            api.cancel_invitation(token, &space, &user)?;
+            AdminResult::InvitationCancelled(user)
+        }
+        AdminOperation::AcceptInvitation { space } => {
+            AdminResult::InvitationAccepted(api.accept_invitation(token, &space)?)
+        }
+        AdminOperation::DeclineInvitation { space } => {
+            api.decline_invitation(token, &space)?;
+            AdminResult::InvitationDeclined(space)
+        }
         AdminOperation::AddMember {
             space,
             channel,
             username,
-        } => AdminResult::MemberAdded {
-            channel: channel.clone(),
-            member: api.add_member(token, &space, channel.as_deref(), &username)?,
-        },
+        } => {
+            let member = api.add_member(token, &space, channel.as_deref(), &username)?;
+            match channel {
+                Some(channel) => AdminResult::MemberAdded {
+                    channel: Some(channel),
+                    member,
+                },
+                None => AdminResult::InvitationCreated(member),
+            }
+        }
         AdminOperation::RemoveMember {
             space,
             channel,

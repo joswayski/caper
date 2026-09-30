@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { AccountApiError, updateProfile, type Account } from "./client";
+import { AccountApiError, normalizeUsername, updateProfile, type Account } from "./client";
 
 export default function ProfileForm({ account, onSaved }: { account: Account; onSaved: (account: Account) => void | Promise<void> }) {
   const [username, setUsername] = useState(account.username ?? "");
@@ -24,7 +24,7 @@ export default function ProfileForm({ account, onSaved }: { account: Account; on
 
   return <form onSubmit={(event) => void save(event)}>
     <label className="my-2 mt-6 block text-[.9rem] font-bold" htmlFor="username">Username</label>
-    <input className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" id="username" name="username" value={username} onChange={(event) => setUsername(event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32))} autoComplete="username" minLength={3} maxLength={32} pattern="[a-z0-9_]{3,32}" required />
+    <input className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" id="username" name="username" value={username} onChange={(event) => setUsername(normalizeUsername(event.target.value))} autoComplete="username" minLength={3} maxLength={32} pattern="[a-z0-9_]{3,32}" required />
     <small className="mt-2.5 block text-[.8rem] leading-[1.5] text-content-muted">3-32 lowercase letters, numbers, or underscores.</small>
     <label className="my-2 mt-6 block text-[.9rem] font-bold" htmlFor="display-name">Display name</label>
     <input className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" id="display-name" name="displayName" value={displayName} onChange={(event) => setDisplayName(event.target.value.slice(0, 64))} autoComplete="name" maxLength={64} required />

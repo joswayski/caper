@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
 
 private sealed interface Overlay {
     data object CreateSpace : Overlay
+    data class Invitation(val space: Space) : Overlay
     data object ManageSpace : Overlay
     data object CreateChannel : Overlay
     data class ManageChannel(val channel: Channel) : Overlay
@@ -137,6 +138,9 @@ internal data class VoiceJoinIntent(
 
     when (val shown = overlay) {
         Overlay.CreateSpace -> CreateSpaceDialog(state.busy, { overlay = null }) { viewModel.createSpace(it) { overlay = null } }
+        is Overlay.Invitation -> InvitationDialog(shown.space, state.busy, state.error, { overlay = null },
+            { viewModel.acceptInvitation(shown.space) { overlay = null } },
+            { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, { overlay = null }) { name, private ->
             // Web opens a new private channel's Overview so people can be added.
@@ -258,6 +262,14 @@ internal data class VoiceJoinIntent(
                     border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
                 ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
             }
+        }
+        state.invitations.forEach { invitation ->
+            Surface(
+                Modifier.size(40.dp).clickable { show(Overlay.Invitation(invitation)) }.semantics {
+                    contentDescription = "Invitation to ${invitation.name}"
+                },
+                color = Surface, shape = MaterialTheme.shapes.medium, border = BorderStroke(1.dp, TerracottaBorder),
+            ) { Box(contentAlignment = Alignment.Center) { Text("!", color = TerracottaBright, fontWeight = FontWeight.Black) } }
         }
         val limits = state.limits
         val canCreateSpace = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
@@ -987,15 +999,49 @@ internal fun counterTone(count: Int): Color = when {
 @Composable private fun ManageSpaceDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
     var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
     var confirmingDelete by remember { mutableStateOf(false) }
+    LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations() }
     CaperDialog("Manage space", close, wide = true, description = "Only the owner can change this space and its membership.") {
+        state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         OutlinedTextField(name, { name = it.codePointTake(80) }, label = { Text("Space name") }, placeholder = { Text("Studio") }, modifier = Modifier.fillMaxWidth())
         Button({ viewModel.renameSpace(name) }, enabled = !state.busy && name.isNotBlank() && name.trim() != detail.space.name, shape = MaterialTheme.shapes.small) { Text("Save name") }
         HorizontalDivider(color = Border)
-        MemberManager(detail.members, state.busy, viewModel::addSpaceMember, viewModel::removeSpaceMember)
+        InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
+            viewModel::removeSpaceMember, viewModel::cancelSpaceInvitation)
         HorizontalDivider(color = Border)
         DangerZone("Delete space", "Delete this space and all its channels for every member.", state.busy) { confirmingDelete = true }
     }
     if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }, warn = true) { viewModel.deleteCurrentSpace { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
+}
+
+@Composable private fun InvitationDialog(space: Space, busy: Boolean, error: String?, close: () -> Unit, accept: () -> Unit, decline: () -> Unit) {
+    CaperDialog("Invitation to ${space.name}", close) {
+        Text("Accept this invitation to access ${space.name}'s channels and conversations.", color = TextMuted)
+        error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            OutlinedButton(decline, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Decline") }
+            Spacer(Modifier.width(8.dp))
+            Button(accept, enabled = !busy, shape = MaterialTheme.shapes.small) { Text(if (busy) "Saving…" else "Accept") }
+        }
+    }
+}
+
+@Composable private fun InviteManager(
+    members: List<Member>, pending: List<Member>, busy: Boolean, add: (String) -> Unit,
+    remove: (Member) -> Unit, cancel: (Member) -> Unit,
+) {
+    Text("Invite", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    MemberManager(members, busy, add, remove, heading = "Members", action = "Invite")
+    Text("Pending invitations", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    if (pending.isEmpty()) Text("No pending invitations.", color = TextMuted, fontSize = 11.sp)
+    pending.forEach { member ->
+        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(member.displayName, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("@${member.username}", color = TextMuted, fontSize = 10.sp)
+            }
+            TextButton({ cancel(member) }, enabled = !busy) { Text("Cancel", color = ErrorText) }
+        }
+    }
 }
 
 @Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {
@@ -1025,17 +1071,17 @@ internal fun counterTone(count: Int): Color = when {
 }
 
 /** Web's MemberManager: exact-username add, then "@username · Owner" rows. */
-@Composable private fun MemberManager(members: List<Member>, busy: Boolean, add: (String) -> Unit, remove: (Member) -> Unit) {
+@Composable private fun MemberManager(members: List<Member>, busy: Boolean, add: (String) -> Unit, remove: (Member) -> Unit, heading: String = "Members", action: String = "Add") {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Members", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Text(heading, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
         Spacer(Modifier.width(8.dp))
-        Button({ if (username.isEmpty()) error = "Enter an exact username." else { error = null; add(username); username = "" } }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Add") }
+        Button({ if (!usernameValid(username)) error = "Use 3–32 lowercase letters, numbers, or underscores." else { error = null; add(username); username = "" } }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text(action) }
     }
     error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
     members.forEach { member ->
@@ -1125,8 +1171,9 @@ internal fun channelNameError(name: String): String? = when {
 }
 
 private fun normalizeUsername(value: String) = value.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(32)
+internal fun usernameValid(username: String) = Regex("^[a-z0-9_]{3,32}$").matches(username)
 internal fun profileValid(username: String, displayName: String) =
-    Regex("^[a-z0-9_]{3,32}$").matches(username) && displayName.isNotBlank() &&
+    usernameValid(username) && displayName.isNotBlank() &&
         displayName.codePointCount(0, displayName.length) <= 64 && displayName.none { it.isISOControl() }
 private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\\s+"), "-").filter { it in 'a'..'z' || it == '-' }.replace(Regex("-+"), "-").removePrefix("-").take(80)
 private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))

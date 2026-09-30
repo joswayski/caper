@@ -40,6 +40,7 @@ function initialState() {
   }))]));
   return {
     spaces: [{ space, channels, members: clone(members) }], messages,
+    invitations: new Map(),
     grants: new Map([[ids.private, [ids.owner, ids.member]]]), failures: [], challenges: new Map(),
     account, chatSessions: new Map(), sendKeys: new Map(), typingRevision: 0,
     media: new Map([[ids.design, { type: 'snapshot', revision: 1, participants: [
@@ -63,7 +64,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   let state = initialState();
   const sockets = new Set();
   const identity = (request) => request.headers.authorization === 'Bearer fixture-owner-token'
-    || /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? '') ? state.account : undefined;
+    || /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? '') ? state.account
+    : request.headers.authorization === 'Bearer fixture-member-token' ? members[1] : undefined;
   const channelFor = (id) => id === ids.demo ? demoChannel
     : state.spaces.flatMap((detail) => detail.channels).find((channel) => channel.id === id);
   const spaceFor = (id) => id === ids.demoSpace ? demoSpace : state.spaces.find((detail) => detail.space.id === id)?.space;
@@ -131,7 +133,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         return reject(response, failure.status, failure.error ?? 'TEST FIXTURE: requested failure.');
       }
       const user = identity(request);
-      if (path === '/api/account/me') return user ? json(response, 200, state.account) : reject(response, 401, 'Sign in required.');
+      if (path === '/api/account/me') return user ? json(response, 200, user) : reject(response, 401, 'Sign in required.');
       if (path === '/api/auth/email/request' && method === 'POST') {
         if (!String(body.email ?? '').includes('@')) return reject(response, 400, 'Enter a valid email address.');
         const challengeId = randomUUID(); state.challenges.set(challengeId, 3);
@@ -200,12 +202,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const available = before !== null ? messages.filter((message) => BigInt(message.seq) < BigInt(before)) : messages;
         return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), cursor: messages.at(-1)?.seq ?? '0', hasMore: available.length > 50 });
       }
-      const spacePath = /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members)(?:\/([^/]+))?)?$/.exec(path);
+      const spacePath = /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members|invitations|invitation)(?:\/([^/]+))?)?$/.exec(path);
       if (spacePath) {
         if (!user) return reject(response, 401, 'Sign in required.');
         const [, spaceId, channelId, section, memberId] = spacePath;
         if (!spaceId) {
-          if (method === 'GET') return json(response, 200, { spaces: state.spaces.map((detail) => detail.space), limits });
+          if (method === 'GET') return json(response, 200, {
+            spaces: state.spaces.filter((detail) => detail.members.some((member) => member.id === user.id)).map((detail) => detail.space),
+            invitations: state.spaces.filter((detail) => state.invitations.get(`${detail.space.id}:${user.id}`)?.status === 'pending').map((detail) => detail.space), limits,
+          });
           if (method === 'POST') {
             const name = typeof body.name === 'string' ? body.name.trim() : '';
             if (!name || [...name].length > 80 || /[\p{Cc}]/u.test(name)) return reject(response, 400, 'invalid space name');
@@ -217,19 +222,47 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           }
         }
         const detail = state.spaces.find((entry) => entry.space.id === spaceId);
-        if (!detail) return reject(response, 404, 'Space not found.');
+        if (!detail) return reject(response, 404, 'resource not found');
+        const owner = detail.space.ownerId === user.id;
+        const invitationKey = `${spaceId}:${user.id}`;
+        if (section === 'invitation') {
+          const invitation = state.invitations.get(invitationKey);
+          if (invitation?.status !== 'pending') return reject(response, 404, 'resource not found');
+          if (method === 'POST') {
+            invitation.status = 'accepted'; detail.members.push(clone(user));
+            return json(response, 200, detail.space);
+          }
+          if (method === 'DELETE') { invitation.status = 'declined'; return json(response, 204); }
+        }
+        if (!detail.members.some((member) => member.id === user.id)) return reject(response, 404, 'resource not found');
+        if (section === 'invitations') {
+          if (!owner) return reject(response, 404, 'resource not found');
+          if (method === 'GET') return json(response, 200, { members: members.filter((member) => state.invitations.get(`${spaceId}:${member.id}`)?.status === 'pending') });
+          const invitation = state.invitations.get(`${spaceId}:${memberId}`);
+          if (method === 'DELETE' && invitation?.status === 'pending') { invitation.status = 'revoked'; return json(response, 204); }
+          return reject(response, 404, 'resource not found');
+        }
         const channel = detail.channels.find((entry) => entry.id === channelId);
         if (channelId && !channel) return reject(response, 404, 'Channel not found.');
         if (section === 'members') {
           const list = channelId ? detail.members.filter((member) => (state.grants.get(channelId) ?? []).includes(member.id)) : detail.members;
           if (method === 'GET') return json(response, 200, { members: list });
           if (method === 'POST') {
-            const member = members.find((entry) => entry.username === body.username);
-            if (!member) return reject(response, 404, 'No account has that username.');
+            if (!owner) return reject(response, 404, 'resource not found');
+            const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
+            if (!/^[a-z0-9_]{3,32}$/.test(username)) return reject(response, 400, 'invalid username');
+            const member = members.find((entry) => entry.username === username);
+            if (!member) return reject(response, 404, 'user not found');
             if (channelId && !detail.members.some((entry) => entry.id === member.id)) return reject(response, 404, 'Member not found.');
             const exists = channelId ? (state.grants.get(channelId) ?? []).includes(member.id) : detail.members.some((entry) => entry.id === member.id);
             if (channelId) state.grants.set(channelId, [...new Set([...(state.grants.get(channelId) ?? []), member.id])]);
-            else if (!exists) detail.members.push(clone(member));
+            else {
+              if (exists) return reject(response, 409, 'user already in space');
+              const key = `${spaceId}:${member.id}`;
+              if (state.invitations.get(key)?.status === 'pending') return reject(response, 409, 'user already invited');
+              if (state.invitations.has(key)) return reject(response, 409, 'invitation cooldown; try again after 24 hours');
+              state.invitations.set(key, { status: 'pending' });
+            }
             return json(response, exists ? 200 : 201, member);
           }
           if (method === 'DELETE') {
@@ -239,6 +272,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             if (channelId) state.grants.set(channelId, (state.grants.get(channelId) ?? []).filter((id) => id !== memberId));
             else {
               detail.members = detail.members.filter((member) => member.id !== memberId);
+              state.invitations.set(`${spaceId}:${memberId}`, { status: 'revoked' });
               for (const item of detail.channels) state.grants.set(item.id, (state.grants.get(item.id) ?? []).filter((id) => id !== memberId));
             }
             return json(response, 204);

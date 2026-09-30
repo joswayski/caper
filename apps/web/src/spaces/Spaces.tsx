@@ -17,7 +17,7 @@ import {
   Settings,
   X,
 } from "lucide-react";
-import { getAccount, type Account } from "../account/client";
+import { getAccount, normalizeUsername, usernameError, type Account } from "../account/client";
 import { playSound, preloadSoundEffects } from "../audio/effects";
 import { ChatHistoryError } from "../chat/client";
 import Wordmark from "../components/Wordmark";
@@ -26,14 +26,18 @@ import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
 import {
+  acceptSpaceInvitation,
   addChannelMember,
   addSpaceMember,
+  cancelSpaceInvitation,
   channelNameError,
   createChannel,
   createSpace,
   deleteChannel,
   deleteSpace,
+  declineSpaceInvitation,
   listChannelMembers,
+  listSpaceInvitations,
   listSpaces,
   normalizeChannelName,
   removeChannelMember,
@@ -51,6 +55,12 @@ import {
 import "./spaces.css";
 
 function errorMessage(error: unknown) {
+  if (error instanceof SpacesApiError) {
+    if (error.message === "user not found") return "User not found. Check the username and try again.";
+    if (error.message === "user already in space") return "This person is already in the space.";
+    if (error.message === "user already invited") return "This person already has a pending invitation.";
+    if (error.message === "invalid username") return "Use 3–32 lowercase letters, numbers, or underscores.";
+  }
   return error instanceof Error ? error.message : "That request did not work.";
 }
 
@@ -403,17 +413,23 @@ function LeaveSpaceDialog({
 
 function MemberManager({
   members,
+  invitations,
+  onCancel,
   onAdd,
   onRemove,
   pending,
 }: {
   members: Member[];
+  invitations?: Member[];
+  onCancel?: (member: Member) => Promise<void>;
   onAdd: (username: string) => Promise<void>;
   onRemove: (member: Member) => Promise<void>;
   pending: boolean;
 }) {
   const [username, setUsername] = useState("");
   const [error, setError] = useState<string>();
+  const [success, setSuccess] = useState<string>();
+  const submitting = useRef(false);
   return (
     <section className="member-manager">
       <div className="dialog-section-heading">
@@ -424,11 +440,18 @@ function MemberManager({
         className="member-add"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!username) return setError("Enter an exact username.");
+          if (submitting.current || pending) return;
+          const invalid = usernameError(username);
+          if (invalid) return setError(invalid);
+          if (invitations && members.some((member) => member.username === username)) return setError("This person is already in the space.");
+          if (invitations?.some((member) => member.username === username)) return setError("This person already has a pending invitation.");
+          submitting.current = true;
           setError(undefined);
+          setSuccess(undefined);
           void onAdd(username)
-            .then(() => setUsername(""))
-            .catch((reason) => setError(errorMessage(reason)));
+            .then(() => { setUsername(""); setSuccess(invitations ? "Invitation sent. They must accept before joining." : "Access granted."); })
+            .catch((reason) => setError(errorMessage(reason)))
+            .finally(() => { submitting.current = false; });
         }}
       >
         <label className="sr-only" htmlFor="member-username">
@@ -438,13 +461,21 @@ function MemberManager({
           id="member-username"
           value={username}
           autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          minLength={3}
+          maxLength={32}
+          pattern="[a-z0-9_]{3,32}"
+          required
           placeholder="Exact username"
-          onChange={(event) => setUsername(event.target.value)}
+          onChange={(event) => { setUsername(normalizeUsername(event.target.value)); setError(undefined); setSuccess(undefined); }}
         />
         <button type="submit" disabled={pending}>
-          Add
+          {invitations ? "Invite" : "Add"}
         </button>
       </form>
+      <p className="channel-name-guidance">3–32 lowercase letters, numbers, or underscores.{invitations && " Invitations expire after 7 days."}</p>
+      {success && <p className="channel-name-guidance" role="status">{success}</p>}
       {error && (
         <p className="space-form-error" role="alert">
           {error}
@@ -480,6 +511,16 @@ function MemberManager({
           </li>
         ))}
       </ul>
+      {invitations && <>
+        <div className="dialog-section-heading"><h3>Pending invitations</h3><span>{invitations.length}</span></div>
+        <ul>
+          {invitations.map((member) => <li key={member.id}>
+            <span className="member-avatar" aria-hidden="true">{member.displayName.slice(0, 1).toUpperCase()}</span>
+            <span><strong>{member.displayName}</strong><small>@{member.username} · Invited</small></span>
+            <button type="button" disabled={pending} onClick={() => void onCancel?.(member).catch((reason) => setError(errorMessage(reason)))}>Cancel invite</button>
+          </li>)}
+        </ul>
+      </>}
     </section>
   );
 }
@@ -497,9 +538,16 @@ function ManageSpaceDialog({
 }) {
   const [name, setName] = useState(detail.space.name);
   const [members, setMembers] = useState(detail.members);
+  const [invitations, setInvitations] = useState<Member[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  useEffect(() => {
+    let current = true;
+    void listSpaceInvitations(detail.space.id).then((result) => { if (current) setInvitations(result.members); })
+      .catch((reason) => { if (current) setError(errorMessage(reason)); });
+    return () => { current = false; };
+  }, [detail.space.id]);
   const run = async (action: () => Promise<void>) => {
     setPending(true);
     setError(undefined);
@@ -548,18 +596,18 @@ function ManageSpaceDialog({
       )}
       <MemberManager
         members={members}
+        invitations={invitations}
         pending={pending}
         onAdd={(username) =>
           run(async () => {
             const member = await addSpaceMember(detail.space.id, username);
-            const next = [
-              ...members.filter((item) => item.id !== member.id),
-              member,
-            ];
-            setMembers(next);
-            onChanged({ ...detail, members: next });
+            setInvitations((current) => [...current.filter((item) => item.id !== member.id), member]);
           })
         }
+        onCancel={(member) => run(async () => {
+          await cancelSpaceInvitation(detail.space.id, member.id);
+          setInvitations((current) => current.filter((item) => item.id !== member.id));
+        })}
         onRemove={async (member) =>
           run(async () => {
             await removeSpaceMember(detail.space.id, member.id);
@@ -724,6 +772,46 @@ function SpacesLoading() {
   </main>;
 }
 
+function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
+  space: Space;
+  onClose: () => void;
+  onAccepted: (space: Space) => void;
+  onDeclined: () => void;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  const submitting = useRef(false);
+  const respond = async (accept: boolean) => {
+    if (submitting.current) return;
+    submitting.current = true;
+    setPending(true);
+    setError(undefined);
+    try {
+      if (accept) onAccepted(await acceptSpaceInvitation(space.id));
+      else { await declineSpaceInvitation(space.id); onDeclined(); }
+    } catch (reason) {
+      if (reason instanceof SpacesApiError && reason.status === 404) {
+        setError("This invitation is no longer available. Close this dialog to refresh your spaces.");
+      } else setError(errorMessage(reason));
+    } finally {
+      submitting.current = false;
+      setPending(false);
+    }
+  };
+  return <Dialog title="You’re invited" onClose={() => { if (!submitting.current) onClose(); }}>
+    <div className="invitation-consent">
+      <LockKeyhole aria-hidden="true" />
+      <h3>Join {space.name}?</h3>
+      <p>You’ve been invited to this space. Its channels, conversations, and members stay hidden until you accept.</p>
+      {error && <p className="space-form-error" role="alert">{error}</p>}
+      <div className="space-dialog-actions">
+        <button className="secondary" type="button" data-initial-focus disabled={pending} onClick={() => void respond(false)}>Decline</button>
+        <button className="primary" type="button" disabled={pending} onClick={() => void respond(true)}>{pending ? "Saving…" : "Accept invitation"}</button>
+      </div>
+    </div>
+  </Dialog>;
+}
+
 export default function Spaces({ embedded = false, initialAccount, engaged = true, onChatOnlineChange }: {
   embedded?: boolean;
   initialAccount?: Account;
@@ -732,6 +820,7 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
 } = {}) {
   const [account, setAccount] = useState<Account | undefined>(initialAccount);
   const [spaces, setSpaces] = useState<Space[]>([]);
+  const [invitations, setInvitations] = useState<Space[]>([]);
   const [limits, setLimits] = useState<SpaceLimits>();
   const [view, setView] = useState<PreparedSpace>();
   const detail = view?.detail;
@@ -740,6 +829,8 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
+  const invitation = invitations.find((item) => item.id === selected.spaceId);
   const [dialog, setDialog] = useState<
     "space" | "channel" | "manage-space" | "leave-space"
   >();
@@ -798,9 +889,10 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
         if (!current) return;
         setAccount(nextAccount);
         setSpaces(result.spaces);
+        setInvitations(result.invitations ?? []);
         setLimits(result.limits);
         setLoading(false);
-        if (!result.spaces.some((space) => space.id === selected.spaceId))
+        if (![...result.spaces, ...result.invitations ?? []].some((space) => space.id === selected.spaceId))
           choose(result.spaces[0]?.id, undefined, true);
       })
       .catch((reason) => {
@@ -815,6 +907,12 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
   }, []);
 
   useEffect(() => {
+    if (invitation) {
+      setView(undefined);
+      setPending(false);
+      setError(undefined);
+      return;
+    }
     if (loading || !selected.spaceId) {
       return;
     }
@@ -844,6 +942,16 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
           if ((reason instanceof SpacesApiError || reason instanceof ChatHistoryError) && [401, 403, 404].includes(reason.status)) {
             navigation.current.forget(selected.spaceId!);
             setView((shown) => shown?.detail.space.id === selected.spaceId ? undefined : shown);
+            if (reason instanceof SpacesApiError && reason.status === 404 && reason.message === "resource not found") {
+              const remaining = spaces.filter((space) => space.id !== selected.spaceId);
+              setSpaces(remaining);
+              setDialog(undefined);
+              setManageChannel(undefined);
+              setNotice("This space is no longer available.");
+              choose(remaining[0]?.id, undefined, true);
+              setPending(false);
+              return;
+            }
           }
           setError(errorMessage(reason));
           setPending(false);
@@ -852,7 +960,41 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
     return () => {
       current = false;
     };
-  }, [selected, loading]);
+  }, [selected, loading, invitation?.id]);
+
+  // Membership can change in another account/tab while this page is open.
+  // Reconcile the rail on focus and every 15s; transport authorization still
+  // enforces access independently of this UI refresh.
+  useEffect(() => {
+    if (loading || !account) return;
+    let current = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const result = await listSpaces();
+        if (!current) return;
+        const available = new Set(result.spaces.map((space) => space.id));
+        for (const space of spaces) if (!available.has(space.id)) navigation.current.forget(space.id);
+        setSpaces(result.spaces);
+        setInvitations(result.invitations ?? []);
+        if (detail && !available.has(detail.space.id)) {
+          setView(undefined);
+          setDialog(undefined);
+          setManageChannel(undefined);
+          setNotice("This space is no longer available.");
+          choose(result.spaces[0]?.id, undefined, true);
+        }
+        if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id)) choose(result.spaces[0]?.id, undefined, true);
+      } catch { /* An outage is not revocation; keep known navigation. */ }
+      finally { refreshing = false; }
+    };
+    const interval = window.setInterval(() => void refresh(), 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { current = false; clearInterval(interval); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [loading, account?.id, detail?.space.id, selected.spaceId, invitation?.id]);
 
   const channel = detail?.channels.find(
     (item) => item.id === view?.channelId,
@@ -890,7 +1032,27 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
     choose(remaining[0]?.id, undefined, true);
   };
 
+  const invitationButtons = invitations.map((space) => <button key={space.id} type="button" className="pending-space-invite" aria-label={`Invitation to ${space.name}`} onClick={() => choose(space.id)}>
+    <LockKeyhole aria-hidden="true" /><span>{space.name}</span><small>Invited</small>
+  </button>);
+
   if (loading) return <SpacesLoading />;
+  if (invitation) return <>
+    <main className="call-page">
+      <header className="call-header"><Wordmark /></header>
+      <section className="call-room spaces-room invitation-shell" aria-hidden="true" inert>
+        <div className="space-rail" /><ChannelSidebar><div className="sidebar-channels" /></ChannelSidebar><div className="stage" />
+      </section>
+    </main>
+    <InvitationDialog key={invitation.id} space={invitation} onClose={() => { choose(spaces[0]?.id, undefined, true); void listSpaces().then((result) => { setSpaces(result.spaces); setInvitations(result.invitations ?? []); }).catch(() => undefined); }}
+      onAccepted={(space) => {
+        setInvitations((items) => items.filter((item) => item.id !== space.id));
+        setSpaces((items) => [...items.filter((item) => item.id !== space.id), space]);
+        navigation.current.forget(space.id);
+        choose(space.id, undefined, true);
+      }}
+      onDeclined={() => { setInvitations((items) => items.filter((item) => item.id !== invitation.id)); choose(spaces[0]?.id, undefined, true); }} />
+  </>;
   if (error && !spaces.length)
     return (
       <main className="spaces-state">
@@ -907,6 +1069,8 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
       <main className="spaces-empty">
         <Wordmark />
         <section>
+          {notice && <p role="status">{notice}</p>}
+          {invitations.length > 0 && <div className="pending-space-invites"><h2>Pending invitations</h2>{invitationButtons}</div>}
           <p className="eyebrow">YOUR SPACES</p>
           <h1>Start a conversation.</h1>
           <p>
@@ -966,6 +1130,7 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
           </button>
         </div>
       ))}
+      {invitations.map((space) => <button key={space.id} className="invited-space" type="button" title={`Invitation to ${space.name}`} aria-label={`Invitation to ${space.name}`} onClick={() => choose(space.id)}><LockKeyhole aria-hidden="true" /></button>)}
       <button
         className="add-space"
         type="button"
@@ -981,6 +1146,7 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
         <Plus aria-hidden="true" />
       </button>
       {pending && <span className="sr-only" role="status">Opening {spaces.find((space) => space.id === selected.spaceId)?.name}…</span>}
+      {notice && <p className="space-access-notice" role="status">{notice}<button type="button" aria-label="Dismiss notice" onClick={() => setNotice(undefined)}><X aria-hidden="true" /></button></p>}
     </nav>
   );
   const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (

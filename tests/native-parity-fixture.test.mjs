@@ -10,7 +10,7 @@ async function setup(t) {
   const request = async (path, { auth = false, body, ...init } = {}) => {
     const response = await fetch(base + path, {
       ...init,
-      headers: { ...(auth ? { authorization: 'Bearer fixture-owner-token' } : {}),
+      headers: { ...(auth ? { authorization: `Bearer ${auth === true ? 'fixture-owner-token' : auth}` } : {}),
         ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...init.headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -65,7 +65,7 @@ test('persistent navigation failure survives prefetch until explicitly cleared',
   assert.equal((await request(path, { auth: true })).response.status, 200, 'ordinary failures remain one-shot');
 });
 
-test('space, channel, and member CRUD enforce production-shaped validation and idempotency', async (t) => {
+test('space invitation consent and channel grants enforce distinct access contracts', async (t) => {
   const { request } = await setup(t);
   assert.equal((await request('/api/spaces', { method: 'POST', auth: true, body: { name: 'bad\nname' } })).response.status, 400);
   const created = await request('/api/spaces', { method: 'POST', auth: true, body: { name: '  Field Notes  ' } });
@@ -73,14 +73,23 @@ test('space, channel, and member CRUD enforce production-shaped validation and i
   const spaceId = created.value.id;
   const added = await request(`/api/spaces/${spaceId}/members`, { method: 'POST', auth: true, body: { username: 'maya' } });
   assert.equal(added.response.status, 201);
-  assert.equal((await request(`/api/spaces/${spaceId}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 200);
+  assert.equal((await request(`/api/spaces/${spaceId}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 409);
+  assert.equal((await request(`/api/spaces/${spaceId}/invitations`, { auth: true })).value.members[0].id, ids.member);
+  assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
+  const pending = await request('/api/spaces', { auth: 'fixture-member-token' });
+  assert.deepEqual(pending.value.invitations.map(({ id }) => id), [spaceId]);
+  assert.ok(!pending.value.spaces.some(({ id }) => id === spaceId));
   const channel = await request(`/api/spaces/${spaceId}/channels`, { method: 'POST', auth: true, body: { name: 'private-notes', private: true } });
   assert.equal(channel.response.status, 201);
   assert.equal((await request(`/api/spaces/${spaceId}/channels`, { method: 'POST', auth: true, body: { name: 'private-notes', private: false } })).response.status, 409);
   assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { method: 'POST', auth: true, body: { username: 'alex' } })).response.status, 404);
+  assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 404);
+  assert.equal((await request(`/api/spaces/${spaceId}/invitation`, { method: 'POST', auth: 'fixture-member-token' })).response.status, 200);
+  assert.equal((await request(`/api/spaces/${spaceId}/invitation`, { method: 'POST', auth: 'fixture-member-token' })).response.status, 404);
   assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 201);
   assert.equal((await request(`/api/spaces/${spaceId}/members/${ids.member}`, { method: 'DELETE', auth: true })).response.status, 204);
   assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { auth: true })).value.members.some(({ id }) => id === ids.member), false);
+  assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
 });
 
 test('send is idempotent, conflicts on changed payload, and history uses stable head cursor pagination', async (t) => {
