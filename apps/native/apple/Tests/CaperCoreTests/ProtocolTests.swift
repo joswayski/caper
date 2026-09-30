@@ -160,6 +160,27 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(ReactionEvent.sequence(event(channel: "other"), channelID: "channel"))
     }
 
+    func testReactionSnapshotsRejectStaleAckAndOverlayOlderPage() {
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let content = ChatContent(version: 1, type: "text", text: "hello")
+        let old = ChatMessage(id: "Message00000001", channelId: "Channel12345", seq: "1", author: author,
+                              content: content, createdAt: "now", clientMessageId: "client",
+                              reactions: [MessageReaction(emoji: "👍", authorIds: ["old"])], reactionSeq: "4")
+        var snapshots = ReactionSnapshots()
+        XCTAssertTrue(snapshots.apply(messageID: old.id, seq: "8", reactions: [MessageReaction(emoji: "👍", authorIds: ["self", "other"])]))
+        XCTAssertFalse(snapshots.apply(messageID: old.id, seq: "7", reactions: []), "late HTTP acknowledgement must not revert replay")
+        snapshots.seed([old])
+        XCTAssertEqual(snapshots.overlay(old).reactionSeq, "8")
+        XCTAssertEqual(snapshots.overlay(old).reactions?.first?.authorIds, ["self", "other"], "an older page must retain an unseen newer reaction")
+    }
+
+    func testBundledEmojiCatalogHasCanonicalSelectableArtwork() {
+        XCTAssertEqual(EmojiArtwork.choices.count, 1_870)
+        XCTAssertEqual(EmojiArtwork.id(for: "❤️"), "2764")
+        XCTAssertEqual(EmojiArtwork.id(for: "👨‍👩‍👧‍👦"), "1f468-200d-1f469-200d-1f467-200d-1f466")
+        XCTAssertNotNil(EmojiArtwork.entry(for: "👍"))
+    }
+
     func testUnknownOutcomeRetriesExactCommandAndResetPreventsResurrection() {
         var delivery = ChatDeliveryState(cursor: "8")
         let first = delivery.begin(text: "original", makeID: { "id-one" })

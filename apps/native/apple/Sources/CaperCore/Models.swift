@@ -102,6 +102,29 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let content: ChatContent
     public let createdAt: String
     public let clientMessageId: String
+    public var reactions: [MessageReaction]? = nil
+    public var reactionSeq: String? = nil
+}
+
+public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
+    public let emoji: String
+    public let authorIds: [String]
+    public var id: String { emoji }
+}
+
+public struct MessageReactionsEvent: Codable, Equatable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let messageId: String
+    public let reactions: [MessageReaction]
+
+    public var isValid: Bool {
+        type == "message.reactions" && schemaVersion == 1 && !channelId.isEmpty && !messageId.isEmpty
+            && (try? Sequence.compare(seq, "0")) != nil
+            && reactions.allSatisfy { !$0.emoji.isEmpty && $0.authorIds.allSatisfy { !$0.isEmpty } }
+    }
 }
 
 public struct ChatHistory: Codable, Sendable {
@@ -257,6 +280,35 @@ enum ReactionEvent {
               }) else { return nil }
         return event["seq"] as? String
     }
+}
+
+/// Keeps each message's reaction snapshot monotonic independently of the
+/// channel delivery cursor. This lets delayed HTTP acknowledgements and older
+/// history pages fill missing messages without reverting a newer replay.
+struct ReactionSnapshots: Sendable {
+    private var values: [String: (seq: String, reactions: [MessageReaction])] = [:]
+
+    mutating func apply(messageID: String, seq: String?, reactions: [MessageReaction]) -> Bool {
+        guard let seq, (try? Sequence.compare(seq, "0")) != nil else { return false }
+        if let current = values[messageID], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
+        guard values[messageID] != nil || values.count < 512 else { return false }
+        values[messageID] = (seq, reactions)
+        return true
+    }
+
+    mutating func seed(_ messages: [ChatMessage]) {
+        for message in messages { _ = apply(messageID: message.id, seq: message.reactionSeq, reactions: message.reactions ?? []) }
+    }
+
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        guard let snapshot = values[message.id] else { return message }
+        var result = message
+        result.reactions = snapshot.reactions
+        result.reactionSeq = snapshot.seq
+        return result
+    }
+
+    mutating func reset() { values.removeAll(keepingCapacity: false) }
 }
 
 /// Accepts only snapshots that cannot move an already-versioned view

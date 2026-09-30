@@ -43,6 +43,29 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testReactionPUTUsesChatTokenBodyAndFifteenCharacterMessageID() async throws {
+        let channel = "Channel12345"
+        let message = "Message00000001"
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/api/chat/channels/\(channel)/messages/\(message)/reactions")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-chat-token"), "chat-secret")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any])
+            XCTAssertEqual(body["emoji"] as? String, "👍")
+            XCTAssertEqual(body["active"] as? Bool, true)
+            return (200, Data("""
+            {"type":"message.reactions","schemaVersion":1,"channelId":"\(channel)","seq":"9","messageId":"\(message)","reactions":[{"emoji":"👍","authorIds":["self"]}]}
+            """.utf8))
+        }
+        let event = try await client().setReaction(channelID: channel, messageID: message, sessionToken: "chat-secret", emoji: "👍", active: true)
+        XCTAssertEqual(event.seq, "9")
+        do {
+            _ = try await client().setReaction(channelID: channel, messageID: "only-twelve1", sessionToken: "chat-secret", emoji: "👍", active: true)
+            XCTFail("Expected local message ID rejection")
+        } catch let error as APIError { XCTAssertEqual(error.status, 400) }
+    }
+
     @MainActor
     func testProfileEditPreservesConversationDraftAndRejectedSend() async throws {
         var historyRequests = 0

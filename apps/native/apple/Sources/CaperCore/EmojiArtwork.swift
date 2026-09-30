@@ -1,0 +1,89 @@
+import Foundation
+import SwiftUI
+import ImageIO
+
+struct EmojiCatalogEntry: Codable, Identifiable, Sendable {
+    let id: String
+    let emoji: String
+    let name: String
+    let keywords: String
+    let category: String
+    let selectable: Bool
+    let sheet: Int
+    let x: Int
+    let y: Int
+}
+
+private final class EmojiBundleToken {}
+
+enum EmojiArtwork {
+    static let choices: [EmojiCatalogEntry] = {
+        guard let url = resourceURL(name: "catalog", extension: "json"),
+              let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([EmojiCatalogEntry].self, from: data) else { return [] }
+        return entries.filter(\.selectable)
+    }()
+
+    static func id(for emoji: String) -> String {
+        emoji.unicodeScalars.filter { $0.value != 0xfe0f || emoji.unicodeScalars.contains(where: { $0.value == 0x200d }) }
+            .map { String($0.value, radix: 16) }.joined(separator: "-")
+    }
+
+    static func entry(for emoji: String) -> EmojiCatalogEntry? {
+        choices.first { $0.id == id(for: emoji) }
+    }
+
+    static func image(for entry: EmojiCatalogEntry) -> CGImage? {
+        EmojiImageCache.shared.image(for: entry)
+    }
+
+    private static func resourceURL(name: String, extension ext: String) -> URL? {
+        #if SWIFT_PACKAGE
+        let bundle = Bundle.module
+        #else
+        let bundle = Bundle(for: EmojiBundleToken.self)
+        #endif
+        return bundle.url(forResource: name, withExtension: ext, subdirectory: "EmojiAssets")
+            ?? bundle.url(forResource: name, withExtension: ext)
+    }
+
+    private final class EmojiImageCache: @unchecked Sendable {
+        static let shared = EmojiImageCache()
+        private let cache = NSCache<NSString, CGImageBox>()
+        private var sheets: [Int: CGImage] = [:]
+        private let lock = NSLock()
+
+        func image(for entry: EmojiCatalogEntry) -> CGImage? {
+            if let cached = cache.object(forKey: entry.id as NSString)?.image { return cached }
+            lock.lock(); defer { lock.unlock() }
+            if let cached = cache.object(forKey: entry.id as NSString)?.image { return cached }
+            let sheet: CGImage
+            if let existing = sheets[entry.sheet] { sheet = existing }
+            else {
+                guard let url = EmojiArtwork.resourceURL(name: "sheet-\(entry.sheet)", extension: "png"),
+                      let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let loaded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+                sheets[entry.sheet] = loaded; sheet = loaded
+            }
+            // Catalog coordinates start at the top-left; Core Graphics crops from the bottom-left.
+            let rect = CGRect(x: entry.x * 64, y: sheet.height - ((entry.y + 1) * 64), width: 64, height: 64)
+            guard let cropped = sheet.cropping(to: rect) else { return nil }
+            cache.setObject(CGImageBox(cropped), forKey: entry.id as NSString)
+            return cropped
+        }
+    }
+
+    private final class CGImageBox { let image: CGImage; init(_ image: CGImage) { self.image = image } }
+}
+
+struct EmojiArtworkView: View {
+    let emoji: String
+    var size: CGFloat = 22
+    var body: some View {
+        if let entry = EmojiArtwork.entry(for: emoji), let image = EmojiArtwork.image(for: entry) {
+            Image(decorative: image, scale: 1).resizable().interpolation(.high).frame(width: size, height: size)
+        } else {
+            Color.clear.frame(width: size, height: size).accessibilityHidden(true)
+        }
+    }
+}

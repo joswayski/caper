@@ -80,7 +80,10 @@ targets:
     type: framework
     platform: macOS
     sources:
-      - Sources/CaperCore
+      - path: Sources/CaperCore
+        excludes: [EmojiAssets]
+      - path: Sources/CaperCore/EmojiAssets
+        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]
@@ -102,7 +105,10 @@ targets:
     type: framework
     platform: iOS
     sources:
-      - Sources/CaperCore
+      - path: Sources/CaperCore
+        excludes: [EmojiAssets]
+      - path: Sources/CaperCore/EmojiAssets
+        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]

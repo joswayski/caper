@@ -666,6 +666,8 @@ public final class ChatModel {
     public var error: String?
     public var hasMore = false
     public var typingNames: [String] = []
+    public var reactionSaving: Set<String> = []
+    public var reactionErrors: [String: String] = [:]
     public var currentAuthor: ChatAuthor? { session?.author }
     /// Web's failed first load: no conversation to show, only the error.
     public private(set) var loadFailed = false
@@ -681,6 +683,8 @@ public final class ChatModel {
     private var subscriptionID: String?
     private var generation = 0
     private var delivery = ChatDeliveryState()
+    private var reactionSnapshots = ReactionSnapshots()
+    private var failedReactions: [String: (emoji: String, active: Bool)] = [:]
     private var typers: [String: (author: ChatAuthor, typing: Bool, revision: String, expires: Date)] = [:]
     private var typingActive = false
     private var typingSent = false
@@ -760,12 +764,21 @@ public final class ChatModel {
             let resolvedChannelID = history.channel?.id
             spaceID = history.space?.id
             self.channelID = resolvedChannelID
-            messages = history.messages
+            reactionSnapshots.seed(history.messages)
+            merge(history.messages)
             delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
             hasMore = history.hasMore
             channelName = history.channel?.name ?? "general"
             spaceName = history.space?.name ?? "Caper"
             session = chatSession
+            if CaperRuntime.isChatPreview("reaction-chips"), let ownID = chatSession?.author.id, !messages.isEmpty {
+                messages[0].reactions = [
+                    MessageReaction(emoji: "👍", authorIds: [ownID, "fixture-other"]),
+                    MessageReaction(emoji: "❤️", authorIds: ["fixture-other"]),
+                ]
+                messages[0].reactionSeq = history.cursor
+                reactionSnapshots.seed(messages)
+            }
             guard let actualChannel = resolvedChannelID else { throw APIError(status: 502, message: "Channel metadata is missing.") }
             let newSubscription = await gateway.subscribeChat(channelID: actualChannel, after: delivery.cursor) { [weak self] event in
                 self?.receive(event, generation: requestGeneration, channelID: actualChannel)
@@ -863,6 +876,32 @@ public final class ChatModel {
         sending = false
     }
 
+    public func setReaction(messageID: String, emoji: String, active: Bool) async {
+        guard let channelID, let session, !reactionSaving.contains(messageID) else { return }
+        let requestGeneration = generation
+        reactionSaving.insert(messageID); reactionErrors[messageID] = nil; failedReactions[messageID] = nil
+        defer { if generation == requestGeneration { reactionSaving.remove(messageID) } }
+        do {
+            let event = try await api.setReaction(channelID: channelID, messageID: messageID, sessionToken: session.token, emoji: emoji, active: active)
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            applyReactions(event)
+        } catch {
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                onAccessRevoked?(channelID)
+                await stop()
+                return
+            }
+            reactionErrors[messageID] = "Couldn’t save reaction. Retry."
+            failedReactions[messageID] = (emoji, active)
+        }
+    }
+
+    public func retryReaction(messageID: String) async {
+        guard let failed = failedReactions[messageID] else { return }
+        await setReaction(messageID: messageID, emoji: failed.emoji, active: failed.active)
+    }
+
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
         guard let text = delivery.discardRejected() else { return false }
@@ -911,11 +950,15 @@ public final class ChatModel {
             return
         }
         if type == "message.reactions" {
-            guard let seq = ReactionEvent.sequence(event, channelID: eventChannelID),
+            guard let data = try? JSONSerialization.data(withJSONObject: event),
+                  let reactionEvent = try? JSONDecoder().decode(MessageReactionsEvent.self, from: data),
+                  reactionEvent.isValid,
+                  let seq = ReactionEvent.sequence(event, channelID: eventChannelID),
                   delivery.receive(seq: seq) else {
                 requestResync(generation: eventGeneration, channelID: eventChannelID)
                 return
             }
+            applyReactions(reactionEvent)
             if let subscriptionID {
                 let cursor = delivery.cursor
                 Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
@@ -959,6 +1002,7 @@ public final class ChatModel {
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
+        reactionSnapshots.reset(); reactionSaving = []; reactionErrors = [:]; failedReactions = [:]
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
         loadingOlder = false; olderError = nil
@@ -966,9 +1010,18 @@ public final class ChatModel {
     }
 
     private func merge(_ incoming: [ChatMessage]) {
+        reactionSnapshots.seed(incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        incoming.forEach { byID[$0.id] = $0 }
+        incoming.forEach { byID[$0.id] = reactionSnapshots.overlay($0) }
+        byID = byID.mapValues { reactionSnapshots.overlay($0) }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
+    }
+
+    private func applyReactions(_ event: MessageReactionsEvent) {
+        guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
+        messages = messages.map { reactionSnapshots.overlay($0) }
+        reactionErrors[event.messageId] = nil
+        failedReactions[event.messageId] = nil
     }
 
     private func flushTyping() {

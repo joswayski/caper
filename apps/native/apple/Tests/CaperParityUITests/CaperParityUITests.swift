@@ -159,6 +159,20 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    func testReactionChipsPickerAndEmptySearchState() {
+        let app = launch(fixture: "reaction-chips")
+        let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch
+        XCTAssertTrue(own.waitForExistence(timeout: 10))
+        let other = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "not selected by you")).firstMatch
+        XCTAssertTrue(other.exists)
+        let add = app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).firstMatch
+        XCTAssertTrue(add.exists); add.tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        type("definitely-no-such-emoji", into: search)
+        XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
+    }
+
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }

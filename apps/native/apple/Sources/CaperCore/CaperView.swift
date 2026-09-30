@@ -1078,7 +1078,7 @@ private struct ChatView: View {
                             if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
                                 ChatDateDivider(createdAt: message.createdAt)
                             }
-                            MessageRow(message: message).id(message.id)
+                            MessageRow(message: message, chat: chat).id(message.id)
                         }
                         if let pending = chat.pendingMessage {
                             if chat.messages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
@@ -1272,6 +1272,8 @@ struct ChatDateDivider: View {
 
 private struct MessageRow: View {
     let message: ChatMessage
+    @Bindable var chat: ChatModel
+    @State private var pickerVisible = false
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(name: message.author.name, size: 34)
@@ -1283,14 +1285,82 @@ private struct MessageRow: View {
                 }
                 Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    ForEach(message.reactions ?? []) { reaction in
+                        let own = reaction.authorIds.contains(chat.currentAuthor?.id ?? "")
+                        Button {
+                            Task { await chat.setReaction(messageID: message.id, emoji: reaction.emoji, active: !own) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                EmojiArtworkView(emoji: reaction.emoji, size: 18)
+                                Text("\(reaction.authorIds.count)").font(CaperTheme.font(11, weight: .bold))
+                            }.padding(.horizontal, 7).frame(height: 28)
+                                .background(own ? CaperTheme.terracotta.opacity(0.24) : CaperTheme.surface)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(own ? CaperTheme.terracottaBright : CaperTheme.border))
+                        }.buttonStyle(.plain).disabled(chat.reactionSaving.contains(message.id))
+                            .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
+                    }
+                    Button { pickerVisible = true } label: { CaperIcon(name: "plus", size: 14).frame(width: 28, height: 28) }
+                        .buttonStyle(.plain).overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                        .accessibilityLabel("Add reaction").accessibilityIdentifier("add-reaction-\(message.id)")
+                    if chat.reactionSaving.contains(message.id) {
+                        ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
+                    }
+                }
+                if let error = chat.reactionErrors[message.id] {
+                    HStack(spacing: 8) {
+                        Text(error)
+                        Button("Retry") { Task { await chat.retryReaction(messageID: message.id) } }
+                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
+                }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
+            .sheet(isPresented: $pickerVisible) {
+                ReactionPicker { emoji in
+                    pickerVisible = false
+                    Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                }
+            }
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+private struct ReactionPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    let select: (String) -> Void
+    private var choices: [EmojiCatalogEntry] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !term.isEmpty else { return EmojiArtwork.choices }
+        return EmojiArtwork.choices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) }
+    }
+    var body: some View {
+        NavigationStack {
+            Group {
+                if choices.isEmpty {
+                    ContentUnavailableView("No emoji found", systemImage: "magnifyingglass", description: Text("Try another search."))
+                        .accessibilityIdentifier("reaction-picker-empty")
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 42), spacing: 8)], spacing: 8) {
+                            ForEach(choices) { entry in
+                                Button { select(entry.emoji) } label: {
+                                    EmojiArtworkView(emoji: entry.emoji, size: 30).frame(width: 42, height: 42)
+                                }.buttonStyle(.plain).accessibilityLabel(entry.name)
+                            }
+                        }.padding(12)
+                    }.accessibilityIdentifier("reaction-picker-grid")
+                }
+            }
+            .navigationTitle("Add reaction")
+            .searchable(text: $query, prompt: "Search emoji")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }.frame(minWidth: 320, minHeight: 420)
     }
 }
 
