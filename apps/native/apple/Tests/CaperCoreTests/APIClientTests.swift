@@ -51,7 +51,20 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(request.url?.path, "/api/chat/channels/\(channel)/messages/\(message)/reactions")
             XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-chat-token"), "chat-secret")
             XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
-            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any])
+            var bodyData = request.httpBody ?? Data()
+            // URLSession may turn the body into a stream before URLProtocol sees it.
+            if let stream = request.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+                var buffer = [UInt8](repeating: 0, count: 1_024)
+                while true {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    guard count >= 0 else { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+                    if count == 0 { break }
+                    bodyData.append(contentsOf: buffer.prefix(count))
+                }
+            }
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
             XCTAssertEqual(body["emoji"] as? String, "👍")
             XCTAssertEqual(body["active"] as? Bool, true)
             return (200, Data("""

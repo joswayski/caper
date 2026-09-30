@@ -700,14 +700,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     keyboardActions = KeyboardActions(onSend = {
                         val pending = state.pendingMessage
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
-                        if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                        else if (draft.isNotBlank()) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" }
+                        if (state.chatAuthorId != null) {
+                            if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
+                            else if (draft.isNotBlank()) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" }
+                        }
                     }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                 )
                 FilledIconButton(
                     { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } },
-                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null,
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
                     shape = MaterialTheme.shapes.small,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = Terracotta, contentColor = Color.White,

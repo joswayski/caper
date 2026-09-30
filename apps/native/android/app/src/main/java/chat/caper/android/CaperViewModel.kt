@@ -66,6 +66,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     spaces = list.spaces, limits = list.limits,
                 )
                 list.spaces.firstOrNull()?.let { selectSpace(it.id) }
+                createChatSession(requestAccountGeneration)
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
                     mutable.value = AppUiState(screen = SessionScreen.Home, error = message(error))
