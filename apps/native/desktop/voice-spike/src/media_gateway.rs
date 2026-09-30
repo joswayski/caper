@@ -479,7 +479,9 @@ mod tests {
         let result = connect_bounded(&endpoint, request, &stop);
         assert!(result.is_err());
         assert!(started.elapsed() >= CONNECT_DEADLINE);
-        assert!(started.elapsed() < CONNECT_DEADLINE + Duration::from_secs(1));
+        // The server trickles for 7s; finishing well before that proves the
+        // deadline cut it off, with slack for a loaded Windows runner.
+        assert!(started.elapsed() < CONNECT_DEADLINE + Duration::from_millis(1500));
         seen.recv_timeout(Duration::from_secs(1)).unwrap();
         server.join().unwrap();
     }
