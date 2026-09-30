@@ -39,14 +39,16 @@ class GatewayClientTest {
         server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) { opened.add(webSocket); webSocket.send("""{"type":"hello","serverTime":1}""") }
             override fun onMessage(webSocket: WebSocket, text: String) { incoming.add(text) }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         }))
         val deliveries = ArrayBlockingQueue<String>(4)
         val gateway = GatewayClient(server.url("/").toString().trimEnd('/'), null, "channel", "0",
             onMessage = { deliveries.add("message:${it.seq}") }, onReaction = { deliveries.add("reaction:${it.seq}") },
             onAccessDenied = {}, onResync = {})
+        var socket: WebSocket? = null
         try {
             gateway.start()
-            val socket = opened.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("socket did not open")
+            socket = opened.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("socket did not open")
             val subscription = Json.parseToJsonElement(incoming.poll(2, TimeUnit.SECONDS)!!).jsonObject
             val id = subscription.getValue("id").jsonPrimitive.content
             socket.send("""{"type":"event","id":"$id","event":{"type":"message.reactions","schemaVersion":1,"channelId":"channel","seq":"1","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author"]}]}}""")
@@ -54,7 +56,11 @@ class GatewayClientTest {
             assertEquals("reaction:1", deliveries.poll(2, TimeUnit.SECONDS))
             assertEquals("message:2", deliveries.poll(2, TimeUnit.SECONDS))
             assertNull(deliveries.poll(250, TimeUnit.MILLISECONDS))
-        } finally { gateway.close(); server.close() }
+        } finally {
+            socket?.close(1000, "done")
+            gateway.close()
+            server.close()
+        }
     }
 
     @Test fun `watch registered on open socket waits for hello and subscribes only once`() {

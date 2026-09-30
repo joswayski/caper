@@ -293,6 +293,8 @@ jobs:
           name: caper-ui-android-${{ github.sha }}
           path: |
             apps/native/android/dist/ui/
+            apps/native/android/app/build/reports/tests/
+            apps/native/android/app/build/test-results/
             apps/native/android/app/build/reports/androidTests/
             apps/native/android/app/build/outputs/androidTest-results/
           if-no-files-found: warn

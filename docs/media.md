@@ -711,8 +711,9 @@ search/empty state, and Escape/focus return passed. A deliberately simulated HTT
 503 verified the visible save error and successful retry after restoring the API.
 Screenshots were inspected; the narrow capture is browser layout coverage, not
 a physical phone or touch/Safari test. Those browser checks predate the subsequent
-merge retiring public General. Apple/Android compilation and simulator checks
-run in GitHub CI; they are unavailable in this Linux orb. Check the current PR's
+merge retiring public General. Android's 83 JVM tests and instrumentation-test
+compilation passed locally with JDK 17 and Android SDK 36. Apple compilation and
+all simulator/device UI checks run in GitHub CI, not this Linux orb. Check the current PR's
 CI results and native screenshots before release. Physical devices, native live
 cross-client reactions, and production rollout checks remain required. No
 deployment or production database write was performed.
