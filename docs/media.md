@@ -42,8 +42,12 @@ the registry keeps that code only for guest participants and shares it in roster
 snapshots. Signed-in participants, including account-channel joins, omit country
 codes, so web, Android, Apple, and Rust desktop clients render no flag for them.
 The local homepage simulation also has no country flags. Existing call records
-retain their stored country until participants leave and rejoin after the API update. Caper
+retain their stored country until participants leave and rejoin after the API/gateway update. Caper
 does not retain the visitor IP itself. Unknown and Tor locations are omitted.
+Guest-only flags have Rust join/snapshot/presence regression coverage and a
+desktop/narrow Chromium roster check (`scripts/test-country-flags.mjs`, mocked
+API projection). Native renderers already omit flags without a country code;
+physical Android, Apple, and Rust desktop validation has not been run for this change.
 Visitors see the public roster before joining through a `media` subscription on
 the application WebSocket, without joining voice. That projection
 includes each participant's session ID, name, country code when available, mute,
