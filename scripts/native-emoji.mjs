@@ -1,7 +1,7 @@
 // Regenerate the native artwork from the same locked packages as the web picker.
 // Requires npm ci and ImageMagick 7. Native builds consume the committed output.
 import { execFileSync } from "node:child_process";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { basename, join } from "node:path";
@@ -37,4 +37,7 @@ for (let index = 0; index < files.length; index += 256) {
   execFileSync("magick", [output, "-background", "none", "-gravity", "NorthWest", "-extent", "1024x1024", "-strip", `PNG32:${output}`]);
 }
 await writeFile(join(target, "catalog.json"), JSON.stringify(entries) + "\n");
+// SwiftPM bundles resources inside its target directory. Keep that generated
+// copy (including attribution/licenses) identical to Android/desktop's source.
+await cp(target, fileURLToPath(new URL("../apps/native/apple/Sources/CaperCore/EmojiAssets/", import.meta.url)), { recursive: true });
 console.log(`Generated ${entries.length} image entries, ${offered.size} picker choices, ${Math.ceil(files.length / 256)} sheets.`);
