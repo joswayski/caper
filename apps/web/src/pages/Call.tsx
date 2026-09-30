@@ -557,7 +557,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     let frame = 0, x = 0, y = 0;
     const check = () => {
       frame = 0;
-      for (const button of document.querySelectorAll<HTMLElement>(".channel-join[data-channel]")) {
+      for (const button of document.querySelectorAll<HTMLElement>(".channel-join[data-channel]:not([inert])")) {
         const box = button.getBoundingClientRect();
         if (!box.width || !box.height) continue;
         const dx = Math.max(box.left - x, 0, x - box.right);
@@ -700,13 +700,16 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     </button>;
     // Join shows on the channel being viewed, and on channels with people in
     // voice when you hover or focus their line (hidden on touch screens).
+    // Animate the slot closed rather than unmounting Join: independent roster
+    // and connection updates should move the avatars smoothly, not snap them.
     const viewed = channelId === channel?.id;
-    const join = !inVoiceHere(channelId) && (viewed || people.length > 0) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
-      <button ref={channelId === channel?.id ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
+    const joinedHere = inVoiceHere(channelId);
+    const join = (viewed || people.length > 0 || joinedHere) && <Tooltip content={joinedHere ? undefined : joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
+      <button ref={viewed && !joinedHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={joinedHere ? "" : undefined} data-live={people.length > 0 && !joinedHere ? "" : undefined} data-hover-only={viewed ? undefined : ""} inert={joinedHere} aria-hidden={joinedHere || undefined} aria-label={joinedHere ? undefined : viewed ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinedHere || joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
     return {
-      summary: <span className="channel-voice">{stack}{join}</span>,
+      summary: <span className="channel-voice">{stack}{join && <span className="channel-join-slot" data-connected={joinedHere ? "" : undefined} data-hover-only={viewed ? undefined : ""}><span className="channel-join-slot-inner">{join}</span></span>}</span>,
       list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
       </div> : null,
