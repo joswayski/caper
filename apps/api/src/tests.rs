@@ -356,11 +356,12 @@ async fn profile_format_validation_happens_in_the_app_before_database_access() {
 async fn profile_rejects_reserved_names_before_database_access() {
     let (mut state, _) = state();
     state.reserved_usernames = accounts::ReservedUsernames::from_env(
-        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", " Security,team ")]),
+        &RuntimeEnvironment::from_values_for_test([("RESERVED_USERNAMES", " Trust,team ")]),
     );
     let router = app(state);
     for username in [
-        " CaPeR ", "ADMIN", "admins", "feedback", "SUPPORT", "mod", "mods", "SECURITY", "team",
+        " CaPeR ", "CAPERS", "ADMIN", "admins", "feedback", "SUPPORT", "mod", "mods", "SECURITY",
+        "staff", "TRUST", "team",
     ] {
         let (status, body) = call(
             router.clone(),

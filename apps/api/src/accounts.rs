@@ -34,7 +34,8 @@ impl Default for ReservedUsernames {
     fn default() -> Self {
         Self(
             [
-                "caper", "admin", "admins", "mod", "mods", "support", "feedback",
+                "caper", "capers", "admin", "admins", "mod", "mods", "support", "feedback",
+                "security", "staff",
             ]
             .map(str::to_owned)
             .into(),
@@ -155,17 +156,19 @@ mod tests {
     fn reserved_names_include_defaults_and_trimmed_case_insensitive_additions() {
         let defaults = ReservedUsernames::from_env(&RuntimeEnvironment::default());
         for name in [
-            "caper", "admin", "admins", "mod", "mods", "support", "feedback",
+            "caper", "capers", "admin", "admins", "mod", "mods", "support", "feedback", "security",
+            "staff",
         ] {
             assert!(defaults.contains(name));
         }
         let configured =
             ReservedUsernames::from_env(&RuntimeEnvironment::from_values_for_test([(
                 "RESERVED_USERNAMES",
-                " Security, TEAM , ,caper",
+                " Trust, TEAM , ,caper",
             )]));
         for name in [
-            "caper", "admin", "admins", "mod", "mods", "support", "feedback", "security", "team",
+            "caper", "capers", "admin", "admins", "mod", "mods", "support", "feedback", "security",
+            "staff", "trust", "team",
         ] {
             assert!(configured.contains(name));
         }
