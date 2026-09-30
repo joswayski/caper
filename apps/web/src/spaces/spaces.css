@@ -109,11 +109,15 @@
 .spaces-state { display: grid; place-content: center; justify-items: center; gap: 18px; text-align: center; }
 .spaces-state .wordmark { position: absolute; top: 28px; left: max(28px, calc((100vw - 1400px) / 2)); }
 .spaces-state p { color: var(--text-muted); }
-.spaces-state button, .spaces-empty section > button { min-height: 44px; padding: 0 16px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
+.spaces-state button, .spaces-empty .primary { min-height: 44px; padding: 0 16px; border: 1px solid var(--terracotta); border-radius: 8px; color: #fff; background: var(--terracotta); font-weight: 800; cursor: pointer; }
 .spaces-empty section { width: min(560px, 100%); margin: 18vh auto 0; }
 .spaces-empty h1 { margin: 10px 0 14px; font-size: clamp(2.4rem, 7vw, 4.5rem); letter-spacing: -.06em; }
 .spaces-empty section > p:not(.eyebrow) { color: var(--text-muted); line-height: 1.65; }
-.spaces-empty section > button { margin-top: 22px; }
+.spaces-empty form { margin-top: 28px; }
+.spaces-empty .space-field { font-size: .9rem; }
+.spaces-empty .space-field input { height: 48px; border-radius: 8px; }
+.spaces-empty .space-dialog-actions { justify-content: flex-start; }
+.spaces-empty button:disabled { opacity: .45; cursor: not-allowed; }
 .spaces-empty section > small { display: block; margin-top: 10px; color: var(--text-muted); }
 .empty-channel-account { display: flex; align-items: center; gap: 8px; margin: auto 12px 12px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-raised); font-size: .8rem; }
 .empty-channel { min-height: 360px; display: grid; place-content: center; justify-items: center; padding: 24px; text-align: center; }
@@ -189,7 +193,7 @@
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
 }
 .space-dialog .secondary:hover:not(:disabled), .member-add button:hover:not(:disabled) { border-color: var(--text-muted); background: var(--border); }
-.space-dialog .primary:hover:not(:disabled), .spaces-state button:hover:not(:disabled), .spaces-empty section > button:hover:not(:disabled), .empty-channel > button:hover:not(:disabled) { border-color: var(--terracotta-bright); background: var(--terracotta-bright); }
+.space-dialog .primary:hover:not(:disabled), .spaces-state button:hover:not(:disabled), .spaces-empty .primary:hover:not(:disabled), .empty-channel > button:hover:not(:disabled) { border-color: var(--terracotta-bright); background: var(--terracotta-bright); }
 .space-dialog .danger:hover:not(:disabled) { border-color: #d44355; background: #d44355; }
 .space-dialog .danger-outline:hover:not(:disabled) { border-color: #d44355; color: #ffabb5; background: rgb(185 54 70 / .16); }
 .member-manager li button:hover:not(:disabled) { color: #ff8c9a; background: rgb(185 54 70 / .12); }
