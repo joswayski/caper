@@ -63,6 +63,10 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-activator")).placeItems'), 'center');
   assert.equal(evaluate('return document.querySelector(".live-activator").getAttribute("href")'), '/spaces');
 
+  assert.equal(evaluate('return document.querySelector(".experimental-warning").textContent'), 'Caper is a work in progress and may contain bugs or incomplete features.');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".experimental-note")).color'), 'rgb(185, 188, 190)', 'Contact copy stays neutral');
+  assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".experimental-warning")).color'), 'rgb(185, 188, 190)', 'Only the work-in-progress sentence gets a warm tint');
+
   // Production surfaces from shared/design.css; don't derive expectations from the demo.
   assert.deepEqual(evaluate('return [".sim-sidebar", ".sim-chat", ".sim-composer"].map(s => getComputedStyle(document.querySelector(s)).backgroundColor)'), ['rgb(21, 28, 30)', 'rgb(25, 33, 35)', 'rgb(40, 49, 51)']);
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), '30%');
