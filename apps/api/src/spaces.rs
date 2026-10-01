@@ -112,9 +112,9 @@ pub(crate) async fn channel_access(
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
            AND NOT s.demo AND $2::bigint IS NOT NULL
-                 AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)
+                 AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2 AND sm.deleted_at IS NULL)
                  AND (s.owner_id = $2 OR NOT c.private OR
-                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))",
+                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2 AND cm.deleted_at IS NULL))",
     )
     .bind(channel)
     .bind(user)
@@ -237,7 +237,7 @@ async fn list_spaces(
         "SELECT s.external_id, s.name, owner.external_id
          FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id
          JOIN public.users owner ON owner.id = s.owner_id
-         WHERE sm.user_id = $1 AND s.deleted_at IS NULL AND NOT s.demo
+         WHERE sm.user_id = $1 AND sm.deleted_at IS NULL AND s.deleted_at IS NULL AND NOT s.demo
          ORDER BY lower(s.name), s.id",
     )
     .bind(principal.user.id)
@@ -264,7 +264,7 @@ async fn create_space(
     let (owned, memberships): (i64, i64) = sqlx::query_as(
         "SELECT
            (SELECT count(*) FROM public.spaces WHERE owner_id = $1 AND deleted_at IS NULL),
-           (SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id WHERE sm.user_id = $1 AND s.deleted_at IS NULL)",
+           (SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id WHERE sm.user_id = $1 AND sm.deleted_at IS NULL AND s.deleted_at IS NULL)",
     )
     .bind(principal.user.id)
     .fetch_one(&mut *tx)
@@ -318,7 +318,7 @@ async fn get_space(
         "SELECT s.id,s.name,s.external_id,o.external_id FROM public.spaces s
          JOIN public.users o ON o.id=s.owner_id
          WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo
-           AND EXISTS (SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2)",
+           AND EXISTS (SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2 AND deleted_at IS NULL)",
     )
     .bind(&space)
     .bind(principal.user.id)
@@ -330,7 +330,7 @@ async fn get_space(
         "SELECT c.external_id,s.external_id,c.name,c.private FROM public.channels c
          JOIN public.spaces s ON s.id=c.space_id
          WHERE c.space_id=$1 AND c.deleted_at IS NULL
-           AND (s.owner_id=$2 OR NOT c.private OR EXISTS (SELECT 1 FROM public.channel_members WHERE channel_id=c.id AND user_id=$2))
+           AND (s.owner_id=$2 OR NOT c.private OR EXISTS (SELECT 1 FROM public.channel_members WHERE channel_id=c.id AND user_id=$2 AND deleted_at IS NULL))
          ORDER BY c.id",
     )
     .bind(row.0)
@@ -489,10 +489,10 @@ async fn add_space_member(
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
     let member = find_user_for_update(&mut tx, &input.username).await?;
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id=sm.space_id WHERE sm.user_id=$1 AND s.deleted_at IS NULL")
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id=sm.space_id WHERE sm.user_id=$1 AND sm.deleted_at IS NULL AND s.deleted_at IS NULL")
         .bind(member.0).fetch_one(&mut *tx).await.map_err(database_error)?;
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2)",
+        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL)",
     )
     .bind(space_id)
     .bind(member.0)
@@ -555,9 +555,9 @@ async fn remove_space_member(
     if principal.user.id != owner_id && principal.user.id != target {
         return Err(not_found());
     }
-    sqlx::query("DELETE FROM public.channel_members cm USING public.channels c WHERE cm.channel_id=c.id AND c.space_id=$1 AND cm.user_id=$2")
+    sqlx::query("UPDATE public.channel_members cm SET deleted_at=now() FROM public.channels c WHERE cm.channel_id=c.id AND c.space_id=$1 AND cm.user_id=$2 AND cm.deleted_at IS NULL")
         .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
-    let changed = sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
+    let changed = sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(space_id)
         .bind(target)
         .execute(&mut *tx)
@@ -581,8 +581,8 @@ async fn list_channel_members(
         "SELECT u.external_id,u.avatar_id,u.username,u.display_name,s.owner_id=u.id
          FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
          JOIN public.spaces s ON s.id=sm.space_id
-         WHERE sm.space_id=$2 AND u.deleted_at IS NULL
-           AND (s.owner_id=u.id OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=$1 AND cm.user_id=u.id))
+         WHERE sm.space_id=$2 AND sm.deleted_at IS NULL AND u.deleted_at IS NULL
+           AND (s.owner_id=u.id OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=$1 AND cm.user_id=u.id AND cm.deleted_at IS NULL))
          ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id",
     )
     .bind(channel_id)
@@ -613,7 +613,7 @@ async fn add_channel_member(
     let channel_id = channel_for_update(&mut tx, space_id, &channel).await?;
     let member = find_user_for_update(&mut tx, &input.username).await?;
     let belongs: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2)",
+        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL)",
     )
     .bind(space_id)
     .bind(member.0)
@@ -661,7 +661,7 @@ async fn remove_channel_member(
         return Err(conflict("owner cannot be removed"));
     }
     let changed =
-        sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+        sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
             .bind(channel_id)
             .bind(target)
             .execute(&mut *tx)
@@ -705,7 +705,7 @@ async fn owner_space(
 }
 
 async fn accessible_space(pool: &PgPool, space: &str, user: i64) -> Result<i64, ApiError> {
-    sqlx::query_scalar("SELECT s.id FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo AND EXISTS(SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2)")
+    sqlx::query_scalar("SELECT s.id FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo AND EXISTS(SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2 AND deleted_at IS NULL)")
         .bind(space).bind(user).fetch_optional(pool).await.map_err(database_error)?.ok_or_else(not_found)
 }
 
@@ -737,7 +737,7 @@ async fn find_user_for_update(
 }
 
 async fn members(pool: &PgPool, space: i64) -> Result<Vec<Member>, ApiError> {
-    Ok(sqlx::query_as::<_,(String,i16,String,String,bool)>("SELECT u.external_id,u.avatar_id,u.username,u.display_name,s.owner_id=u.id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id JOIN public.spaces s ON s.id=sm.space_id WHERE sm.space_id=$1 AND u.deleted_at IS NULL ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id")
+    Ok(sqlx::query_as::<_,(String,i16,String,String,bool)>("SELECT u.external_id,u.avatar_id,u.username,u.display_name,s.owner_id=u.id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id JOIN public.spaces s ON s.id=sm.space_id WHERE sm.space_id=$1 AND sm.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id")
         .bind(space).fetch_all(pool).await.map_err(database_error)?.into_iter().map(|(id,avatar_id,username,display_name,owner)|Member{id,avatar_id,username,display_name,owner}).collect())
 }
 
@@ -972,22 +972,114 @@ mod tests {
             .unwrap(),
             StatusCode::NO_CONTENT
         );
+        // Leaving ends access but keeps both membership records.
+        let periods = |table: &'static str, column: &'static str, scope: i64| {
+            let pool = pool.clone();
+            let user = member.user.id;
+            async move {
+                sqlx::query_as::<_, (i64, i64)>(&format!(
+                    "SELECT count(*), count(*) FILTER (WHERE deleted_at IS NULL) FROM public.{table}
+                     WHERE {column}=$1 AND user_id=$2"
+                ))
+                .bind(scope)
+                .bind(user)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(periods("space_members", "space_id", space_id).await, (1, 0));
         assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM public.channel_members WHERE channel_id=$1 AND user_id=$2"
-            )
-            .bind(private_id)
-            .bind(member.user.id)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-            0
+            periods("channel_members", "channel_id", private_id).await,
+            (1, 0)
         );
         assert_eq!(
             channel_access(&pool, &public, Some(member.user.id))
                 .await
                 .unwrap_err()
                 .status,
+            StatusCode::NOT_FOUND
+        );
+        // Re-adding starts a new period without reviving the old private grant,
+        // and removing again leaves every earlier period intact.
+        let (status, _) = add_space_member(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(space.clone()),
+            Json(MemberInput {
+                username: "member".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(periods("space_members", "space_id", space_id).await, (2, 1));
+        assert!(
+            channel_access(&pool, &public, Some(member.user.id))
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            channel_access(&pool, &private, Some(member.user.id))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        let (status, _) = add_channel_member(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path((space.clone(), private.clone())),
+            Json(MemberInput {
+                username: "member".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(
+            periods("channel_members", "channel_id", private_id).await,
+            (2, 1)
+        );
+        let (status, _) = add_channel_member(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path((space.clone(), private.clone())),
+            Json(MemberInput {
+                username: "member".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            periods("channel_members", "channel_id", private_id).await,
+            (2, 1)
+        );
+        assert_eq!(
+            remove_space_member(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path((space.clone(), member.user.external_id.clone())),
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(periods("space_members", "space_id", space_id).await, (2, 0));
+        assert_eq!(
+            periods("channel_members", "channel_id", private_id).await,
+            (2, 0)
+        );
+        assert_eq!(
+            remove_space_member(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path((space.clone(), member.user.external_id.clone())),
+            )
+            .await
+            .unwrap_err()
+            .status,
             StatusCode::NOT_FOUND
         );
         assert_eq!(

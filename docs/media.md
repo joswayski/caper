@@ -489,7 +489,10 @@ Owners add existing accounts by exact username and can remove them. This is a
 direct membership change, not an invitation awaiting acceptance. There are no
 invite links, custom roles, ownership transfers or public space discovery yet.
 Non-owner members can leave a space themselves. Removing a space member also
-removes their private-channel grants. The owner cannot be removed.
+removes their private-channel grants. The owner cannot be removed. Removal is a
+soft delete: the membership row gets `deleted_at` and stays in Postgres. Re-adding
+someone inserts a new row, so earlier membership periods are kept; it does not
+restore old private-channel grants.
 Counts include active resources only. Defaults are 20 owned spaces per
 account (`SPACE_OWNED_LIMIT`), 100 total memberships including owned spaces
 (`SPACE_MEMBERSHIP_LIMIT`), and 100 channels per space (`SPACE_CHANNEL_LIMIT`).
@@ -2492,7 +2495,9 @@ only as HMAC-SHA-256 values. Session tokens contain 256 random bits and only the
 SHA-256 hashes are stored. Request limits are enforced in PostgreSQL across API
 replicas: three sends per address per 15 minutes, ten per address per day, twenty
 per keyed IP hash per hour, and a 500-email global hourly budget. Throttled requests
-return an indistinguishable synthetic challenge ID and do not call SES.
+return an indistinguishable synthetic challenge ID and do not call SES. Challenges
+and sessions are retained after they are consumed, expire, or are revoked; nothing
+prunes them. Removing a user row does not cascade to its sessions.
 
 External-provider middleware, callbacks, token verification, key fetching, session
 hooks, and browser forwarding remain removed. Server functions retain CSRF middleware.
@@ -2828,6 +2833,8 @@ rejected for migrations with no runtime-URL fallback. Both URLs must target the 
 existing `/caperchat` database. Startup does not create the database or roles. It
 connects with `DATABASE_URL` to identify the actual runtime role, then the migration
 connection grants that role only the application table and sequence access it needs.
+It also revokes `DELETE` and `TRUNCATE` on every `public` table on each startup, so
+the API cannot hard-delete records; removals use `deleted_at` or `revoked_at`.
 The direct migration connection explicitly sets `search_path=public`, so a schema
 named for the migration role or a database-level custom search path cannot redirect
 new tables or SQLx's ledger. This startup override is not applied to the runtime
