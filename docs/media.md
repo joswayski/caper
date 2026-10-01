@@ -2752,20 +2752,35 @@ accounts a random default. Login, username/display-name edits and voice rejoinin
 do not reroll it. Assignments are not exclusive: people can share an avatar.
 The field identifies an actual bundled image, not a hash of a name/account ID.
 
-The immutable v1 collection contains **100 distinct designs × eight hue treatments**.
-The original four homepage characters remain unchanged. Companion source sheets
-are in `assets/avatars`; `node scripts/generate-avatars.mjs` (ImageMagick 7) reproduces
-the 32×25, 64px-per-tile atlas (2048×1600). Web uses WebP; native builds bundle
-the canonical PNG. Source artwork is generated, then cropped/recolored offline;
-there is no runtime generation, remote image service, R2, or new secret.
-Do not reorder tiles or replace the v1 collection once accounts have assignments.
+The collection contains **100 distinct designs × eight hue treatments**. The v2
+artwork uses real SVG paths traced from the original 256px source quadrants, not
+embedded bitmap images. Tracing simplifies shading and details; it cannot recover
+detail absent from the source. The ID mapping stays character = ID % 100 and
+colorway = floor(ID / 100), so existing assignments retain their character/color.
+The old 64px v1 atlases remain unchanged for older web clients.
+
+Canonical vector masters live in `assets/avatars/vector-v2`. The offline authoring
+command `uv run scripts/vectorize-avatars.py` requires ImageMagick 7 and pinned
+VTracer; do not rerun it against a published version. To reproduce client exports,
+run `node scripts/generate-avatar-vectors.mjs`; `--check` detects drift and runs in
+web tests. Web and Rust desktop use `public/images/avatars/v2/{id}.svg`, Apple uses
+a preserved-vector asset catalog, and Android uses native VectorDrawables. Native
+resources are bundled for offline use. There is no runtime generator, image
+service, R2, new secret, or database change for the vector upgrade.
+
+Web requests only the visible SVGs. Versioned v2 paths get
+`Cache-Control: public, max-age=31536000, immutable`; publish changed artwork at a
+new versioned path, never overwrite cached v2 URLs or reroll IDs. R2 is unnecessary
+for this fixed collection. Future uploaded photos/GIFs should use object storage
+with validated media references and separate upload/access/cache policies; storing
+an object in R2 alone is not a CDN caching configuration.
 
 Account/member/chat author responses carry `avatarId`. HTTP history, both gateway
 replay protocols and outbox publication enrich old messages from the current user
 record without rewriting the message log. Voice snapshots carry the authenticated
 account's saved avatar, not a client-supplied ID. Existing shared voice state is
 backward-compatible: absent IDs render initials until the participant rejoins.
-Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved tile. Missing or
+Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved design. Missing or
 invalid IDs render initials; presence dots and speaking rings remain separate.
 
 Custom photo/GIF uploads, avatar selection and a public collection page are future
@@ -2783,13 +2798,14 @@ against disposable Postgres. Chat tests cover missing-avatar historical payloads
 outbox and gateway replay; voice tests check trusted assignments and old Valkey
 state. `node scripts/test-avatars.mjs http://localhost:30701 .amp/in/artifacts`
 checks real browser components with a labelled API/gateway mock, including desktop
-and narrow layouts, tile boundaries, presence and profile rename. Normal screenshots
+and narrow layouts, SVG selection, presence and profile rename. Normal screenshots
 give every account a saved picture, including existing accounts. A separate
 incomplete-response test checks initials; it does not represent migrated accounts.
 This browser fixture is not live signup, SFU, physical phone or native evidence.
-Rust desktop was separately built and visually inspected in its labelled static
-fixture (chat, account, member and voice avatars); atlas selection and voice-stack
-interaction tests pass. The full desktop suite (`--test-threads=2`) reports 120
+The vector upgrade additionally decodes all 800 SVGs in Chromium, checks alpha
+outside the circular crop, and provides enlarged/100-design review captures.
+Rust desktop's SVG rendering and voice-stack interaction tests pass.
+The full desktop suite (`--test-threads=2`) reports 120
 passed and nine ignored. Leaving/deleting a space clears private conversation
 state immediately, without a retired public-General fallback.
 Desktop application clippy passes with `--no-deps`; unrestricted clippy fails
@@ -2799,7 +2815,29 @@ their platform build/device checks before release; Java and
 Swift/Xcode are unavailable in this orb. Docker daemon is unavailable, so API/web
 build stages were validated directly rather than building container images.
 
-#### Avatar deployment order
+#### Vector upgrade deployment order
+
+1. Prerequisite: the saved-avatar API/migration rollout below is already complete.
+   No infrastructure, R2, secrets/configuration, database migrations, API or gateway
+   deployment is needed for the vector upgrade. Do not alter saved assignments.
+2. Once the merged commit's web image is available, deploy web explicitly (merging
+   alone does not deploy). Wait for the workflow to finish, then verify rollout:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   curl -I https://caper.chat/images/avatars/v2/0.svg
+   ```
+   Expect SVG content and a one-year immutable cache header. Check existing
+   account pictures in chat/member/voice views and at browser zoom; IDs must not
+   change. The old v1 image URLs remain available to previously loaded clients.
+3. Release Android, iOS/macOS and Rust desktop independently through their normal
+   client workflows after platform builds and visual/device checks. Clients bundle
+   their resources; they do not depend on web deploying first.
+4. Roll back only the affected web image/client release if necessary; leave the
+   database untouched. No shared deployment or database writes were run here.
+
+#### Original saved-avatar deployment order
 
 1. No infrastructure, R2, new secrets or configuration changes. Wait for immutable
    API/web images for the merged commit. Merging does not deploy. Keep existing

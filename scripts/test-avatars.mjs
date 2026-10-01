@@ -71,7 +71,8 @@ try {
   assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].every(e => e.querySelector("[data-avatar-id]"))'), true, 'Every account has a saved profile picture');
   assert.equal(evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'), 'Online');
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true, 'Image avatars and their containers must have transparent backing');
-  browser('eval', 'new Promise((resolve,reject) => { const image = new Image(); image.onload=()=>image.width===2048&&image.height===1600?resolve(true):reject(Error("Wrong atlas size")); image.onerror=reject; image.src="/images/avatars/capers-v1.webp"; })');
+  assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundImage.endsWith(`/images/avatars/v2/${e.dataset.avatarId}.svg")`))'), true);
+  browser('eval', 'Promise.all([0,31,32,799,143].map(id => new Promise((resolve,reject) => { const image = new Image(); image.onload=()=>resolve(true); image.onerror=reject; image.src=`/images/avatars/v2/${id}.svg`; })))');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-desktop.png'));
   browser('click', '.space-menu summary');
   browser('click', '.space-actions button');
@@ -98,7 +99,55 @@ try {
   assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].at(-1).textContent'), 'M');
   assert.equal(evaluate('[...document.querySelectorAll(".chat-avatar")].at(-1).querySelector("[data-avatar-id]")'), null);
   assert.notEqual(evaluate('getComputedStyle([...document.querySelectorAll(".chat-avatar")].at(-1).firstElementChild).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Initials retain a readable neutral backing for incomplete responses');
-  console.log('PASS: every normal account has a saved profile picture; saved IDs in chat, members, voice roster/stack and account; zero/row/end tiles; transparent image backing; separate missing-response fallback; presence; profile rename; desktop and narrow Chromium. Mock API, no live voice.');
+  // Review enlarged real components outside the compact chat layout, then every
+  // design. These temporary test surfaces are not product gallery/upload features.
+  browser('set', 'viewport', '1280', '900', '2');
+  browser('eval', `(() => {
+    const stage = document.createElement('section'); stage.id = 'vector-review';
+    stage.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0C0D0F;color:#F3F4F5;padding:32px;overflow:auto';
+    stage.innerHTML = '<h1 style="font-size:24px;margin-bottom:24px">Rendering comparison · saved avatar IDs unchanged</h1><div id="comparison" style="display:grid;grid-template-columns:120px repeat(4, 240px);gap:16px;align-items:center"></div>';
+    document.body.append(stage);
+    const grid = stage.querySelector('#comparison');
+    for (const version of ['Previous 64px bitmap', 'New vector paths']) {
+      const label = document.createElement('p'); label.textContent = version; grid.append(label);
+      for (const id of [0,31,32,799]) {
+        const tile = document.querySelector('[data-avatar-id="'+id+'"]').cloneNode(true);
+        tile.style.width='240px'; tile.style.height='240px'; tile.style.borderRadius='50%';
+        if (version.startsWith('Previous')) {
+          tile.style.backgroundImage='url(/images/avatars/capers-v1.webp)';
+          tile.style.backgroundSize='3200% 2500%';
+          tile.style.backgroundPosition=(id%32)*100/31+'% '+Math.floor(id/32)*100/24+'%';
+        }
+        grid.append(tile);
+      }
+    }
+    const bitmap = new Image(); bitmap.src='/images/avatars/capers-v1.webp'; return bitmap.decode();
+  })()`);
+  browser('eval', 'new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-enlarged.png'));
+  // All 800 must load, retain alpha outside the circle, and contain visible art.
+  assert.equal(evaluate(`(async () => {
+    for (let id=0; id<800; id++) {
+      const image = new Image(); image.src='/images/avatars/v2/'+id+'.svg'; await image.decode();
+      const canvas=document.createElement('canvas'); canvas.width=canvas.height=32;
+      const ctx=canvas.getContext('2d'); ctx.drawImage(image,0,0,32,32);
+      if (ctx.getImageData(0,0,1,1).data[3] !== 0 || ctx.getImageData(16,16,1,1).data[3] !== 255) throw Error('Invalid alpha for '+id);
+    }
+    return true;
+  })()`), true);
+  browser('set', 'viewport', '1280', '1500', '2');
+  browser('eval', `(() => {
+    const stage=document.querySelector('#vector-review');
+    stage.innerHTML='<h1 style="font-size:24px;margin-bottom:24px">100 vector designs · IDs 0–99 · artwork review</h1><div id="designs" style="display:grid;grid-template-columns:repeat(10,1fr);gap:12px"></div>';
+    for(let id=0;id<100;id++) {
+      const figure=document.createElement('figure'); figure.style.margin='0';
+      figure.innerHTML='<img width="100" height="100" src="/images/avatars/v2/'+id+'.svg"><figcaption style="text-align:center">'+id+'</figcaption>';
+      stage.querySelector('#designs').append(figure);
+    }
+    return Promise.all([...stage.querySelectorAll('img')].map(img=>img.decode()));
+  })()`);
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-vector-collection.png'));
+  console.log('PASS: saved SVG IDs in chat, members, voice roster/stack and account; transparent backing; missing-response fallback; presence; profile rename; desktop, narrow and enlarged Chromium. Mock API, no live voice.');
 } catch (error) {
   console.error(browser('snapshot'));
   throw error;
