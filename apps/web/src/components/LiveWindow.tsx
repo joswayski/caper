@@ -21,30 +21,30 @@ const people = [
 ];
 
 const messages = [
-  { person: 0, at: 0, text: "okay, this made my entire morning", meme: true, emoji: 0 },
-  { person: 1, at: 1.25, text: "the tiny hat is doing a lot of work here", emoji: 2 },
-  { person: 2, at: 3, text: "new group photo. no objections please", emoji: 1 },
-  { person: 3, at: 4.75, text: "i leave for TWO minutes 😂", emoji: 4 },
-  { person: 0, at: 7.5, text: "anyway… who’s up for a game?", emoji: 3 },
-  { person: 4, at: 9.25, text: "did someone say game night? 👀", emoji: 2 },
-  { person: 1, at: 11.25, text: "already here. bringing the playlist 🎶", emoji: 1 },
-  { person: 3, at: 11.75, text: "save me a spot", emoji: 3 },
-  { person: 2, at: 12.5, text: "rule one: nobody lets me choose the map", emoji: 0 },
-  { person: 5, at: 16.25, text: "hello hello! what did i miss?", emoji: 1 },
-  { person: 4, at: 16.75, text: "a tiny hat and some very serious planning", emoji: 0 },
-  { person: 5, at: 20.25, text: "excellent. i brought snacks 🍿", emoji: 2 },
-  { person: 0, at: 22, text: "brb, getting tea. please behave", emoji: 4 },
-  { person: 3, at: 24, text: "no promises", emoji: 0 },
-  { person: 0, at: 26.5, text: "back! the kettle was faster than this lobby", emoji: 3 },
-  { person: 2, at: 28.25, text: "we’re waiting for theo’s 400-song playlist", emoji: 0 },
-  { person: 1, at: 30.5, text: "it’s called having range", emoji: 2 },
-  { person: 4, at: 32.25, text: "i’m requesting exactly one ridiculous song", emoji: 1 },
-  { person: 5, at: 34.75, text: "fun fact: capybaras are excellent swimmers", emoji: 3 },
-  { person: 3, at: 36.25, text: "so our mascot can carry us on the water map?", emoji: 0 },
-  { person: 5, at: 38, text: "joining voice to defend this theory", emoji: 2 },
-  { person: 0, at: 40.5, text: "this is now a capybara appreciation channel", meme: true, emoji: 1 },
-  { person: 4, at: 42.75, text: "the hat really ties the whole team together", emoji: 2 },
-  { person: 2, at: 45, text: "back with cookies. let’s gooo", emoji: 3 },
+  { person: 0, at: 0, text: "okay, this made my entire morning", meme: true, emoji: 0, reactionCount: 3 },
+  { person: 1, at: 1.25, text: "the tiny hat is doing a lot of work here" },
+  { person: 2, at: 3, text: "new group photo. no objections please" },
+  { person: 3, at: 4.75, text: "i leave for TWO minutes 😂", emoji: 4, reactionCount: 1 },
+  { person: 0, at: 7.5, text: "anyway… who’s up for a game?" },
+  { person: 4, at: 9.25, text: "did someone say game night? 👀" },
+  { person: 1, at: 11.25, text: "already here. bringing the playlist 🎶" },
+  { person: 3, at: 11.75, text: "save me a spot" },
+  { person: 2, at: 12.5, text: "rule one: nobody lets me choose the map", emoji: 0, reactionCount: 2 },
+  { person: 5, at: 16.25, text: "hello hello! what did i miss?" },
+  { person: 4, at: 16.75, text: "a tiny hat and some very serious planning" },
+  { person: 5, at: 20.25, text: "excellent. i brought snacks 🍿" },
+  { person: 0, at: 22, text: "brb, getting tea. please behave" },
+  { person: 3, at: 24, text: "no promises", emoji: 0, reactionCount: 1 },
+  { person: 0, at: 26.5, text: "back! the kettle was faster than this lobby" },
+  { person: 2, at: 28.25, text: "we’re waiting for theo’s 400-song playlist" },
+  { person: 1, at: 30.5, text: "it’s called having range" },
+  { person: 4, at: 32.25, text: "i’m requesting exactly one ridiculous song" },
+  { person: 5, at: 34.75, text: "fun fact: capybaras are excellent swimmers", emoji: 3, reactionCount: 2 },
+  { person: 3, at: 36.25, text: "so our mascot can carry us on the water map?" },
+  { person: 5, at: 38, text: "joining voice to defend this theory" },
+  { person: 0, at: 40.5, text: "this is now a capybara appreciation channel", meme: true, emoji: 1, reactionCount: 3 },
+  { person: 4, at: 42.75, text: "the hat really ties the whole team together" },
+  { person: 2, at: 45, text: "back with cookies. let’s gooo", emoji: 3, reactionCount: 2 },
 ];
 
 type DemoMessage = typeof messages[number] & { cycle: number; reactions: number[] };
@@ -89,7 +89,7 @@ export default function LiveWindow() {
   // Stable server/first-client render; randomize only once the local demo is
   // ready, then once per loop, never on ordinary React renders.
   const timing = useMemo(() => createDemoTiming(people.map((person) => person.speech), messages.map((message) => message.at), ready ? Math.random : () => .5), [ready, cycle]);
-  const timedMessages = useMemo(() => messages.map((message, index) => ({ ...message, ...timing.messages[index], cycle })), [timing, cycle]);
+  const timedMessages = useMemo(() => messages.map((message, index) => ({ ...message, ...timing.messages[index], reactions: message.emoji === undefined ? [] : timing.messages[index].reactions.slice(0, message.reactionCount), cycle })), [timing, cycle]);
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
@@ -205,13 +205,13 @@ export default function LiveWindow() {
               }}>
                 <div className="sim-message-list">
                   {visibleMessages.map((message) => {
-                    const item = emoji[message.emoji];
+                    const item = message.emoji === undefined ? undefined : emoji[message.emoji];
                     const count = message.reactions.filter((at) => at + message.cycle * cycleLength <= phase + cycle * cycleLength).length;
                     return <article className="sim-message" key={`${message.cycle}:${message.at}`}>
                       <Avatar person={people[message.person]} />
                       <div><strong>{people[message.person].name}</strong><span className="sim-time">just now</span><p>{message.text}</p>{message.meme && <img className="sim-meme" src="/images/demo-tiny-hat.webp" width="384" height="384" alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy." />}
                         <div className="sim-reactions">
-                          {count > 0 && <span className="sim-reaction" role="img" aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}`}><img src={`/images/demo-emoji/${item.code}.svg`} alt="" /><span>{count}</span></span>}
+                          {item && count > 0 && <span className="sim-reaction" role="img" aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}`}><img src={`/images/demo-emoji/${item.code}.svg`} alt="" /><span>{count}</span></span>}
                         </div>
                       </div>
                     </article>;

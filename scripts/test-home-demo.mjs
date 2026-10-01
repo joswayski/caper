@@ -140,10 +140,15 @@ try {
   assert.equal(evaluate('return Number(document.querySelectorAll(".sim-message")[23].querySelector(".sim-reaction > span").textContent)'), 1, 'Older messages do not receive all remaining reactions instantly at the loop boundary');
   nextMoments(3); // June posts again; her original message remains too
   assert.equal(evaluate('return document.querySelectorAll(".sim-message:last-of-type .sim-reaction").length'), 0);
+  const firstCycleReactions = () => evaluate('return [...document.querySelectorAll(".sim-message")].slice(0, 24).map(message => Number(message.querySelector(".sim-reaction > span")?.textContent ?? 0))');
+  const expectedReactions = [3, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 2, 0, 0, 3, 0, 2];
+  assert.deepEqual(firstCycleReactions(), expectedReactions, 'Only seven standout posts receive reactions, with varied counts; ordinary messages stay unreacted after every delay has elapsed');
   nextMoments(49); // A second complete loop still cannot erase the original
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 51);
   assert.ok(evaluate('return window.firstDemoMessage === document.querySelector(".sim-message")'));
+  assert.deepEqual(firstCycleReactions(), expectedReactions, 'Later loops cannot add reactions to ordinary messages or inflate the original counts');
   assert.ok(evaluate('const el = document.querySelector(".sim-messages"); return el.scrollHeight - el.scrollTop - el.clientHeight <= 1;'));
+  console.log('PASS: 17 of 24 messages never receive reactions; seven standout posts get 1–3 delayed reactions');
   console.log('PASS: full message history persists across two loops; auto-follow and reading older messages work; reactions remain delayed and read-only');
   console.log('PASS: general/feedback channels, no join notices/hints/actions, nested voice roster, simultaneous speakers, burst messages and multi-person typing');
 

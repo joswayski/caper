@@ -222,6 +222,8 @@ The centered join CTA is the demo's only action. The `general` and `feedback`
 channels, voice roster, composer and emoji reaction counts are read-only; there
 are no join notices, reaction picker/hints, or playback controls. Speech,
 messages, typing and delayed reactions use independent randomized timings.
+Only seven of the 24 scripted posts (memes and a few standout replies) receive
+one to three delayed reactions; ordinary messages stay unreacted.
 Messages remain in local page history across animation loops. The full-height
 conversation follows new posts unless the visitor scrolls back to read older
 messages; reloading starts a fresh illustration. No reaction API is called.
