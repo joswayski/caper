@@ -1,6 +1,7 @@
 import SwiftUI
 #if os(iOS)
 import MediaPlayer
+import UIKit
 #elseif os(macOS)
 import AppKit
 #endif
@@ -213,7 +214,7 @@ private struct WorkspaceView: View {
         workspace.task(id: model.viewedVoiceRoot) { await model.refreshVoiceAvailability() }
     }
 
-    private var workspace: some View {
+    private var workspaceContent: some View {
         GeometryReader { geometry in
             let narrow = geometry.size.width <= 760
             let membersVisible = membersPreference ?? !narrow
@@ -233,13 +234,20 @@ private struct WorkspaceView: View {
                                 membersPreference = !membersVisible
                             }
                             if membersVisible {
-                                MemberPresenceView(model: model)
-                                    .frame(width: min(280, geometry.size.width - 24)).padding(.top, 50)
+                                Color.black.opacity(0.25)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { membersPreference = false }
+                                    .padding(.top, 50)
+                                    .accessibilityHidden(true)
+                                MemberPresenceView(model: model, close: { membersPreference = false })
+                                    .frame(width: min(280, geometry.size.width - 64))
+                                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                                    .padding(.top, 58).padding(.trailing, 8).padding(.bottom, 8)
                             }
                         }
                     } else {
                         HStack(spacing: 0) {
-                            SpaceRail(model: model, showLogin: { sheet = .login }, create: { sheet = .createSpace })
+                            SpaceRail(model: model, narrow: narrow, showLogin: { sheet = .login }, create: { sheet = .createSpace })
                                 .frame(width: 60)
                             ChannelSidebar(
                                 model: model,
@@ -249,6 +257,9 @@ private struct WorkspaceView: View {
                             )
                             .frame(width: narrow ? nil : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
                             .frame(maxWidth: narrow ? .infinity : CGFloat(min(sidebarWidth, sidebarMaximum(for: geometry.size.width))))
+                            .clipShape(RoundedRectangle(cornerRadius: narrow ? 16 : 0))
+                            .padding(.top, narrow ? 8 : 0)
+                            .padding(.trailing, narrow ? 8 : 0)
                             .overlay(alignment: .trailing) {
                                 if !narrow {
                                     Rectangle().fill(sidebarHovered || sidebarFocused ? CaperTheme.terracottaBright : Color.clear)
@@ -321,14 +332,22 @@ private struct WorkspaceView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if narrow && model.navigationOpen {
+                    AccountBar(model: model, sheet: $sheet)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CaperTheme.blackout)
         }
-        .modifier(LoginPresentation(sheet: $sheet, model: model))
-        .disabled(modalSheet.wrappedValue != nil)
-        .accessibilityHidden(modalSheet.wrappedValue != nil)
-        .overlay {
+    }
+
+    private var workspace: some View {
+        ZStack {
+            workspaceContent
+                .disabled(modalSheet.wrappedValue != nil)
+                .accessibilityHidden(modalSheet.wrappedValue != nil)
+            // A sibling, not an overlay on disabled content: modal controls must
+            // retain their own hit-testing, keyboard and accessibility environment.
             if let item = modalSheet.wrappedValue {
                 GeometryReader { geometry in
                     ZStack {
@@ -339,7 +358,7 @@ private struct WorkspaceView: View {
                             .id(item.id)
                             .frame(width: min(item.id.contains("manage") ? 600 : 560, geometry.size.width - 32))
                             .frame(height: min(680, max(1, geometry.size.height - 48)), alignment: .top)
-                            .background(CaperTheme.surface)
+                            .background(CaperTheme.surface.onTapGesture {})
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                             .shadow(color: .black.opacity(0.3), radius: 24, y: 12)
@@ -352,6 +371,7 @@ private struct WorkspaceView: View {
                 }
             }
         }
+        .modifier(LoginPresentation(sheet: $sheet, model: model))
         .onChange(of: sheet?.id) { _, _ in modalDismissDisabled = false }
         .task(id: model.detail?.space.id) {
             guard sheet == nil, model.detail != nil else { return }
@@ -396,6 +416,7 @@ private struct LoginPresentation: ViewModifier {
 
 private struct SpaceRail: View {
     @Bindable var model: AppModel
+    let narrow: Bool
     let showLogin: () -> Void
     let create: () -> Void
     private var createHelp: String {
@@ -407,11 +428,11 @@ private struct SpaceRail: View {
         ScrollView {
             VStack(spacing: 10) {
                 ForEach(model.spaces) { space in
-                    SpaceRailButton(model: model, space: space)
+                    SpaceRailButton(model: model, space: space, narrow: narrow)
                 }
                 Button(action: model.account == nil ? showLogin : create) {
                     CaperIcon(name: "plus", size: 20).foregroundStyle(CaperTheme.terracottaBright)
-                        .frame(width: 40, height: 40)
+                        .frame(width: narrow ? 44 : 40, height: narrow ? 44 : 40)
                         .background(CaperTheme.surface)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(CaperTheme.border, style: StrokeStyle(lineWidth: 1, dash: [4])))
@@ -421,7 +442,7 @@ private struct SpaceRail: View {
             }.padding(.vertical, 14).frame(maxWidth: .infinity)
         }
         .background(CaperTheme.blackout)
-        .overlay(alignment: .trailing) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+        .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
 }
 
@@ -430,6 +451,7 @@ private struct SpaceRail: View {
 private struct SpaceRailButton: View {
     @Bindable var model: AppModel
     let space: Space
+    let narrow: Bool
     private var selected: Bool { model.selectedSpaceID == space.id }
     private var name: String { space.demo == true ? "Caper" : space.name }
     private var corner: CGFloat { selected ? 8 : 12 }
@@ -441,7 +463,7 @@ private struct SpaceRailButton: View {
         Button { Task { await model.select(space: space) } } label: {
             Text(space.demo == true ? "C" : String(space.name.prefix(1)).uppercased())
                 .font(CaperTheme.font(13, weight: .black))
-                .frame(width: 40, height: 40)
+                .frame(width: narrow ? 44 : 40, height: narrow ? 44 : 40)
                 .background(fill)
                 .clipShape(RoundedRectangle(cornerRadius: corner))
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
@@ -567,10 +589,10 @@ private struct ChannelSidebar: View {
                     }
                 }.padding(.horizontal, 16)
             }
-            AccountBar(model: model, sheet: $sheet)
+            if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
         .background(CaperTheme.sidebar)
-        .overlay(alignment: .trailing) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+        .overlay(alignment: .trailing) { if !narrow { Rectangle().fill(CaperTheme.border).frame(width: 1) } }
     }
 }
 
@@ -596,7 +618,11 @@ private struct NavigationPrefetchModifier: ViewModifier {
 private struct SidebarIconButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 14, weight: .semibold)).foregroundStyle(CaperTheme.muted)
+            #if os(iOS)
+            .frame(width: 44, height: 44)
+            #else
             .frame(width: 28, height: 28).background(configuration.isPressed ? CaperTheme.border : .clear)
+            #endif
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .modifier(ControlHover())
     }
@@ -662,7 +688,8 @@ private struct ChannelVoiceSlot: View {
 private struct MemberPresenceView: View {
     @Bindable var model: AppModel
     @Bindable var presence: PresenceModel
-    init(model: AppModel) { self.model = model; presence = model.presence }
+    var close: (() -> Void)?
+    init(model: AppModel, close: (() -> Void)? = nil) { self.model = model; presence = model.presence; self.close = close }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -671,8 +698,13 @@ private struct MemberPresenceView: View {
                 if model.detail?.space.demo != true {
                     Text("\(model.detail?.members.count ?? 0)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
                 }
+                if let close {
+                    Button(action: close) { CaperIcon(name: "x") }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Close member list")
+                }
             }.padding(.horizontal, 12).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            ScrollView {
             VStack(alignment: .leading, spacing: 8) {
             if model.detail?.space.demo == true {
                 Text("General is open to everyone. People in voice appear in the channel sidebar.")
@@ -699,6 +731,7 @@ private struct MemberPresenceView: View {
                 }
             }
             }.padding(.horizontal, 12)
+            }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(CaperTheme.sidebar)
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
@@ -844,7 +877,13 @@ private struct PrepareVoiceOnApproach: ViewModifier {
 private struct VoiceJoinButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
-            .padding(.horizontal, 10).frame(height: 32).background(CaperTheme.terracotta.opacity(configuration.isPressed ? 0.25 : 0.14))
+            .padding(.horizontal, 10)
+            #if os(iOS)
+            .frame(height: 44)
+            #else
+            .frame(height: 32)
+            #endif
+            .background(CaperTheme.terracotta.opacity(configuration.isPressed ? 0.25 : 0.14))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.terracotta.opacity(0.7))).clipShape(RoundedRectangle(cornerRadius: 6))
             .modifier(ControlHover())
     }
@@ -916,7 +955,13 @@ private struct AccountBar: View {
                 .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
                 .accessibilityValue(voice.muted ? "Muted" : "On").accessibilityIdentifier("microphone-toggle")
             Button { inputOptions.toggle() } label: {
-                CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
+                CaperIcon(name: "chevron-down", size: 12)
+                    #if os(iOS)
+                    .frame(width: 32, height: 44)
+                    #else
+                    .frame(width: 14, height: 28)
+                    #endif
+                    .contentShape(Rectangle())
             }.buttonStyle(.plain).help("Input Options").accessibilityLabel("Input Options")
                 .popover(isPresented: $inputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: true) }
             Button { CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) } } label: {
@@ -926,7 +971,13 @@ private struct AccountBar: View {
                 .accessibilityLabel(voice.deafened ? "Undeafen audio" : "Deafen audio")
                 .accessibilityValue(voice.deafened ? "Deafened" : "On").accessibilityIdentifier("deafen-toggle")
             Button { outputOptions.toggle() } label: {
-                CaperIcon(name: "chevron-down", size: 12).frame(width: 14, height: 28)
+                CaperIcon(name: "chevron-down", size: 12)
+                    #if os(iOS)
+                    .frame(width: 32, height: 44)
+                    #else
+                    .frame(width: 14, height: 28)
+                    #endif
+                    .contentShape(Rectangle())
             }.buttonStyle(.plain).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
             Menu {
@@ -947,9 +998,21 @@ private struct AccountBar: View {
                 #endif
                 if model.account != nil { Button("Log out", role: .destructive) { Task { await model.logout() } } }
                 else { Button("Sign in") { sheet = .login } }
-            } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 28, height: 28).fixedSize()
+            } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).menuIndicator(.hidden)
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                #else
+                .frame(width: 28, height: 28)
+                #endif
+                .fixedSize()
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
-            }.padding(4).frame(height: 42).background(CaperTheme.raised)
+            }.padding(4)
+                #if os(iOS)
+                .frame(height: 52)
+                #else
+                .frame(height: 42)
+                #endif
+                .background(CaperTheme.raised)
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
         .padding(12)
@@ -1013,14 +1076,14 @@ private struct AccountAudioMenu: View {
     }
 }
 
-private struct Avatar: View {
+struct Avatar: View {
     let name: String; let size: CGFloat
     var avatarID: Int? = nil
     var speaking = false
     var body: some View {
         Group {
-            if let index = CaperAvatar.index(for: avatarID) {
-                Image("caper-avatar-\(index)", bundle: caperResourceBundle)
+            if let image = CaperAvatar.image(for: avatarID) {
+                image.renderingMode(.original)
                     .resizable()
                     .scaledToFit()
                     .frame(width: size, height: size)
@@ -1042,6 +1105,22 @@ private var caperResourceBundle: Bundle {
     #else
     return Bundle(for: CaperResourceAnchor.self)
     #endif
+}
+
+extension CaperAvatar {
+    /// Resolve the framework/package asset explicitly. A missing catalog must
+    /// show initials rather than a blank frame that still takes up avatar space.
+    @MainActor static func image(for avatarID: Int?) -> Image? {
+        guard let index = index(for: avatarID) else { return nil }
+        let name = "caper-avatar-\(index)"
+        #if os(iOS)
+        guard let image = UIImage(named: name, in: caperResourceBundle, compatibleWith: nil) else { return nil }
+        return Image(uiImage: image)
+        #else
+        guard let image = caperResourceBundle.image(forResource: NSImage.Name(name)) else { return nil }
+        return Image(nsImage: image)
+        #endif
+    }
 }
 
 private struct ConversationStage: View {
@@ -1613,7 +1692,17 @@ private struct SpaceEditor: View {
                         Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
                             .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
                             .accessibilityIdentifier("space-members-heading")
-                        HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()); Button("Add") { run { try await model.addSpaceMember(username: username); username = "" } }.buttonStyle(CaperSecondaryButton()) }
+                        HStack {
+                            TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle())
+                                .autocorrectionDisabled()
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                #endif
+                                .submitLabel(.done).onSubmit(addMember)
+                                .accessibilityLabel("Exact username")
+                            Button("Add", action: addMember).buttonStyle(CaperSecondaryButton())
+                                .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }.disabled(pending)
                         ForEach(model.detail?.members ?? []) { member in
                             HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { run { try await model.removeSpaceMember(member) } } } }.font(CaperTheme.font(12))
                         }
@@ -1624,7 +1713,7 @@ private struct SpaceEditor: View {
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                 }.padding(22)
-            }.accessibilityIdentifier("space-settings-scroll")
+            }.scrollDismissesKeyboard(.interactively).accessibilityIdentifier("space-settings-scroll")
         }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : "" }
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
@@ -1635,7 +1724,12 @@ private struct SpaceEditor: View {
             .modifier(ConfirmationPresentation())
         }
     }
-    private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }
+    private func addMember() {
+        guard !pending, !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let submitted = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        run { try await model.addSpaceMember(username: submitted); username = "" }
+    }
+    private func run(_ action: @escaping () async throws -> Void) { guard !pending else { return }; pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }
 }
 
 private struct ChannelEditor: View {
@@ -1682,7 +1776,16 @@ private struct ChannelEditor: View {
                             Text(membersError).foregroundStyle(.red)
                             Button("Retry loading members") { Task { await loadMembers(channel) } }.disabled(loadingMembers)
                         }
-                        HStack { TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle()).onSubmit { addMember(channel) }; Button("Add") { addMember(channel) }.buttonStyle(CaperSecondaryButton()) }
+                        HStack {
+                            TextField("Exact username", text: $username).textFieldStyle(CaperTextFieldStyle())
+                                .autocorrectionDisabled()
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                #endif
+                                .submitLabel(.done).onSubmit { addMember(channel) }
+                                .accessibilityLabel("Exact username")
+                            Button("Add") { addMember(channel) }.buttonStyle(CaperSecondaryButton())
+                        }
                             .disabled(pending || loadingMembers || membersError != nil)
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                         ForEach(members) { member in
@@ -1745,6 +1848,7 @@ private struct ChannelEditor: View {
         }
     }
     private func addMember(_ channel: Channel) {
+        guard !pending, !loadingMembers, membersError == nil else { return }
         guard !username.isEmpty else { memberError = "Enter an exact username."; return }
         memberError = nil
         run { let member = try await model.addChannelMember(channel, username: username); members.removeAll { $0.id == member.id }; members.append(member); username = "" }

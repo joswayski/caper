@@ -709,7 +709,11 @@ public final class ChatModel {
         // Actor callbacks queued before unsubscribe must not revive stopped chat.
         guard channelID != nil else { return }
         liveState = state
-        if let error { self.error = error }
+        // Transport interruptions are represented by liveState and the view's
+        // delayed connection indicator. `error` is reserved for durable
+        // history, session, subscription and send failures. Gateway reports a
+        // rejected subscription with connected state, not reconnecting.
+        if state == .connected, let error { self.error = error }
     }
 
     func updateAuthor(account: Account) {
