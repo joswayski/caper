@@ -53,6 +53,7 @@ const BODY_LIMIT: usize = 256 * 1024;
 const RESERVATION: Duration = Duration::from_secs(30);
 
 pub mod accounts;
+mod assets;
 mod auth;
 mod channel_media;
 mod chat;
@@ -729,6 +730,7 @@ pub struct AppState {
     store: Option<Arc<media_store::ValkeyStore>>,
     database: Option<PgPool>,
     chat: Option<chat::Chat>,
+    assets: Option<assets::Assets>,
     events: watch::Sender<()>,
     room_events: Arc<std::sync::Mutex<HashMap<Option<String>, watch::Sender<()>>>>,
     room_interest: Arc<Notify>,
@@ -770,6 +772,7 @@ impl AppState {
             store: None,
             database,
             chat: None,
+            assets: None,
             events,
             room_events: Arc::new(std::sync::Mutex::new(HashMap::new())),
             room_interest: Arc::new(Notify::new()),
@@ -800,6 +803,15 @@ impl AppState {
         self.chat = chat::Chat::from_env(self.database.as_ref(), environment).await?;
         if let Some(chat) = self.chat.clone() {
             chat::spawn_publisher(chat);
+        }
+        Ok(())
+    }
+
+    /// Uploads need R2 credentials; without them the routes answer 503.
+    pub fn enable_assets(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
+        self.assets = assets::Assets::from_env(self.database.as_ref(), environment)?;
+        if let Some(assets) = self.assets.clone() {
+            assets::spawn_purger(assets);
         }
         Ok(())
     }
@@ -1066,6 +1078,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .route("/api/account/profile", post(account_profile))
         .route("/api/auth/logout", post(auth_logout))
         .merge(spaces::routes())
+        .merge(assets::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             account_auth,

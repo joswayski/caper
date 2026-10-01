@@ -12,7 +12,8 @@
     "build": "npm run build:web",
     "build:web": "npm run build --workspace @caper/web",
     "start:web": "npm run start --workspace @caper/web",
-    "check": "npm run build:web"
+    "check": "npm run build:web",
+    "test:cdn": "node --test apps/cdn/worker.test.mjs"
   },
   "engines": {
     "node": "24.x",

@@ -86,6 +86,7 @@ async fn retired_unscoped_media_cannot_subscribe_or_replay_commands() {
             .unwrap(),
         broker: redis::Client::open("redis://localhost:1").unwrap(),
         wake: Arc::new(tokio::sync::Notify::new()),
+        cdn: None,
     });
     for hash in [None, Some(vec![1])] {
         let identity = Identity {
@@ -212,6 +213,7 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         pool: pool.clone(),
         broker: broker.clone(),
         wake: Arc::new(tokio::sync::Notify::new()),
+        cdn: None,
     };
     let chat_token = Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Owner',$4)")

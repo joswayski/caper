@@ -4,7 +4,12 @@ A place for your people. Text and voice conversations at [caper.chat](https://ca
 Early-stage and actively in development.
 
 Accounts receive a saved, random Caper avatar from 100 designs and eight colorways.
-Custom photo/GIF uploads and an avatar gallery are not implemented yet.
+Custom photo/GIF avatars and an avatar gallery are not implemented yet.
+
+Signed-in members can attach up to 10 files per message on the web: images
+(compressed in the browser), video, audio and other files, within a per-person
+storage allowance (1 GB by default). Android, Apple and Rust desktop show the
+message text but not its files yet. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 ## Development
 

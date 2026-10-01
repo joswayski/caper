@@ -197,7 +197,7 @@ test("public history loads before identity and remains visible while the send se
   assert.deepEqual(requests, ["/api/chat/general", "/api/chat/session"]);
 });
 
-interface SendBody { clientMessageId: string; text: string }
+interface SendBody { clientMessageId: string; text: string; attachmentIds?: string[] }
 
 function committed(body: SendBody, seq: string): ChatMessage {
   return {
@@ -220,7 +220,8 @@ async function sendingFixture(t: TestContext) {
     });
     assert.equal(String(input), "/api/chat/channels/general/messages");
     const body = JSON.parse(String(init?.body)) as SendBody;
-    assert.deepEqual(Object.keys(body).sort(), ["clientMessageId", "text"], "local metadata never enters the wire contract");
+    assert.deepEqual(Object.keys(body).filter((key) => key !== "attachmentIds").sort(), ["clientMessageId", "text"], "local metadata never enters the wire contract");
+    if ("attachmentIds" in body) assert.ok(Array.isArray(body.attachmentIds) && body.attachmentIds.length > 0, "attachment IDs are sent only when present");
     return new Promise<Response>((resolve, reject) => posts.push({ body, resolve, reject }));
   });
   let state!: ChatViewState;
@@ -318,6 +319,21 @@ test("optimistic send is immediate; HTTP-first confirmation uses server content/
   f.sockets[0].message(accepted);
   assert.deepEqual(f.state.messages.map((message) => message.seq), ["1", "2", "3"]);
   assert.deepEqual(f.state.messages[2], accepted);
+});
+
+test("file-only messages send attachment IDs, keep local previews while pending, and need content", async (t) => {
+  const f = await sendingFixture(t);
+  await assert.rejects(f.client.send("   "), /Write a message first/);
+  const local = { id: "f1", kind: "image" as const, contentType: "image/webp", name: "shot.webp", size: 10, url: "blob:local", previewUrl: "blob:local" };
+  const sending = f.client.send("", [local]);
+  assert.deepEqual(f.posts[0].body.attachmentIds, ["f1"]);
+  assert.equal(f.posts[0].body.text, "");
+  assert.equal(f.state.pendingSend?.attachments?.[0].url, "blob:local");
+  const accepted = committed(f.posts[0].body, "1");
+  accepted.content = { ...accepted.content, attachments: [{ ...local, url: "https://cdn.test/original/f1?exp=1&sig=s", previewUrl: undefined }] };
+  f.posts[0].resolve(Response.json(accepted));
+  assert.equal(await sending, true);
+  assert.equal(f.state.messages[0].content.attachments?.[0].url, "https://cdn.test/original/f1?exp=1&sig=s");
 });
 
 test("WebSocket-first confirmation requires the sender and cannot be undone by a late failed HTTP response", async (t) => {

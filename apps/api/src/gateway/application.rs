@@ -521,7 +521,15 @@ async fn replay(
                 event(out, &sub.id, json!({"type":"resync_required"})).await?;
                 return Err(invalid());
             }
-            event(out, &sub.id, chat::enrich_author(payload, avatar_id)).await?;
+            event(
+                out,
+                &sub.id,
+                crate::assets::sign_attachments(
+                    chat::enrich_author(payload, avatar_id),
+                    state.chat.cdn.as_deref(),
+                ),
+            )
+            .await?;
             *after = seq;
         }
     }
@@ -562,7 +570,7 @@ async fn chat_subscription(
                     channel_access(&state.chat.pool, channel, identity.user).await?;
                     if payload["type"] == "typing.updated" { event(out, &sub.id, payload).await?; }
                     else if let Some(seq) = payload["seq"].as_str().and_then(|s| s.parse::<i64>().ok()) {
-                        if seq == after + 1 { event(out, &sub.id, payload).await?; after = seq; }
+                        if seq == after + 1 { event(out, &sub.id, crate::assets::sign_attachments(payload, state.chat.cdn.as_deref())).await?; after = seq; }
                         else if seq > after { replay(state, identity, sub, out, &mut after).await?; }
                     }
                 }

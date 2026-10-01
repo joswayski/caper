@@ -2,6 +2,7 @@
 //! belong on this path, never in a gateway or a delete/recreate bot.
 use crate::{
     ApiError, AppState, RuntimeEnvironment, account_token,
+    assets::{self, CdnSigner},
     auth::random_id,
     spaces::{channel_access, session_user},
 };
@@ -32,6 +33,8 @@ pub(crate) struct Chat {
     pub pool: PgPool,
     pub broker: redis::Client,
     pub wake: Arc<Notify>,
+    /// Signs attachment delivery URLs; absent until the CDN is configured.
+    pub cdn: Option<Arc<CdnSigner>>,
 }
 
 pub(crate) fn unavailable() -> ApiError {
@@ -64,6 +67,7 @@ impl Chat {
             pool,
             broker,
             wake: Arc::new(Notify::new()),
+            cdn: CdnSigner::from_env(environment)?,
         }))
     }
 }
@@ -110,7 +114,7 @@ async fn history(
     let before = query.before.as_deref().map(cursor).transpose()?;
     let user = request_user(&chat.pool, &headers).await?;
     Ok(Json(
-        history_page(&chat.pool, &channel, before, user).await?,
+        history_with(&chat.pool, &channel, before, user, chat.cdn.as_deref()).await?,
     ))
 }
 
@@ -129,11 +133,21 @@ pub(crate) fn cursor(value: &str) -> Result<i64, ApiError> {
         .filter(|v| *v >= 0)
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "invalid cursor"))
 }
+#[cfg(test)]
 async fn history_page(
     pool: &PgPool,
     channel: &str,
     before: Option<i64>,
     user: Option<i64>,
+) -> Result<Value, ApiError> {
+    history_with(pool, channel, before, user, None).await
+}
+pub(crate) async fn history_with(
+    pool: &PgPool,
+    channel: &str,
+    before: Option<i64>,
+    user: Option<i64>,
+    cdn: Option<&CdnSigner>,
 ) -> Result<Value, ApiError> {
     let access = channel_access(pool, channel, user).await?;
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
@@ -151,9 +165,14 @@ async fn history_page(
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     rows.reverse();
-    let rows: Vec<Value> = rows
+    let mut rows: Vec<Value> = rows
         .into_iter()
         .map(|(payload, avatar)| enrich_author(payload, avatar))
+        .collect();
+    assets::mark_deleted(pool, &mut rows).await?;
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .map(|payload| assets::sign_attachments(payload, cdn))
         .collect();
     Ok(
         json!({"messages":rows,"cursor":access.last_seq.to_string(),"hasMore":more,
@@ -215,14 +234,24 @@ async fn session(
 #[serde(rename_all = "camelCase")]
 struct SendInput {
     client_message_id: Uuid,
+    #[serde(default)]
     text: String,
+    /// Ready uploads from `POST /api/assets`, in display order.
+    #[serde(default)]
+    attachment_ids: Vec<String>,
 }
 
 /// Single pre-publication boundary. Future replacement rules run here before
 /// size validation, persistence, outbox creation, or notifications. No BO2 rule
 /// is hard-coded: that was an example, not the demo's policy.
+#[cfg(test)]
 fn prepare_text(text: &str) -> Result<Value, ApiError> {
-    if text.trim().is_empty()
+    prepare_content(text, false)
+}
+
+/// Text may be empty only when the message carries attachments.
+fn prepare_content(text: &str, has_attachments: bool) -> Result<Value, ApiError> {
+    if (text.trim().is_empty() && !has_attachments)
         || text.chars().count() > 4000
         || text
             .chars()
@@ -243,16 +272,17 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let payload = persist(
+    let payload = persist_message(
         &chat.pool,
         &channel,
         sender_token(&headers)?,
         input.client_message_id,
         &input.text,
+        &input.attachment_ids,
     )
     .await?;
     chat.wake.notify_one();
-    Ok(Json(payload))
+    Ok(Json(assets::sign_attachments(payload, chat.cdn.as_deref())))
 }
 
 fn sender_token(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -349,6 +379,7 @@ async fn publish_typing(
     Ok(())
 }
 
+#[cfg(test)]
 async fn persist(
     pool: &PgPool,
     channel: &str,
@@ -356,7 +387,28 @@ async fn persist(
     client_id: Uuid,
     text: &str,
 ) -> Result<Value, ApiError> {
-    let content = prepare_text(text)?;
+    persist_message(pool, channel, token, client_id, text, &[]).await
+}
+pub(crate) async fn persist_message(
+    pool: &PgPool,
+    channel: &str,
+    token: &str,
+    client_id: Uuid,
+    text: &str,
+    attachment_ids: &[String],
+) -> Result<Value, ApiError> {
+    if attachment_ids.len() > assets::MAX_PER_MESSAGE
+        || attachment_ids
+            .iter()
+            .enumerate()
+            .any(|(i, id)| attachment_ids[..i].contains(id))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "attach up to 10 different files",
+        ));
+    }
+    let mut content = prepare_content(text, !attachment_ids.is_empty())?;
     let mut tx = pool.begin().await.map_err(database_error)?;
     let (session_id, author_id, name, user_id, avatar_id) =
         authorize_sender(&mut tx, token).await?;
@@ -384,7 +436,12 @@ async fn persist(
     .map_err(database_error)?;
     let (channel_id, head) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
-    let hash = Sha256::digest(text.as_bytes()).to_vec();
+    // Text-only hashes stay as before so retries across the upgrade still match.
+    let hash = if attachment_ids.is_empty() {
+        Sha256::digest(text.as_bytes()).to_vec()
+    } else {
+        Sha256::digest(format!("{text}\0{}", attachment_ids.join(",")).as_bytes()).to_vec()
+    };
     let existing: Option<(i64, Vec<u8>, Value)> = sqlx::query_as("SELECT session_id, request_hash, payload FROM public.messages WHERE channel_id = $1 AND client_message_id = $2")
         .bind(channel_id).bind(client_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     if let Some((sender, original, payload)) = existing {
@@ -405,11 +462,18 @@ async fn persist(
             "sending too quickly; try again shortly",
         ));
     }
+    if !attachment_ids.is_empty() {
+        let owner =
+            user_id.ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "sign in to send files"))?;
+        content["attachments"] =
+            Value::Array(assets::attach(&mut tx, attachment_ids, owner, channel_id).await?);
+    }
     let seq = head + 1;
     let id = random_id(15);
     let payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
-    sqlx::query("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)")
-        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).execute(&mut *tx).await.map_err(database_error)?;
+    let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).fetch_one(&mut *tx).await.map_err(database_error)?;
+    assets::link(&mut tx, attachment_ids, message_id).await?;
     sqlx::query("INSERT INTO public.channel_events (channel_id, seq, payload) VALUES ($1,$2,$3)")
         .bind(channel_id).bind(seq).bind(json!({"type":"message.created","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":payload})).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("UPDATE public.channels SET last_seq = $2 WHERE id = $1")

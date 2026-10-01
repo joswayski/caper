@@ -639,6 +639,152 @@ constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
 
+## Uploads and attachments
+
+Signed-in members attach up to 10 files to a message. Bytes never pass through
+AWS: the API reserves quota and presigns one exact upload, the client `PUT`s
+straight to the private R2 bucket, and the `apps/cdn` Worker serves downloads
+from its own domain after checking a signature the API issued.
+
+### Data model
+
+One `assets` row per logical file (`202610010002_assets.sql`), shared by future
+purposes such as avatars (`purpose`, today only `attachment`). An optional
+preview is a fixed derived object beside the original, not another row:
+
+| Object | Key |
+| --- | --- |
+| Original | `original/{asset id}` |
+| Preview (≤ 640 px, ≤ 512 KiB, WebP/JPEG/PNG) | `preview/{asset id}` |
+
+`message_id`/`position` link a sent file to one message. Message content keeps
+its version 1 `type:"text"` shape and gains an optional `attachments` array
+(`id, kind, contentType, name, size, width, height, durationMs, preview`).
+**Stored payloads never contain URLs.** Rows are never deleted (matching the
+retain-records policy): `deleted_at` hides a file and `purged_at` records that
+its R2 objects were removed.
+
+### Upload flow
+
+1. `POST /api/assets` (account cookie/bearer) with channel, name, type, exact
+   byte size, optional dimensions/duration and preview size. The API checks
+   channel access, locks the user row, enforces quota, 30 reservations/minute
+   and 20 pending uploads, inserts a pending row, and returns presigned `PUT`
+   URLs (15 minutes). The signature covers `content-type`, `content-length`
+   and the download name in `content-disposition`, so R2 rejects other bytes.
+2. The client uploads the preview, then the original, directly to R2.
+3. `POST /api/assets/{id}/complete`: the API `HEAD`s each object, requires the
+   exact reserved size, and for inline types checks magic bytes from a 64-byte
+   ranged `GET`. A mismatch soft-deletes the reservation (`422`).
+4. `POST /api/chat/channels/{id}/messages` accepts `attachmentIds`. Inside the
+   send transaction the API locks the sender's ready, unattached uploads for
+   that channel, embeds their descriptions and links them. Text may be empty
+   only when files are attached. Attachment IDs join the idempotency hash;
+   text-only hashes are unchanged.
+
+`GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
+returns fresh URLs for visible attachments (like Discord's refresh endpoint)
+for tabs open longer than a URL's lifetime.
+
+### Limits and quota
+
+- Per person, across every space: `ASSET_QUOTA_BYTES` (default 1 GiB) of stored
+  bytes, original plus preview. No separate per-file limit; one file may use
+  the whole allowance. Space owners are not charged for members' uploads.
+- Quota counts what is **stored** (after browser compression), and reservations
+  count immediately so parallel uploads cannot overshoot.
+- Bytes stay counted until the purge loop removes the objects. That bounds
+  upload/delete/re-upload churn to the allowance.
+- Single `PUT` uploads (R2 allows up to 5 GiB). Multipart/resumable uploads are
+  not implemented.
+
+### Delivery and URL signing
+
+Every response or socket frame that carries a message signs URLs as it leaves:
+history, the send response, and both gateway paths (live and replay, including
+the legacy socket). URLs look like
+`https://cdn.caper.chat/original/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
+Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
+cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
+three days out, serves allowlisted image/video/audio types inline, forces every
+other type to download as `application/octet-stream`, and always sends
+`nosniff` plus a sandboxing CSP. Range requests (video seeking) are supported.
+The edge cache is keyed by object, after signature verification. A leaked URL
+works until it expires, as with Discord's signed attachment links.
+
+### Browser compression and previews
+
+The web client re-encodes PNG/JPEG/WebP/HEIC stills to WebP at quality 0.92
+(JPEG where the browser cannot encode WebP), keeping the result only when it is
+at least 10% smaller or the original cannot render inline. Re-encoding drops
+EXIF metadata such as GPS. GIF, SVG and AVIF upload unchanged. Images larger
+than 640 px or 512 KiB get a 640 px preview; videos get a poster frame. Nothing
+is transcoded server-side, and the server never trusts client compression: it
+validates what was stored. Video transcoding (WebCodecs) and a wasm port of
+Captures' palette PNG encoder are not implemented.
+
+### Deletion and purge
+
+An API loop (every minute, `FOR UPDATE SKIP LOCKED`, safe across replicas):
+
+- Marks uploads never completed after 1 hour, or completed but never sent
+  after 24 hours, as deleted.
+- Removes R2 objects for deleted rows: immediately when the file was never
+  sent, 24 hours after deletion when it was (so moderators can still inspect
+  it), then sets `purged_at` and releases quota.
+
+History marks deleted attachments `unavailable` without URLs. No user-facing
+message or file delete exists yet; account deletion should set `deleted_at` on
+the owner's assets when that flow lands.
+
+### Configuration
+
+| Variable | Where | Meaning |
+| --- | --- | --- |
+| `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
+| `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
+| `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `1073741824`. |
+| `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
+
+The bucket needs a CORS rule allowing `PUT` from the web origin with the
+`content-type` and `content-disposition` headers (managed in
+`joswayski/infrastructure`). The Worker (`apps/cdn/wrangler.toml`) binds the
+bucket as `MEDIA`, runs on `cdn.caper.chat` / `cdn.staging.caper.chat`, and
+holds `ASSET_CDN_SIGNING_SECRET` as a Worker secret:
+
+```sh
+cd apps/cdn
+npx wrangler secret put ASSET_CDN_SIGNING_SECRET --env staging
+npx wrangler deploy --env staging
+```
+
+### Platform status
+
+| Platform | Send files | Show files |
+| --- | --- | --- |
+| Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
+| Android, Apple, Rust desktop | No | Message text only. They ignore the additive `attachments` field; a file-only message shows an empty text row. |
+
+### Validation
+
+- Rust unit tests: SigV4 presigning matches AWS's published S3 example, signed
+  upload headers, day-snapped delivery URLs, a signature vector shared with the
+  Worker tests, configuration rules, sniffing and name/type normalization.
+- Postgres integration test (fake S3 server): quota with previews, access
+  denial, exact-size and magic-byte verification, ordered single-use linking,
+  history signing, URL refresh visibility, purge timing and quota release.
+- Worker tests (`npm run test:cdn`): signature, expiry, tampering, inline versus
+  download headers, ranges, HEAD.
+- Web tests: tolerant attachment validation, upload request sequence, storage
+  full errors, file-only sends.
+- Chromium against a local API, gateway, Postgres 16, Valkey, a fake S3 server
+  and the real Worker code: a 1.6 MB PNG uploaded as a 143 KB WebP, a second
+  member received it live through the gateway, history reload and a 390 px
+  layout rendered, a tampered signature returned 404.
+- Not yet validated: live R2 (signature acceptance, signed `content-length`
+  and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders,
+  and physical phones.
+
 ## Shared call state and rolling deployments
 
 The original shared-state rollout below covers the public General room. Account
