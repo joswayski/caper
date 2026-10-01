@@ -338,7 +338,7 @@ private struct WorkspaceView: View {
                         WorkspaceSheetView(item: item, model: model) { sheet = nil }
                             .id(item.id)
                             .frame(width: min(item.id.contains("manage") ? 600 : 560, geometry.size.width - 32))
-                            .frame(maxHeight: max(200, geometry.size.height - 48))
+                            .frame(height: min(680, max(1, geometry.size.height - 48)), alignment: .top)
                             .background(CaperTheme.surface)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -1459,14 +1459,16 @@ private struct WorkspaceSheetView: View {
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
             case .audio: AudioPreferencesView(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
-            case .connection: ConnectionDetailsView(voice: model.voice, close: close)
+            case .connection: ScrollView { ConnectionDetailsView(voice: model.voice, close: close) }
             case .diagnostics:
                 VStack(alignment: .leading, spacing: 18) {
                     SheetHeader(title: "Audio diagnostics", detail: "Local processing counters", close: close)
-                    if model.account?.debugEnabled == true { AudioDiagnosticsView(voice: model.voice).padding(22) }
+                    ScrollView {
+                        if model.account?.debugEnabled == true { AudioDiagnosticsView(voice: model.voice).padding(22) }
+                    }
                 }
             }
-        }.frame(maxWidth: .infinity)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -1587,7 +1589,9 @@ private struct ProfileSheet: View {
                         // profile under the keyboard.
                         .submitLabel(.done).onSubmit(save)
                     Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    if let error = model.error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright) }
+                    Text(model.error ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                        .opacity(model.error == nil ? 0 : 1).accessibilityHidden(model.error == nil)
                     Button(model.busy ? "Saving…" : "Save profile", action: save)
                         .buttonStyle(CaperPrimaryButton())
                         .disabled(!canSave)
@@ -1649,6 +1653,7 @@ private struct SpaceEditor: View {
                 CaperEffects.shared.play(.delete)
                 close()
             }
+            .modifier(ConfirmationPresentation())
         }
     }
     private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }
@@ -1680,7 +1685,7 @@ private struct ChannelEditor: View {
                         Text("Channels are where conversations happen around a topic. Use a name that is easy to find and understand.")
                             .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                     }
-                    Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in \(model.detail?.space.name ?? "this space") can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) } }.toggleStyle(.switch)
+                    Toggle(isOn: Binding(get: { privateChannel }, set: { privateChannel = $0; CaperEffects.shared.toggle($0) })) { VStack(alignment: .leading) { Text("Private channel").font(CaperTheme.font(13, weight: .bold)); Text(privateChannel ? "Only you and the people you add can view or join." : "Anyone in \(model.detail?.space.name ?? "this space") can view or join this channel.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted) }.frame(minHeight: channel == nil ? nil : 32, alignment: .topLeading) }.toggleStyle(.switch)
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)) }
                     if channel == nil {
                         HStack {
@@ -1723,15 +1728,16 @@ private struct ChannelEditor: View {
                     }
                 }.padding(22)
             }
-            if dirty {
-                // Web's save bar appears only when something changed.
-                HStack {
+            if channel != nil {
+                // Reserve the save bar while clean so toggling privacy cannot resize the sheet.
+                let saveBar = HStack {
                     Text("You have unsaved changes.").font(CaperTheme.font(12))
                     Spacer()
                     Button("Reset") { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; error = nil }.buttonStyle(CaperSecondaryButton()).disabled(pending)
                     Button(pending ? "Saving…" : "Save changes", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 150).disabled(pending)
                 }.padding(.horizontal, 22).padding(.vertical, 12).background(CaperTheme.raised)
                     .accessibilityIdentifier("channel-save-bar")
+                if dirty { saveBar } else { saveBar.hidden().allowsHitTesting(false) }
             }
         }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; if channel == nil { nameFocused = true } }
         .task(id: channel?.private) { if let channel, channel.private { await loadMembers(channel) } }
@@ -1742,6 +1748,7 @@ private struct ChannelEditor: View {
                     CaperEffects.shared.play(.delete)
                     close()
                 }
+                .modifier(ConfirmationPresentation())
             }
         }
     }
@@ -1781,7 +1788,19 @@ private struct DialogDismissDisabled: PreferenceKey {
 private struct ConfirmationSheet: View {
     let title: String; let detail: String; let action: String; let close: () -> Void; let perform: () async throws -> Void
     @State private var pending = false; @State private var error: String?
-    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? (action.hasPrefix("Delete") ? "Deleting…" : "Saving…") : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) }.background(CaperTheme.surface).interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending) }
+    var body: some View { VStack(spacing: 0) { SheetHeader(title: title, detail: detail, close: { if !pending { close() } }); ScrollView { VStack(spacing: 16) { if let error { Text(error).foregroundStyle(.red) }; HStack { Button("Cancel", action: close).disabled(pending).keyboardShortcut(.cancelAction); Button(pending ? (action.hasPrefix("Delete") ? "Deleting…" : "Saving…") : action, role: .destructive) { guard !pending else { return }; pending = true; error = nil; Task { do { try await perform(); close() } catch { self.error = error.localizedDescription }; pending = false } }.disabled(pending).accessibilityIdentifier("confirm-destructive-action") } }.padding(22) } }.background(CaperTheme.surface).interactiveDismissDisabled(pending).preference(key: DialogDismissDisabled.self, value: pending) }
+}
+
+private struct ConfirmationPresentation: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: 560, maxHeight: .infinity, alignment: .top)
+            #if os(iOS)
+            .presentationDetents([.medium])
+            #else
+            .frame(width: 520, height: 280, alignment: .top)
+            #endif
+    }
 }
 
 private struct CaperField: View {
@@ -2118,7 +2137,7 @@ private struct ConnectionDetailsView: View {
             } else {
                 Text("Join voice to see connection details.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             }
-        }.padding(22).frame(minWidth: 360).background(CaperTheme.surface)
+        }.padding(22).frame(maxWidth: .infinity).background(CaperTheme.surface)
             .task(id: voice.phase) {
                 while !Task.isCancelled && voice.phase == .connected {
                     await voice.refreshDiagnostics()

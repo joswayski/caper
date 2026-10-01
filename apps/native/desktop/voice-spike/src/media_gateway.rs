@@ -326,11 +326,18 @@ fn connect_bounded(
             POLL.min(deadline.saturating_duration_since(Instant::now())),
         ) {
             Ok(stream) => {
+                // The watchdog below enforces the deadline and cancellation, so
+                // a slow peer may pause between bytes for up to the time left.
+                // A 200 ms per-read limit failed real slow networks (and loaded
+                // CI) mid-handshake. The caller restores POLL afterwards.
+                let remaining = deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1));
                 stream
-                    .set_read_timeout(Some(POLL))
+                    .set_read_timeout(Some(remaining))
                     .map_err(tungstenite::Error::Io)?;
                 stream
-                    .set_write_timeout(Some(POLL))
+                    .set_write_timeout(Some(remaining))
                     .map_err(tungstenite::Error::Io)?;
                 // A per-read timeout alone cannot bound a peer that trickles
                 // TLS or upgrade bytes indefinitely. Shutdown of a clone

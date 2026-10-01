@@ -9,6 +9,22 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
+Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
+errors, pending states and member loading do not resize or recenter them. Channel
+settings reserve the hidden save bar, and profile forms reserve error space so
+retrying a save does not move its button. Channel and space settings dismiss on
+outside click/tap; nested delete confirmation dismissal leaves settings open.
+Run `MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-space-controls.mjs`
+against Vite for desktop, narrow and short-viewport geometry, overflow reachability
+and backdrop regression checks with mocked APIs. Android, Apple and Rust desktop
+use independently implemented stable shells; browser results do not validate
+native rendering. Rust desktop has headless egui geometry/backdrop regression
+checks. Native CI supplies Android/Apple platform builds and simulator/emulator
+UI checks; macOS CI also captures the rendered desktop client. Physical-device
+keyboard, scrolling and outside-tap checks remain separate release validation;
+CI is not physical-device coverage. Desktop leave/delete-space handling clears the
+departed conversation and fences late navigation/chat results before selecting
+another space, rather than falling back to the retired General channel.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 Input/output device lists open directly beside the profile's microphone/headphone
@@ -205,27 +221,39 @@ Validation for this transport change:
 
 ### Public text demo
 
-Retired September 2026. `LiveWindow.tsx` now renders a bounded, local scripted
+Retired September 2026. `LiveWindow.tsx` now renders a local scripted
 conversation with fictional participants, typing, visual speaking indicators,
 and a bundled AI-generated capybara meme (`public/images/demo-tiny-hat.webp`).
-The visible “Simulated demo” label distinguishes the illustration from live
-activity. It plays no audio and requests no chat/media capability or gateway
-subscription. Reduced-motion visitors get a static illustration. Click/Tap to
-join opens `/login`, the existing email-code account flow. This illustration
+The “Fictional conversation” caption outside the window distinguishes the
+illustration from live activity without a badge inside the channel. Satoshi
+uses `font-display: swap` so names, messages and the join label remain visible
+in the fallback font while fonts download. It plays no audio and requests no
+chat/media capability or gateway subscription. Reduced-motion visitors get a
+static illustration. Click/Tap to
+join targets `/spaces`: signed-out visitors reach the existing email-code
+account flow, while returning members skip login. This illustration
 does not claim that image uploads are implemented in account chat.
 
-The centered join CTA leaves the reaction chips and quick emoji picker usable.
-Demo reactions toggle locally, never persist, and never call the real reactions
-API. Scripted counts grow as the conversation progresses; hover, keyboard focus,
-an open picker, and Pause stop the script. The four profile pictures in
+The centered join CTA is the demo's only action. The `general` and `feedback`
+channels, voice roster, composer and emoji reaction counts are read-only; there
+are no join notices, reaction picker/hints, or playback controls. Speech,
+messages, typing and delayed reactions use independent randomized timings.
+Only seven of the 24 scripted posts (memes and a few standout replies) receive
+one to three delayed reactions; ordinary messages stay unreacted.
+Messages remain in local page history across animation loops. The full-height
+conversation follows new posts unless the visitor scrolls back to read older
+messages; reloading starts a fresh illustration. No reaction API is called.
+The four profile pictures in
 `public/images/demo-avatars.webp` were generated using `caper-face.svg` as the
 reference (beanie, headphones, glasses, and a star variation). The five bundled
 Twemoji 15.0 SVGs carry their CC BY 4.0 attribution in `images/demo-emoji`.
 The homepage contact actions link to X and copy the email address, with success
 feedback or a visible address when the browser denies clipboard access.
 `node scripts/test-home-demo.mjs http://localhost:30701` checks the real local
-homepage's 3D hit testing, reaction toggles, picker/Escape, reduced motion,
-clipboard-denial fallback, and join → email entry. Mobile touch emulation is
+homepage with a controlled browser clock: history retention across two loops,
+auto-follow/scrollback, delayed passive reactions, removed controls/notices,
+both channels on mobile, reduced motion, clipboard-denial fallback, and join →
+email entry or authenticated spaces. Mobile touch emulation is
 browser-only coverage, not native-client or physical-device verification.
 
 The API no longer seeds General or exposes `/api/chat/general` or unscoped
