@@ -149,6 +149,7 @@ body {
 .made-by a,
 .experimental-note a { color: var(--text); text-underline-offset: 4px; }
 .hero-copy > .experimental-note { max-width: 380px; margin-top: 12px; color: var(--text-muted); font-size: .8125rem; font-weight: 400; line-height: 1.55; }
+.experimental-warning { color: color-mix(in srgb, var(--terracotta-bright) 60%, var(--text-muted)); }
 .experimental-note .contact-action { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; vertical-align: middle; padding: 0 4px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
 .contact-action svg { width: 14px; height: 14px; }
 .contact-action:hover { color: var(--terracotta-bright); }
