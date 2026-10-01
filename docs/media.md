@@ -7,7 +7,7 @@ button opens email-code sign-in/sign-up; it does not connect to a real channel.
 The former **Public demo / General** is retired. Account-owned spaces contain
 unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
-Participants use their account display name. This is not an outgoing-call flow.
+Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
@@ -2713,6 +2713,98 @@ Copying is explicit; no audio, device IDs, credentials or automatic diagnostic
 uploads are included. This controls UI visibility, not access to privileged server
 data. OpenFeature is an evaluation API/provider standard, not a required database
 or service; this single allowlist intentionally has no flag SDK or table.
+
+### Saved default avatars
+
+An avatar is the user's profile picture, not a separate cosmetic identity. The
+mascot is the default picture everywhere: account, members, chat and voice.
+`users.avatar_id` is a persisted smallint (0–799), assigned by PostgreSQL once on
+account creation. Migration `202609300001_user_avatars.sql` also assigns existing
+accounts a random default. Login, username/display-name edits and voice rejoining
+do not reroll it. Assignments are not exclusive: people can share an avatar.
+The field identifies an actual bundled image, not a hash of a name/account ID.
+
+The immutable v1 collection contains **100 distinct designs × eight hue treatments**.
+The original four homepage characters remain unchanged. Companion source sheets
+are in `assets/avatars`; `node scripts/generate-avatars.mjs` (ImageMagick 7) reproduces
+the 32×25, 64px-per-tile atlas (2048×1600). Web uses WebP; native builds bundle
+the canonical PNG. Source artwork is generated, then cropped/recolored offline;
+there is no runtime generation, remote image service, R2, or new secret.
+Do not reorder tiles or replace the v1 collection once accounts have assignments.
+
+Account/member/chat author responses carry `avatarId`. HTTP history, both gateway
+replay protocols and outbox publication enrich old messages from the current user
+record without rewriting the message log. Voice snapshots carry the authenticated
+account's saved avatar, not a client-supplied ID. Existing shared voice state is
+backward-compatible: absent IDs render initials until the participant rejoins.
+Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved tile. Missing or
+invalid IDs render initials; presence dots and speaking rings remain separate.
+
+Custom photo/GIF uploads, avatar selection and a public collection page are future
+work. A future validated uploaded-media reference should replace the displayed
+mascot everywhere, not create a second independent picture. Uploading, replacing
+or removing a custom picture must preserve `users.avatar_id`. Removing the upload
+must clear only the custom-media reference and restore that same saved mascot in
+account, member, chat and voice views; it must not reroll the mascot or show initials.
+This is the contract for the future upload feature, not implemented upload/delete
+functionality. This change neither accepts arbitrary image URLs nor exposes
+upload-looking controls.
+
+Validation: migration/backfill/profile stability and repeat email-login tests run
+against disposable Postgres. Chat tests cover missing-avatar historical payloads,
+outbox and gateway replay; voice tests check trusted assignments and old Valkey
+state. `node scripts/test-avatars.mjs http://localhost:30701 .amp/in/artifacts`
+checks real browser components with a labelled API/gateway mock, including desktop
+and narrow layouts, tile boundaries, presence and profile rename. Normal screenshots
+give every account a saved picture, including existing accounts. A separate
+incomplete-response test checks initials; it does not represent migrated accounts.
+This browser fixture is not live signup, SFU, physical phone or native evidence.
+Rust desktop was separately built and visually inspected in its labelled static
+fixture (chat, account, member and voice avatars); atlas selection and voice-stack
+interaction tests pass. The full desktop suite (`--test-threads=2`) reports 120
+passed and nine ignored. Leaving/deleting a space clears private conversation
+state immediately, without a retired public-General fallback.
+Desktop application clippy passes with `--no-deps`; unrestricted clippy fails
+on existing warnings in vendored `webrtc-sys`.
+Android and Apple source/tests/resource packaging were updated but require
+their platform build/device checks before release; Java and
+Swift/Xcode are unavailable in this orb. Docker daemon is unavailable, so API/web
+build stages were validated directly rather than building container images.
+
+#### Avatar deployment order
+
+1. No infrastructure, R2, new secrets or configuration changes. Wait for immutable
+   API/web images for the merged commit. Merging does not deploy. Keep existing
+   database/migration credentials and shared Valkey configuration; do not clear it.
+2. Deploy API first. Normal startup applies the additive migration and runtime
+   grants. Its volatile random default backfills existing rows under a table lock;
+   allow a maintenance window if the account table is large. Wait for the workflow
+   to succeed before checking that the new image rolled out:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. Deploy gateway after the migration; its replay queries require the new column.
+   Wait for this workflow to succeed and confirm the new image:
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. Deploy web, then release native clients through their normal release workflows.
+   Client releases are independent after server rollout; old clients ignore the
+   additive field and new clients retain initials against older servers.
+   ```sh
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+5. Verify an existing account and a new signup have saved `avatarId` values in
+   `/api/account/me`. Check matching chat/member/voice pictures, including old
+   history, reload/login, profile rename and voice rejoin. Verify native packaging
+   includes the atlas and run device UI checks before publishing those releases.
+   Rollback images independently if necessary; **leave the additive column and its
+   assignments intact**. Old code ignores it. Do not drop/recreate the column or
+   regenerate assignments. No shared migration or deployment was run during development.
 
 ### Removed account lifecycle integration
 

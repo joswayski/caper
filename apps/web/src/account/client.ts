@@ -1,5 +1,6 @@
 export interface Account {
   id: string;
+  avatarId?: number | null;
   username: string | null;
   displayName: string | null;
   debugEnabled?: boolean;
