@@ -128,6 +128,11 @@
 
 .space-dialog { width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 0; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface); box-shadow: 0 24px 80px rgb(0 0 0 / .55); }
 .space-dialog-wide { width: min(600px, calc(100vw - 32px)); }
+/* Stable shells: async errors, member loading and save bars must not recenter a modal. */
+.space-dialog { height: min(520px, calc(100dvh - 32px)); scrollbar-gutter: stable; }
+.space-dialog:has(> .delete-confirmation) { height: min(320px, calc(100dvh - 32px)); }
+.space-dialog[open] { display: flex; flex-direction: column; }
+.space-dialog > * { flex-shrink: 0; }
 .space-dialog::backdrop { background: rgb(0 0 0 / .4); }
 .space-dialog > header { position: sticky; z-index: 2; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .space-dialog > header h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
@@ -188,6 +193,8 @@
 .channel-save-bar { position: sticky; bottom: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; border-top: 1px solid var(--border); background: var(--blackout); }
 .channel-save-bar > span { font-size: .76rem; }
 .channel-save-bar > div { display: flex; gap: 8px; margin-left: auto; }
+.channel-save-bar { margin-top: auto; }
+.channel-save-bar[aria-hidden="true"] { visibility: hidden; }
 
 :is(.space-dialog, .channel-navigation, .spaces-state, .spaces-empty, .empty-channel) :is(button, summary), .navigation-toggle {
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;

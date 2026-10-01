@@ -689,11 +689,17 @@ public final class ChatModel {
     private var typingIdleTask: Task<Void, Never>?
     private var typingExpiryTask: Task<Void, Never>?
     @ObservationIgnored private lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
-        self?.liveState = state
-        if let error { self?.error = error }
+        self?.receiveGatewayState(state, error: error)
     }
 
     public init(api: APIClient) { self.api = api }
+
+    func receiveGatewayState(_ state: GatewayState, error: String?) {
+        // Actor callbacks queued before unsubscribe must not revive stopped chat.
+        guard channelID != nil else { return }
+        liveState = state
+        if let error { self.error = error }
+    }
 
     func updateAuthor(account: Account) {
         guard let session, !session.author.isGuest, session.author.id == account.id,

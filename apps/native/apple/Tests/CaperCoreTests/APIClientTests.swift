@@ -455,10 +455,17 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(chat.channelName, "new")
         XCTAssertEqual(chat.messages.map(\.content.text), ["new"])
 
+        chat.receiveGatewayState(.connected, error: nil)
+        XCTAssertEqual(chat.liveState, .connected)
         await chat.stop()
         XCTAssertTrue(chat.messages.isEmpty)
         XCTAssertTrue(chat.draft.isEmpty)
         XCTAssertEqual(chat.liveState, .disconnected)
+        for lateState in [GatewayState.connecting, .connected, .reconnecting] {
+            chat.receiveGatewayState(lateState, error: "Late gateway failure")
+            XCTAssertEqual(chat.liveState, .disconnected)
+            XCTAssertNil(chat.error)
+        }
     }
 
     @MainActor
