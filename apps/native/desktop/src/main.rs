@@ -4592,7 +4592,20 @@ impl CaperApp {
                     }
                     // Web: the conversation stays; only sending waits on a new session.
                     if !joined {
-                        ui.label(RichText::new("Read-only preview · Join to chat or use voice.").color(MUTED));
+                        ui.label(bold("Preview").size(12.0));
+                        let format = egui::TextFormat {
+                            font_id: egui::FontId::proportional(12.0),
+                            color: MUTED,
+                            ..Default::default()
+                        };
+                        let mut copy = egui::text::LayoutJob::default();
+                        copy.append("Join ", 0.0, format.clone());
+                        copy.append(&format!("#{}", self.channel_name()), 0.0, egui::TextFormat {
+                            font_id: egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                            ..format.clone()
+                        });
+                        copy.append(" to interact with people here", 0.0, format);
+                        ui.label(copy);
                         return;
                     }
                     if let Some(error) = self.session_error.clone() {
@@ -7366,10 +7379,18 @@ mod tests {
             })
             .collect();
         assert!(labels.contains(&"Join channel"), "{labels:?}");
+        assert!(labels.contains(&"Preview"), "{labels:?}");
         assert!(
-            labels.contains(&"Read-only preview · Join to chat or use voice."),
+            labels.contains(&"Join #design to interact with people here"),
             "{labels:?}"
         );
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::epaint::Shape::Text(text) if text.galley.job.text == "Join #design to interact with people here"
+                && text.galley.job.sections.iter().any(|section|
+                    &text.galley.job.text[section.byte_range.clone()] == "#design"
+                        && section.format.font_id.family == egui::FontFamily::Name("Satoshi Bold".into())
+                )
+        )), "preview channel name must be bold");
         assert!(
             !labels.contains(&"Send") && !labels.contains(&"Retry session"),
             "{labels:?}"

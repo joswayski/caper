@@ -226,6 +226,7 @@
 .channel-preview > div > div { flex: 1; min-width: 160px; }
 .channel-preview strong { display: block; font-size: .82rem; }
 .channel-preview span { display: block; margin-top: 5px; color: var(--text-muted); font-size: .76rem; line-height: 1.5; overflow-wrap: anywhere; }
+.channel-preview span strong { display: inline; font-size: inherit; }
 .channel-preview .primary { min-height: 38px; padding: 0 14px; border: 1px solid var(--terracotta); border-radius: 8px; color: var(--text); background: var(--terracotta); font: inherit; font-size: .76rem; font-weight: 750; cursor: pointer; }
 .channel-preview .primary:hover:not(:disabled) { background: var(--terracotta-bright); }
 .channel-preview .primary:disabled { opacity: .45; cursor: wait; }

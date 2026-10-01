@@ -686,46 +686,11 @@ node scripts/test-space-invitations.mjs
 | Android | Consent, pending/cancel, validation and 404 cleanup implemented. Initial PR CI found a MemberManager callback compile error; fixed with explicit callback arguments in the follow-up. JDK/Android SDK tests and physical-device rendering unavailable in this orb; platform CI must verify the fix |
 | Docker/production/live media | No Docker daemon available; image build stages validated directly. No shared database migration, deployment, live SFU or physical-device test performed |
 
-**Deployment order** (operator commands only; merging does not deploy):
-
-1. No infrastructure apply or new secrets/configuration is needed. Keep the
-   existing database/migration roles and shared Valkey configuration. Wait for
-   immutable images and successful native build/test jobs for the merged commit;
-   set `MERGED_SHA` to that full commit SHA. Keep the current single desired API
-   replica. Do not serve invitation mutations from a mix of old and new APIs:
-   old replicas still auto-add members without consent.
-2. Deploy the API first. API startup applies
-   `202609300001_space_invitations.sql` using `MIGRATION_DATABASE_URL` and grants
-   the existing runtime role access to both new tables. No separate manual SQL
-   or data conversion is required. Wait for workflow success, then readiness and
-   all API pods using the new image before releasing clients.
-   ```bash
-   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-   kubectl -n default rollout status deployment/caper-api --timeout=15m
-   ```
-3. No gateway rollout is required for this change: channel authorization still
-   uses `space_members`; pending invitations cannot subscribe. API and gateway
-   images may deploy independently once the existing channel-aware gateway is
-   in place. Deploy web and release native clients only after step 2. Web and
-   native releases can deploy independently of each other; older clients cannot
-   accept invitations and may display invitation creation as membership.
-   ```bash
-   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-   # Wait for workflow success before checking rollout:
-   kubectl -n default rollout status deployment/caper-web --timeout=15m
-   # After native CI succeeds; publishes signed clients/TestFlight:
-   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
-   ```
-4. With two test accounts, verify pending lists, no pre-accept detail/chat/media
-   access, accept/decline/cancel, duplicate errors and removal from navigation.
-   Verify existing members still read/send/join; treat provider track cleanup as
-   asynchronous. Check the 20/21 attempt boundary against a disposable space,
-   not unsolicited invitations to real users.
-5. Prefer a forward fix. An older web/native client can run against the new API
-   but loses consent UI; keep the new API and tables. Do not roll back to the
-   old auto-add API while invitations are enabled: that removes the consent
-   boundary. Do not delete invitation/cooldown state or active memberships as
-   rollback. No Valkey/SFU state migration or reset is needed.
+Use the combined **Deployment order** under
+[Channel participation and private consent](#channel-participation-and-private-consent)
+below for space invitations and channel joining. Merge space-invitation consent
+first, but do not deploy it separately: the cumulative API applies both pending
+migrations before the gateway and clients roll out. Merging does not deploy.
 
 ### Channel participation and private consent
 
@@ -791,48 +756,60 @@ CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-join
 | Browser | Build/typecheck and unit tests; explicitly mocked Chromium desktop/390px search, preview, retry, persistence, accept/decline and leave. DOM/request assertions verify no private history before consent and zero microphone requests; representative captures inspected |
 | Rust desktop | Independent membership/directory/preview/consent implementation, Linux unit tests/fmt/clippy/build and rendered labelled desktop/narrow preview, directory/private consent and starter-channel disclosure fixtures inspected. Not Windows execution, physical audio, or live SFU evidence |
 | Apple iOS/macOS | Independent implementation and DTO/route tests added. No Swift/Xcode execution or device rendering in this Linux orb; platform CI and device acceptance remain required |
-| Android | Independent implementation and DTO/route tests added. No JDK/Android SDK execution or physical-device rendering in this orb; platform CI and device acceptance remain required |
+| Android | Independent implementation and DTO/route tests added. Published channel PR CI built the APK and passed five instrumentation tests, but UI smoke still expects the retired guest demo instead of the current sign-in screen. The full job is not passing. No JDK/Android SDK execution or physical-device rendering in this orb; updated platform CI and device acceptance remain required |
 | Native refresh | Invitations/joins are discovered on account/space reload and after mutations. Browser additionally refreshes on focus/visibility and every 15 seconds. Native clients do not claim browser-equivalent periodic discovery; server authorization applies immediately |
 | Docker/live | No Docker daemon available; validate web/API image build stages directly. No deployment, shared database writes, live SFU or physical-device acceptance performed |
 
-**Deployment order** (operator actions only; merge does not deploy):
+**Deployment order** for space invitations and channel joining (operator actions
+only; merge does not deploy):
 
-1. Merge/deploy space-invitation consent first, then this stacked change. No new
-   infrastructure, secrets or configuration is required. Keep one desired API
-   replica with the existing shared Valkey configuration. Use a maintenance
-   window for channel/invitation mutations; do not serve them from mixed old/new API
-   versions, since older versions grant private access without consent. Set
-   `MERGED_SHA` to the full merged channel-change SHA after immutable images and
-   platform checks succeed.
+1. Merge space-invitation consent (#234), retarget the stacked channel change
+   (#238) to `main`, then merge it. A separate #234 deployment is unnecessary;
+   deploy the final cumulative images once. No new infrastructure, secrets or
+   configuration is required. Existing direct `MIGRATION_DATABASE_URL`, runtime
+   `DATABASE_URL` and shared `VALKEY_URL` must already be configured. Keep one
+   desired API replica. Use a maintenance window for channel/invitation mutations;
+   do not serve them from mixed old/new API versions, since older versions grant
+   private access without consent. Set `MERGED_SHA` to the full merged
+   channel-change SHA after immutable images and exact-head platform checks succeed.
 2. Deploy API first; startup uses the existing direct
-   `MIGRATION_DATABASE_URL` to apply the additive channel migration and grant
-   runtime table privileges. No manual backfill/reset is required. Wait for the
-   deployment workflow and readiness before gateway/client rollout.
+   `MIGRATION_DATABASE_URL` to apply every pending embedded migration, including
+   `202609300001_space_invitations.sql` and `202610010001_channel_joining.sql`,
+   before granting runtime table privileges. The channel migration backfills
+   existing active members, not pending space invitees. Already-applied migrations
+   are skipped. No manual migration/backfill/reset is required. Wait for workflow
+   success, readiness and all API pods using the new image before continuing.
    ```bash
    gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
    kubectl -n default rollout status deployment/caper-api --timeout=15m
    ```
 3. Deploy gateway next so typing/media commands enforce participation too. The
    API and gateway must both be updated before exposing channel-joining clients;
-   do not reset shared call state or close healthy tracks for this rollout.
+   no Valkey/SFU schema migration/reset is required. Do not close healthy tracks
+   for this rollout. Wait for workflow success and readiness. The workflow/app
+   key is `caper-gateway`; the Kubernetes Deployment is `caper-chat-gateway`.
    ```bash
    gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
-   kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
    ```
 4. Deploy web, then release native clients after their exact-head platform tests
    succeed. Web and native releases can proceed independently after steps 2–3.
    Older clients cannot join newly discovered channels or accept private channel
    invitations and may misleadingly display a pending invite as an active member;
-   update owner clients before using private invitations.
+   update owner clients before using private invitations. Wait for each workflow
+   to succeed before checking rollout.
    ```bash
    gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
    kubectl -n default rollout status deployment/caper-web --timeout=15m
    gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
    ```
 5. Verify with two owned test accounts: old conversations remain joined, a new
-   member starts in one channel, public preview cannot send/use voice, join does
-   not enter voice, private metadata precedes acceptance, cancellation blocks
-   stale acceptance, and public/private leave have distinct re-entry behavior.
+   member cannot read space/channel history or use media before accepting the
+   space invite and starts in one channel afterward; public preview cannot
+   send/use voice; join does not enter voice; private metadata precedes acceptance;
+   cancellation blocks stale acceptance; public/private leave have distinct
+   re-entry behavior. Verify inviter/expiry, accept/decline/cancel and an unrelated
+   active call surviving navigation/leave. Treat provider cleanup as asynchronous.
    Prefer a forward fix. Client rollback is possible against the new services,
    with the limitations above; do not roll API/gateway back across the consent
    or participation boundary or drop membership/invitation tables as rollback.

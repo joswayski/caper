@@ -1189,7 +1189,11 @@ private struct ChatView: View {
             if model.previewingChannel {
                 VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Read-only preview. Join to chat or use voice; joining doesn’t enter a call.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Preview").font(CaperTheme.font(12, weight: .bold))
+                        (Text("Join ") + Text("#\(chat.channelName)").font(CaperTheme.font(12, weight: .bold)) + Text(" to interact with people here"))
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    }
                     Spacer()
                     Button(joining ? "Joining…" : "Join channel") {
                         guard !joining, let channel = model.selectedChannel else { return }

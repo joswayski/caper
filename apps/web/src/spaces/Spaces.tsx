@@ -1545,7 +1545,7 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
         }}
         voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
         channelActions={channel.joined === false ? <div className="channel-preview">
-          <div><strong>Read-only preview</strong><span>Join #{channel.name} to send messages or use voice. Joining doesn’t enter a call.</span></div>
+          <div><strong>Preview</strong><span>Join <strong>#{channel.name}</strong> to interact with people here</span></div>
           <button type="button" className="primary" disabled={membershipPending} onClick={() => void changeChannelMembership(() => joinChannel(detail.space.id, channel.id)).catch((reason) => setMembershipError(errorMessage(reason)))}>{membershipPending ? "Joining…" : "Join channel"}</button>
           {membershipError && <p role="alert">{membershipError}</p>}
         </div> : <div className="channel-membership-actions"><button className="channel-membership-leave" type="button" disabled={membershipPending} onClick={() => setLeavingChannel(channel)}>Leave channel</button></div>}

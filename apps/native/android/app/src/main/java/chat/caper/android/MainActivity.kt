@@ -44,10 +44,13 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -688,7 +691,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (joined) IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
-        if (!joined) Text("Read-only preview. Join this channel to send messages or use voice; joining doesn’t enter a call.", Modifier.padding(12.dp), color = TextMuted, fontSize = 12.sp)
+        if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text(buildAnnotatedString {
+                append("Join ")
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("#${channel.name}") }
+                append(" to interact with people here")
+            }, color = TextMuted, fontSize = 12.sp)
+        }
         state.refreshError?.let { error ->
             Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -87,6 +87,11 @@ try {
   browser('find', 'role', 'button', 'click', '--name', 'Preview #design', '--exact');
   wait('!!document.querySelector(".channel-preview")');
   assert.equal(evaluate('document.querySelector("#chat-message") !== null'), false);
+  assert.equal(evaluate('document.querySelector(".channel-preview span").previousElementSibling.textContent'), 'Preview');
+  assert.equal(evaluate('document.querySelector(".channel-preview span").textContent'), 'Join #design to interact with people here');
+  assert.equal(evaluate('document.querySelector(".channel-preview span strong").textContent'), '#design');
+  assert.ok(evaluate('Number(getComputedStyle(document.querySelector(".channel-preview span strong")).fontWeight) > Number(getComputedStyle(document.querySelector(".channel-preview span")).fontWeight)'));
+  assert.equal(evaluate('getComputedStyle(document.querySelector(".channel-preview span strong")).display'), 'inline');
   assert.equal(evaluate('channelFixture.state.joined.includes("other1234567")'), false);
   assert.equal(evaluate('channelFixture.requests.some(r => r.path.includes("other1234567/media") || r.path.endsWith("membership"))'), false);
   assert.equal(evaluate('channelFixture.microphones'), 0);
