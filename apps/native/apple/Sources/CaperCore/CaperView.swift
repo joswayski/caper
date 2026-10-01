@@ -1083,10 +1083,17 @@ struct Avatar: View {
     var body: some View {
         Group {
             if let image = CaperAvatar.image(for: avatarID) {
-                image.renderingMode(.original)
+                #if os(iOS)
+                Image(uiImage: image).renderingMode(.original)
                     .resizable()
                     .scaledToFit()
                     .frame(width: size, height: size)
+                #else
+                Image(nsImage: image).renderingMode(.original)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size, height: size)
+                #endif
             } else {
                 Text(String(name.prefix(1)).uppercased()).font(CaperTheme.font(size * 0.36, weight: .black))
                     .frame(width: size, height: size).background(CaperTheme.raised)
@@ -1110,17 +1117,17 @@ private var caperResourceBundle: Bundle {
 extension CaperAvatar {
     /// Resolve the framework/package asset explicitly. A missing catalog must
     /// show initials rather than a blank frame that still takes up avatar space.
-    @MainActor static func image(for avatarID: Int?) -> Image? {
+    #if os(iOS)
+    @MainActor static func image(for avatarID: Int?) -> UIImage? {
         guard let index = index(for: avatarID) else { return nil }
-        let name = "caper-avatar-\(index)"
-        #if os(iOS)
-        guard let image = UIImage(named: name, in: caperResourceBundle, compatibleWith: nil) else { return nil }
-        return Image(uiImage: image)
-        #else
-        guard let image = caperResourceBundle.image(forResource: NSImage.Name(name)) else { return nil }
-        return Image(nsImage: image)
-        #endif
+        return UIImage(named: "caper-avatar-\(index)", in: caperResourceBundle, compatibleWith: nil)
     }
+    #else
+    @MainActor static func image(for avatarID: Int?) -> NSImage? {
+        guard let index = index(for: avatarID) else { return nil }
+        return caperResourceBundle.image(forResource: NSImage.Name("caper-avatar-\(index)"))
+    }
+    #endif
 }
 
 private struct ConversationStage: View {

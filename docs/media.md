@@ -2775,8 +2775,9 @@ cellular/Wi-Fi transitions.
 | Platform/check | Coverage for this mobile pass |
 | --- | --- |
 | Web, Chromium desktop/narrow/short viewport | Executed mocked API/gateway checks for exact-username add/Enter/pending protection, dialog geometry, navigation/account alignment, member Close/outside dismissal and scrolling; inspected rendered states. Not iPhone Safari or touch evidence. |
-| Apple iOS/macOS | Added pending-connection regression, all-800 bundled-avatar lookup and representative colored-pixel tests; parity UI exercises member add/close/outside tap and iPhone navigation bounds. Swift/Xcode unavailable in this orb; native CI and physical iPhone checks are required before release. |
-| Android | Added all-800 resource lookup and representative VectorDrawable pixel tests. Java/SDK/device unavailable in this orb; native CI and physical keyboard/Back/navigation checks are required before release. |
+| Apple iOS simulator/macOS ARM | CI run `36819347315` passed: all-800 bundled-avatar lookup, representative SwiftUI colored-pixel rendering and pending-connection regression. iPhone 16 simulator parity passed 17 tests, including editable exact-username add, Close/outside dismissal and navigation bounds; inspected native captures. This is fixture/simulator evidence, not a physical iPhone or production-network check. |
+| Apple macOS Intel | Bundled-avatar lookup passed, but the SwiftUI pixel test crashed hosted Metal initialization. Follow-up uses CPU rasterization of the same resolved NSImage on Intel, retaining SwiftUI rendering on iOS/ARM; the follow-up requires native CI. No native toolchain is available in this Linux orb. |
+| Android | CI run `36819347315` built the APK and passed six instrumented tests, including all-800 resource lookup and representative VectorDrawable pixels. Smoke reached real Compose send/HTTP/gateway delivery, then failed an old exact-author expectation missing `avatarId`; the expectation now includes the saved ID without weakening assertions. Full follow-up smoke and physical keyboard/Back/navigation checks remain required before release. |
 | Rust desktop | No UI changes. Root Rust tests/format/Clippy ran; these do not validate native mobile clients. |
 | Production networks/voice | Not exercised. Sustained voice, background/resume and Wi-Fi/cellular/TURN checks remain separate acceptance gates. |
 
