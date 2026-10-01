@@ -147,19 +147,23 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
     let role = quote_identifier(runtime_role);
     for statement in [
         format!("GRANT USAGE ON SCHEMA public TO {role}"),
+        // Records are retained: the app soft-deletes with deleted_at/revoked_at,
+        // so the runtime role never holds DELETE or TRUNCATE, including grants
+        // left by earlier releases.
+        format!("REVOKE DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM {role}"),
         format!("GRANT SELECT, INSERT, UPDATE ON public.users TO {role}"),
         format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.auth_email_challenges, public.account_sessions TO {role}"
+            "GRANT SELECT, INSERT, UPDATE ON public.auth_email_challenges, public.account_sessions TO {role}"
         ),
         format!("GRANT USAGE ON SEQUENCE public.users_id_seq TO {role}"),
         format!(
             "GRANT SELECT, INSERT, UPDATE ON public.spaces, public.channels, public.chat_sessions, public.messages, public.channel_events TO {role}"
         ),
         format!(
-            "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members TO {role}"
+            "GRANT SELECT, INSERT, UPDATE ON public.space_members, public.channel_members TO {role}"
         ),
         format!(
-            "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq TO {role}"
+            "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq, public.space_members_id_seq, public.channel_members_id_seq TO {role}"
         ),
     ] {
         sqlx::query(&statement)
@@ -277,8 +281,8 @@ mod tests {
             ("public.users", "SELECT"),
             ("public.users", "INSERT"),
             ("public.users", "UPDATE"),
-            ("public.auth_email_challenges", "DELETE"),
-            ("public.account_sessions", "DELETE"),
+            ("public.space_members", "UPDATE"),
+            ("public.channel_members", "UPDATE"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")
@@ -291,6 +295,21 @@ mod tests {
                 "{runtime_role} lacks {privilege} on {object}"
             );
         }
+        let deletable: Vec<String> = sqlx::query_scalar(
+            "SELECT c.relname::text FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+               AND (has_table_privilege($1, c.oid, 'DELETE')
+                 OR has_table_privilege($1, c.oid, 'TRUNCATE'))",
+        )
+        .bind(&runtime_role)
+        .fetch_all(&verify)
+        .await
+        .unwrap();
+        assert!(
+            deletable.is_empty(),
+            "{runtime_role} can delete from {deletable:?}"
+        );
         assert!(
             sqlx::query_scalar::<_, bool>("SELECT has_sequence_privilege($1, $2, $3)")
                 .bind(&runtime_role)
@@ -321,6 +340,16 @@ mod tests {
                 .fetch_one(&verify)
                 .await
                 .unwrap();
+        // Earlier releases granted DELETE; rerunning startup must take it back.
+        verify
+            .execute(
+                format!(
+                    r#"GRANT DELETE ON public.account_sessions, public.space_members TO "{runtime_role}""#
+                )
+                .as_str(),
+            )
+            .await
+            .unwrap();
         verify.close().await;
 
         migrate_database_with(migration_options, Some(&runtime_role))
@@ -368,6 +397,17 @@ mod tests {
             .unwrap(),
             1
         );
+        for object in ["public.account_sessions", "public.space_members"] {
+            assert!(
+                !sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, 'DELETE')")
+                    .bind(&runtime_role)
+                    .bind(object)
+                    .fetch_one(&verify)
+                    .await
+                    .unwrap(),
+                "{runtime_role} kept DELETE on {object}"
+            );
+        }
         verify.close().await;
 
         admin

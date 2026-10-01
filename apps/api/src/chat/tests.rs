@@ -847,7 +847,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
             .fetch_one(&mut *removal)
             .await
             .unwrap();
-    sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(first_id)
         .bind(member)
         .execute(&mut *removal)
@@ -911,7 +911,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
 
     // Removing the private grant closes an already-established subscription on
     // the next periodic authorization tick, without requiring another event.
-    sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(first_id)
         .bind(member)
         .execute(&pool)

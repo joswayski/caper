@@ -4,7 +4,7 @@ import Wordmark from "../components/Wordmark";
 
 // Mailbox that answers privacy and account-deletion requests.
 const CONTACT = "privacy@caper.chat";
-const UPDATED = "September 30, 2026";
+const UPDATED = "October 1, 2026";
 
 export const Route = createFileRoute("/privacy")({
   head: () => ({ meta: [{ title: "Privacy - Caper" }] }),
@@ -47,7 +47,7 @@ function Privacy() {
       </Section>
 
       <Section title="How long we keep it">
-        <p>Messages and your account stay until they're deleted. Sign-in sessions are removed a week after they expire.</p>
+        <p>We keep your account, messages, spaces and sign-in history until you ask us to delete them. Signing out, leaving a space, or being removed from one ends access but keeps the record.</p>
       </Section>
 
       <Section title="Your choices">

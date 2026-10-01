@@ -446,7 +446,7 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         next(&mut replacement, "error", Some("denied")).await["status"],
         403
     );
-    sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(space_id)
         .bind(user)
         .execute(&pool)
