@@ -238,6 +238,12 @@ export const browserTransport: UploadTransport = {
   }),
 };
 
+/** Uploads are optional server configuration; hide the control when off. */
+export async function uploadsAvailable(fetcher: typeof fetch = fetch): Promise<boolean> {
+  const response = await fetcher("/api/assets/usage", { credentials: "same-origin", cache: "no-store" }).catch(() => undefined);
+  return !!response?.ok;
+}
+
 /** Fresh URLs for attachments whose signed URLs expired in a long-open tab. */
 export async function refreshAttachmentUrls(ids: string[], fetcher: typeof fetch = fetch): Promise<Record<string, { url: string; previewUrl?: string }>> {
   const response = await fetcher("/api/assets/urls", {

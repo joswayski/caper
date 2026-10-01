@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { attachmentsOf, isChatMessage, type ChatMessage } from "../chat/types.ts";
-import { attachmentKind, compressible, fitWithin, formatBytes, keepCompressed, refreshAttachmentUrls, renamed, uploadPrepared, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
+import { attachmentKind, compressible, uploadsAvailable, fitWithin, formatBytes, keepCompressed, refreshAttachmentUrls, renamed, uploadPrepared, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
 
 const message = (content: unknown) => ({
   id: "m1", channelId: "c1", seq: "1", createdAt: "2026-10-01T00:00:00Z", clientMessageId: "x",
@@ -96,4 +96,10 @@ test("expired URLs can be refreshed and their expiry read", async () => {
   assert.equal(urlExpiry(urls.f1.url), 172800);
   assert.equal(urlExpiry(undefined), undefined);
   assert.deepEqual(await refreshAttachmentUrls(["f1"], (async () => new Response(null, { status: 503 })) as typeof fetch), {});
+});
+
+test("the attach control appears only when the API has uploads configured", async () => {
+  assert.equal(await uploadsAvailable((async () => Response.json({ used: 0, limit: 1 })) as typeof fetch), true);
+  assert.equal(await uploadsAvailable((async () => Response.json({ error: "uploads unavailable" }, { status: 503 })) as typeof fetch), false);
+  assert.equal(await uploadsAvailable((async () => { throw new TypeError("offline"); }) as typeof fetch), false);
 });

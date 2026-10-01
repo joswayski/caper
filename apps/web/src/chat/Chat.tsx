@@ -5,7 +5,7 @@ import { ChatClient, initialChatView } from "./client.ts";
 import { dateDivider } from "./dates.ts";
 import { attachmentsOf, type ChatAttachment, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
-import { MAX_ATTACHMENTS, browserTransport, prepareFile, refreshAttachmentUrls, uploadPrepared } from "./uploads.ts";
+import { MAX_ATTACHMENTS, browserTransport, prepareFile, refreshAttachmentUrls, uploadPrepared, uploadsAvailable } from "./uploads.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import "./chat.css";
@@ -64,6 +64,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
+  const [uploadsEnabled, setUploadsEnabled] = useState(false);
   const [freshUrls, setFreshUrls] = useState<Record<string, { url: string; previewUrl?: string }>>({});
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
@@ -137,6 +138,13 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
   useEffect(() => { clientRef.current?.setSounds(messageSounds); }, [messageSounds]);
 
+  useEffect(() => {
+    if (!signedIn) { setUploadsEnabled(false); return; }
+    let active = true;
+    void uploadsAvailable().then((available) => { if (active) setUploadsEnabled(available); });
+    return () => { active = false; };
+  }, [signedIn]);
+
   // Uploads belong to one channel; abandon them when it changes or unmounts.
   useEffect(() => () => {
     for (const controller of uploads.current.values()) controller.abort();
@@ -151,7 +159,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
   const addFiles = (files: File[]) => {
     const channel = state.channelId;
-    if (!signedIn || !channel || !files.length) return;
+    if (!signedIn || !uploadsEnabled || !channel || !files.length) return;
     const room = MAX_ATTACHMENTS - drafts.length;
     if (room <= 0) { setValidationError(`You can attach up to ${MAX_ATTACHMENTS} files.`); return; }
     setValidationError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
@@ -271,7 +279,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     </article></div>;
   };
 
-  const canAttach = signedIn && state.phase === "ready" && !!state.channelId;
+  const canAttach = signedIn && uploadsEnabled && state.phase === "ready" && !!state.channelId;
   return <section className="chat-panel" aria-labelledby="chat-heading"
     onDragOver={(event) => { if (canAttach && event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
     onDrop={(event) => { if (!canAttach || !event.dataTransfer.files.length) return; event.preventDefault(); addFiles([...event.dataTransfer.files]); }}>
