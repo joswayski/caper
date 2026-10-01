@@ -1769,7 +1769,13 @@ async fn join(
             )
         }
     };
-    let country_code = country_code(&headers);
+    // Account-channel joins authenticate before dispatch and carry media_session.
+    // Only guests expose an approximate country in any roster projection.
+    let country_code = if account.is_none() && s.media_session.is_none() {
+        country_code(&headers)
+    } else {
+        None
+    };
     let reservation = Uuid::new_v4();
     let (monitor, pulls) = s
         .update(|r| {

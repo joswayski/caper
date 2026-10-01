@@ -79,6 +79,7 @@ try {
   assert.ok(!evaluate('return document.querySelector(".sim-sidebar").textContent.includes("In voice")'));
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-person .avatar")).width'), '20px');
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-person")).backgroundColor'), 'rgba(0, 0, 0, 0)', 'Production indicates speech on the avatar, not a green row');
+  assert.equal(evaluate('return document.querySelectorAll(".live-window .participant-country").length'), 0, 'The simulation has no country flags');
   assert.deepEqual(speakers(), ['Maya', 'Theo', 'June'], 'Multiple people speak simultaneously');
   assert.equal(evaluate('return document.querySelector(".voice-stack").tagName'), 'SPAN');
   evaluate('window.firstDemoMessage = document.querySelector(".sim-message");');
@@ -129,6 +130,7 @@ try {
   nextMoments(6); // 45
   assert.equal(members().length, 6);
   assert.equal(voices().length, 6);
+  assert.equal(evaluate('return document.querySelectorAll(".sim-person .participant-country").length'), 0, 'Joining/rejoining demo participants have no flags');
   assert.ok(evaluate('return document.querySelector(".sim-messages").textContent.includes("back with cookies. let’s gooo")'));
   assert.equal(evaluate('return document.querySelectorAll(".sim-message").length'), 24);
   nextMoments(4); // 0: new loop, but the previous conversation stays
