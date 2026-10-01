@@ -81,9 +81,6 @@ targets:
     platform: macOS
     sources:
       - path: Sources/CaperCore
-        excludes: [capers-v1.png]
-      - path: ../../web/public/images/avatars/capers-v1.png
-        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]
@@ -106,9 +103,6 @@ targets:
     platform: iOS
     sources:
       - path: Sources/CaperCore
-        excludes: [capers-v1.png]
-      - path: ../../web/public/images/avatars/capers-v1.png
-        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]

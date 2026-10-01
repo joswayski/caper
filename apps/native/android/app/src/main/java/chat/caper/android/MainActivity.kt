@@ -3,7 +3,6 @@ package chat.caper.android
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
-import android.graphics.BitmapFactory
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -12,7 +11,6 @@ import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -40,10 +38,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -876,14 +870,6 @@ internal fun counterTone(count: Int): Color = when {
     else -> TextMuted
 }
 
-// Share the decoded atlas instead of allocating one for every visible avatar.
-private object AvatarAtlas {
-    private var image: ImageBitmap? = null
-    fun load(context: android.content.Context): ImageBitmap = image ?: context.assets
-        .open("capers-v1.png").use { BitmapFactory.decodeStream(it).asImageBitmap() }
-        .also { image = it }
-}
-
 @Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) {
     val index = caperAvatarIndex(avatarId)
     Box(
@@ -901,11 +887,11 @@ private object AvatarAtlas {
     ) {
         if (index == null) Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
         else {
-            val context = LocalContext.current
-            val atlas = remember { AvatarAtlas.load(context) }
-            Canvas(Modifier.fillMaxSize()) {
-                drawImage(atlas, IntOffset((index % 32) * 64, (index / 32) * 64), IntSize(64, 64), IntOffset.Zero, IntSize(this.size.width.toInt(), this.size.height.toInt()))
-            }
+            Image(
+                painter = painterResource(caperAvatarResources[index]),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+            )
         }
     }
 }

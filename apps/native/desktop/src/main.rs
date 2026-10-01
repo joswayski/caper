@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
+mod avatar_images;
 mod credentials;
 mod effects;
 mod gateway;
@@ -5871,17 +5872,10 @@ fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
 
 fn paint_avatar(ui: &egui::Ui, rect: egui::Rect, name: &str, avatar_id: Option<i32>) {
     if let Some(index) = caper_avatar_index(avatar_id).map(usize::from) {
-        let uv = egui::Rect::from_min_max(
-            egui::pos2((index % 32) as f32 / 32.0, (index / 32) as f32 / 25.0),
-            egui::pos2(
-                (index % 32 + 1) as f32 / 32.0,
-                (index / 32 + 1) as f32 / 25.0,
-            ),
-        );
-        egui::Image::new(egui::include_image!(
-            "../../../web/public/images/avatars/capers-v1.png"
-        ))
-        .uv(uv)
+        egui::Image::from_bytes(
+            format!("bytes://caper-avatars-v2/{index}.svg"),
+            avatar_images::SVG[index],
+        )
         .paint_at(ui, rect);
     } else {
         ui.painter()
@@ -6641,7 +6635,7 @@ mod tests {
         assert_eq!(app.selected_channel, selected);
         assert!(app.voice_target("not-in-space").is_none());
         render(&mut app, &context, vec![]);
-        // PNG decoding is asynchronous on native; wait for the real atlas rather
+        // SVG decoding is asynchronous on native; wait for the real avatar rather
         // than inspecting its loading spinner in the first two frames.
         let started = std::time::Instant::now();
         while context.has_pending_images() {
@@ -6665,11 +6659,9 @@ mod tests {
             .iter()
             .find_map(|shape| match &shape.shape {
                 egui::Shape::Rect(rect)
-                    if rect
-                        .brush
-                        .as_ref()
-                        .is_some_and(|brush| brush.uv.min == egui::pos2(15.0 / 32.0, 0.0))
-                        && rect.rect.width() == 20.0
+                    if rect.brush.as_ref().is_some_and(|brush| {
+                        brush.uv == egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
+                    }) && rect.rect.width() == 20.0
                         && rect.rect.center().x < 340.0 =>
                 {
                     Some(rect.rect.center())

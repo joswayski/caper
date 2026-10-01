@@ -977,10 +977,10 @@ private struct Avatar: View {
     var body: some View {
         Group {
             if let index = CaperAvatar.index(for: avatarID) {
-                Image("capers-v1", bundle: caperResourceBundle)
-                    .resizable().frame(width: size * 32, height: size * 25)
-                    .offset(x: -CGFloat(index % 32) * size, y: -CGFloat(index / 32) * size)
-                    .frame(width: size, height: size, alignment: .topLeading).clipped()
+                Image("caper-avatar-\(index)", bundle: caperResourceBundle)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size, height: size)
             } else {
                 Text(String(name.prefix(1)).uppercased()).font(CaperTheme.font(size * 0.36, weight: .black))
                     .frame(width: size, height: size).background(CaperTheme.raised)
