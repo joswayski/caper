@@ -1997,6 +1997,8 @@ impl eframe::App for CaperApp {
             self.login_page(context);
         } else if self.onboarding() {
             self.onboarding_page(context);
+        } else if self.needs_first_space() {
+            self.first_space_page(context);
         } else {
             self.shell(context);
             self.dialogs(context);
@@ -2065,6 +2067,101 @@ impl CaperApp {
                 .account
                 .as_ref()
                 .is_some_and(|account| account.username.is_none() || account.display_name.is_none())
+    }
+
+    /// Web's first-space page: a signed-in account whose loaded space list is
+    /// empty names its first space instead of seeing an empty workspace.
+    fn needs_first_space(&self) -> bool {
+        self.account.is_some()
+            && self.limits.is_some()
+            && self.dialog.is_none()
+            && !self.spaces.iter().any(|space| !space.demo)
+    }
+
+    fn first_space_page(&mut self, context: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BLACKOUT))
+            .show(context, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(440.0);
+                        ui.add_space(100.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.add(egui::Image::new(egui::include_image!(
+                                "../../../web/public/caper-wordmark.svg"
+                            )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                            ui.add_space(58.0);
+                            ui.label(black("Name your space").size(40.0));
+                            ui.add_space(20.0);
+                            ui.label(
+                                RichText::new(
+                                    "Choose something you will recognize easily. You can always change it later!",
+                                )
+                                .size(16.0)
+                                .color(MUTED),
+                            );
+                            ui.add_space(24.0);
+                            ui.label(bold("Space name").size(14.0));
+                            ui.add_space(4.0);
+                            let field = ui.add(
+                                egui::TextEdit::singleline(&mut self.form_name)
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(64)
+                                    .min_size(egui::vec2(0.0, 52.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let allowed = self.can_create_space();
+                            if !allowed {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("You have reached your space limit.")
+                                        .size(12.8)
+                                        .color(MUTED),
+                                );
+                            }
+                            if let Some(error) = &self.error {
+                                ui.add_space(16.0);
+                                login_error_frame(ui, error);
+                            }
+                            ui.add_space(24.0);
+                            let blocked =
+                                self.loading || !allowed || self.form_name.trim().is_empty();
+                            let entered = field.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            let clicked = login_action(
+                                ui,
+                                if self.loading { "Creating…" } else { "Create space" },
+                                blocked,
+                            )
+                            .clicked();
+                            if (clicked || entered) && !blocked {
+                                // Web validates on submit and keeps the name on failure.
+                                if let Some(error) = space_name_error(&self.form_name) {
+                                    self.error = Some(error.into());
+                                } else {
+                                    self.admin(AdminOperation::CreateSpace {
+                                        name: self.form_name.clone(),
+                                    });
+                                }
+                            }
+                            ui.add_space(16.0);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Log out").size(13.6).color(MUTED),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.logout();
+                                }
+                            });
+                        });
+                    });
+                });
+            });
     }
 
     fn onboarding_page(&mut self, context: &egui::Context) {
@@ -6998,6 +7095,7 @@ mod tests {
         let space = app.selected_space.clone().unwrap();
         // There is no public General fallback after leaving the last space.
         app.spaces.retain(|entry| !entry.demo);
+        assert!(!app.needs_first_space());
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
         assert!(app.timeline.messages().next().is_some());
@@ -7011,6 +7109,8 @@ mod tests {
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
         assert!(!app.can_leave_space());
+        // Like web, an account with no spaces is asked to name its first one.
+        assert!(app.needs_first_space());
     }
 
     #[test]

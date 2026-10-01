@@ -41,7 +41,10 @@ public enum CaperTheme {
             switch model.phase {
             case .loading: LoadingView()
             case .onboarding: ProfileView(model: model)
-            case .signedOut, .ready: WorkspaceView(model: model)
+            case .signedOut, .ready:
+                if model.phase == .ready && model.spaces.isEmpty && model.spacesLoaded { FirstSpaceView(model: model) }
+                else if model.phase == .ready && model.spaces.isEmpty, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
+                else { WorkspaceView(model: model) }
             }
         }
         .preferredColorScheme(.dark)
@@ -86,6 +89,67 @@ private struct LoadingView: View {
             ProgressView().controlSize(.small)
             Text("Loading your spaces…").font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
         }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
+    }
+}
+
+/// Web's first-space page: an account with no spaces names one here.
+private struct FirstSpaceView: View {
+    @Bindable var model: AppModel
+    @State private var name = ""
+    @State private var error: String?
+    @State private var pending = false
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Wordmark()
+                Text("Name your space").font(CaperTheme.font(28, weight: .bold)).padding(.top, 20)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Choose something you will recognize easily. You can always change it later!")
+                    .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
+                CaperField(title: "Space name", text: $name).onSubmit(create)
+                Button(pending ? "Creating…" : "Create space", action: create)
+                    .buttonStyle(CaperPrimaryButton())
+                    .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
+                    .accessibilityIdentifier("first-space-create")
+                if !model.canCreateSpace, model.limits != nil {
+                    Text("You have reached your space limit.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                }
+                if let error {
+                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    Spacer()
+                    Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
+                        .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                }
+            }.padding(28).frame(maxWidth: 440).frame(maxWidth: .infinity)
+        }.background(CaperTheme.blackout)
+    }
+    private func create() {
+        guard !pending, model.canCreateSpace, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        pending = true; error = nil
+        Task {
+            // The name stays in the field when creation fails, like web.
+            do { try await model.createSpace(name: name) } catch { self.error = error.localizedDescription }
+            pending = false
+        }
+    }
+}
+
+private struct SpacesUnavailableView: View {
+    @Bindable var model: AppModel
+    let error: String
+    var body: some View {
+        VStack(spacing: 14) {
+            Wordmark()
+            Text("Spaces are unavailable.").font(CaperTheme.font(22, weight: .bold))
+            Text(error).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.terracottaBright).multilineTextAlignment(.center)
+            Button(model.busy ? "Trying…" : "Try again") { Task { await model.loadSpaces() } }
+                .buttonStyle(CaperSecondaryButton()).disabled(model.busy)
+            Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
+                .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+        }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
     }
 }
 
