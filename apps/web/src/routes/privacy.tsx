@@ -4,7 +4,7 @@ import Wordmark from "../components/Wordmark";
 
 // Mailbox that answers privacy and account-deletion requests.
 const CONTACT = "privacy@caper.chat";
-const UPDATED = "September 30, 2026";
+const UPDATED = "October 1, 2026";
 
 export const Route = createFileRoute("/privacy")({
   head: () => ({ meta: [{ title: "Privacy - Caper" }] }),
@@ -24,6 +24,7 @@ function Privacy() {
           <li><b className="text-content">Your email address</b>, if you sign in. We use it only to send you one-time sign-in codes.</li>
           <li><b className="text-content">Your username and display name</b>, which other people see in conversations.</li>
           <li><b className="text-content">Messages you send</b>, stored so the people in that channel can read them.</li>
+          <li><b className="text-content">Files you attach</b>, stored so the people in that channel can open them. Photos are re-encoded on your device before upload, which removes embedded details such as location.</li>
           <li><b className="text-content">Your spaces and channels</b>: what you create, join, and who you add.</li>
           <li><b className="text-content">Basic service logs</b>, such as errors and connection timings, used to keep Caper working. Sign-in requests record a one-way hash of your IP address to limit abuse.</li>
         </ul>
@@ -40,13 +41,13 @@ function Privacy() {
       <Section title="Who handles data for us">
         <ul className="list-disc space-y-2 pl-5">
           <li>Amazon Web Services hosts Caper and sends sign-in emails.</li>
-          <li>Cloudflare carries voice and network traffic.</li>
+          <li>Cloudflare carries voice and network traffic, and stores attached files.</li>
           <li>Axiom stores service logs.</li>
         </ul>
       </Section>
 
       <Section title="How long we keep it">
-        <p>Messages and your account stay until they're deleted. Sign-in sessions are removed a week after they expire.</p>
+        <p>Messages and your account stay until they're deleted. Attached files are removed from storage about a day after they're deleted; uploads that are never sent are removed within a day. Sign-in sessions are removed a week after they expire.</p>
       </Section>
 
       <Section title="Your choices">

@@ -2,13 +2,15 @@ import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChatMessage, sequence, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChatMessage, sequence, type ChatAttachment, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
 export interface PendingChatMessage {
   clientMessageId: string;
   text: string;
+  /** Uploaded files; URLs may be local object URLs until the server confirms. */
+  attachments?: ChatAttachment[];
   author?: ChatAuthor;
   createdAt: string;
 }
@@ -230,16 +232,17 @@ export class ChatClient {
     }
   }
 
-  async send(text: string): Promise<boolean> {
+  async send(text: string, attachments: ChatAttachment[] = []): Promise<boolean> {
     if (this.sending || this.state.sendRejected) return false;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
     const pending = {
-      ...(this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text, createdAt: new Date().toISOString() }),
+      ...(this.state.pendingSend ?? { clientMessageId: crypto.randomUUID(), text, attachments: attachments.length ? attachments : undefined, createdAt: new Date().toISOString() }),
       author: this.session?.author,
     };
     const count = Array.from(pending.text).length;
-    if (!pending.text.trim() || count > 4_000) throw new Error(count > 4_000 ? "Messages can be at most 4,000 characters." : "Write a message first.");
+    const attachmentIds = (pending.attachments ?? []).map((attachment) => attachment.id);
+    if ((!pending.text.trim() && !attachmentIds.length) || count > 4_000) throw new Error(count > 4_000 ? "Messages can be at most 4,000 characters." : "Write a message first.");
     if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(pending.text)) throw new Error("Messages cannot contain control characters.");
     const channelId = this.state.channelId;
     if (!channelId) throw new Error("Chat is not ready yet.");
@@ -260,7 +263,7 @@ export class ChatClient {
         const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-          body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text }),
+          body: JSON.stringify({ clientMessageId: pending.clientMessageId, text: pending.text, ...(attachmentIds.length ? { attachmentIds } : {}) }),
           signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
         });
         if (!response.ok) {

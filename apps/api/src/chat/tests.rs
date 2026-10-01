@@ -252,6 +252,7 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         pool: pool.clone(),
         broker,
         wake: Arc::new(Notify::new()),
+        cdn: None,
     };
     let mut state = AppState::new(
         crate::Config::test(false),
@@ -890,6 +891,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         pool: pool.clone(),
         broker,
         wake: Arc::new(Notify::new()),
+        cdn: None,
     };
     let gateway = crate::gateway::Gateway::new(chat);
     gateway.start();

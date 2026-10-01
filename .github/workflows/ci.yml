@@ -21,6 +21,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test --workspace @caper/web
+      - run: npm run test:cdn
 
   rust:
     name: Rust

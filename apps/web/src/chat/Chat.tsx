@@ -1,8 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Paperclip } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
 import { dateDivider } from "./dates.ts";
-import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
+import { attachmentsOf, type ChatAttachment, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
+import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
+import { MAX_ATTACHMENTS, browserTransport, prepareFile, refreshAttachmentUrls, uploadPrepared } from "./uploads.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import "./chat.css";
@@ -57,6 +60,11 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
+  const uploads = useRef(new Map<string, AbortController>());
+  const objectUrls = useRef(new Set<string>());
+  const [freshUrls, setFreshUrls] = useState<Record<string, { url: string; previewUrl?: string }>>({});
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
 
@@ -95,6 +103,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       const pending = next.pendingSend;
       if (pending && pending.clientMessageId !== pendingId) {
         setDraft((current) => current === pending.text ? "" : current);
+        const sent = new Set((pending.attachments ?? []).map((attachment) => attachment.id));
+        if (sent.size) setDrafts((current) => current.filter((item) => !item.attachment || !sent.has(item.attachment.id)));
         followLatest.current = true;
       }
       pendingId = pending?.clientMessageId;
@@ -126,6 +136,57 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   }, [state.online, onLocalPresenceChange]);
 
   useEffect(() => { clientRef.current?.setSounds(messageSounds); }, [messageSounds]);
+
+  // Uploads belong to one channel; abandon them when it changes or unmounts.
+  useEffect(() => () => {
+    for (const controller of uploads.current.values()) controller.abort();
+    uploads.current.clear();
+    setDrafts([]);
+  }, [channelId]);
+  useEffect(() => () => { for (const url of objectUrls.current) URL.revokeObjectURL(url); }, []);
+
+  const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
+    setDrafts((current) => current.map((item) => item.key === key ? { ...item, ...change } : item));
+  }, []);
+
+  const addFiles = (files: File[]) => {
+    const channel = state.channelId;
+    if (!signedIn || !channel || !files.length) return;
+    const room = MAX_ATTACHMENTS - drafts.length;
+    if (room <= 0) { setValidationError(`You can attach up to ${MAX_ATTACHMENTS} files.`); return; }
+    setValidationError(files.length > room ? `Only ${room} more file${room === 1 ? "" : "s"} can be attached.` : undefined);
+    for (const file of files.slice(0, room)) {
+      const key = crypto.randomUUID();
+      const localUrl = file.type.startsWith("image/") || file.type.startsWith("video/") ? URL.createObjectURL(file) : undefined;
+      if (localUrl) objectUrls.current.add(localUrl);
+      const controller = new AbortController();
+      uploads.current.set(key, controller);
+      setDrafts((current) => [...current, { key, name: file.name, kind: file.type.startsWith("image/") ? "image" : "file", localUrl, sourceSize: file.size, progress: 0 }]);
+      void (async () => {
+        try {
+          const prepared = await prepareFile(file);
+          updateDraft(key, { name: prepared.name, kind: prepared.kind, storedSize: prepared.blob.size });
+          const attachment = await uploadPrepared(channel, prepared, browserTransport, (progress) => updateDraft(key, { progress }), controller.signal);
+          updateDraft(key, { attachment, progress: 1 });
+        } catch (error) {
+          if (!controller.signal.aborted) updateDraft(key, { error: error instanceof Error ? error.message : "Upload failed." });
+        } finally {
+          uploads.current.delete(key);
+        }
+      })();
+    }
+  };
+
+  const removeDraft = (key: string) => {
+    uploads.current.get(key)?.abort();
+    uploads.current.delete(key);
+    setDrafts((current) => current.filter((item) => item.key !== key));
+  };
+
+  const refreshUrls = useCallback((ids: string[]) => {
+    void refreshAttachmentUrls(ids).then((urls) => { if (Object.keys(urls).length) setFreshUrls((current) => ({ ...current, ...urls })); });
+  }, []);
+  const withFreshUrls = (attachments: ChatAttachment[]) => attachments.map((attachment) => ({ ...attachment, ...freshUrls[attachment.id] }));
 
   useEffect(() => { onOnlineChange?.(state.online); }, [state.online, onOnlineChange]);
 
@@ -170,8 +231,15 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     setValidationError(undefined);
     followLatest.current = true;
     const submitted = state.pendingSend?.text ?? draft;
+    if (!state.pendingSend && drafts.some((item) => !item.attachment)) {
+      setValidationError(drafts.some((item) => item.error) ? "Remove files that failed to upload first." : "Wait for files to finish uploading.");
+      return;
+    }
+    // Pending messages show local copies until the server's signed URLs arrive.
+    const attachments = drafts.flatMap((item) => item.attachment
+      ? [{ ...item.attachment, url: item.localUrl, previewUrl: item.localUrl }] : []);
     try {
-      await clientRef.current?.send(submitted);
+      await clientRef.current?.send(submitted, attachments);
     } catch (error) {
       setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
     }
@@ -187,7 +255,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
-        <p>{"content" in message ? message.content.text : message.text}</p>
+        {("content" in message ? message.content.text : message.text) && <p>{"content" in message ? message.content.text : message.text}</p>}
+        <MessageAttachments attachments={"content" in message ? withFreshUrls(attachmentsOf(message)) : message.attachments ?? []} onExpired={pending ? undefined : refreshUrls} />
         {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
           <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
           {state.sendRejected ? <>
@@ -202,7 +271,10 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     </article></div>;
   };
 
-  return <section className="chat-panel" aria-labelledby="chat-heading">
+  const canAttach = signedIn && state.phase === "ready" && !!state.channelId;
+  return <section className="chat-panel" aria-labelledby="chat-heading"
+    onDragOver={(event) => { if (canAttach && event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+    onDrop={(event) => { if (!canAttach || !event.dataTransfer.files.length) return; event.preventDefault(); addFiles([...event.dataTransfer.files]); }}>
     <header className="chat-heading">
       <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}># {channelName}</h2>
       {headerActions}
@@ -247,7 +319,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         <HistoryHeader context={{ hasMore: state.hasMore, loadingOlder: false, loadOlder }} />
         {messages.slice(previewStart).map((message, index) => renderMessage(previewStart + index, message))}
       </div>}
-      <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text}`}</p>
+      <p className="sr-only" aria-live="polite" aria-atomic="true">{state.phase === "ready" && latestMessage && `${latestMessage.author.name}: ${latestMessage.content.text || `sent ${attachmentsOf(latestMessage).length === 1 ? "a file" : `${attachmentsOf(latestMessage).length} files`}`}`}</p>
     </div>
 
     <p className="chat-typing" role="status" aria-atomic="true">
@@ -259,9 +331,17 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     <div className="chat-composer">
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
-      <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      <DraftAttachments drafts={drafts} onRemove={removeDraft} />
+      <form data-attach={canAttach || undefined} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        {canAttach && <>
+          <button type="button" className="chat-attach" aria-label="Attach files" title="Attach files" disabled={drafts.length >= MAX_ATTACHMENTS} onClick={() => fileInputRef.current?.click()}><Paperclip size={17} aria-hidden="true" /></button>
+          <input ref={fileInputRef} type="file" multiple hidden onChange={(event) => { addFiles([...(event.target.files ?? [])]); event.target.value = ""; }} />
+        </>}
         <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
-        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} enterKeyHint="send" aria-describedby="chat-composer-hint" placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
+        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} enterKeyHint="send" aria-describedby="chat-composer-hint" placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onPaste={(event) => {
+          const files = [...event.clipboardData.files];
+          if (canAttach && files.length) { event.preventDefault(); addFiles(files); }
+        }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
         <span id="chat-composer-hint" className="sr-only">Enter to send. Shift+Enter for a new line.</span>
