@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Hash, Pause, Play, SkipForward, SmilePlus } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ChevronDown, Hash } from "lucide-react";
 import usFlag from "flag-icons/flags/4x3/us.svg?url";
 import gbFlag from "flag-icons/flags/4x3/gb.svg?url";
 import caFlag from "flag-icons/flags/4x3/ca.svg?url";
@@ -47,6 +47,8 @@ const messages = [
   { person: 2, at: 45, text: "back with cookies. let’s gooo", emoji: 3 },
 ];
 
+type DemoMessage = typeof messages[number] & { cycle: number; reactions: number[] };
+
 // Arrivals and voice changes belong only to this local illustration.
 const activity = [
   { at: 0, person: 2, online: true, voice: true, text: "June joined voice" },
@@ -79,24 +81,15 @@ function Avatar({ person }: { person: typeof people[number] }) {
 export default function LiveWindow() {
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
   const [ready, setReady] = useState(false);
-  const [{ phase, cycle, reactions }, setDemo] = useState<{ phase: number; cycle: number; reactions: Record<string, boolean> }>({ phase: 3, cycle: 0, reactions: {} });
-  const [paused, setPaused] = useState(false);
-  const [interacting, setInteracting] = useState(false);
-  const [focused, setFocused] = useState(false);
+  const [{ phase, cycle, history }, setDemo] = useState<{ phase: number; cycle: number; history: DemoMessage[] }>({ phase: 3, cycle: 0, history: [] });
   const [reducedMotion, setReducedMotion] = useState(false);
-  const [rosterOpen, setRosterOpen] = useState(true);
-  const [picker, setPicker] = useState<number>();
   // Stable server/first-client render; randomize only once the local demo is
   // ready, then once per loop, never on ordinary React renders.
   const timing = useMemo(() => createDemoTiming(people.map((person) => person.speech), messages.map((message) => message.at), ready ? Math.random : () => .5), [ready, cycle]);
-  const advance = useCallback((seconds: number) => {
-    setDemo((current) => {
-      const elapsed = current.phase + seconds;
-      const loops = Math.floor(elapsed / cycleLength);
-      return { phase: elapsed % cycleLength, cycle: current.cycle + loops, reactions: loops > 0 ? {} : current.reactions };
-    });
-  }, []);
+  const timedMessages = useMemo(() => messages.map((message, index) => ({ ...message, ...timing.messages[index], cycle })), [timing, cycle]);
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
@@ -112,6 +105,19 @@ export default function LiveWindow() {
     return () => motion.detach();
   }, []);
 
+  useLayoutEffect(() => {
+    const viewport = messagesRef.current;
+    if (!viewport) return;
+    const follow = () => {
+      if (following.current) viewport.scrollTop = viewport.scrollHeight;
+    };
+    const observer = new ResizeObserver(follow);
+    observer.observe(viewport);
+    observer.observe(viewport.firstElementChild!);
+    follow();
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
     const update = () => setReducedMotion(media.matches);
@@ -121,16 +127,25 @@ export default function LiveWindow() {
   }, []);
 
   useEffect(() => {
-    if (paused || interacting || focused || reducedMotion || picker !== undefined) return;
+    if (reducedMotion) return;
     // Sample elapsed time rather than snapping every effect to a shared beat.
     let previous = performance.now();
     const timer = window.setInterval(() => {
       const now = performance.now();
-      advance((now - previous) / 1000);
+      const seconds = (now - previous) / 1000;
       previous = now;
+      setDemo((current) => {
+        const elapsed = current.phase + seconds;
+        const loops = Math.floor(elapsed / cycleLength);
+        return {
+          phase: elapsed % cycleLength,
+          cycle: current.cycle + loops,
+          history: loops > 0 ? [...current.history, ...timedMessages] : current.history,
+        };
+      });
     }, 75);
     return () => window.clearInterval(timer);
-  }, [paused, interacting, focused, reducedMotion, picker, advance]);
+  }, [reducedMotion, timedMessages]);
 
   const present = people.map((person, index) => {
     const last = activity.filter((event) => event.person === index && event.at <= phase).at(-1);
@@ -139,42 +154,35 @@ export default function LiveWindow() {
   });
   const onlinePeople = present.filter((person) => person.online);
   const voicePeople = present.filter((person) => person.voice);
-  const latestActivity = activity.filter((event) => event.at <= phase).at(-1)!;
-  const timedMessages = messages.map((message, index) => ({ ...message, ...timing.messages[index] }));
-  const visibleMessages = timedMessages.filter((message) => message.at <= phase).slice(-3);
+  const visibleMessages = [...history, ...timedMessages.filter((message) => message.at <= phase)];
   const typingPeople = [...new Set(timedMessages.filter((message) => message.at > phase && message.typing <= phase && present[message.person].online).map((message) => people[message.person].name))];
-  const toggle = (key: string) => setDemo((current) => ({ ...current, reactions: { ...current.reactions, [key]: !current.reactions[key] } }));
 
   return (
     <div className="live-stage" ref={stageRef} suppressHydrationWarning data-ready={ready ? "" : undefined}>
       <div className="live-glow" aria-hidden="true" />
-      <div className="live-scene" ref={sceneRef} suppressHydrationWarning tabIndex={-1}>
+      <div className="live-scene" ref={sceneRef} suppressHydrationWarning>
         <div className="live-shadow" aria-hidden="true" />
         {[5, 4, 3, 2, 1].map((depth) => <div key={depth} className="live-slab" style={{ "--z": -depth * 5 } as CSSProperties} aria-hidden="true" />)}
         <div className="live-window">
-          <div className="sim-demo" aria-label="Simulated Caper conversation"
-            onMouseOver={(event) => setInteracting(!!(event.target as HTMLElement).closest(".sim-reactions, .sim-emoji-picker"))} onMouseLeave={() => setInteracting(false)}
-            onFocusCapture={(event) => setFocused(!!event.target.closest(".sim-reactions, .sim-emoji-picker"))} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false); }}
-            onKeyDown={(event) => { if (event.key === "Escape") { setPicker(undefined); event.currentTarget.querySelector<HTMLButtonElement>(`[data-picker-for="${picker}"]`)?.focus(); } }}>
+          <div className="sim-demo" aria-label="Simulated Caper conversation">
             <aside className="sim-rail" aria-label="Demo space"><span>C</span></aside>
-            <aside className="sim-sidebar people-panel spaces-room">
+            <aside className="sim-sidebar people-panel spaces-room navigation-open">
               <div className="sidebar-channels">
                 <nav className="channel-navigation" aria-label="Simulated channels">
-                  <header><div className="sim-brand">Caper<ChevronDown aria-hidden="true" /></div></header>
+                  <header><div className="sim-brand">Caper</div></header>
                   <div className="channel-section-heading sim-section-title"><ChevronDown aria-hidden="true" />Channels<span className="section-count">2</span></div>
                   <ul>
                     <li data-voice="">
                       <div className="channel-line">
                         <div className="channel-select sim-channel" aria-current="page"><Hash aria-hidden="true" /><span>general</span></div>
-                        <span className="channel-voice" data-live-control>
-                          <button className="voice-stack" type="button" aria-expanded={rosterOpen} aria-controls="sim-voice-roster" aria-label={`${voicePeople.length} in demo voice. ${rosterOpen ? "Hide" : "Show"} participants.`} onClick={() => setRosterOpen(!rosterOpen)}>
-                            <span className="voice-stack-faces" aria-hidden="true">{voicePeople.slice(0, 3).map((person) => <span className={`voice-stack-avatar${person.speaking && !rosterOpen ? " speaking" : ""}`} key={person.name}>{person.name[0]}</span>)}{voicePeople.length > 3 && <small>+{voicePeople.length - 3}</small>}</span>
-                            <ChevronDown aria-hidden="true" />
-                          </button>
+                        <span className="channel-voice">
+                          <span className="voice-stack" aria-label={`${voicePeople.length} in demo voice`}>
+                            <span className="voice-stack-faces" aria-hidden="true">{voicePeople.slice(0, 3).map((person) => <span className="voice-stack-avatar" key={person.name}>{person.name[0]}</span>)}{voicePeople.length > 3 && <small>+{voicePeople.length - 3}</small>}</span>
+                          </span>
                         </span>
                       </div>
-                      <div className="voice-occupants" data-open={rosterOpen ? "" : undefined} id="sim-voice-roster">
-                        <div className="voice-occupants-inner" inert={!rosterOpen}>
+                      <div className="voice-occupants" data-open="">
+                        <div className="voice-occupants-inner">
                           <ul className="sim-people" aria-label="People in demo voice in general">
                             {voicePeople.map((person) => <li className="sim-person participant" data-speaking={person.speaking ? "" : undefined} key={person.name} aria-label={`${person.name}${person.speaking ? ", speaking" : ""}`}>
                               <span className="participant-avatar"><span className={`avatar sim-voice-avatar ${person.speaking ? "speaking" : "quiet"}`}><Avatar person={person} /></span></span>
@@ -184,40 +192,34 @@ export default function LiveWindow() {
                         </div>
                       </div>
                     </li>
-                    <li><div className="channel-select"><Hash aria-hidden="true" /><span>tomato-soup</span></div></li>
+                    <li><div className="channel-select"><Hash aria-hidden="true" /><span>feedback</span></div></li>
                   </ul>
                 </nav>
               </div>
             </aside>
             <section className="sim-chat">
               <header><div><Hash aria-hidden="true" /><strong>general</strong></div><span className="sim-label">Simulated demo</span></header>
-              <div className="sim-arrival" key={latestActivity.at}>{latestActivity.text}</div>
-              <div className="sim-messages" aria-live="off">
-                {visibleMessages.map((message) => (
-                  <article className="sim-message" key={message.at}>
-                    <Avatar person={people[message.person]} />
-                    <div><strong>{people[message.person].name}</strong><span className="sim-time">just now</span><p>{message.text}</p>{message.meme && <img className="sim-meme" src="/images/demo-tiny-hat.webp" width="384" height="384" alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy." />}
-                      <div className="sim-reactions" data-live-control>
-                        {emoji.map((item, index) => {
-                          const key = `${message.at}:${index}`;
-                          const mine = !!reactions[key];
-                          // Simulated readers react after the message appears,
-                          // never bundled with its first frame. Viewer clicks
-                          // still take effect immediately.
-                          const count = (index === message.emoji ? message.reactions.filter((at) => at <= phase).length : 0) + Number(mine);
-                          return count > 0 && <button type="button" key={item.code} aria-pressed={mine} aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}${mine ? ", including you" : ""}`} title={mine ? "Remove your reaction" : "Add your reaction"} onClick={() => toggle(key)}><img src={`/images/demo-emoji/${item.code}.svg`} alt="" /><span>{count}</span></button>;
-                        })}
-                        <button type="button" className="sim-add-reaction" data-picker-for={message.at} aria-label={`Add reaction to ${people[message.person].name}'s message`} aria-expanded={picker === message.at} onClick={() => setPicker(picker === message.at ? undefined : message.at)}><SmilePlus aria-hidden="true" /></button>
+              <div className="sim-messages" ref={messagesRef} role="log" aria-label="Simulated message history" aria-live="off" tabIndex={0} data-live-control onScroll={(event) => {
+                const viewport = event.currentTarget;
+                following.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
+              }}>
+                <div className="sim-message-list">
+                  {visibleMessages.map((message) => {
+                    const item = emoji[message.emoji];
+                    const count = message.reactions.filter((at) => at + message.cycle * cycleLength <= phase + cycle * cycleLength).length;
+                    return <article className="sim-message" key={`${message.cycle}:${message.at}`}>
+                      <Avatar person={people[message.person]} />
+                      <div><strong>{people[message.person].name}</strong><span className="sim-time">just now</span><p>{message.text}</p>{message.meme && <img className="sim-meme" src="/images/demo-tiny-hat.webp" width="384" height="384" alt="A capybara wearing a tiny hat. Caption: Tiny hat. Huge energy." />}
+                        <div className="sim-reactions">
+                          {count > 0 && <span className="sim-reaction" role="img" aria-label={`${item.text}, ${count} ${count === 1 ? "reaction" : "reactions"}`}><img src={`/images/demo-emoji/${item.code}.svg`} alt="" /><span>{count}</span></span>}
+                        </div>
                       </div>
-                      {picker === message.at && <div className="sim-emoji-picker" data-live-control role="group" aria-label="Try a demo reaction">
-                        {emoji.map((item, index) => <button type="button" key={item.code} aria-label={`React with ${item.text}`} onClick={() => { toggle(`${message.at}:${index}`); setPicker(undefined); }}><img src={`/images/demo-emoji/${item.code}.svg`} alt={item.text} /></button>)}
-                      </div>}
-                    </div>
-                  </article>
-                ))}
-                <div className="sim-typing">{typingPeople.length > 0 && <><i /><i /><i /> {typingPeople.join(" and ")} {typingPeople.length === 1 ? "is" : "are"} typing</>}</div>
+                    </article>;
+                  })}
+                </div>
               </div>
-              <footer className="sim-footer" data-live-control><a className="sim-composer" href="/spaces">Join to message #general</a><span>Try a reaction · just for fun</span><div className="sim-playback"><button type="button" aria-label="Next demo moment" onClick={() => { setPicker(undefined); advance(1); }}><SkipForward aria-hidden="true" />Next</button><button type="button" disabled={reducedMotion} aria-label={paused ? "Play demo" : "Pause demo"} aria-pressed={paused || reducedMotion} onClick={() => setPaused(!paused)}>{paused || reducedMotion ? <Play aria-hidden="true" /> : <Pause aria-hidden="true" />}{reducedMotion ? "Reduced motion" : paused ? "Play" : "Pause"}</button></div></footer>
+              <div className="sim-typing">{typingPeople.length > 0 && <><i /><i /><i /> {typingPeople.join(" and ")} {typingPeople.length === 1 ? "is" : "are"} typing</>}</div>
+              <footer className="sim-footer" aria-hidden="true"><div className="sim-composer">Message #general</div></footer>
             </section>
             <aside className="sim-members" aria-label="Simulated members">
               <div className="sim-members-heading">Members <span>{onlinePeople.length}</span></div>
@@ -225,7 +227,7 @@ export default function LiveWindow() {
             </aside>
           </div>
         </div>
-        <a className="live-activator" data-live-activator data-live-control href="/spaces" aria-label="Join Caper. Arrow keys tilt the window.">
+        <a className="live-activator" data-live-activator data-live-control href="/spaces" aria-label="Join Caper">
           <span className="live-invite"><i aria-hidden="true" /><span className="live-invite-fine">Click to join</span><span className="live-invite-coarse">Tap to join</span></span>
         </a>
       </div>
