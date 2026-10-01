@@ -6001,7 +6001,7 @@ fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
 fn paint_avatar(ui: &egui::Ui, rect: egui::Rect, name: &str, avatar_id: Option<i32>) {
     if let Some(index) = caper_avatar_index(avatar_id).map(usize::from) {
         egui::Image::from_bytes(
-            format!("bytes://caper-avatars-v2/{index}.svg"),
+            format!("bytes://caper-avatars-v3/{index}.svg"),
             avatar_images::SVG[index],
         )
         .paint_at(ui, rect);
