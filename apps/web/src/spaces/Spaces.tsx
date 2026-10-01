@@ -252,18 +252,21 @@ function SubmitRow({
   );
 }
 
-function CreateSpaceDialog({
-  onClose,
+function CreateSpaceForm({
+  onCancel,
   onCreated,
+  disabled = false,
 }: {
-  onClose: () => void;
+  onCancel?: () => void;
   onCreated: (space: Space) => void;
+  disabled?: boolean;
 }) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (pending || disabled) return;
     const invalid = spaceNameError(name);
     if (invalid) return setError(invalid);
     setPending(true);
@@ -275,23 +278,28 @@ function CreateSpaceDialog({
       setPending(false);
     }
   };
-  return (
-    <Dialog
-      title="Create a space"
-      dismissOnBackdrop={!pending}
-      onClose={onClose}
-    >
-      <form onSubmit={(event) => void submit(event)}>
-        <NameField label="Space name" value={name} onChange={setName} />
-        {error && (
-          <p className="space-form-error" role="alert">
-            {error}
-          </p>
-        )}
-        <SubmitRow pending={pending} label="Create space" onCancel={onClose} />
-      </form>
-    </Dialog>
+  const form = (
+    <form onSubmit={(event) => void submit(event)}>
+      <NameField label="Space name" value={name} onChange={setName} />
+      {error && (
+        <p className="space-form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="space-dialog-actions">
+        {onCancel && <button type="button" className="secondary" disabled={pending} onClick={onCancel}>Cancel</button>}
+        <button type="submit" className="primary" disabled={pending || disabled || !name.trim()}>{pending ? "Creating…" : "Create space"}</button>
+      </div>
+    </form>
   );
+  return onCancel ? <Dialog title="Create a space" dismissOnBackdrop={!pending} onClose={onCancel}>{form}</Dialog> : form;
+}
+
+function CreateSpaceDialog({ onClose, onCreated }: {
+  onClose: () => void;
+  onCreated: (space: Space) => void;
+}) {
+  return <CreateSpaceForm onCancel={onClose} onCreated={onCreated} />;
 }
 
 function CreateChannelDialog({
@@ -724,20 +732,21 @@ function SpacesLoading() {
   </main>;
 }
 
-export default function Spaces({ embedded = false, initialAccount, engaged = true, onChatOnlineChange }: {
+export default function Spaces({ embedded = false, initialAccount, initialSpaceList, engaged = true, onChatOnlineChange }: {
   embedded?: boolean;
   initialAccount?: Account;
+  initialSpaceList?: { spaces: Space[]; limits: SpaceLimits };
   engaged?: boolean;
   onChatOnlineChange?: (online: boolean) => void;
 } = {}) {
   const [account, setAccount] = useState<Account | undefined>(initialAccount);
-  const [spaces, setSpaces] = useState<Space[]>([]);
-  const [limits, setLimits] = useState<SpaceLimits>();
+  const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
+  const [limits, setLimits] = useState<SpaceLimits | undefined>(initialSpaceList?.limits);
   const [view, setView] = useState<PreparedSpace>();
   const detail = view?.detail;
   const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState(() => embedded ? {} : selectedFromUrl());
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
   const [dialog, setDialog] = useState<
@@ -794,7 +803,7 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
         if (nextAccount && (!nextAccount.username || !nextAccount.displayName))
           return void window.location.assign("/profile");
         if (!nextAccount) return void window.location.replace("/login");
-        const result = await listSpaces();
+        const result = initialSpaceList ?? await listSpaces();
         if (!current) return;
         setAccount(nextAccount);
         setSpaces(result.spaces);
@@ -907,31 +916,19 @@ export default function Spaces({ embedded = false, initialAccount, engaged = tru
       <main className="spaces-empty">
         <Wordmark />
         <section>
-          <p className="eyebrow">YOUR SPACES</p>
-          <h1>Start a conversation.</h1>
+          <h1>Name your space</h1>
           <p>
-            Create a space for your people. Every space begins with one unified
-            text and voice channel.
+            Choose something you will recognize easily. You can always change it later!
           </p>
-          <button
-            type="button"
+          <CreateSpaceForm
             disabled={!canCreateSpace}
-            onClick={() => setDialog("space")}
-          >
-            Create your first space
-          </button>
-          {!canCreateSpace && <small>You have reached your space limit.</small>}
-        </section>
-        {dialog === "space" && (
-          <CreateSpaceDialog
-            onClose={() => setDialog(undefined)}
             onCreated={(space) => {
               setSpaces([space]);
-              setDialog(undefined);
               choose(space.id);
             }}
           />
-        )}
+          {!canCreateSpace && <small>You have reached your space limit.</small>}
+        </section>
       </main>
     );
   if (!detail && !error) return <SpacesLoading />;
