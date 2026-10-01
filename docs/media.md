@@ -19,10 +19,10 @@ against Vite for desktop, narrow and short-viewport geometry, overflow reachabil
 and backdrop regression checks with mocked APIs. Android, Apple and Rust desktop
 use independently implemented stable shells; browser results do not validate
 native rendering. Rust desktop has headless egui geometry/backdrop regression
-checks. Android and Apple compilation/device checks, and rendered desktop
-inspection, remain pending (this Linux orb has no JDK/Android device, Swift
-toolchain or graphical display); native CI supplies the platform build and
-simulator/emulator checks. Desktop leave/delete-space handling clears the
+checks. Native CI supplies Android/Apple platform builds and simulator/emulator
+UI checks; macOS CI also captures the rendered desktop client. Physical-device
+keyboard, scrolling and outside-tap checks remain separate release validation;
+CI is not physical-device coverage. Desktop leave/delete-space handling clears the
 departed conversation and fences late navigation/chat results before selecting
 another space, rather than falling back to the retired General channel.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
