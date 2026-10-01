@@ -120,10 +120,12 @@ TestFlight with `apps/native/apple/upload-testflight.sh`. Signing is cloud-manag
 through the App Store Connect API key, so no distribution certificate or profile is
 stored. Each run's build number is `<run number>.<attempt>`. The run then adds the
 build to every TestFlight tester group. A build that is in no group reaches no
-phone, so the release fails if App Store Connect has no tester group. Keep an
-**Internal Testing** group with **Automatic Distribution** on, and put yourself in
-it, so every build installs without anyone adding it by hand. Testers who join an
-external group's public link get each build after Beta App Review.
+phone, so the release fails if App Store Connect has no tester group. Friends
+belong in an **External Testing** group: the run adds each build to it and submits
+it for Beta App Review, and testers get it once Apple approves. App Store Connect
+team members can instead use an **Internal Testing** group with Automatic
+Distribution, which needs no review. A tester added to a single build by hand
+never receives later builds.
 
 **Desktop self-updates.** Release builds of the Mac, Windows and Linux apps carry
 `caper-updater` (`apps/native/updater`) and the run number as their build number.

@@ -118,8 +118,9 @@ def main() -> None:
         # (and its Discord message) does not report the iPhone as shipped.
         sys.exit(
             f"Build {build_number} is in App Store Connect, but no TestFlight tester group exists, "
-            "so no tester will get it. In App Store Connect → Caper Chat → TestFlight, create an "
-            "Internal Testing group with Automatic Distribution on and add yourself, then add this build to it."
+            "so no tester will get it. In App Store Connect → Caper Chat → TestFlight, create a tester "
+            "group (External for friends, Internal for App Store Connect team members), add the testers, "
+            "then retry the release."
         )
     external = False
     for group in groups:
