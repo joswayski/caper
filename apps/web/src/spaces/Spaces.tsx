@@ -812,9 +812,9 @@ function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
       setPending(false);
     }
   };
-  return <Dialog title="You’re invited" onClose={() => { if (!submitting.current) onClose(); }}>
+  return <Dialog title="You’re invited!" onClose={() => { if (!submitting.current) onClose(); }}>
     <div className="invitation-consent">
-      <LockKeyhole aria-hidden="true" />
+      <img src="/images/invitation/1f4e8.png" width={32} height={32} alt="" />
       <h3>Join {space.name}?</h3>
       <p>{space.inviter
         ? <><strong>{space.inviter.displayName}</strong> (@{space.inviter.username}) invited you to this space.</>

@@ -128,6 +128,7 @@
 .space-dialog:has(.invitation-consent)::backdrop { backdrop-filter: blur(8px); background: rgb(0 0 0 / .5); }
 .invitation-consent { margin: 24px 22px; }
 .invitation-consent > svg { width: 28px; height: 28px; color: var(--text-muted); }
+.invitation-consent > img { display: block; width: 32px; height: 32px; }
 .invitation-consent h3 { margin: 16px 0 10px; font-size: 1.25rem; overflow-wrap: anywhere; }
 .invitation-consent p { color: var(--text-muted); font-size: .84rem; line-height: 1.6; overflow-wrap: anywhere; }
 .invitation-consent .space-form-error { color: #ff9b82; }
