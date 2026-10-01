@@ -108,8 +108,10 @@ try {
     browser('click', '.pending-space-invite');
     wait('!!document.querySelector(".invitation-consent")');
     assert.equal(evaluate('document.querySelector(".space-dialog h2").textContent'), 'You’re invited!');
-    wait('document.querySelector(".invitation-consent > img")?.naturalWidth === 64');
-    assert.deepEqual(evaluate('(() => { const image = document.querySelector(".invitation-consent > img"); const rect = image.getBoundingClientRect(); return [image.getAttribute("src"), image.alt, rect.width, rect.height]; })()'), ['/images/invitation/1f4e8.png', '', 32, 32]);
+    wait('document.querySelector(".space-dialog > header h2 img")?.naturalWidth === 64');
+    assert.deepEqual(evaluate('(() => { const image = document.querySelector(".space-dialog > header h2 img"); const rect = image.getBoundingClientRect(); return [image.getAttribute("src"), image.alt, rect.width, rect.height]; })()'), ['/images/invitation/1f4e8.png', '', 32, 32]);
+    assert.ok(evaluate('(() => { const heading = document.querySelector(".space-dialog h2"); const image = heading.querySelector("img").getBoundingClientRect(); const range = document.createRange(); range.selectNodeContents(heading.lastChild); const text = range.getBoundingClientRect(); return image.right < text.left && Math.abs(image.y + image.height / 2 - text.y - text.height / 2) < 4; })()'), 'envelope sits beside the title on the same line');
+    assert.equal(evaluate('document.querySelectorAll(".invitation-consent img").length'), 0, 'no duplicate artwork in the body');
     assert.equal(evaluate('document.querySelector(".invitation-consent h3").textContent'), 'Join TEST FIXTURE · Studio?');
     assert.deepEqual(evaluate('[...document.querySelectorAll(".invitation-consent > p")].map(p => p.textContent)'), ['TEST FIXTURE host (@fixture_host) invited you.']);
     assert.equal(evaluate('inviteFixture.requests.some(r => r.path === "/api/spaces/space1234567" || /channels|messages|presence|media/.test(r.path))'), false, 'no private data is requested before acceptance');

@@ -127,7 +127,6 @@
 .space-dialog::backdrop { background: rgb(0 0 0 / .4); }
 .space-dialog:has(.invitation-consent)::backdrop { backdrop-filter: blur(8px); background: rgb(0 0 0 / .5); }
 .invitation-consent { margin: 24px 22px; }
-.invitation-consent > img { display: block; width: 32px; height: 32px; }
 .invitation-consent h3 { margin: 16px 0 10px; font-size: 1.25rem; overflow-wrap: anywhere; }
 .invitation-consent p { color: var(--text-muted); font-size: .84rem; line-height: 1.6; overflow-wrap: anywhere; }
 .invitation-consent .space-form-error { color: #ff9b82; }
@@ -146,6 +145,8 @@
 .space-access-notice svg { width: 16px; height: 16px; }
 .space-dialog > header { position: sticky; z-index: 2; top: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .space-dialog > header h2 { margin: 0; font-size: 1.2rem; letter-spacing: -.025em; }
+.space-dialog > header h2:has(img) { display: flex; align-items: center; gap: 12px; }
+.space-dialog > header h2 img { flex: 0 0 auto; width: 32px; height: 32px; }
 .space-dialog > header p { margin: 6px 0 0; color: var(--text-muted); font-size: .76rem; line-height: 1.45; }
 .space-dialog > header > button { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .space-dialog > header > button:hover { color: var(--text); background: var(--border); }

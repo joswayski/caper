@@ -5109,7 +5109,14 @@ impl CaperApp {
                             .show(ui, |ui| {
                                 ui.horizontal_top(|ui| {
                                     ui.vertical(|ui| {
-                                        ui.label(bold(title).size(19.0));
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 12.0;
+                                            if matches!(dialog, Dialog::Invitation(_)) {
+                                                ui.add(egui::Image::from_bytes("bytes://invitation-envelope.png", include_bytes!("../../../web/public/images/invitation/1f4e8.png"))
+                                                    .fit_to_exact_size(egui::vec2(32.0, 32.0)));
+                                            }
+                                            ui.label(bold(title).size(19.0));
+                                        });
                                         if matches!(dialog, Dialog::ManageSpace) {
                                             ui.add_space(5.0);
                                             ui.label(
@@ -5156,9 +5163,6 @@ impl CaperApp {
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
                                             Dialog::Invitation(invitation) => {
-                                                ui.add(egui::Image::from_bytes("bytes://invitation-envelope.png", include_bytes!("../../../web/public/images/invitation/1f4e8.png"))
-                                                    .fit_to_exact_size(egui::vec2(32.0, 32.0)));
-                                                ui.add_space(10.0);
                                                 ui.heading(format!("Join {}?", invitation.name));
                                                 if let Some(inviter) = &invitation.inviter {
                                                     ui.label(format!("{} (@{}) invited you.", inviter.display_name, inviter.username));
