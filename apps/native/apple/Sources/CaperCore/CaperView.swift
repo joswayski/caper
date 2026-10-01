@@ -614,7 +614,7 @@ private struct ChannelVoiceSlot: View {
         if active {
             return model.voice.participants.map {
                 VoiceSpectator(id: $0.id, avatarId: $0.avatarId, name: $0.name, muted: $0.muted,
-                               deafened: $0.deafened, countryCode: $0.countryCode)
+                               deafened: $0.deafened)
             }
         }
         return model.voicePresence.roster(for: channel.id)
@@ -649,7 +649,6 @@ private struct ChannelVoiceSlot: View {
                             Avatar(name: person.name, size: 23, avatarID: person.avatarId)
                             Text(person.name).lineLimit(1)
                             if person.muted { CaperIcon(name: "mic-off", size: 13) }
-                            ParticipantCountry(code: person.countryCode)
                             if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
                         }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                             .accessibilityElement(children: .combine)
@@ -753,23 +752,6 @@ private extension View {
 }
 #endif
 
-/// Web shows the participant's flag with "From {region}"; an emoji flag is the native equivalent.
-struct ParticipantCountry: View {
-    let code: String?
-    var body: some View {
-        if let code, code.count == 2, code.allSatisfy({ $0.isASCII && $0.isUppercase }) {
-            let name = Locale(identifier: "en_US").localizedString(forRegionCode: code) ?? code
-            Text(Self.flag(code))
-                .font(.system(size: 11)).help(name).accessibilityLabel("From \(name)")
-        }
-    }
-    static func flag(_ code: String) -> String {
-        var scalars = String.UnicodeScalarView()
-        for scalar in code.unicodeScalars { if let indicator = Unicode.Scalar(127_397 + scalar.value) { scalars.append(indicator) } }
-        return String(scalars)
-    }
-}
-
 private struct VoiceRoster: View {
     @Bindable var voice: VoiceClient
     @State private var audioParticipantID: String? = nil
@@ -781,11 +763,8 @@ private struct VoiceRoster: View {
                     Avatar(name: participant.name, size: 20, avatarID: participant.avatarId, speaking: voice.speakingParticipants.contains(participant.id))
                         .accessibilityValue(voice.speakingParticipants.contains(participant.id) ? "Speaking" : "")
                     VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 5) {
-                            Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
-                                .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
-                            ParticipantCountry(code: participant.countryCode)
-                        }
+                        Text(participant.name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
+                            .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
                         if !voice.isSelf(participantID: participant.id), voice.locallyMutedParticipants.contains(participant.id) {
                             HStack(spacing: 4) {
                                 CaperIcon(name: "volume-x", size: 10)

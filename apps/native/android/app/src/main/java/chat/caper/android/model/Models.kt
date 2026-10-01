@@ -61,7 +61,6 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
 @Serializable data class Participant(
     val id: String,
     val name: String,
-    val countryCode: String? = null,
     val muted: Boolean,
     val deafened: Boolean,
     val tracks: List<MediaTrack>,
@@ -69,10 +68,10 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
 )
 @Serializable data class MediaSnapshot(val participants: List<Participant>, val revision: Long? = null)
 @Serializable data class SpectatorParticipant(
-    val id: String, val name: String, val countryCode: String? = null,
+    val id: String, val name: String,
     val muted: Boolean, val deafened: Boolean, val avatarId: Int? = null,
 ) {
-    fun asParticipant() = Participant(id, name, countryCode, muted, deafened, emptyList(), avatarId)
+    fun asParticipant() = Participant(id, name, muted, deafened, emptyList(), avatarId)
 }
 @Serializable data class SpectatorSnapshot(val participants: List<SpectatorParticipant>, val revision: Long)
 @Serializable data class SessionDescription(val type: String, val sdp: String)

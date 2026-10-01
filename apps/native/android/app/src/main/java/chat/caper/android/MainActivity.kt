@@ -452,10 +452,7 @@ internal data class VoiceJoinIntent(
                 Avatar(participant.name, 24.dp, avatarId = participant.avatarId, speaking = participant.id in voice.speakingParticipants)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", Modifier.weight(1f, fill = false), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        ParticipantCountry(participant.countryCode)
-                    }
+                    Text(participant.name + if (participant.id == voice.selfId) " (you)" else "", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (participant.id != voice.selfId && participant.id in voice.locallyMutedParticipants) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(painterResource(R.drawable.lucide_volume_x), null, Modifier.size(10.dp), tint = TerracottaBright)
@@ -508,14 +505,6 @@ internal data class VoiceJoinIntent(
         }
         previous = self to others
     }
-}
-
-/** Web shows the participant's flag with "From {region}"; the emoji flag is the native equivalent. */
-@Composable internal fun ParticipantCountry(code: String?) {
-    if (code == null || code.length != 2 || !code.all { it in 'A'..'Z' }) return
-    val region = java.util.Locale("", code).getDisplayCountry(java.util.Locale.US).ifEmpty { code }
-    val flag = code.map { String(Character.toChars(0x1F1E6 + (it - 'A'))) }.joinToString("")
-    Text(flag, Modifier.padding(start = 4.dp).semantics { contentDescription = "From $region" }, fontSize = 11.sp)
 }
 
 @Composable internal fun ConnectedVoiceContext(voice: VoiceState, openChannel: () -> Unit, leave: () -> Unit) {

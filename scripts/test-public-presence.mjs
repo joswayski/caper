@@ -51,7 +51,7 @@ try {
       }
       if(path==='/api/media/join'){
         const intent=JSON.parse(init.body);f.joinIntent=intent;
-        pushRoster([{id:'self',name:'Grok',countryCode:'US',muted:intent.muted??false,deafened:intent.deafened??false,tracks:[]}]);
+        pushRoster([{id:'self',name:'Grok',muted:intent.muted??false,deafened:intent.deafened??false,tracks:[]}]);
         return Response.json({token:'fixture-capability',id:'self',iceServers:[]});
       }
       if(path==='/api/media/publish')return Response.json({sessionDescription:{type:'answer',sdp:'v=0'}});

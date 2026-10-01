@@ -105,7 +105,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const channelId = body.media.channelId ?? ids.demo;
           if (!channelFor(channelId) || !Array.isArray(body.media.participants)) return reject(response, 400, 'invalid media fixture');
           const snapshot = { type: 'snapshot', revision: (state.media.get(channelId)?.revision ?? 0) + 1,
-            participants: body.media.participants.map(({ id, name, muted, deafened, countryCode }) => ({ id, name, muted, deafened, ...(countryCode ? { countryCode } : {}) })) };
+            participants: body.media.participants.map(({ id, name, muted, deafened }) => ({ id, name, muted, deafened })) };
           state.media.set(channelId, snapshot);
           broadcast('media', channelId, snapshot);
         }

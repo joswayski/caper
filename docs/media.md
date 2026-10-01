@@ -53,20 +53,16 @@ reserved; participant IDs, not names, distinguish people. With `VALKEY_URL` conf
 live call state is shared in Valkey; without it, development uses process memory.
 Up to 12 people can join with microphone permission,
 mute, deafen, choose devices, and leave. Other visitors may record audio.
-Cloudflare's IP Geolocation setting adds an approximate country code at ingress;
-the registry keeps that code only for guest participants and shares it in roster
-snapshots. Signed-in participants, including account-channel joins, omit country
-codes, so web, Android, Apple, and Rust desktop clients render no flag for them.
-The local homepage simulation also has no country flags. Existing call records
-retain their stored country until participants leave and rejoin after the API/gateway update. Caper
-does not retain the visitor IP itself. Unknown and Tor locations are omitted.
-Guest-only flags have Rust join/snapshot/presence regression coverage and a
-desktop/narrow Chromium roster check (`scripts/test-country-flags.mjs`, mocked
-API projection). Native renderers already omit flags without a country code;
-physical Android, Apple, and Rust desktop validation has not been run for this change.
+Caper does not collect or project country codes, and no client renders country
+flags. Old Valkey participant records still decode; their country fields are
+ignored and dropped when rewritten, without forcing a leave/rejoin. Rust
+snapshot/presence tests cover this recovery path; `scripts/test-country-flags.mjs`
+checks desktop/narrow web rosters with a mocked legacy country payload.
+Android and Apple compilation and physical native checks have not been run for
+this removal in the Linux orb; Rust desktop validation is tracked separately.
 Visitors see the public roster before joining through a `media` subscription on
 the application WebSocket, without joining voice. That projection
-includes each participant's session ID, name, country code when available, mute,
+includes each participant's session ID, name, mute,
 and deafen state, but never media track IDs, session tokens, or audio.
 The HTTP/SSE endpoints remain available for older clients and inspection, but the
 current browser uses neither SSE nor HTTP polling for live rosters. Spectators
@@ -232,8 +228,11 @@ Validation for this transport change:
 Retired September 2026. `LiveWindow.tsx` now renders a local scripted
 conversation with fictional participants, typing, visual speaking indicators,
 and a bundled AI-generated capybara meme (`public/images/demo-tiny-hat.webp`).
-The “Fictional conversation” caption outside the window distinguishes the
-illustration from live activity without a badge inside the channel. Satoshi
+The illustration has an accessible simulation label but no visible caption or
+badge inside the channel. Its bottom-left profile and microphone/headphones/settings
+icons are passive illustration, not live audio controls. The card uses grab/grabbing
+cursors for tilt-dragging, while the join link keeps a pointer and the message
+history retains native scrolling. Satoshi
 uses `font-display: swap` so names, messages and the join label remain visible
 in the fallback font while fonts download. It plays no audio and requests no
 chat/media capability or gateway subscription. Reduced-motion visitors get a
@@ -2449,9 +2448,8 @@ seeds use lowercase. No data migration is required.
 The API accepts guest names of 1–64 Unicode characters after trimming,
 with no control characters. Guest names are unverified, nonunique, and not reserved.
 When a valid account bearer token or browser session cookie accompanies a join, the
-API uses the stored display name instead of the submitted name. Country flags use
-the API-provided Cloudflare country code for guests only; no flag is invented when location is
-unavailable. The web login page sends email codes and then requires a unique
+API uses the stored display name instead of the submitted name. Country codes
+are neither stored nor shown. The web login page sends email codes and then requires a unique
 username and display name. Account login is enabled when `AUTH_SECRET`, the database
 URLs, and SES settings are configured. Native development account screens use the
 same service with bearer sessions; their platform acceptance is tracked separately.
