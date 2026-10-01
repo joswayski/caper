@@ -38,6 +38,20 @@ pub struct Channel {
     pub space_id: String,
     pub name: String,
     pub private: bool,
+    /// Older servers predate explicit channel membership; their channels were joined.
+    #[serde(default = "default_joined")]
+    pub joined: bool,
+}
+
+fn default_joined() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelInvitation {
+    pub channel: Channel,
+    pub inviter: Inviter,
 }
 
 /// Spectators receive identity and status, never media track capabilities.
@@ -82,6 +96,8 @@ pub struct SpaceDetail {
     pub space: Space,
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub channel_invitations: Vec<ChannelInvitation>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -154,6 +170,8 @@ pub struct Presence {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Members {
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub invitations: Vec<Member>,
 }
 
 #[derive(Default)]
@@ -278,6 +296,20 @@ mod tests {
         let inviter = invitation.inviter.unwrap();
         assert_eq!(inviter.username, "host_user");
         assert_eq!(inviter.display_name, "Space Host");
+    }
+
+    #[test]
+    fn channel_membership_and_invitation_defaults_decode_safely() {
+        let detail: SpaceDetail = serde_json::from_value(serde_json::json!({
+            "space": {"id":"s", "name":"Studio", "ownerId":"owner"},
+            "channels": [{"id":"c", "spaceId":"s", "name":"general", "private":false}],
+            "members": []
+        }))
+        .unwrap();
+        assert!(detail.channels[0].joined);
+        assert!(detail.channel_invitations.is_empty());
+        let members: Members = serde_json::from_value(serde_json::json!({"members":[]})).unwrap();
+        assert!(members.invitations.is_empty());
     }
 
     fn message(id: &str, seq: u64) -> Message {

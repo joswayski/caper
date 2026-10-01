@@ -41,6 +41,8 @@ function initialState() {
   return {
     spaces: [{ space, channels, members: clone(members) }], messages,
     invitations: new Map(),
+    channelInvitations: new Map(),
+    joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
     grants: new Map([[ids.private, [ids.owner, ids.member]]]), failures: [], challenges: new Map(),
     account, chatSessions: new Map(), sendKeys: new Map(), typingRevision: 0,
     media: new Map([[ids.design, { type: 'snapshot', revision: 1, participants: [
@@ -69,6 +71,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const channelFor = (id) => id === ids.demo ? demoChannel
     : state.spaces.flatMap((detail) => detail.channels).find((channel) => channel.id === id);
   const spaceFor = (id) => id === ids.demoSpace ? demoSpace : state.spaces.find((detail) => detail.space.id === id)?.space;
+  const canRead = (channel, user) => channel?.id === ids.demo || !!user && state.spaces.some(detail =>
+    detail.space.id === channel?.spaceId && detail.members.some(member => member.id === user.id)
+      && (!channel.private || detail.space.ownerId === user.id || (state.grants.get(channel.id) ?? []).includes(user.id)));
+  const canParticipate = (channel, user) => canRead(channel, user) && (channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user.id));
+  const channelDTO = (channel, user) => ({ ...channel, joined: channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user?.id) });
   const broadcast = (kind, channelId, event) => {
     for (const client of sockets) for (const [id, sub] of client.subscriptions) {
       if (sub.kind === kind && (sub.channelId ?? ids.demo) === channelId) client.send({ type: 'event', id, event });
@@ -172,6 +179,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         state.chatSessions.set(token, who);
         return json(response, 200, { token, author: who });
       }
+      const mediaChannel = /^\/api\/channels\/([^/]+)\/media\//.exec(path);
+      if (mediaChannel && !canParticipate(channelFor(mediaChannel[1]), user)) return reject(response, 404, 'resource not found');
       if (/^\/api\/(?:channels\/[^/]+\/)?media\/status$/.test(path)) return json(response, 200, { enabled: true });
       if (/^\/api\/(?:channels\/[^/]+\/)?media\//.test(path)) return reject(response, 503, 'TEST FIXTURE: no real media engine or SFU is connected.');
       const chat = /^\/api\/chat\/channels\/([^/]+)\/messages$/.exec(path);
@@ -179,6 +188,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const channel = channelFor(chat?.[1] ?? ids.demo);
         if (!channel) return reject(response, 404, 'Channel not found.');
         if (channel.id !== ids.demo && !user) return reject(response, 401, 'Sign in required.');
+        if (!canRead(channel, user) || method === 'POST' && !canParticipate(channel, user)) return reject(response, 404, 'resource not found');
         const messages = state.messages.get(channel.id) ?? [];
         if (method === 'POST') {
           const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
@@ -202,7 +212,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const available = before !== null ? messages.filter((message) => BigInt(message.seq) < BigInt(before)) : messages;
         return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), cursor: messages.at(-1)?.seq ?? '0', hasMore: available.length > 50 });
       }
-      const spacePath = /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members|invitations|invitation)(?:\/([^/]+))?)?$/.exec(path);
+      const spacePath = /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members|invitations|invitation|membership)(?:\/([^/]+))?)?$/.exec(path);
       if (spacePath) {
         if (!user) return reject(response, 401, 'Sign in required.');
         const [, spaceId, channelId, section, memberId] = spacePath;
@@ -220,6 +230,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             const space = { id, name, ownerId: state.account.id };
             const channel = { id: randomUUID().replaceAll('-', '').slice(0, 12), spaceId: id, name: 'general', private: false };
             state.spaces.push({ space, channels: [channel], members: [{ ...state.account, owner: true }] }); state.messages.set(channel.id, []);
+            state.joins.set(channel.id, [user.id]);
             return json(response, 201, space);
           }
         }
@@ -227,11 +238,13 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (!detail) return reject(response, 404, 'resource not found');
         const owner = detail.space.ownerId === user.id;
         const invitationKey = `${spaceId}:${user.id}`;
-        if (section === 'invitation') {
+        if (section === 'invitation' && !channelId) {
           const invitation = state.invitations.get(invitationKey);
           if (invitation?.status !== 'pending') return reject(response, 404, 'resource not found');
           if (method === 'POST') {
             invitation.status = 'accepted'; detail.members.push(clone(user));
+            const starter = detail.channels.find(channel => !channel.private && channel.name === 'general') ?? detail.channels.find(channel => !channel.private);
+            if (starter) state.joins.set(starter.id, [...new Set([...(state.joins.get(starter.id) ?? []), user.id])]);
             return json(response, 200, detail.space);
           }
           if (method === 'DELETE') { invitation.status = 'declined'; return json(response, 204); }
@@ -246,9 +259,30 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         }
         const channel = detail.channels.find((entry) => entry.id === channelId);
         if (channelId && !channel) return reject(response, 404, 'Channel not found.');
+        if (section === 'membership') {
+          if (!canRead(channel, user)) return reject(response, 404, 'resource not found');
+          const remaining = (state.joins.get(channel.id) ?? []).filter(id => id !== user.id);
+          state.joins.set(channel.id, method === 'POST' ? [...remaining, user.id] : remaining);
+          if (method === 'DELETE' && channel.private && !owner) {
+            state.grants.set(channel.id, (state.grants.get(channel.id) ?? []).filter(id => id !== user.id));
+            state.channelInvitations.set(`${channel.id}:${user.id}`, { status: 'revoked' });
+          }
+          return json(response, method === 'POST' ? 200 : 204, channelDTO(channel, user));
+        }
+        if (section === 'invitation' && channel) {
+          const invitation = state.channelInvitations.get(`${channel.id}:${user.id}`);
+          if (invitation?.status !== 'pending') return reject(response, 404, 'resource not found');
+          invitation.status = method === 'POST' ? 'accepted' : 'declined';
+          if (method === 'POST') {
+            state.grants.set(channel.id, [...new Set([...(state.grants.get(channel.id) ?? []), user.id])]);
+            state.joins.set(channel.id, [...new Set([...(state.joins.get(channel.id) ?? []), user.id])]);
+          }
+          return json(response, method === 'POST' ? 200 : 204, channelDTO(channel, user));
+        }
         if (section === 'members') {
+          if (channel && !owner) return reject(response, 404, 'resource not found');
           const list = channelId ? detail.members.filter((member) => (state.grants.get(channelId) ?? []).includes(member.id)) : detail.members;
-          if (method === 'GET') return json(response, 200, { members: list });
+          if (method === 'GET') return json(response, 200, { members: list, ...(channel ? { invitations: detail.members.filter(member => state.channelInvitations.get(`${channel.id}:${member.id}`)?.status === 'pending') } : {}) });
           if (method === 'POST') {
             if (!owner) return reject(response, 404, 'resource not found');
             const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
@@ -257,7 +291,14 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             if (!member) return reject(response, 404, 'user not found');
             if (channelId && !detail.members.some((entry) => entry.id === member.id)) return reject(response, 404, 'Member not found.');
             const exists = channelId ? (state.grants.get(channelId) ?? []).includes(member.id) : detail.members.some((entry) => entry.id === member.id);
-            if (channelId) state.grants.set(channelId, [...new Set([...(state.grants.get(channelId) ?? []), member.id])]);
+            if (channelId) {
+              if (!channel.private) return reject(response, 409, 'public channels are self-joined');
+              const key = `${channelId}:${member.id}`;
+              if (exists || member.id === user.id) return reject(response, 409, 'user already in channel');
+              if (state.channelInvitations.get(key)?.status === 'pending') return reject(response, 409, 'user already invited');
+              if (state.channelInvitations.has(key)) return reject(response, 409, 'invitation cooldown; try again after 24 hours');
+              state.channelInvitations.set(key, { status: 'pending' });
+            }
             else {
               if (exists) return reject(response, 409, 'user already in space');
               const key = `${spaceId}:${member.id}`;
@@ -268,26 +309,38 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             return json(response, exists ? 200 : 201, member);
           }
           if (method === 'DELETE') {
+            if (!owner && (channelId || memberId !== user.id)) return reject(response, 404, 'resource not found');
             if (memberId === state.account.id) return reject(response, 409, 'The owner cannot be removed.');
             const exists = channelId ? (state.grants.get(channelId) ?? []).includes(memberId) : detail.members.some((member) => member.id === memberId);
-            if (!exists) return reject(response, 404, 'Member not found.');
-            if (channelId) state.grants.set(channelId, (state.grants.get(channelId) ?? []).filter((id) => id !== memberId));
+            if (!exists && state.channelInvitations.get(`${channelId}:${memberId}`)?.status !== 'pending') return reject(response, 404, 'Member not found.');
+            if (channelId) {
+              state.grants.set(channelId, (state.grants.get(channelId) ?? []).filter((id) => id !== memberId));
+              state.joins.set(channelId, (state.joins.get(channelId) ?? []).filter(id => id !== memberId));
+              state.channelInvitations.set(`${channelId}:${memberId}`, { status: 'revoked' });
+            }
             else {
               detail.members = detail.members.filter((member) => member.id !== memberId);
               state.invitations.set(`${spaceId}:${memberId}`, { status: 'revoked' });
               for (const item of detail.channels) state.grants.set(item.id, (state.grants.get(item.id) ?? []).filter((id) => id !== memberId));
+              for (const item of detail.channels) {
+                state.joins.set(item.id, (state.joins.get(item.id) ?? []).filter(id => id !== memberId));
+                state.channelInvitations.set(`${item.id}:${memberId}`, { status: 'revoked' });
+              }
             }
             return json(response, 204);
           }
         }
         if (section === 'channels' && method === 'POST') {
+          if (!owner) return reject(response, 404, 'resource not found');
           if (!/^[a-z]+(?:-[a-z]+)*$/.test(body.name ?? '') || body.name.length > 80) return reject(response, 400, 'Use lowercase letters separated by single dashes.');
           if (detail.channels.some((entry) => entry.name === body.name)) return reject(response, 409, 'channel name already exists');
           const next = { id: randomUUID().replaceAll('-', '').slice(0, 12), spaceId, name: body.name, private: !!body.private };
           detail.channels.push(next); state.messages.set(next.id, []); state.grants.set(next.id, [state.account.id]);
-          return json(response, 201, next);
+          state.joins.set(next.id, [user.id]);
+          return json(response, 201, channelDTO(next, user));
         }
         if (method === 'PATCH') {
+          if (!owner) return reject(response, 404, 'resource not found');
           if (channel) {
             if (!/^[a-z]+(?:-[a-z]+)*$/.test(body.name ?? '') || body.name.length > 80) return reject(response, 400, 'invalid channel name');
             if (detail.channels.some((entry) => entry !== channel && entry.name === body.name)) return reject(response, 409, 'channel name already exists');
@@ -297,14 +350,20 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             if (!name || [...name].length > 80 || /[\p{Cc}]/u.test(name)) return reject(response, 400, 'invalid space name');
             detail.space.name = name;
           }
-          return json(response, 200, channel ?? detail.space);
+          return json(response, 200, channel ? channelDTO(channel, user) : detail.space);
         }
         if (method === 'DELETE') {
+          if (!owner) return reject(response, 404, 'resource not found');
           if (channel) detail.channels = detail.channels.filter((entry) => entry.id !== channelId);
           else state.spaces = state.spaces.filter((entry) => entry.space.id !== spaceId);
           return json(response, 204);
         }
-        if (method === 'GET') return json(response, 200, channel ?? detail);
+        if (method === 'GET') return json(response, 200, channel ? channelDTO(channel, user) : {
+          ...detail, channels: detail.channels.filter(channel => canRead(channel, user)).map(channel => channelDTO(channel, user)),
+          channelInvitations: detail.channels.filter(channel => state.channelInvitations.get(`${channel.id}:${user.id}`)?.status === 'pending').map(channel => ({
+            channel: { ...channel, joined: false }, inviter: { username: state.account.username, displayName: state.account.displayName },
+          })),
+        });
       }
       reject(response, 404, `TEST FIXTURE: unsupported ${method} ${path}`);
     } catch { reject(response, 400, 'TEST FIXTURE: malformed request.'); }
@@ -325,6 +384,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (frame.kind === 'chat') {
           const channelId = frame.channelId ?? ids.demo;
           const messages = state.messages.get(channelId);
+          if (!canRead(channelFor(channelId), identity(request))) return client.send({ type: 'error', id: frame.id, status: 404, error: 'resource not found' });
           if (!messages || !/^(0|[1-9]\d*)$/.test(frame.after ?? '0')) return client.send({ type: 'error', id: frame.id, status: 400, error: 'invalid subscription' });
           client.subscriptions.set(frame.id, frame);
           for (const message of messages.filter((message) => BigInt(message.seq) > BigInt(frame.after ?? '0')))
@@ -342,7 +402,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           } });
         } else if (frame.kind === 'media') {
           const channelId = frame.channelId ?? ids.demo;
-          if (!channelFor(channelId) || state.mediaDenied.has(channelId) || (channelId !== ids.demo && !identity(request)))
+          if (!canParticipate(channelFor(channelId), identity(request)) || state.mediaDenied.has(channelId))
             return client.send({ type: 'error', id: frame.id, status: 403, error: 'TEST FIXTURE: voice access denied.' });
           if (frame.token) return client.send({ type: 'error', id: frame.id, status: 503, error: 'TEST FIXTURE: no real media engine or SFU is connected.' });
           client.subscriptions.set(frame.id, frame);
@@ -354,6 +414,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (frame.method === 'typing') {
           const who = state.chatSessions.get(frame.chatToken);
           const channel = channelFor(frame.channelId);
+          if (!canParticipate(channel, identity(request))) return client.send({ type: 'result', id: frame.id, status: 404, body: { error: 'resource not found' } });
           if (!who || !channel || typeof frame.body?.typing !== 'boolean') return client.send({ type: 'result', id: frame.id, status: 401, body: { error: 'guest session expired' } });
           broadcast('chat', channel.id, { type: 'typing.updated', channelId: channel.id, author: who,
             typing: frame.body.typing, revision: String(++state.typingRevision) });

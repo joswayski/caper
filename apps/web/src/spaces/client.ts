@@ -11,6 +11,12 @@ export interface Channel {
   spaceId: string;
   name: string;
   private: boolean;
+  joined?: boolean;
+}
+
+export interface ChannelInvitation {
+  channel: Channel;
+  inviter: { username: string; displayName: string };
 }
 
 export interface Member {
@@ -30,6 +36,7 @@ export interface SpaceDetail {
   space: Space;
   channels: Channel[];
   members: Member[];
+  channelInvitations?: ChannelInvitation[];
 }
 
 export class SpacesApiError extends Error {
@@ -150,7 +157,7 @@ export function declineSpaceInvitation(spaceId: string) {
 }
 
 export function listChannelMembers(spaceId: string, channelId: string) {
-  return request<{ members: Member[] }>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`);
+  return request<{ members: Member[]; invitations?: Member[] }>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`);
 }
 
 export function addChannelMember(spaceId: string, channelId: string, username: string) {
@@ -161,4 +168,20 @@ export function addChannelMember(spaceId: string, channelId: string, username: s
 
 export function removeChannelMember(spaceId: string, channelId: string, memberId: string) {
   return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members/${pathId(memberId)}`, { method: "DELETE" });
+}
+
+export function joinChannel(spaceId: string, channelId: string) {
+  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/membership`, { method: "POST" });
+}
+
+export function leaveChannel(spaceId: string, channelId: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/membership`, { method: "DELETE" });
+}
+
+export function acceptChannelInvitation(spaceId: string, channelId: string) {
+  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, { method: "POST" });
+}
+
+export function declineChannelInvitation(spaceId: string, channelId: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, { method: "DELETE" });
 }

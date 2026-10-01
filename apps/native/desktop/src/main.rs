@@ -119,6 +119,11 @@ enum Dialog {
         id: String,
         name: String,
     },
+    LeaveChannel {
+        space: String,
+        channel: String,
+        name: String,
+    },
     ConfirmDelete {
         space: String,
         channel: Option<String>,
@@ -196,6 +201,8 @@ struct CaperApp {
     members_visible: bool,
     narrow_members_visible: bool,
     channels_expanded: bool,
+    browse_channels: bool,
+    channel_search: String,
     roster_generation: u64,
     voice_join_request: u64,
     channel_rosters: BTreeMap<String, Vec<model::VoiceOccupant>>,
@@ -284,6 +291,8 @@ impl CaperApp {
             members_visible: true,
             narrow_members_visible: false,
             channels_expanded: true,
+            browse_channels: false,
+            channel_search: String::new(),
             roster_generation: 0,
             voice_join_request: 0,
             channel_rosters: BTreeMap::new(),
@@ -347,6 +356,29 @@ impl CaperApp {
                     app.clear_channel_state();
                     app.invitations.push(invitation.clone());
                     app.dialog = Some(Dialog::Invitation(invitation));
+                } else if name.starts_with("parity-channel-preview")
+                    || name.starts_with("parity-channel-directory")
+                {
+                    app.account.as_mut().unwrap().id = "fixture-maya".into();
+                    let detail = app.detail.as_mut().unwrap();
+                    detail.channels[1].joined = false;
+                    let mut private = detail.channels.pop().unwrap();
+                    private.joined = false;
+                    detail.channel_invitations.push(model::ChannelInvitation {
+                        channel: private,
+                        inviter: model::Inviter {
+                            username: "fixture_host".into(),
+                            display_name: "TEST FIXTURE host".into(),
+                        },
+                    });
+                    if name.starts_with("parity-channel-preview") {
+                        app.selected_channel = Some("chan00000002".into());
+                        app.session = None;
+                        app.session_error = None;
+                    } else {
+                        app.browse_channels = true;
+                        app.navigation_open = name.ends_with("-narrow");
+                    }
                 } else if matches!(name, "parity-admin" | "parity-admin-invitations") {
                     app.form_name = "Fixture Studio".into();
                     app.managed_members = app
@@ -577,6 +609,7 @@ impl CaperApp {
             space_id: space.id.clone(),
             name: "general".into(),
             private: false,
+            joined: true,
         };
         self.account = Some(Account {
             id: "fixture-owner".into(),
@@ -591,12 +624,14 @@ impl CaperApp {
                 space_id: space.id.clone(),
                 name: "design".into(),
                 private: false,
+                joined: true,
             },
             Channel {
                 id: "chan00000003".into(),
                 space_id: space.id.clone(),
                 name: "planning".into(),
                 private: true,
+                joined: true,
             },
         ];
         self.spaces = vec![demo, space.clone()];
@@ -630,6 +665,7 @@ impl CaperApp {
                     owner: false,
                 },
             ],
+            channel_invitations: vec![],
         });
         self.presence
             .insert("fixture-owner".into(), "online".into());
@@ -1026,14 +1062,27 @@ impl CaperApp {
                     space_id: history.space.id,
                     name: history.channel.name,
                     private: false,
+                    joined: true,
                 }],
                 members: vec![],
+                channel_invitations: vec![],
             });
         }
         self.session_error = session.as_ref().err().cloned();
         self.session = session.ok();
         self.live = "Connecting…".into();
         self.connect_gateway();
+    }
+
+    fn selected_is_joined(&self) -> bool {
+        self.selected_channel.as_ref().is_some_and(|id| {
+            self.detail.as_ref().is_some_and(|detail| {
+                detail
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == *id && channel.joined)
+            })
+        })
     }
 
     fn connect_gateway(&mut self) {
@@ -1049,6 +1098,7 @@ impl CaperApp {
                 detail
                     .channels
                     .iter()
+                    .filter(|channel| self.selected_is_joined() && channel.joined)
                     .take(gateway::MAX_MEDIA_CHANNELS)
                     .map(|channel| gateway::MediaChannel {
                         id: channel.id.clone(),
@@ -1325,7 +1375,8 @@ impl CaperApp {
     fn voice_target(&self, channel: &str) -> Option<(CallContext, Option<String>)> {
         let detail = self.detail.as_ref()?;
         let target = detail.channels.iter().find(|item| item.id == channel)?;
-        if self.unavailable_rosters.contains(channel)
+        if !target.joined
+            || self.unavailable_rosters.contains(channel)
             || (!detail.space.demo && self.token.is_none())
             || self.join_unavailable().is_some()
         {
@@ -1932,9 +1983,14 @@ impl CaperApp {
                     self.clear_channel_state();
                 }
             }
-            AdminResult::Members { channel, members } => {
+            AdminResult::Members {
+                channel,
+                members,
+                invitations,
+            } => {
                 if channel == self.managed_channel {
                     self.managed_members = members;
+                    self.managed_invitations = invitations;
                 }
             }
             AdminResult::Invitations(members) => self.managed_invitations = members,
@@ -1958,15 +2014,74 @@ impl CaperApp {
             }
             AdminResult::MemberAdded { channel, member } => {
                 if channel == self.managed_channel {
-                    self.managed_members.retain(|item| item.id != member.id);
-                    self.managed_members.push(member);
+                    self.managed_invitations.retain(|item| item.id != member.id);
+                    self.managed_invitations.push(member);
                     self.member_username.clear();
                 }
             }
             AdminResult::MemberRemoved { channel, member } => {
                 if channel == self.managed_channel {
                     self.managed_members.retain(|item| item.id != member);
+                    self.managed_invitations.retain(|item| item.id != member);
                 }
+            }
+            AdminResult::ChannelLeft(channel) => {
+                if let Some(mut detail) = self.detail.clone() {
+                    let owner = self.owner();
+                    detail
+                        .channels
+                        .retain(|item| item.id != channel || !item.private || owner);
+                    for item in &mut detail.channels {
+                        if item.id == channel {
+                            item.joined = false;
+                        }
+                    }
+                    self.admin_result(AdminResult::ChannelMembership {
+                        detail,
+                        channel,
+                        joined: false,
+                    });
+                }
+            }
+            AdminResult::ChannelMembership {
+                detail,
+                channel,
+                joined,
+            } => {
+                self.detail = Some(detail);
+                if !joined && self.voice.state.active_channel() == Some(&channel) {
+                    self.voice.leave();
+                }
+                if !joined && self.selected_channel.as_deref() == Some(&channel) {
+                    self.generation += 1;
+                    self.clear_channel_state();
+                }
+                self.loading = false;
+                self.invalidate_navigation_cache();
+                if self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.channels.iter().any(|item| item.id == channel))
+                {
+                    self.select_channel(channel, false);
+                } else if let Some(next) = self
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| detail.channels.iter().find(|item| item.joined))
+                    .map(|item| item.id.clone())
+                {
+                    self.select_channel(next, false);
+                } else {
+                    self.clear_channel_state();
+                }
+            }
+            AdminResult::ChannelInvitationDeclined(channel) => {
+                if let Some(detail) = &mut self.detail {
+                    detail
+                        .channel_invitations
+                        .retain(|invite| invite.channel.id != channel);
+                }
+                self.loading = false;
             }
         }
     }
@@ -2966,11 +3081,47 @@ impl CaperApp {
                             },
                         );
                         ui.add_space(4.0);
+                        if ui.button(if self.browse_channels { "Close Browse" } else { "Browse channels" }).clicked() {
+                            self.browse_channels = !self.browse_channels;
+                            self.channel_search.clear();
+                        }
+                        if self.browse_channels {
+                            ui.add(egui::TextEdit::singleline(&mut self.channel_search).hint_text("Search channels"));
+                            let query = self.channel_search.to_lowercase();
+                            let previews: Vec<_> = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channels.iter()
+                                .filter(|channel| !channel.joined && channel.name.to_lowercase().contains(&query))
+                                .map(|channel| (channel.id.clone(), channel.name.clone())).collect());
+                            for (id, name) in previews {
+                                ui.horizontal(|ui| {
+                                    if ui.button(format!("# {name}")).clicked() { self.select_channel(id.clone(), false); }
+                                    if ui.small_button("Join").clicked() && let Some(space) = self.selected_space.clone() {
+                                        self.admin(AdminOperation::JoinChannel { space, channel: id.clone() });
+                                    }
+                                });
+                            }
+                            let invitations = self.detail.as_ref().map_or_else(Vec::new, |detail| detail.channel_invitations.clone());
+                            for invitation in invitations {
+                                ui.group(|ui| {
+                                    ui.label(bold(format!("Private invitation · #{}", invitation.channel.name)).size(12.0));
+                                    ui.label(RichText::new(format!("{} (@{}) invited you. Expires seven days after it was sent.", invitation.inviter.display_name, invitation.inviter.username)).size(11.0).color(MUTED));
+                                    ui.label(RichText::new("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.").size(11.0).color(MUTED));
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Decline").clicked() && let Some(space) = self.selected_space.clone() {
+                                            self.admin(AdminOperation::DeclineChannelInvitation { space, channel: invitation.channel.id.clone() });
+                                        }
+                                        if ui.button("Accept").clicked() && let Some(space) = self.selected_space.clone() {
+                                            self.admin(AdminOperation::AcceptChannelInvitation { space, channel: invitation.channel.id.clone() });
+                                        }
+                                    });
+                                });
+                            }
+                        }
                         let channels: Vec<_> =
                             self.detail.as_ref().map_or_else(Vec::new, |detail| {
                                 detail
                                     .channels
                                     .iter()
+                                    .filter(|channel| channel.joined)
                                     .map(|channel| {
                                         (channel.id.clone(), channel.name.clone(), channel.private)
                                     })
@@ -4285,9 +4436,14 @@ impl CaperApp {
 
     /// An account space whose channels are all hidden from this member.
     fn no_accessible_channels(&self) -> bool {
-        self.detail
-            .as_ref()
-            .is_some_and(|detail| !detail.space.demo && detail.channels.is_empty())
+        self.detail.as_ref().is_some_and(|detail| {
+            !detail.space.demo
+                && !detail.channels.iter().any(|channel| channel.joined)
+                && !detail
+                    .channels
+                    .iter()
+                    .any(|channel| Some(&channel.id) == self.selected_channel.as_ref())
+        })
     }
 
     /// Web's `.empty-channel` stage.
@@ -4308,13 +4464,13 @@ impl CaperApp {
                     ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
                 paint_icon(ui.painter(), rect, NavIcon::Hash, TERRACOTTA_BRIGHT);
                 ui.add_space(14.0);
-                ui.label(bold("No accessible channels").size(20.0));
+                ui.label(bold("No joined channels").size(20.0));
                 ui.add_space(7.0);
                 ui.label(
                     RichText::new(if owner {
                         "Create a channel to start a conversation."
                     } else {
-                        "The owner has not shared a channel with you yet."
+                        "Browse public channels or accept a private invitation."
                     })
                     .size(13.0)
                     .color(MUTED),
@@ -4382,6 +4538,15 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
+                                    if let (Some(space), Some(channel)) = (self.selected_space.clone(), self.selected_channel.clone())
+                                        && let Some(entry) = self.detail.as_ref().and_then(|detail| detail.channels.iter().find(|item| item.id == channel)).cloned()
+                                    {
+                                        if !entry.joined && ui.button("Join channel").clicked() {
+                                            self.admin(AdminOperation::JoinChannel { space, channel });
+                                        } else if entry.joined && !self.detail.as_ref().is_some_and(|detail| detail.space.demo) && ui.small_button("Leave").clicked() {
+                                            self.dialog = Some(Dialog::LeaveChannel { space, channel, name: entry.name });
+                                        }
+                                    }
                                     if self
                                         .detail
                                         .as_ref()
@@ -4409,8 +4574,9 @@ impl CaperApp {
             ).size().y);
             let editor_height = (draft_height + 20.0).clamp(42.0, (ui.ctx().viewport_rect().height() * 0.4).min(320.0));
             let session_row = if self.session_error.is_some() { 24.0 } else { 0.0 };
+            let joined = self.selected_is_joined();
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(editor_height + 24.0 + session_row)
+                .min_height(if joined { editor_height + 24.0 + session_row } else { 44.0 })
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
@@ -4425,6 +4591,10 @@ impl CaperApp {
                         ui.colored_label(ERROR, error);
                     }
                     // Web: the conversation stays; only sending waits on a new session.
+                    if !joined {
+                        ui.label(RichText::new("Read-only preview · Join to chat or use voice.").color(MUTED));
+                        return;
+                    }
                     if let Some(error) = self.session_error.clone() {
                         ui.horizontal(|ui| {
                             ui.colored_label(ERROR, error);
@@ -4860,6 +5030,9 @@ impl CaperApp {
             Dialog::ManageSpace => "Manage space",
             Dialog::Invitation(_) => "Space invitation",
             Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
+            Dialog::LeaveChannel { name, .. } => {
+                leave_title.get_or_insert(format!("Leave #{name}?"))
+            }
             Dialog::ConfirmDelete { channel, .. } => {
                 if channel.is_some() {
                     "Delete channel"
@@ -4975,6 +5148,7 @@ impl CaperApp {
                                                 }
                                                 ui.label(format!("You have been invited to join {}. Accept to load its channels and conversations.", invitation.name));
                                                 ui.label("Invitations expire seven days after they’re sent.");
+                                                ui.label("You’ll start in one public channel if available. Browse to choose others. Accepting never joins a voice call.");
                                                 ui.add_space(16.0);
                                                 ui.horizontal(|ui| {
                                                     if ui.add_enabled(!self.loading, egui::Button::new("Decline")).clicked() {
@@ -5012,6 +5186,13 @@ impl CaperApp {
                                                         self.admin(AdminOperation::LeaveSpace { space: id, member });
                                                     }
                                                 });
+                                            }
+                                            Dialog::LeaveChannel { space, channel, .. } => {
+                                                let private_loss = !self.owner() && self.detail.as_ref().is_some_and(|detail| detail.channels.iter().any(|item| item.id == channel && item.private));
+                                                ui.label(if private_loss { "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." } else { "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call." });
+                                                let (cancel, leave) = dialog_actions(ui, "Leave channel", !self.loading);
+                                                if cancel { self.dialog = None; }
+                                                if leave { self.admin(AdminOperation::LeaveChannel { space, channel }); }
                                             }
                                             Dialog::CreateChannel => self.channel_dialog(ui, None),
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
@@ -5213,6 +5394,7 @@ impl CaperApp {
         self.form_private = private;
         self.managed_channel = Some(id.into());
         self.managed_members.clear();
+        self.managed_invitations.clear();
         self.member_username.clear();
         self.member_error = None;
         self.error = None;
@@ -5329,6 +5511,29 @@ impl CaperApp {
                 );
             });
             self.members_dialog(ui, Some(channel.clone()));
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(format!(
+                    "Pending invitations · {}",
+                    self.managed_invitations.len()
+                ))
+                .size(12.0)
+                .color(MUTED),
+            );
+            for invitation in self.managed_invitations.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("@{}", invitation.username));
+                    if ui.button("Cancel").clicked()
+                        && let Some(space) = self.selected_space.clone()
+                    {
+                        self.admin(AdminOperation::RemoveMember {
+                            space,
+                            channel: Some(channel.clone()),
+                            member: invitation.id,
+                        });
+                    }
+                });
+            }
         }
         ui.separator();
         ui.label(RichText::new("Delete channel").size(14.0));
@@ -6595,6 +6800,8 @@ fn main() -> eframe::Result {
             name,
             "parity-narrow"
                 | "parity-browse"
+                | "parity-channel-preview-narrow"
+                | "parity-channel-directory-narrow"
                 | "parity-voice-rosters-narrow"
                 | "parity-invitation-narrow"
                 | "parity-update-download"
@@ -7135,6 +7342,97 @@ mod tests {
     }
 
     #[test]
+    fn public_preview_is_not_empty_even_without_joined_channels_and_has_no_composer() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-channel-preview"),
+        );
+        for channel in &mut app.detail.as_mut().unwrap().channels {
+            channel.joined = false;
+        }
+        assert!(!app.selected_is_joined());
+        assert!(!app.no_accessible_channels());
+        assert!(app.session.is_none());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.contains(&"Join channel"), "{labels:?}");
+        assert!(
+            labels.contains(&"Read-only preview · Join to chat or use voice."),
+            "{labels:?}"
+        );
+        assert!(
+            !labels.contains(&"Send") && !labels.contains(&"Retry session"),
+            "{labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label.starts_with("Message #")),
+            "preview must not render a composer: {labels:?}"
+        );
+        assert!(!app.loading, "rendering a preview must not send a mutation");
+    }
+
+    #[test]
+    fn acknowledged_channel_leave_hides_participation_before_navigation_refresh() {
+        for private in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            app.account.as_mut().unwrap().id = "fixture-maya".into();
+            let channel = app
+                .detail
+                .as_ref()
+                .unwrap()
+                .channels
+                .iter()
+                .find(|item| item.private == private)
+                .unwrap()
+                .id
+                .clone();
+            app.selected_channel = Some(channel.clone());
+            app.draft = "old conversation draft".into();
+            assert!(app.timeline.messages().next().is_some());
+            app.admin_result(crate::worker::AdminResult::ChannelLeft(channel.clone()));
+            assert!(
+                !app.detail
+                    .as_ref()
+                    .unwrap()
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel && item.joined)
+            );
+            assert_eq!(
+                app.detail
+                    .as_ref()
+                    .unwrap()
+                    .channels
+                    .iter()
+                    .any(|item| item.id == channel),
+                !private
+            );
+            assert!(app.session.is_none());
+            assert!(app.timeline.messages().next().is_none());
+            assert!(app.draft.is_empty());
+            assert!(
+                app.selected_channel.is_none(),
+                "unavailable refresh cannot restore the left conversation"
+            );
+        }
+    }
+
+    #[test]
     fn deletion_requires_confirmation_and_cancel_preserves_editor_and_data() {
         for (fixture, label) in [
             ("parity-admin", "Delete space"),
@@ -7351,6 +7649,7 @@ mod tests {
                 space_id: "space0000001".into(),
                 name: "secret".into(),
                 private: true,
+                joined: true,
             },
         ));
         assert!(matches!(&app.dialog, Some(Dialog::ManageChannel(id)) if id == "chan00000009"));
@@ -8345,6 +8644,7 @@ mod tests {
             },
             channels: Vec::new(),
             members,
+            channel_invitations: Vec::new(),
         };
         assert_eq!(member_page_ids(&detail, 0).len(), 25);
         assert_eq!(member_page_ids(&detail, 1), ["member-25"]);

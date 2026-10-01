@@ -727,6 +727,116 @@ node scripts/test-space-invitations.mjs
    boundary. Do not delete invitation/cooldown state or active memberships as
    rollback. No Valkey/SFU state migration or reset is needed.
 
+### Channel participation and private consent
+
+Channel access and participation are separate. `channel_members` remains the
+private authorization grant; `channel_joins` records the conversations a member
+has chosen. The sidebar shows joined channels. Browse channels searches the
+accessible directory and opens read-only previews without joining, preparing
+voice, or requesting a microphone. Public history and live text subscriptions
+remain readable before joining; sending, typing and every channel media
+operation require participation. Joining a channel never enters its voice call.
+The current quota remains 100 channels per space; this does not raise it to
+thousands or introduce server-side directory pagination.
+
+`Channel.joined` is returned by space details and channel mutations. New clients
+default a missing field to true for compatibility with older APIs. Public
+join/leave uses POST/DELETE
+`/api/spaces/{space}/channels/{channel}/membership`. Public leave removes the
+sidebar entry but preserves preview/rejoin access. Private non-owner leave also
+removes the authorization grant and warns that another invitation is required;
+the owner keeps implicit administration and can rejoin from the directory.
+Leaving a channel stops its local call, not an unrelated call. SFU cleanup after
+authorization ends is asynchronous, as above.
+
+Owner POST `/api/spaces/{space}/channels/{channel}/members` now sends a private
+invitation, not a grant. GET returns active `members` and separate pending
+`invitations`; DELETE `/members/{user}` cancels a pending invite or removes a
+grant and participation. The recipient's space detail adds `channelInvitations`
+containing only channel metadata and the current owner's public `inviter`
+identity. The pending channel is absent from the accessible directory, and its
+history/media stay unauthorized. POST/DELETE `/invitation` accepts/declines;
+acceptance grants and joins in one transaction. A stale, revoked, declined or
+expired invitation cannot be accepted. Unauthorized resources retain generic
+404 responses.
+
+Channel invitations expire after seven days and retain a 24-hour pair cooldown
+after decline, cancellation or removal. They share the space-invitation attempt
+budget (20 per owner per ten minutes), with separate live-pending limits of 50
+channel invitations per recipient and 100 per channel. Invitees must already
+belong to the space. These are fixed policies, not new secrets/configuration.
+
+Migration `202610010001_channel_joining.sql` joins existing members to all their
+currently accessible non-demo channels, preserving conversations during rollout.
+New space acceptance joins only one public starter, preferring `general`, if
+available. Creating a channel joins its creator, not every space member. Space
+removal clears participation and revokes channel invitations. No Valkey/SFU
+schema change or data reset is needed.
+
+Validation commands (disposable local services only):
+
+```bash
+DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+cargo test --workspace -- --ignored --test-threads=1
+node --test tests/native-parity-fixture.test.mjs
+CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-joining.mjs
+```
+
+| Platform | Channel participation validation / limits |
+| --- | --- |
+| API | Disposable Postgres migration/backfill, concurrent join, public read versus participation, private consent/expiry/cooldown/cancellation and removal tests; SQL sends and gateway/media authorization enforce joins |
+| Browser | Build/typecheck and unit tests; explicitly mocked Chromium desktop/390px search, preview, retry, persistence, accept/decline and leave. DOM/request assertions verify no private history before consent and zero microphone requests; representative captures inspected |
+| Rust desktop | Independent membership/directory/preview/consent implementation, Linux unit tests/fmt/clippy/build and rendered labelled desktop/narrow preview, directory/private consent and starter-channel disclosure fixtures inspected. Not Windows execution, physical audio, or live SFU evidence |
+| Apple iOS/macOS | Independent implementation and DTO/route tests added. No Swift/Xcode execution or device rendering in this Linux orb; platform CI and device acceptance remain required |
+| Android | Independent implementation and DTO/route tests added. No JDK/Android SDK execution or physical-device rendering in this orb; platform CI and device acceptance remain required |
+| Native refresh | Invitations/joins are discovered on account/space reload and after mutations. Browser additionally refreshes on focus/visibility and every 15 seconds. Native clients do not claim browser-equivalent periodic discovery; server authorization applies immediately |
+| Docker/live | No Docker daemon available; validate web/API image build stages directly. No deployment, shared database writes, live SFU or physical-device acceptance performed |
+
+**Deployment order** (operator actions only; merge does not deploy):
+
+1. Merge/deploy space-invitation consent first, then this stacked change. No new
+   infrastructure, secrets or configuration is required. Keep one desired API
+   replica with the existing shared Valkey configuration. Use a maintenance
+   window for channel/invitation mutations; do not serve them from mixed old/new API
+   versions, since older versions grant private access without consent. Set
+   `MERGED_SHA` to the full merged channel-change SHA after immutable images and
+   platform checks succeed.
+2. Deploy API first; startup uses the existing direct
+   `MIGRATION_DATABASE_URL` to apply the additive channel migration and grant
+   runtime table privileges. No manual backfill/reset is required. Wait for the
+   deployment workflow and readiness before gateway/client rollout.
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. Deploy gateway next so typing/media commands enforce participation too. The
+   API and gateway must both be updated before exposing channel-joining clients;
+   do not reset shared call state or close healthy tracks for this rollout.
+   ```bash
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-gateway --timeout=15m
+   ```
+4. Deploy web, then release native clients after their exact-head platform tests
+   succeed. Web and native releases can proceed independently after steps 2–3.
+   Older clients cannot join newly discovered channels or accept private channel
+   invitations and may misleadingly display a pending invite as an active member;
+   update owner clients before using private invitations.
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+5. Verify with two owned test accounts: old conversations remain joined, a new
+   member starts in one channel, public preview cannot send/use voice, join does
+   not enter voice, private metadata precedes acceptance, cancellation blocks
+   stale acceptance, and public/private leave have distinct re-entry behavior.
+   Prefer a forward fix. Client rollback is possible against the new services,
+   with the limitations above; do not roll API/gateway back across the consent
+   or participation boundary or drop membership/invitation tables as rollback.
+
 ## Shared call state and rolling deployments
 
 The original shared-state rollout below covers the public General room. Account

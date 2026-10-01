@@ -239,6 +239,63 @@ impl Api {
         .map(|_| ())
     }
 
+    pub fn join_channel(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/membership"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn leave_channel(&self, token: &str, space: &str, channel: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/channels/{channel}/membership"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn accept_channel_invitation(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/invitation"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn decline_channel_invitation(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/channels/{channel}/invitation"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
     pub fn members(
         &self,
         token: &str,
