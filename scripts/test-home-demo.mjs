@@ -66,6 +66,9 @@ try {
   // Production surfaces from shared/design.css; don't derive expectations from the demo.
   assert.deepEqual(evaluate('return [".sim-sidebar", ".sim-chat", ".sim-composer"].map(s => getComputedStyle(document.querySelector(s)).backgroundColor)'), ['rgb(21, 28, 30)', 'rgb(25, 33, 35)', 'rgb(40, 49, 51)']);
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), '30%');
+  assert.deepEqual(evaluate('return [...document.fonts].filter(font => font.family === "Satoshi").map(font => [font.weight, font.display]).sort()'), [['400', 'swap'], ['500', 'swap'], ['700', 'swap'], ['900', 'swap']], 'All font weights must paint fallback text while Satoshi downloads');
+  assert.equal(evaluate('return document.querySelector(".sim-chat > header").textContent'), 'general', 'No simulated-demo badge inside the room');
+  assert.equal(evaluate('return document.querySelector(".live-caption").textContent'), 'Fictional conversation', 'Label the illustration outside the room');
   assert.equal(evaluate('return document.querySelector(".sim-composer").tagName'), 'DIV');
   assert.equal(evaluate('return document.querySelectorAll(".sim-demo :is(button, a, input, textarea, [role=button])").length'), 0, 'Join is the only action; the room is read-only');
   assert.equal(evaluate('return document.querySelectorAll(".live-stage a").length'), 1);
@@ -179,6 +182,7 @@ try {
   browser('click', '.live-invite');
   wait('location.pathname === "/profile"');
   console.log('PASS: centered join-only CTA, reduced motion, clipboard failure, no chat/media requests and email login');
+  console.log('PASS: non-blocking font loading and no in-room simulation badge');
   console.log('PASS: simplified login copy and mobile demo clearance');
   console.log('PASS: signed-in join bypasses login; incomplete accounts reach profile setup (mocked accounts)');
 } finally {

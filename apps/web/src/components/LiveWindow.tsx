@@ -198,7 +198,7 @@ export default function LiveWindow() {
               </div>
             </aside>
             <section className="sim-chat">
-              <header><div><Hash aria-hidden="true" /><strong>general</strong></div><span className="sim-label">Simulated demo</span></header>
+              <header><div><Hash aria-hidden="true" /><strong>general</strong></div></header>
               <div className="sim-messages" ref={messagesRef} role="log" aria-label="Simulated message history" aria-live="off" tabIndex={0} data-live-control onScroll={(event) => {
                 const viewport = event.currentTarget;
                 following.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
@@ -231,6 +231,7 @@ export default function LiveWindow() {
           <span className="live-invite"><i aria-hidden="true" /><span className="live-invite-fine">Click to join</span><span className="live-invite-coarse">Tap to join</span></span>
         </a>
       </div>
+      <p className="live-caption">Fictional conversation</p>
     </div>
   );
 }

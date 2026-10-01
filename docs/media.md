@@ -208,9 +208,12 @@ Validation for this transport change:
 Retired September 2026. `LiveWindow.tsx` now renders a local scripted
 conversation with fictional participants, typing, visual speaking indicators,
 and a bundled AI-generated capybara meme (`public/images/demo-tiny-hat.webp`).
-The visible “Simulated demo” label distinguishes the illustration from live
-activity. It plays no audio and requests no chat/media capability or gateway
-subscription. Reduced-motion visitors get a static illustration. Click/Tap to
+The “Fictional conversation” caption outside the window distinguishes the
+illustration from live activity without a badge inside the channel. Satoshi
+uses `font-display: swap` so names, messages and the join label remain visible
+in the fallback font while fonts download. It plays no audio and requests no
+chat/media capability or gateway subscription. Reduced-motion visitors get a
+static illustration. Click/Tap to
 join targets `/spaces`: signed-out visitors reach the existing email-code
 account flow, while returning members skip login. This illustration
 does not claim that image uploads are implemented in account chat.
