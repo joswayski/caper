@@ -9,6 +9,22 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
+Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
+errors, pending states and member loading do not resize or recenter them. Channel
+settings reserve the hidden save bar, and profile forms reserve error space so
+retrying a save does not move its button. Channel and space settings dismiss on
+outside click/tap; nested delete confirmation dismissal leaves settings open.
+Run `MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-space-controls.mjs`
+against Vite for desktop, narrow and short-viewport geometry, overflow reachability
+and backdrop regression checks with mocked APIs. Android, Apple and Rust desktop
+use independently implemented stable shells; browser results do not validate
+native rendering. Rust desktop has headless egui geometry/backdrop regression
+checks. Native CI supplies Android/Apple platform builds and simulator/emulator
+UI checks; macOS CI also captures the rendered desktop client. Physical-device
+keyboard, scrolling and outside-tap checks remain separate release validation;
+CI is not physical-device coverage. Desktop leave/delete-space handling clears the
+departed conversation and fences late navigation/chat results before selecting
+another space, rather than falling back to the retired General channel.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 Input/output device lists open directly beside the profile's microphone/headphone
@@ -213,27 +229,39 @@ Validation for this transport change:
 
 ### Public text demo
 
-Retired September 2026. `LiveWindow.tsx` now renders a bounded, local scripted
+Retired September 2026. `LiveWindow.tsx` now renders a local scripted
 conversation with fictional participants, typing, visual speaking indicators,
 and a bundled AI-generated capybara meme (`public/images/demo-tiny-hat.webp`).
-The visible “Simulated demo” label distinguishes the illustration from live
-activity. It plays no audio and requests no chat/media capability or gateway
-subscription. Reduced-motion visitors get a static illustration. Click/Tap to
-join opens `/login`, the existing email-code account flow. This illustration
+The “Fictional conversation” caption outside the window distinguishes the
+illustration from live activity without a badge inside the channel. Satoshi
+uses `font-display: swap` so names, messages and the join label remain visible
+in the fallback font while fonts download. It plays no audio and requests no
+chat/media capability or gateway subscription. Reduced-motion visitors get a
+static illustration. Click/Tap to
+join targets `/spaces`: signed-out visitors reach the existing email-code
+account flow, while returning members skip login. This illustration
 does not claim that image uploads are implemented in account chat.
 
-The centered join CTA leaves the reaction chips and quick emoji picker usable.
-Demo reactions toggle locally, never persist, and never call the real reactions
-API. Scripted counts grow as the conversation progresses; hover, keyboard focus,
-an open picker, and Pause stop the script. The four profile pictures in
+The centered join CTA is the demo's only action. The `general` and `feedback`
+channels, voice roster, composer and emoji reaction counts are read-only; there
+are no join notices, reaction picker/hints, or playback controls. Speech,
+messages, typing and delayed reactions use independent randomized timings.
+Only seven of the 24 scripted posts (memes and a few standout replies) receive
+one to three delayed reactions; ordinary messages stay unreacted.
+Messages remain in local page history across animation loops. The full-height
+conversation follows new posts unless the visitor scrolls back to read older
+messages; reloading starts a fresh illustration. No reaction API is called.
+The four profile pictures in
 `public/images/demo-avatars.webp` were generated using `caper-face.svg` as the
 reference (beanie, headphones, glasses, and a star variation). The five bundled
 Twemoji 15.0 SVGs carry their CC BY 4.0 attribution in `images/demo-emoji`.
 The homepage contact actions link to X and copy the email address, with success
 feedback or a visible address when the browser denies clipboard access.
 `node scripts/test-home-demo.mjs http://localhost:30701` checks the real local
-homepage's 3D hit testing, reaction toggles, picker/Escape, reduced motion,
-clipboard-denial fallback, and join → email entry. Mobile touch emulation is
+homepage with a controlled browser clock: history retention across two loops,
+auto-follow/scrollback, delayed passive reactions, removed controls/notices,
+both channels on mobile, reduced motion, clipboard-denial fallback, and join →
+email entry or authenticated spaces. Mobile touch emulation is
 browser-only coverage, not native-client or physical-device verification.
 
 The API no longer seeds General or exposes `/api/chat/general` or unscoped
@@ -2732,20 +2760,35 @@ accounts a random default. Login, username/display-name edits and voice rejoinin
 do not reroll it. Assignments are not exclusive: people can share an avatar.
 The field identifies an actual bundled image, not a hash of a name/account ID.
 
-The immutable v1 collection contains **100 distinct designs × eight hue treatments**.
-The original four homepage characters remain unchanged. Companion source sheets
-are in `assets/avatars`; `node scripts/generate-avatars.mjs` (ImageMagick 7) reproduces
-the 32×25, 64px-per-tile atlas (2048×1600). Web uses WebP; native builds bundle
-the canonical PNG. Source artwork is generated, then cropped/recolored offline;
-there is no runtime generation, remote image service, R2, or new secret.
-Do not reorder tiles or replace the v1 collection once accounts have assignments.
+The collection contains **100 distinct designs × eight hue treatments**. The v2
+artwork uses real SVG paths traced from the original 256px source quadrants, not
+embedded bitmap images. Tracing simplifies shading and details; it cannot recover
+detail absent from the source. The ID mapping stays character = ID % 100 and
+colorway = floor(ID / 100), so existing assignments retain their character/color.
+The old 64px v1 atlases remain unchanged for older web clients.
+
+Canonical vector masters live in `assets/avatars/vector-v2`. The offline authoring
+command `uv run scripts/vectorize-avatars.py` requires ImageMagick 7 and pinned
+VTracer; do not rerun it against a published version. To reproduce client exports,
+run `node scripts/generate-avatar-vectors.mjs`; `--check` detects drift and runs in
+web tests. Web and Rust desktop use `public/images/avatars/v2/{id}.svg`, Apple uses
+a preserved-vector asset catalog, and Android uses native VectorDrawables. Native
+resources are bundled for offline use. There is no runtime generator, image
+service, R2, new secret, or database change for the vector upgrade.
+
+Web requests only the visible SVGs. Versioned v2 paths get
+`Cache-Control: public, max-age=31536000, immutable`; publish changed artwork at a
+new versioned path, never overwrite cached v2 URLs or reroll IDs. R2 is unnecessary
+for this fixed collection. Future uploaded photos/GIFs should use object storage
+with validated media references and separate upload/access/cache policies; storing
+an object in R2 alone is not a CDN caching configuration.
 
 Account/member/chat author responses carry `avatarId`. HTTP history, both gateway
 replay protocols and outbox publication enrich old messages from the current user
 record without rewriting the message log. Voice snapshots carry the authenticated
 account's saved avatar, not a client-supplied ID. Existing shared voice state is
 backward-compatible: absent IDs render initials until the participant rejoins.
-Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved tile. Missing or
+Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved design. Missing or
 invalid IDs render initials; presence dots and speaking rings remain separate.
 
 Custom photo/GIF uploads, avatar selection and a public collection page are future
@@ -2763,13 +2806,14 @@ against disposable Postgres. Chat tests cover missing-avatar historical payloads
 outbox and gateway replay; voice tests check trusted assignments and old Valkey
 state. `node scripts/test-avatars.mjs http://localhost:30701 .amp/in/artifacts`
 checks real browser components with a labelled API/gateway mock, including desktop
-and narrow layouts, tile boundaries, presence and profile rename. Normal screenshots
+and narrow layouts, SVG selection, presence and profile rename. Normal screenshots
 give every account a saved picture, including existing accounts. A separate
 incomplete-response test checks initials; it does not represent migrated accounts.
 This browser fixture is not live signup, SFU, physical phone or native evidence.
-Rust desktop was separately built and visually inspected in its labelled static
-fixture (chat, account, member and voice avatars); atlas selection and voice-stack
-interaction tests pass. The full desktop suite (`--test-threads=2`) reports 120
+The vector upgrade additionally decodes all 800 SVGs in Chromium, checks alpha
+outside the circular crop, and provides enlarged/100-design review captures.
+Rust desktop's SVG rendering and voice-stack interaction tests pass.
+The full desktop suite (`--test-threads=2`) reports 120
 passed and nine ignored. Leaving/deleting a space clears private conversation
 state immediately, without a retired public-General fallback.
 Desktop application clippy passes with `--no-deps`; unrestricted clippy fails
@@ -2779,7 +2823,29 @@ their platform build/device checks before release; Java and
 Swift/Xcode are unavailable in this orb. Docker daemon is unavailable, so API/web
 build stages were validated directly rather than building container images.
 
-#### Avatar deployment order
+#### Vector upgrade deployment order
+
+1. Prerequisite: the saved-avatar API/migration rollout below is already complete.
+   No infrastructure, R2, secrets/configuration, database migrations, API or gateway
+   deployment is needed for the vector upgrade. Do not alter saved assignments.
+2. Once the merged commit's web image is available, deploy web explicitly (merging
+   alone does not deploy). Wait for the workflow to finish, then verify rollout:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   curl -I https://caper.chat/images/avatars/v2/0.svg
+   ```
+   Expect SVG content and a one-year immutable cache header. Check existing
+   account pictures in chat/member/voice views and at browser zoom; IDs must not
+   change. The old v1 image URLs remain available to previously loaded clients.
+3. Release Android, iOS/macOS and Rust desktop independently through their normal
+   client workflows after platform builds and visual/device checks. Clients bundle
+   their resources; they do not depend on web deploying first.
+4. Roll back only the affected web image/client release if necessary; leave the
+   database untouched. No shared deployment or database writes were run here.
+
+#### Original saved-avatar deployment order
 
 1. No infrastructure, R2, new secrets or configuration changes. Wait for immutable
    API/web images for the merged commit. Merging does not deploy. Keep existing
