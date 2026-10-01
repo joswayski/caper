@@ -21,9 +21,10 @@ use independently implemented stable shells; browser results do not validate
 native rendering. Rust desktop has headless egui geometry/backdrop regression
 checks. Android and Apple compilation/device checks, and rendered desktop
 inspection, remain pending (this Linux orb has no JDK/Android device, Swift
-toolchain or graphical display). The desktop suite has an unrelated existing
-leave-space assertion expecting the retired General channel; this also fails on
-the unchanged base revision.
+toolchain or graphical display); native CI supplies the platform build and
+simulator/emulator checks. Desktop leave/delete-space handling clears the
+departed conversation and fences late navigation/chat results before selecting
+another space, rather than falling back to the retired General channel.
 Mic test offers an explicit, tab-memory-only recording of up to 30 seconds of
 received Natural audio and an on-device Enhanced comparison from the same take.
 Input/output device lists open directly beside the profile's microphone/headphone

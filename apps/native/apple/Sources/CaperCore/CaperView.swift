@@ -1666,16 +1666,14 @@ private struct ChannelEditor: View {
             }
             if channel != nil {
                 // Reserve the save bar while clean so toggling privacy cannot resize the sheet.
-                HStack {
+                let saveBar = HStack {
                     Text("You have unsaved changes.").font(CaperTheme.font(12))
                     Spacer()
                     Button("Reset") { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; error = nil }.buttonStyle(CaperSecondaryButton()).disabled(pending)
                     Button(pending ? "Saving…" : "Save changes", action: submit).buttonStyle(CaperPrimaryButton()).frame(width: 150).disabled(pending)
                 }.padding(.horizontal, 22).padding(.vertical, 12).background(CaperTheme.raised)
                     .accessibilityIdentifier("channel-save-bar")
-                    .opacity(dirty ? 1 : 0)
-                    .disabled(!dirty)
-                    .accessibilityHidden(!dirty)
+                if dirty { saveBar } else { saveBar.hidden().allowsHitTesting(false) }
             }
         }.background(CaperTheme.surface).onAppear { name = channel?.name ?? ""; privateChannel = channel?.private ?? false; if channel == nil { nameFocused = true } }
         .task(id: channel?.private) { if let channel, channel.private { await loadMembers(channel) } }

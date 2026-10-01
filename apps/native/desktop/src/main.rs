@@ -7134,6 +7134,9 @@ mod tests {
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
         assert!(app.timeline.messages().next().is_some());
+        app.select_channel("next".into(), false);
+        let stale_generation = app.generation;
+        let stale_navigation = app.navigation;
         app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
         assert!(!app.spaces.iter().any(|entry| entry.id == space));
         assert!(app.detail.is_none());
@@ -7144,6 +7147,16 @@ mod tests {
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
         assert!(!app.can_leave_space());
+        app.accept_navigation(
+            stale_generation,
+            stale_navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("next"), Ok(session()))),
+            }),
+        );
+        assert!(app.selected_channel.is_none());
+        assert!(app.timeline.messages().next().is_none());
     }
 
     #[test]
