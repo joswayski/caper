@@ -127,9 +127,12 @@ internal data class VoiceJoinIntent(
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::showLogin, viewModel::verify) { viewModel.requestCode(screen.email) }
                 is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
-                SessionScreen.Home, is SessionScreen.Spaces -> HomeScreen(
-                    state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
-                )
+                SessionScreen.Home, is SessionScreen.Spaces ->
+                    // Web's first-space page: an account with no spaces names one.
+                    if (state.account != null && state.limits != null && state.spaces.none { !it.demo }) FirstSpaceScreen(state, viewModel)
+                    else HomeScreen(
+                        state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
+                    )
             }
             // Keep the current conversation stable while a space or channel opens.
             if (state.busy && !homeVisible) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Terracotta)
@@ -974,6 +977,28 @@ internal fun counterTone(count: Int): Color = when {
         Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text(if (busy) "Saving…" else if (account.username.isNullOrEmpty()) "Finish account" else "Save profile") }
     }
     if (close == null) AuthFrame { form() } else CaperDialog("Edit profile", close) { form() }
+}
+
+@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel) {
+    var name by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    val limits = state.limits
+    val allowed = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
+        state.spaces.count { !it.demo } < limits.totalSpaces
+    AuthFrame {
+        Text("Name your space", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        Text("Choose something you will recognize easily. You can always change it later!", color = TextMuted, fontSize = 12.sp)
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(name, { name = it.codePointTake(80); error = null }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        if (!allowed) Text("You have reached your space limit.", color = TextMuted, fontSize = 12.sp)
+        (error ?: state.error)?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        Spacer(Modifier.height(16.dp))
+        Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
+            enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
+        ) { Text(if (state.busy) "Creating…" else "Create space") }
+        TextButton(viewModel::logout, Modifier.align(Alignment.End)) { Text("Log out", color = TextMuted) }
+    }
 }
 
 @Composable private fun CreateSpaceDialog(busy: Boolean, close: () -> Unit, create: (String) -> Unit) {
