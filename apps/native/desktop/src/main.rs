@@ -5041,7 +5041,7 @@ impl CaperApp {
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
-            Dialog::Invitation(_) => "Space invitation",
+            Dialog::Invitation(_) => "You’re invited!",
             Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::LeaveChannel { name, .. } => {
                 leave_title.get_or_insert(format!("Leave #{name}?"))
@@ -5156,6 +5156,9 @@ impl CaperApp {
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
                                             Dialog::Invitation(invitation) => {
+                                                ui.add(egui::Image::from_bytes("bytes://invitation-envelope.png", include_bytes!("../../../web/public/images/invitation/1f4e8.png"))
+                                                    .fit_to_exact_size(egui::vec2(32.0, 32.0)));
+                                                ui.add_space(10.0);
                                                 if let Some(inviter) = &invitation.inviter {
                                                     ui.label(format!("{} (@{}) invited you.", inviter.display_name, inviter.username));
                                                 }
@@ -7319,6 +7322,7 @@ mod tests {
             .collect();
         assert!(labels.contains(&"Decline"), "{labels:?}");
         assert!(labels.contains(&"Accept invitation"), "{labels:?}");
+        assert!(labels.contains(&"You’re invited!"), "{labels:?}");
         assert!(
             labels.contains(&"TEST FIXTURE host (@fixture_host) invited you."),
             "{labels:?}"

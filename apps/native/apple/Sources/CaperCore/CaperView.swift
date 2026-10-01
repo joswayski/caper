@@ -1633,7 +1633,9 @@ private struct InvitationSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SheetHeader(title: "Space invitation", detail: "You were invited to \(invitation.name). Accept to view its channels and conversations.", close: close)
+            SheetHeader(title: "You’re invited!", detail: "You were invited to \(invitation.name). Accept to view its channels and conversations.", close: close)
+            Image("IncomingEnvelope", bundle: artworkBundle).resizable().interpolation(.high)
+                .frame(width: 32, height: 32).accessibilityHidden(true).padding(.horizontal, 22)
             if let inviter = invitation.inviter {
                 Text("\(inviter.displayName) (@\(inviter.username)) invited you.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
             }
@@ -1646,6 +1648,14 @@ private struct InvitationSheet: View {
                 Button("Accept") { perform { try await model.acceptInvitation(invitation); close() } }.buttonStyle(CaperPrimaryButton())
             }.disabled(pending).padding(22)
         }.background(CaperTheme.surface)
+    }
+
+    private var artworkBundle: Bundle {
+        #if SWIFT_PACKAGE
+        Bundle.module
+        #else
+        Bundle(for: CaperEffects.self)
+        #endif
     }
 
     private func perform(_ action: @escaping () async throws -> Void) {

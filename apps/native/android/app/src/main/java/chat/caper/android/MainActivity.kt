@@ -1056,7 +1056,8 @@ internal fun counterTone(count: Int): Color = when {
 }
 
 @Composable private fun InvitationDialog(space: Space, busy: Boolean, error: String?, close: () -> Unit, accept: () -> Unit, decline: () -> Unit) {
-    CaperDialog("Invitation to ${space.name}", close) {
+    CaperDialog("You’re invited!", close) {
+        Image(painterResource(R.drawable.incoming_envelope), contentDescription = null, modifier = Modifier.size(32.dp))
         space.inviter?.let { Text("${it.displayName} (@${it.username}) invited you.", color = TextMuted) }
         Text("Accept this invitation to access ${space.name}'s channels and conversations.", color = TextMuted)
         Text("Invitations expire seven days after they’re sent.", color = TextMuted, fontSize = 12.sp)

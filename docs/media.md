@@ -578,6 +578,21 @@ they currently discover invites at account load and prune stale spaces when
 navigation returns 404, rather than using the browser's periodic list refresh.
 Server access checks apply identically to every client.
 
+Space consent uses “You’re invited!” and the same 32px decorative Twemoji
+incoming-envelope artwork on web, Android, Apple and Rust desktop. The canonical
+PNG and CC BY 4.0 attribution are in `apps/web/public/images/invitation`.
+Android/Apple resource copies are checked byte-for-byte by the web test suite;
+desktop embeds the canonical PNG. Native layouts retain their existing modal
+patterns. This presentation change adds no API, migration, secret or reaction
+dependency. Keep the Apple invitation asset catalog and attribution resources
+when integrating other native resource changes.
+
+The separate message-reactions work must not be merged blindly into channel
+participation: reaction mutation authorization must require `channel_joins`,
+including for cross-channel tokens and mutations queued behind leave. Preview
+history reads must remain available. Borrowing this fixed artwork does not
+import reaction behavior or resolve that integration requirement.
+
 Account voice uses `/api/channels/{channel}/media/*`, with the same operation
 names as the guest `/api/media/*` endpoints. Every request needs a valid account
 session and channel access; in-call commands also need the room's
@@ -764,14 +779,15 @@ CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-join
 only; merge does not deploy):
 
 1. Merge space-invitation consent (#234), retarget the stacked channel change
-   (#238) to `main`, then merge it. A separate #234 deployment is unnecessary;
+   (#238) to `main` and merge it, then retarget and merge the invitation-presentation
+   follow-up. A separate #234 or #238 deployment is unnecessary;
    deploy the final cumulative images once. No new infrastructure, secrets or
    configuration is required. Existing direct `MIGRATION_DATABASE_URL`, runtime
    `DATABASE_URL` and shared `VALKEY_URL` must already be configured. Keep one
    desired API replica. Use a maintenance window for channel/invitation mutations;
    do not serve them from mixed old/new API versions, since older versions grant
    private access without consent. Set `MERGED_SHA` to the full merged
-   channel-change SHA after immutable images and exact-head platform checks succeed.
+   final revision after immutable images and exact-head platform checks succeed.
 2. Deploy API first; startup uses the existing direct
    `MIGRATION_DATABASE_URL` to apply every pending embedded migration, including
    `202609300001_space_invitations.sql` and `202610010001_channel_joining.sql`,
