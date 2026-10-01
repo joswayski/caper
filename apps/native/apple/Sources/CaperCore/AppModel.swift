@@ -704,7 +704,7 @@ public final class ChatModel {
               let name = account.displayName else { return }
         // Account-backed sends resolve the current name server-side. Updating
         // this presentation snapshot must not reopen chat or discard its draft.
-        self.session = ChatSession(token: session.token, author: ChatAuthor(id: account.id, name: name, isGuest: false))
+        self.session = ChatSession(token: session.token, author: ChatAuthor(id: account.id, name: name, isGuest: false, avatarId: account.avatarId))
     }
 
     /// A token-free copy of only the timeline currently retained by this model.

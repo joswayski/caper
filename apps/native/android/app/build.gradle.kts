@@ -80,7 +80,7 @@ android {
         buildConfig = true
     }
     sourceSets["main"].apply {
-        assets.srcDirs("../third_party", rootProject.file("../../../shared/emoji"), layout.buildDirectory.dir("generated/caper-fonts/assets"), layout.buildDirectory.dir("native-inputs/assets"))
+        assets.srcDirs("../third_party", "../../../web/public/images/avatars", rootProject.file("../../../shared/emoji"), layout.buildDirectory.dir("generated/caper-fonts/assets"), layout.buildDirectory.dir("native-inputs/assets"))
         jniLibs.srcDir(layout.buildDirectory.dir("native-inputs/ort/jni"))
         res.srcDir(layout.buildDirectory.dir("generated/caper-fonts/res"))
     }

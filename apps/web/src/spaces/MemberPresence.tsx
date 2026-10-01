@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import PresenceDot from "../components/PresenceDot";
+import Avatar from "../components/Avatar";
 import { watchPresence } from "../gateway/client";
 import type { Member } from "./client";
 
@@ -37,7 +38,7 @@ export default function MemberPresence({ spaceId, members, demo }: { spaceId: st
           const status = statuses[member.id];
           return <li key={member.id}>
             <span className="member-presence-avatar">
-              <span aria-hidden="true">{member.displayName.slice(0, 1).toUpperCase()}</span>
+              <Avatar avatarId={member.avatarId} name={member.displayName} />
               <PresenceDot status={status} live={live} />
             </span>
             <span><strong title={member.displayName}>{member.displayName}</strong></span>

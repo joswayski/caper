@@ -28,7 +28,7 @@ class ReactionUiTest {
     @Test fun ownershipPickerSearchAndSavingStates() {
         val state = mutableStateOf(AppUiState(chatAuthorId = "self"))
         val message = ChatMessage(
-            "message00000001", "channel00001", "1", ChatAuthor("other", "Fixture Author", false),
+            "message00000001", "channel00001", "1", ChatAuthor("other", "Fixture Author", false, avatarId = 719),
             ChatContent(1, "text", "TEST FIXTURE — reaction chips, not a live conversation."),
             "2026-09-29T10:00:00Z", "fixture-client",
             listOf(MessageReaction("👍", listOf("self", "other")), MessageReaction("❤️", listOf("other")),

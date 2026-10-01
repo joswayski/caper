@@ -3,6 +3,9 @@
 A place for your people. Text and voice conversations at [caper.chat](https://caper.chat).
 Early-stage and actively in development.
 
+Accounts receive a saved, random Caper avatar from 100 designs and eight colorways.
+Custom photo/GIF uploads and an avatar gallery are not implemented yet.
+
 ## Development
 
 You'll need Node.js 24, npm 11+, Docker Compose, and AWS CLI access to the `staging` profile.

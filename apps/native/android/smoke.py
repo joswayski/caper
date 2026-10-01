@@ -288,13 +288,17 @@ def main() -> None:
     launch()
 
     # The first launch after a fresh install also compiles and warms the app,
-    # which can take well over 20 s on a loaded CI emulator. Public guest chat
-    # was retired; a fresh install must gate conversations behind sign-in.
+    # which can take well over 20 s on a loaded CI emulator.
+    # Signed-out users now land at authentication. The retired public General
+    # demo must not be reconstructed by the fixture; authenticate before
+    # exercising the populated account-space coverage below.
     login = capture("caper-android-login", "Come on in.", seconds=60)
     for required in ("WELCOME TO CAPER", "Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
-    assert find(login, contains="Message #") is None
-    assert find(login, text="Join") is None
+    for retired in ("general", "Join", "TEST FIXTURE", "Message #"):
+        assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
+    assert find(login, description="Channel options") is None
+    assert find(login, description="Create channel") is None
 
     fixture({"failure": {"path": "/api/auth/email/request", "method": "POST", "status": 503}})
     enter_first_field("fixture@example.test")

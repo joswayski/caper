@@ -60,7 +60,7 @@ export default function MessageReactions({ message, authorId, onReact }: {
       <span>{failure.error}</span><button type="button" onClick={() => void react(failure.emoji, failure.active)}>Retry reaction</button>
       <button type="button" onClick={() => setFailure(undefined)}>Dismiss</button>
     </div>}
-    {open && <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>(".live-scene")}><FloatingFocusManager context={context}>
+    {open && <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>(".live-scene") ?? undefined}><FloatingFocusManager context={context}>
       <div className="chat-reaction-picker" ref={refs.setFloating} style={floatingStyles} aria-label="Choose a reaction" {...getFloatingProps()}>
         <div className="chat-reaction-picker-heading"><strong>Add a reaction</strong><button type="button" aria-label="Close emoji picker" onClick={() => setOpen(false)}><X size={18} /></button></div>
         <div className="chat-reaction-picker-body">

@@ -1,5 +1,6 @@
 export interface ChatAuthor {
   id: string;
+  avatarId?: number | null;
   name: string;
   isGuest: boolean;
 }
