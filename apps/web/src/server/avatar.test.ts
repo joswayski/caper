@@ -1,19 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { avatarPosition } from "../account/avatar.ts";
+import { avatarUrl } from "../account/avatar.ts";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { callSnapshot } from "../media/events.ts";
 
-test("saved avatar IDs select row-major tiles, including zero and row boundaries", () => {
-  assert.equal(avatarPosition(0), "0% 0%");
-  assert.equal(avatarPosition(31), "100% 0%");
-  assert.equal(avatarPosition(32), "0% 4.166666666666667%");
-  assert.equal(avatarPosition(798), "96.7741935483871% 100%");
-  assert.equal(avatarPosition(799), "100% 100%");
-  assert.equal(new Set(Array.from({ length: 800 }, (_, id) => avatarPosition(id))).size, 800);
+test("all client vector resources match the canonical masters and persisted ID mapping", () => {
+  execFileSync(process.execPath, [new URL("../../../../scripts/generate-avatar-vectors.mjs", import.meta.url).pathname, "--check"]);
 });
 
-test("old API data and invalid saved IDs use initials, never an arbitrary tile", () => {
-  for (const id of [undefined, null, -1, 800, 1.5, NaN, Infinity]) assert.equal(avatarPosition(id), undefined);
+test("all saved IDs have distinct path-only SVG artwork, not embedded rasters", () => {
+  for (let id = 0; id < 800; id++) {
+    assert.equal(avatarUrl(id), `/images/avatars/v2/${id}.svg`);
+    const svg = readFileSync(new URL(`../../public/images/avatars/v2/${id}.svg`, import.meta.url), "utf8");
+    assert.match(svg, /viewBox="0 0 256 256"/);
+    assert.match(svg, /<path d=/);
+    assert.doesNotMatch(svg, /<image|data:|href=/i);
+  }
+});
+
+test("old API data and invalid saved IDs use initials, never an arbitrary picture", () => {
+  for (const id of [undefined, null, -1, 800, 1.5, NaN, Infinity]) assert.equal(avatarUrl(id), undefined);
 });
 
 test("active and spectator voice retain saved avatar even when call identity changes", () => {

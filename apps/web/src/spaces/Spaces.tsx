@@ -524,6 +524,7 @@ function ManageSpaceDialog({
       description="Only the owner can change this space and its membership."
       onClose={onClose}
       width="wide"
+      dismissOnBackdrop
     >
       <form
         onSubmit={(event) => {
@@ -631,6 +632,7 @@ function ManageChannelDialog({
       title="Overview"
       onClose={onClose}
       width="wide"
+      dismissOnBackdrop
     >
       <form
         id="channel-overview"
@@ -699,19 +701,17 @@ function ManageChannelDialog({
         <p>Delete this channel for everyone in the space.</p>
         <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>Delete channel</button>
       </section>
-      {dirty && (
-        <footer className="channel-save-bar">
-          <span role="status">You have unsaved changes.</span>
-          <div>
-            <button type="button" className="secondary" disabled={pending} onClick={() => {
-              setName(channel.name);
-              setPrivateChannel(channel.private);
-              setError(undefined);
-            }}>Reset</button>
-            <button type="submit" form="channel-overview" className="primary" disabled={pending}>{pending ? "Saving…" : "Save changes"}</button>
-          </div>
-        </footer>
-      )}
+      <footer className="channel-save-bar" aria-hidden={!dirty} inert={!dirty}>
+        <span role="status">You have unsaved changes.</span>
+        <div>
+          <button type="button" className="secondary" disabled={pending} onClick={() => {
+            setName(channel.name);
+            setPrivateChannel(channel.private);
+            setError(undefined);
+          }}>Reset</button>
+          <button type="submit" form="channel-overview" className="primary" disabled={pending}>{pending ? "Saving…" : "Save changes"}</button>
+        </div>
+      </footer>
       {confirmDelete && <DeleteConfirmation kind="channel" name={channel.name} onClose={() => setConfirmDelete(false)} onDelete={async () => {
         await deleteChannel(detail.space.id, channel.id);
         onDeleted();

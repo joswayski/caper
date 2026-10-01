@@ -16,6 +16,10 @@ public final class AppModel {
     /// Remaining code attempts reported by the last rejected verification, as on web.
     public var loginAttemptsRemaining: Int?
     public var limits: SpaceLimits?
+    /// The account's space list has loaded at least once. With no spaces,
+    /// the workspace shows web's "Name your space" first-space form.
+    public var spacesLoaded = false
+    public var spacesError: String?
     public var navigationOpen = false
     public var openingSpaceID: String?
     public var openingChannelID: String?
@@ -154,7 +158,7 @@ public final class AppModel {
         voiceJoinGeneration += 1
         clearNavigationCache()
         voice.leaveImmediately()
-        account = nil; spaces = []; detail = nil
+        account = nil; spaces = []; detail = nil; spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
@@ -171,11 +175,18 @@ public final class AppModel {
     public func loadSpaces() async {
         guard account != nil else { return }
         let attempt = generation
+        spacesError = nil
         await work(generation: attempt) {
-            let response = try await self.api.spaces()
+            let response: SpacesResponse
+            do { response = try await self.api.spaces() }
+            catch {
+                if self.generation == attempt { self.spacesError = error.localizedDescription }
+                throw error
+            }
             guard self.generation == attempt else { return }
             self.limits = response.limits
             self.spaces = response.spaces
+            self.spacesLoaded = true
             if let selected = self.spaces.first(where: { $0.id == self.selectedSpaceID })
                 ?? self.spaces.first(where: { $0.id == self.preferredInitialSpaceID })
                 ?? self.spaces.first {
@@ -693,11 +704,17 @@ public final class ChatModel {
     private var typingIdleTask: Task<Void, Never>?
     private var typingExpiryTask: Task<Void, Never>?
     @ObservationIgnored private lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
-        self?.liveState = state
-        if let error { self?.error = error }
+        self?.receiveGatewayState(state, error: error)
     }
 
     public init(api: APIClient) { self.api = api }
+
+    func receiveGatewayState(_ state: GatewayState, error: String?) {
+        // Actor callbacks queued before unsubscribe must not revive stopped chat.
+        guard channelID != nil else { return }
+        liveState = state
+        if let error { self.error = error }
+    }
 
     func updateAuthor(account: Account) {
         guard let session, !session.author.isGuest, session.author.id == account.id,

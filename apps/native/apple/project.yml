@@ -81,10 +81,8 @@ targets:
     platform: macOS
     sources:
       - path: Sources/CaperCore
-        excludes: [EmojiAssets, capers-v1.png]
+        excludes: [EmojiAssets]
       - path: Sources/CaperCore/EmojiAssets
-        buildPhase: resources
-      - path: ../../web/public/images/avatars/capers-v1.png
         buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
@@ -108,10 +106,8 @@ targets:
     platform: iOS
     sources:
       - path: Sources/CaperCore
-        excludes: [EmojiAssets, capers-v1.png]
+        excludes: [EmojiAssets]
       - path: Sources/CaperCore/EmojiAssets
-        buildPhase: resources
-      - path: ../../web/public/images/avatars/capers-v1.png
         buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources

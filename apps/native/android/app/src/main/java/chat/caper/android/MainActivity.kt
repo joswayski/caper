@@ -3,7 +3,6 @@ package chat.caper.android
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
-import android.graphics.BitmapFactory
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -12,7 +11,6 @@ import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -43,13 +41,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -136,9 +131,12 @@ internal data class VoiceJoinIntent(
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
                 is SessionScreen.Verify -> VerifyScreen(screen, state.busy, state.error, viewModel::clearError, viewModel::showLogin, viewModel::verify) { viewModel.requestCode(screen.email) }
                 is SessionScreen.Profile -> ProfileScreen(screen.account, state.busy, state.error, null, viewModel::saveProfile)
-                SessionScreen.Home, is SessionScreen.Spaces -> HomeScreen(
-                    state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
-                )
+                SessionScreen.Home, is SessionScreen.Spaces ->
+                    // Web's first-space page: an account with no spaces names one.
+                    if (state.account != null && state.limits != null && state.spaces.none { !it.demo }) FirstSpaceScreen(state, viewModel)
+                    else HomeScreen(
+                        state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
+                    )
             }
             // Keep the current conversation stable while a space or channel opens.
             if (state.busy && !homeVisible) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = Terracotta)
@@ -953,14 +951,6 @@ internal fun counterTone(count: Int): Color = when {
     else -> TextMuted
 }
 
-// Share the decoded atlas instead of allocating one for every visible avatar.
-private object AvatarAtlas {
-    private var image: ImageBitmap? = null
-    fun load(context: android.content.Context): ImageBitmap = image ?: context.assets
-        .open("capers-v1.png").use { BitmapFactory.decodeStream(it).asImageBitmap() }
-        .also { image = it }
-}
-
 @Composable private fun Avatar(name: String, size: Dp, modifier: Modifier = Modifier, avatarId: Int? = null, speaking: Boolean = false) {
     val index = caperAvatarIndex(avatarId)
     Box(
@@ -978,11 +968,11 @@ private object AvatarAtlas {
     ) {
         if (index == null) Text(name.take(1).uppercase(), fontWeight = FontWeight.Black, fontSize = (size.value * .38f).sp)
         else {
-            val context = LocalContext.current
-            val atlas = remember { AvatarAtlas.load(context) }
-            Canvas(Modifier.fillMaxSize()) {
-                drawImage(atlas, IntOffset((index % 32) * 64, (index / 32) * 64), IntSize(64, 64), IntOffset.Zero, IntSize(this.size.width.toInt(), this.size.height.toInt()))
-            }
+            Image(
+                painter = painterResource(caperAvatarResources[index]),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+            )
         }
     }
 }
@@ -1058,10 +1048,34 @@ private object AvatarAtlas {
             supportingText = { Text("3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             supportingText = { Text("Shown to other people. It does not need to be unique.", color = TextMuted) })
-        error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+            error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        }
         Button({ submit(username, name) }, enabled = profileValid(username, name) && !busy, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) { Text(if (busy) "Saving…" else if (account.username.isNullOrEmpty()) "Finish account" else "Save profile") }
     }
     if (close == null) AuthFrame { form() } else CaperDialog("Edit profile", close) { form() }
+}
+
+@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel) {
+    var name by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    val limits = state.limits
+    val allowed = limits != null && state.spaces.count { it.ownerId == state.account?.id } < limits.ownedSpaces &&
+        state.spaces.count { !it.demo } < limits.totalSpaces
+    AuthFrame {
+        Text("Name your space", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        Text("Choose something you will recognize easily. You can always change it later!", color = TextMuted, fontSize = 12.sp)
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(name, { name = it.codePointTake(80); error = null }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        if (!allowed) Text("You have reached your space limit.", color = TextMuted, fontSize = 12.sp)
+        (error ?: state.error)?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        Spacer(Modifier.height(16.dp))
+        Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
+            enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small,
+        ) { Text(if (state.busy) "Creating…" else "Create space") }
+        TextButton(viewModel::logout, Modifier.align(Alignment.End)) { Text("Log out", color = TextMuted) }
+    }
 }
 
 @Composable private fun CreateSpaceDialog(busy: Boolean, close: () -> Unit, create: (String) -> Unit) {
@@ -1107,17 +1121,18 @@ private object AvatarAtlas {
     var confirmingDelete by remember { mutableStateOf(false) }
     LaunchedEffect(channel.id, channel.private) { viewModel.loadChannelGrants(channel) }
     val dirty = name.removeSuffix("-") != channel.name || private != channel.private
-    // Web: a sticky save bar appears only while the overview has unsaved changes.
-    CaperDialog("Overview", close, wide = true, footer = if (!dirty) null else { {
-        Row(Modifier.fillMaxWidth().background(Blackout).padding(horizontal = 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+    // Keep the sticky save bar's footprint stable while hiding clean controls.
+    CaperDialog("Overview", close, wide = true, footer = {
+        val hiddenSemantics = if (dirty) Modifier else Modifier.clearAndSetSemantics { }
+        Row(Modifier.fillMaxWidth().then(hiddenSemantics).graphicsLayer { alpha = if (dirty) 1f else 0f }.background(Blackout).padding(horizontal = 22.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("You have unsaved changes.", Modifier.weight(1f), fontSize = 12.sp)
-            OutlinedButton({ name = channel.name; private = channel.private }, enabled = !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Reset") }
+            OutlinedButton({ name = channel.name; private = channel.private }, enabled = dirty && !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Reset") }
             Spacer(Modifier.width(8.dp))
-            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { Text(if (state.busy) "Saving…" else "Save changes") }
+            Button({ viewModel.updateChannel(channel, name.removeSuffix("-"), private) }, enabled = dirty && !state.busy && !channelInvalid(name), shape = MaterialTheme.shapes.small) { Text(if (state.busy) "Saving…" else "Save changes") }
         }
-    } }) {
+    }) {
         OutlinedTextField(name, { name = normalizeChannel(it) }, label = { Text("Channel name") }, placeholder = { Text("project-updates") }, modifier = Modifier.fillMaxWidth())
-        PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
+        PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space", stableSwitch = true) { private = it }
         if (channel.private) {
             HorizontalDivider(color = Border)
             MemberManager(state.channelGrants, state.busy, { viewModel.addChannelGrant(channel, it) }) { viewModel.removeChannelGrant(channel, it) }
@@ -1163,7 +1178,7 @@ private object AvatarAtlas {
 internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolean =
     draft.isBlank() || draft == rejectedText
 
-@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = Alignment.CenterVertically) {
+@Composable private fun PrivacyToggle(value: Boolean, spaceName: String, stableSwitch: Boolean = false, changed: (Boolean) -> Unit) = Row(Modifier.fillMaxWidth().clickable { CaperEffects.toggle(!value); changed(!value) }, verticalAlignment = if (stableSwitch) Alignment.Top else Alignment.CenterVertically) {
     Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) })
 }
 
@@ -1188,19 +1203,21 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Dialog(close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.padding(16.dp).widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth().heightIn(max = 760.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-            Column {
-                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                        Column(Modifier.weight(1f)) {
-                            Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                            description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
+        BoxWithConstraints(Modifier.padding(16.dp).widthIn(max = if (wide) 600.dp else 460.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Surface(Modifier.fillMaxWidth().height(minOf(maxHeight, 760.dp)), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                Column {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                            Column(Modifier.weight(1f)) {
+                                Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                                description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
+                            }
+                            IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) }
                         }
-                        IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) }
+                        HorizontalDivider(color = Border); content()
                     }
-                    HorizontalDivider(color = Border); content()
+                    if (footer != null) { HorizontalDivider(color = Border); footer() }
                 }
-                if (footer != null) { HorizontalDivider(color = Border); footer() }
             }
         }
     }

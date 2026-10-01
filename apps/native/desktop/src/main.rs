@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
+mod avatar_images;
 mod credentials;
 mod effects;
 mod emoji;
@@ -1971,7 +1972,8 @@ impl CaperApp {
                 self.detail = None;
                 self.managed_members.clear();
                 self.presence.clear();
-                if let Some(space) = self.spaces.first() {
+                // General is retired, so only an account space can follow.
+                if let Some(space) = self.spaces.iter().find(|space| !space.demo) {
                     self.select_space(space.id.clone());
                 }
             }
@@ -2115,6 +2117,8 @@ impl eframe::App for CaperApp {
             self.login_page(context);
         } else if self.onboarding() {
             self.onboarding_page(context);
+        } else if self.needs_first_space() {
+            self.first_space_page(context);
         } else {
             self.shell(context);
             self.dialogs(context);
@@ -2183,6 +2187,101 @@ impl CaperApp {
                 .account
                 .as_ref()
                 .is_some_and(|account| account.username.is_none() || account.display_name.is_none())
+    }
+
+    /// Web's first-space page: a signed-in account whose loaded space list is
+    /// empty names its first space instead of seeing an empty workspace.
+    fn needs_first_space(&self) -> bool {
+        self.account.is_some()
+            && self.limits.is_some()
+            && self.dialog.is_none()
+            && !self.spaces.iter().any(|space| !space.demo)
+    }
+
+    fn first_space_page(&mut self, context: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BLACKOUT))
+            .show(context, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(440.0);
+                        ui.add_space(100.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.add(egui::Image::new(egui::include_image!(
+                                "../../../web/public/caper-wordmark.svg"
+                            )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                            ui.add_space(58.0);
+                            ui.label(black("Name your space").size(40.0));
+                            ui.add_space(20.0);
+                            ui.label(
+                                RichText::new(
+                                    "Choose something you will recognize easily. You can always change it later!",
+                                )
+                                .size(16.0)
+                                .color(MUTED),
+                            );
+                            ui.add_space(24.0);
+                            ui.label(bold("Space name").size(14.0));
+                            ui.add_space(4.0);
+                            let field = ui.add(
+                                egui::TextEdit::singleline(&mut self.form_name)
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(64)
+                                    .min_size(egui::vec2(0.0, 52.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let allowed = self.can_create_space();
+                            if !allowed {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("You have reached your space limit.")
+                                        .size(12.8)
+                                        .color(MUTED),
+                                );
+                            }
+                            if let Some(error) = &self.error {
+                                ui.add_space(16.0);
+                                login_error_frame(ui, error);
+                            }
+                            ui.add_space(24.0);
+                            let blocked =
+                                self.loading || !allowed || self.form_name.trim().is_empty();
+                            let entered = field.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            let clicked = login_action(
+                                ui,
+                                if self.loading { "Creating…" } else { "Create space" },
+                                blocked,
+                            )
+                            .clicked();
+                            if (clicked || entered) && !blocked {
+                                // Web validates on submit and keeps the name on failure.
+                                if let Some(error) = space_name_error(&self.form_name) {
+                                    self.error = Some(error.into());
+                                } else {
+                                    self.admin(AdminOperation::CreateSpace {
+                                        name: self.form_name.clone(),
+                                    });
+                                }
+                            }
+                            ui.add_space(16.0);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Log out").size(13.6).color(MUTED),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.logout();
+                                }
+                            });
+                        });
+                    });
+                });
+            });
     }
 
     fn onboarding_page(&mut self, context: &egui::Context) {
@@ -5140,12 +5239,23 @@ impl CaperApp {
         } else {
             440.0
         };
-        let minimum: f32 = if matches!(dialog, Dialog::ManageSpace) {
+        let dialog_height: f32 = if matches!(dialog, Dialog::ManageSpace) {
             658.0
         } else if matches!(dialog, Dialog::ManageChannel(_)) {
             618.0
+        } else if matches!(dialog, Dialog::Audio) {
+            700.0
+        } else if matches!(dialog, Dialog::Connection | Dialog::Diagnostics) {
+            520.0
+        } else if matches!(dialog, Dialog::Profile) {
+            460.0
+        } else if matches!(
+            dialog,
+            Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. }
+        ) {
+            300.0
         } else {
-            0.0
+            420.0
         };
         let available = context.viewport_rect().size() - egui::vec2(32.0, 32.0);
         let return_to = match &dialog {
@@ -5158,21 +5268,21 @@ impl CaperApp {
         };
         let mut close = context.input(|input| input.key_pressed(egui::Key::Escape))
             && !egui::Popup::is_any_open(context);
-        egui::Area::new(egui::Id::new("caper-dialog"))
+        let dismiss_on_backdrop = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
+        let modal = egui::Area::new(egui::Id::new("caper-dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(context, |ui| {
-                // An Area remembers its previous size. Let settings grow when
-                // recording/replay controls appear instead of pinning the old
-                // short scroll viewport; the screen remains the upper bound.
-                ui.set_max_height(available.y);
+                // Every modal keeps a viewport-bounded shell so asynchronous
+                // content changes scroll rather than resize or recenter it.
+                ui.set_height(dialog_height.min(available.y));
                 egui::Frame::new()
                     .fill(SURFACE)
                     .stroke(Stroke::new(1.0, BORDER))
                     .corner_radius(8)
                     .show(ui, |ui| {
                         ui.set_width(width.min(available.x));
-                        ui.set_min_height(minimum.min(available.y));
+                        ui.set_height(dialog_height.min(available.y));
                         let dialog_top = ui.min_rect().top();
                         egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(22, 18))
@@ -5207,11 +5317,14 @@ impl CaperApp {
                             });
                         ui.separator();
                         let save_bar = match &dialog {
-                            Dialog::ManageChannel(id) if self.channel_dirty(id) => Some(id.clone()),
+                            Dialog::ManageChannel(id) => {
+                                Some((id.clone(), self.channel_dirty(id)))
+                            }
                             _ => None,
                         };
                         egui::ScrollArea::vertical()
-                            .max_height((available.y - if save_bar.is_some() { 160.0 } else { 92.0 }).max(120.0))
+                            .id_salt(("modal-content", title))
+                            .max_height((dialog_height.min(available.y) - if save_bar.is_some() { 160.0 } else { 92.0 }).max(1.0))
                             .show(ui, |ui| {
                                 egui::Frame::new()
                                     .inner_margin(egui::Margin::symmetric(22, 20))
@@ -5259,16 +5372,32 @@ impl CaperApp {
                                         notices(ui, &self.error, &self.warning);
                                     });
                             });
-                        if let Some(id) = save_bar {
+                        if let Some((id, dirty)) = save_bar {
                             // Web's bar is sticky at the dialog's bottom edge.
-                            let filler = dialog_top + minimum.min(available.y) - 66.0 - ui.cursor().top();
+                            let filler = dialog_top + dialog_height.min(available.y) - 66.0 - ui.cursor().top();
                             if filler > 0.0 {
                                 ui.add_space(filler);
                             }
-                            self.channel_save_bar(ui, &id);
+                            if dirty {
+                                self.channel_save_bar(ui, &id);
+                            } else {
+                                // Match channel_save_bar's 36px row and 14px vertical margins
+                                // without creating visible or accessible widgets.
+                                ui.allocate_space(egui::vec2(ui.available_width(), 64.0));
+                            }
                         }
                     });
             });
+        if dismiss_on_backdrop && !egui::Popup::is_any_open(context) {
+            // Use the press, not the release that may have just opened the modal.
+            close |= context.input(|input| {
+                input.pointer.any_pressed()
+                    && input
+                        .pointer
+                        .interact_pos()
+                        .is_some_and(|position| !modal.response.rect.contains(position))
+            });
+        }
         if close && !(self.loading && return_to.is_some()) {
             self.dialog = return_to;
             self.error = None;
@@ -6205,17 +6334,10 @@ fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
 
 fn paint_avatar(ui: &egui::Ui, rect: egui::Rect, name: &str, avatar_id: Option<i32>) {
     if let Some(index) = caper_avatar_index(avatar_id).map(usize::from) {
-        let uv = egui::Rect::from_min_max(
-            egui::pos2((index % 32) as f32 / 32.0, (index / 32) as f32 / 25.0),
-            egui::pos2(
-                (index % 32 + 1) as f32 / 32.0,
-                (index / 32 + 1) as f32 / 25.0,
-            ),
-        );
-        egui::Image::new(egui::include_image!(
-            "../../../web/public/images/avatars/capers-v1.png"
-        ))
-        .uv(uv)
+        egui::Image::from_bytes(
+            format!("bytes://caper-avatars-v2/{index}.svg"),
+            avatar_images::SVG[index],
+        )
         .paint_at(ui, rect);
     } else {
         ui.painter()
@@ -6958,6 +7080,110 @@ mod tests {
         }
     }
 
+    fn scroll_modal_to_bottom(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
+        let bounds =
+            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+        render(
+            app,
+            context,
+            vec![
+                egui::Event::PointerMoved(bounds.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -2000.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            render(app, context, vec![]);
+        }
+        render(app, context, vec![])
+    }
+
+    #[test]
+    fn modal_shells_do_not_recenter_for_errors_or_pending_content() {
+        for dialog in [
+            Dialog::Profile,
+            Dialog::Audio,
+            Dialog::Connection,
+            Dialog::Diagnostics,
+            Dialog::CreateSpace,
+            Dialog::ManageSpace,
+            Dialog::CreateChannel,
+            Dialog::ManageChannel("chan00000003".into()),
+            Dialog::ConfirmDelete {
+                space: "space0000001".into(),
+                channel: Some("chan00000003".into()),
+                name: "planning".into(),
+            },
+            Dialog::LeaveSpace {
+                id: "space0000001".into(),
+                name: "Fixture Studio".into(),
+            },
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-channel"),
+            );
+            app.dialog = Some(dialog);
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let bounds = || {
+                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap())
+            };
+            let before = bounds();
+            app.error = Some("Test-only asynchronous error content. ".repeat(100));
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            assert_eq!(bounds(), before, "error resized or recentered modal");
+            app.error = None;
+            app.loading = true;
+            app.form_private = !app.form_private;
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            assert_eq!(
+                bounds(),
+                before,
+                "pending content resized or recentered modal"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_backdrops_dismiss_without_inside_clicks_dismissing() {
+        for fixture in ["parity-admin", "parity-channel"] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let bounds =
+                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            click(
+                &mut app,
+                &context,
+                bounds.left_top() + egui::vec2(10.0, 10.0),
+            );
+            assert!(app.dialog.is_some(), "inside click dismissed settings");
+            click(&mut app, &context, egui::pos2(5.0, 5.0));
+            assert!(
+                app.dialog.is_none(),
+                "outside click did not dismiss settings"
+            );
+            assert!(!app.loading);
+        }
+    }
+
     #[test]
     fn spectator_rosters_collapse_without_navigating_or_exposing_playback_controls() {
         let context = egui::Context::default();
@@ -6975,7 +7201,7 @@ mod tests {
         assert_eq!(app.selected_channel, selected);
         assert!(app.voice_target("not-in-space").is_none());
         render(&mut app, &context, vec![]);
-        // PNG decoding is asynchronous on native; wait for the real atlas rather
+        // SVG decoding is asynchronous on native; wait for the real avatar rather
         // than inspecting its loading spinner in the first two frames.
         let started = std::time::Instant::now();
         while context.has_pending_images() {
@@ -6999,11 +7225,9 @@ mod tests {
             .iter()
             .find_map(|shape| match &shape.shape {
                 egui::Shape::Rect(rect)
-                    if rect
-                        .brush
-                        .as_ref()
-                        .is_some_and(|brush| brush.uv.min == egui::pos2(15.0 / 32.0, 0.0))
-                        && rect.rect.width() == 20.0
+                    if rect.brush.as_ref().is_some_and(|brush| {
+                        brush.uv == egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
+                    }) && rect.rect.width() == 20.0
                         && rect.rect.center().x < 340.0 =>
                 {
                     Some(rect.rect.center())
@@ -7331,6 +7555,7 @@ mod tests {
         let space = app.selected_space.clone().unwrap();
         // Exercise leaving the last account space, with no demo fallback.
         app.spaces.retain(|entry| entry.id == space);
+        assert!(!app.needs_first_space());
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
         app.pending_reactions.insert(
@@ -7343,7 +7568,9 @@ mod tests {
         app.reaction_errors
             .insert("message".into(), "failed".into());
         assert!(app.timeline.messages().next().is_some());
-        let old_generation = app.generation;
+        app.select_channel("next".into(), false);
+        let stale_generation = app.generation;
+        let stale_navigation = app.navigation;
         app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
         assert!(!app.spaces.iter().any(|entry| entry.id == space));
         assert!(app.detail.is_none());
@@ -7356,7 +7583,7 @@ mod tests {
         assert!(app.pending_reactions.is_empty());
         assert!(app.reaction_errors.is_empty());
         app.accept_navigation(
-            old_generation,
+            stale_generation,
             app.navigation,
             Ok(crate::worker::PreparedNavigation {
                 detail: None,
@@ -7369,6 +7596,18 @@ mod tests {
         );
         assert!(app.timeline.messages().next().is_none());
         assert!(!app.can_leave_space());
+        app.accept_navigation(
+            stale_generation,
+            stale_navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("next"), Ok(session()))),
+            }),
+        );
+        assert!(app.selected_channel.is_none());
+        assert!(app.timeline.messages().next().is_none());
+        // Like web, an account with no spaces is asked to name its first one.
+        assert!(app.needs_first_space());
     }
 
     #[test]
@@ -7430,7 +7669,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing {label}"))
             };
             render(&mut app, &context, vec![]);
-            let output = render(&mut app, &context, vec![]);
+            render(&mut app, &context, vec![]);
+            let output = scroll_modal_to_bottom(&mut app, &context);
             click(&mut app, &context, button(&output, label));
             assert!(matches!(app.dialog, Some(Dialog::ConfirmDelete { .. })));
             assert!(!app.loading, "opening confirmation must not send DELETE");
@@ -7552,6 +7792,7 @@ mod tests {
         app.dialog = Some(Dialog::Audio);
         render(&mut app, &context, vec![]);
         let audio = render(&mut app, &context, vec![]);
+        let scrolled_audio = scroll_modal_to_bottom(&mut app, &context);
         for copy in [
             "Only you can hear these tests.",
             "Microphone volume",
@@ -7565,7 +7806,10 @@ mod tests {
             "Test microphone",
             "Input level",
         ] {
-            assert!(contains(&audio, copy), "Missing web copy: {copy}");
+            assert!(
+                contains(&audio, copy) || contains(&scrolled_audio, copy),
+                "Missing web copy: {copy}"
+            );
         }
         for removed in [
             "contour",
@@ -7575,7 +7819,7 @@ mod tests {
             "preferences are saved",
         ] {
             assert!(
-                !contains(&audio, removed),
+                !contains(&audio, removed) && !contains(&scrolled_audio, removed),
                 "Unexpected explanatory copy: {removed}"
             );
         }

@@ -20,7 +20,7 @@ function fixture() {
   localStorage.setItem('caper:channel-sidebar-width', saved);
   const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner', debugEnabled: new URL(location.href).searchParams.has('debug') };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
-  const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: true };
+  const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: !new URL(location.href).searchParams.has('publicChannel') };
   window.homeFixture = { account, history: { space: { id: 'public123456', name: 'Public demo' }, channel: { id: 'general12345', name: 'general' }, messages: [], cursor: '0', hasMore: false } };
   const members = [{ ...account, owner: true }, ...Array.from({ length: 29 }, (_, index) => ({
     id: `member${String(index).padStart(6, '0')}`, username: `member_${index}`, displayName: `Fixture member ${index + 1}`, owner: false,
@@ -64,6 +64,11 @@ function fixture() {
   window.fetch = async (input, options = {}) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
     if (!path.startsWith('/api/')) return originalFetch(input, options);
+    if (path === '/api/account/profile' && options.method === 'POST') {
+      await new Promise(resolve => { control.profileRelease = resolve; });
+      control.profileRelease = null;
+      return Response.json({ error: 'Fixture username conflict' }, { status: 409 });
+    }
     if (options.method === 'PATCH') {
       const body = JSON.parse(options.body);
       control.updates.push({ path, body });
@@ -124,9 +129,115 @@ function openOverview() {
   browser('click', '.danger-outline');
   wait('!!document.querySelector(".delete-confirmation")');
 }
+function geometry(selector) {
+  return evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; })()`);
+}
+function dismissBackdrop() {
+  browser('mouse', 'move', '1', '1');
+  browser('mouse', 'down', 'left');
+  browser('mouse', 'up', 'left');
+}
+function stableShell(selector) {
+  const before = geometry(selector);
+  evaluate(`(() => { const d = document.querySelector(${JSON.stringify(selector)}); const p = document.createElement('p'); p.dataset.layoutProbe = ''; p.textContent = 'Test-only asynchronous content '.repeat(200); d.append(p); })()`);
+  assert.deepEqual(geometry(selector), before, `${selector}: overflowing async content must not resize or recenter`);
+  evaluate('document.querySelector("[data-layout-probe]").remove()');
+  assert.deepEqual(geometry(selector), before);
+}
+function testModalGeometry() {
+  for (const [width, height] of [[1280, 900], [390, 844], [390, 500]]) {
+    browser('set', 'viewport', String(width), String(height), '2');
+    browser('open', `${url}?space=space1234567&channel=channel12345&publicChannel&debug`);
+    wait('!!document.querySelector(".channel-navigation")');
+    evaluate('document.fonts.ready');
+    if (width < 760) browser('click', '.navigation-toggle');
+    browser('focus', '[aria-label="Manage fixture-channel"]');
+    browser('press', 'Enter');
+    const selectors = ['.space-dialog[open]', '.space-field input', '.channel-privacy input'];
+    const before = selectors.map(geometry);
+    assert.ok(evaluate('document.querySelector(".channel-save-bar").inert'));
+    screenshot(`modal-channel-clean-${width}-${height}`);
+    browser('check', '.channel-privacy input');
+    assert.deepEqual(selectors.map(geometry), before, 'Privacy toggle moved dialog or controls');
+    assert.equal(evaluate('document.querySelector(".channel-save-bar").inert'), false);
+    screenshot(`modal-channel-dirty-${width}-${height}`);
+    browser('click', '.channel-save-bar .secondary');
+    assert.deepEqual(selectors.map(geometry), before, 'Reset moved dialog or controls');
+    browser('check', '.channel-privacy input');
+    browser('click', '.channel-save-bar .primary');
+    wait('document.querySelector(".channel-save-bar").inert && !!document.querySelector(".member-manager")');
+    assert.deepEqual(selectors.map(geometry), before, 'Saving privacy and loading members moved dialog or fields');
+    screenshot(`modal-channel-members-${width}-${height}`);
+    browser('uncheck', '.channel-privacy input');
+    assert.deepEqual(selectors.map(geometry), before, 'Making a private channel public moved dialog or fields');
+    browser('click', '.channel-save-bar .secondary');
+    stableShell('.space-dialog[open]');
+    evaluate('document.querySelector(".space-dialog[open]").scrollTop = document.querySelector(".space-dialog[open]").scrollHeight');
+    assert.ok(evaluate(`(() => { const button = document.querySelector('.danger-outline'); const r = button.getBoundingClientRect(); return button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })()`), 'Scrolled delete action must be pointer-reachable');
+    screenshot(`modal-channel-scrolled-${width}-${height}`);
+    browser('click', '.danger-outline');
+    wait('!!document.querySelector(".delete-confirmation")');
+    screenshot(`modal-delete-${width}-${height}`);
+    stableShell('.space-dialog:has(.delete-confirmation)');
+    dismissBackdrop();
+    assert.equal(opens(), 1, 'Confirmation backdrop must leave settings open');
+    evaluate('document.querySelector(".space-dialog[open]").scrollTop = 0');
+    browser('click', '.space-field input');
+    assert.equal(opens(), 1, 'Inside click must leave channel settings open');
+    dismissBackdrop();
+    assert.equal(opens(), 0, 'Channel settings backdrop must dismiss');
+    for (const label of ['Create space', 'Create channel']) {
+      browser('click', `[aria-label="${label}"]`);
+      screenshot(`modal-${label.toLowerCase().replace(' ', '-')}-${width}-${height}`);
+      stableShell('.space-dialog[open]');
+      browser('press', 'Escape');
+    }
+    browser('click', '.space-menu summary');
+    browser('click', '.space-actions button');
+    screenshot(`modal-manage-space-${width}-${height}`);
+    stableShell('.space-dialog[open]');
+    evaluate('document.querySelector(".space-dialog[open]").scrollTop = 0');
+    browser('click', '.space-field input');
+    assert.equal(opens(), 1, 'Inside click must leave space settings open');
+    dismissBackdrop();
+    assert.equal(opens(), 0, 'Space settings backdrop must dismiss');
+    browser('click', '.account-profile');
+    wait('!!document.querySelector(".profile-dialog[open] form")');
+    // Normalize scroll before measuring: a short viewport legitimately scrolls
+    // to an off-screen submit button when it is clicked.
+    evaluate('document.querySelector(".profile-dialog button[type=submit]").scrollIntoView({block:"nearest"})');
+    const profileSelectors = ['.profile-dialog[open]', '#username', '#display-name', '.profile-dialog button[type=submit]'];
+    const profileBefore = profileSelectors.map(geometry);
+    browser('click', '.profile-dialog button[type=submit]');
+    wait('!!spaceControlFixture.profileRelease');
+    assert.deepEqual(profileSelectors.map(geometry), profileBefore, 'Saving moved profile');
+    evaluate('spaceControlFixture.profileRelease()');
+    wait('!!document.querySelector(".profile-dialog [role=alert]")');
+    assert.deepEqual(profileSelectors.map(geometry), profileBefore, 'Error moved profile');
+    screenshot(`modal-profile-error-${width}-${height}`);
+    browser('click', '.profile-dialog button[type=submit]');
+    wait('!!spaceControlFixture.profileRelease');
+    assert.deepEqual(profileSelectors.map(geometry), profileBefore, 'Error-to-saving moved profile');
+    screenshot(`modal-profile-saving-${width}-${height}`);
+    evaluate('spaceControlFixture.profileRelease()');
+    wait('!!document.querySelector(".profile-dialog [role=alert]")');
+    stableShell('.profile-dialog[open]');
+    browser('press', 'Escape');
+    browser('click', '[aria-label="User Settings"]');
+    browser('find', 'role', 'button', 'click', '--name', 'Audio diagnostics', '--exact');
+    wait('!!document.querySelector(".audio-dialog[open]")');
+    screenshot(`modal-audio-${width}-${height}`);
+    stableShell('.audio-dialog[open]');
+    browser('press', 'Escape');
+    assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Modal overflowed viewport');
+  }
+  console.log('PASS: all browser modal shells retain exact bounds with overflowing async content; privacy/reset and profile clean/saving/error/retry retain exact dialog, field and button bounds at desktop, narrow and short viewports (mock API).');
+}
 try {
   browser('open', 'about:blank');
   browser('set', 'viewport', '1280', '900', '2');
+  testModalGeometry();
+  if (!process.env.MODALS_ONLY) {
   if (!process.env.HOMEPAGE_ONLY) {
   for (const [viewport, saved, expected] of [[1280, '240', 240], [1280, '440', 440], [800, '440', 362], [1280, 'invalid', 280]]) {
     browser('set', 'viewport', String(viewport), '900', '2');
@@ -215,7 +326,7 @@ try {
   assert.equal(evaluate('document.activeElement.className'), 'danger-outline');
   browser('fill', '.space-field input', '   Fresh Plans   ');
   browser('press', 'Enter');
-  wait('!document.querySelector(".channel-save-bar")');
+  wait('document.querySelector(".channel-save-bar").inert');
   assert.equal(evaluate('document.querySelector(".space-field input").value'), 'fresh-plans');
   assert.deepEqual(evaluate('spaceControlFixture.updates.at(-1).body'), { name: 'fresh-plans', private: true });
   browser('click', '.danger-outline');
@@ -398,6 +509,7 @@ try {
     }
   }
   console.log('PASS: homepage guest/account desktop and narrow layouts, local space navigation, create/manage dialogs, dialog Escape, exit and focus restoration (mock API/gateway).');
+  }
 } finally {
   try { browser('close'); } finally { rmSync(directory, { recursive: true, force: true }); }
 }
