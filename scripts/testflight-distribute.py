@@ -113,7 +113,14 @@ def main() -> None:
 
     groups = must(call("GET", f"/apps/{app_id}/betaGroups", query={"limit": "200"}), "Listing tester groups")["data"]
     if not groups:
-        print("::warning::No TestFlight tester groups exist yet; create one in App Store Connect → TestFlight.")
+        # Without a group the build sits in App Store Connect and no phone,
+        # including the developer's, ever receives it. Fail so the release
+        # (and its Discord message) does not report the iPhone as shipped.
+        sys.exit(
+            f"Build {build_number} is in App Store Connect, but no TestFlight tester group exists, "
+            "so no tester will get it. In App Store Connect → Caper Chat → TestFlight, create an "
+            "Internal Testing group with Automatic Distribution on and add yourself, then add this build to it."
+        )
     external = False
     for group in groups:
         attributes = group["attributes"]
