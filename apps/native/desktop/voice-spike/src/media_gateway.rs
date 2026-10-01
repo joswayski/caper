@@ -410,6 +410,9 @@ mod tests {
         thread::spawn(move || {
             use std::io::{Read, Write};
             let (mut stream, _) = listener.accept().unwrap();
+            // Small writes must not wait for Nagle/delayed ACKs: that
+            // can trip the client's idle timeout instead of its total deadline.
+            stream.set_nodelay(true).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
@@ -417,20 +420,22 @@ mod tests {
             let received = stream.read(&mut bytes).unwrap();
             assert!(String::from_utf8_lossy(&bytes[..received]).contains("GET /api/chat/events"));
             // A valid but unterminated header field keeps the HTTP parser in
-            // progress. Each byte arrives inside the socket's 200ms timeout.
+            // progress. Use chunks, not individual bytes: tungstenite rejects
+            // too many undersized reads before the total deadline is reached.
+            // One header also avoids its header-count limit; even seven seconds
+            // of these chunks stays below its total handshake byte limit.
             stream
                 .write_all(b"HTTP/1.1 101 Switching Protocols\r\nX-Slow: ")
                 .unwrap();
             ready.send(()).unwrap();
             let started = Instant::now();
-            let continuation = b"aaaaaaaaaaaa\r\nX-Slow: ";
-            let mut index = 0;
+            let continuation = [b'a'; 256];
             while started.elapsed() < Duration::from_secs(7) {
-                thread::sleep(Duration::from_millis(100));
-                if stream.write_all(&continuation[index..index + 1]).is_err() {
+                // Leave scheduler headroom inside the 200ms per-read timeout.
+                thread::sleep(Duration::from_millis(50));
+                if stream.write_all(&continuation).is_err() {
                     break;
                 }
-                index = (index + 1) % continuation.len();
             }
         })
     }
@@ -477,9 +482,17 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let started = Instant::now();
         let result = connect_bounded(&endpoint, request, &stop);
-        assert!(result.is_err());
-        assert!(started.elapsed() >= CONNECT_DEADLINE);
-        assert!(started.elapsed() < CONNECT_DEADLINE + Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        let error = result.expect_err("unterminated upgrade must time out");
+        assert!(
+            elapsed >= CONNECT_DEADLINE,
+            "upgrade failed before the total deadline after {elapsed:?}: {error}"
+        );
+        assert!(elapsed < CONNECT_DEADLINE + Duration::from_secs(1));
+        assert!(matches!(
+            *error,
+            tungstenite::Error::Io(ref error) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
         seen.recv_timeout(Duration::from_secs(1)).unwrap();
         server.join().unwrap();
     }
