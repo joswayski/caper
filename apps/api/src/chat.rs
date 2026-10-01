@@ -489,7 +489,7 @@ async fn persist_reaction(
     active: bool,
 ) -> Result<Value, ApiError> {
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (_, author_id, _, user_id) = authorize_sender(&mut tx, token).await?;
+    let (_, _, _, user_id) = authorize_sender(&mut tx, token).await?;
     // Match message creation's space -> channel lock order. In particular, a
     // membership revocation which won the space lock cannot be bypassed using
     // a snapshot taken while this request was waiting.
@@ -516,14 +516,14 @@ async fn persist_reaction(
     .map_err(database_error)?;
     let (message_id, mut payload) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND author_external_id=$3)")
-        .bind(message_id).bind(emoji).bind(&author_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND user_id=$3)")
+        .bind(message_id).bind(emoji).bind(user_id).fetch_one(&mut *tx).await.map_err(database_error)?;
 
     if exists != active {
-        sqlx::query("DELETE FROM public.message_reaction_activity WHERE author_external_id=$1 AND created_at <= now()-interval '1 minute'")
-            .bind(&author_id).execute(&mut *tx).await.map_err(database_error)?;
-        let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM public.message_reaction_activity a JOIN public.messages m ON m.id=a.message_id WHERE m.channel_id=$1 AND a.author_external_id=$2 AND a.created_at > now()-interval '1 minute'")
-            .bind(channel_id).bind(&author_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+        sqlx::query("DELETE FROM public.message_reaction_activity WHERE user_id=$1 AND created_at <= now()-interval '1 minute'")
+            .bind(user_id).execute(&mut *tx).await.map_err(database_error)?;
+        let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM public.message_reaction_activity a JOIN public.messages m ON m.id=a.message_id WHERE m.channel_id=$1 AND a.user_id=$2 AND a.created_at > now()-interval '1 minute'")
+            .bind(channel_id).bind(user_id).fetch_one(&mut *tx).await.map_err(database_error)?;
         if recent >= 60 {
             return Err(ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -540,18 +540,31 @@ async fn persist_reaction(
                     "reaction limit reached",
                 ));
             }
-            sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,author_external_id) VALUES($1,$2,$3)")
-                .bind(message_id).bind(emoji).bind(&author_id).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query(
+                "INSERT INTO public.message_reactions(message_id,emoji,user_id) VALUES($1,$2,$3)",
+            )
+            .bind(message_id)
+            .bind(emoji)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
         } else {
-            sqlx::query("DELETE FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND author_external_id=$3")
-                .bind(message_id).bind(emoji).bind(&author_id).execute(&mut *tx).await.map_err(database_error)?;
+            sqlx::query("DELETE FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND user_id=$3")
+                .bind(message_id).bind(emoji).bind(user_id).execute(&mut *tx).await.map_err(database_error)?;
         }
-        sqlx::query("INSERT INTO public.message_reaction_activity(message_id,author_external_id) VALUES($1,$2)")
-            .bind(message_id).bind(&author_id).execute(&mut *tx).await.map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO public.message_reaction_activity(message_id,user_id) VALUES($1,$2)",
+        )
+        .bind(message_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     }
 
     let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
-        "SELECT emoji,array_agg(author_external_id ORDER BY author_external_id) FROM public.message_reactions WHERE message_id=$1 GROUP BY emoji ORDER BY emoji")
+        "SELECT r.emoji,array_agg(u.external_id ORDER BY u.external_id) FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id WHERE r.message_id=$1 GROUP BY r.emoji ORDER BY r.emoji")
         .bind(message_id).fetch_all(&mut *tx).await.map_err(database_error)?;
     let reactions: Vec<Value> = rows
         .into_iter()

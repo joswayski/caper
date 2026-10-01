@@ -66,6 +66,10 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     seed(&pool).await.unwrap();
+    // Keep user primary keys distinct from chat-session keys and public IDs.
+    pool.execute("ALTER TABLE public.users ALTER COLUMN id RESTART WITH 1000")
+        .await
+        .unwrap();
     // Keep the original actor IDs while exercising account-only channels.
     for token in ["guest-one", "guest-two"] {
         let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id")
@@ -138,6 +142,35 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         first["reactions"],
         json!([{"emoji":"👍","authorIds":["guest-one"]}])
     );
+    for table in ["message_reactions", "message_reaction_activity"] {
+        let stored_user: i64 = sqlx::query_scalar(&format!("SELECT user_id FROM public.{table}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_user, reader,
+            "{table} must store the user's primary key"
+        );
+    }
+    for statement in [
+        "INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT id,'🤔',$2 FROM public.messages WHERE external_id=$1",
+        "INSERT INTO public.message_reaction_activity(message_id,user_id) SELECT id,$2 FROM public.messages WHERE external_id=$1",
+    ] {
+        let error = sqlx::query(statement)
+            .bind(id)
+            .bind(i64::MAX)
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref(),
+            Some("23503"),
+            "both tables must reject a nonexistent user via a foreign key"
+        );
+    }
     let other = persist_reaction(&pool, &channel, id, "guest-two", "👍", true)
         .await
         .unwrap();
@@ -369,8 +402,8 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍",
         "🥰", "😘", "😗", "😙", "😚",
     ];
-    sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,author_external_id) SELECT m.id,emoji,'fixture' FROM public.messages m CROSS JOIN unnest($2::text[]) AS emoji WHERE m.external_id=$1")
-        .bind(bounded_id).bind(kinds.as_slice()).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT m.id,emoji,$3 FROM public.messages m CROSS JOIN unnest($2::text[]) AS emoji WHERE m.external_id=$1")
+        .bind(bounded_id).bind(kinds.as_slice()).bind(reader).execute(&pool).await.unwrap();
     assert!(
         persist_reaction(&pool, &channel, bounded_id, "guest-two", "😀", true)
             .await
@@ -385,7 +418,7 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
     );
     sqlx::query("DELETE FROM public.message_reactions WHERE message_id=(SELECT id FROM public.messages WHERE external_id=$1)")
         .bind(bounded_id).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,author_external_id) SELECT m.id,'👍','fixture-'||n FROM public.messages m CROSS JOIN generate_series(1,999) AS n WHERE m.external_id=$1")
+    sqlx::query("WITH actors AS (INSERT INTO public.users(external_id) SELECT 'fixture-'||n FROM generate_series(1,999) AS n RETURNING id) INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT m.id,'👍',actors.id FROM public.messages m CROSS JOIN actors WHERE m.external_id=$1")
         .bind(bounded_id).execute(&pool).await.unwrap();
     let full = persist_reaction(&pool, &channel, bounded_id, "guest-two", "👍", true)
         .await

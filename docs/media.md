@@ -635,8 +635,11 @@ and a skin-tone selector are deferred.
 `{emoji,active}` and `X-Caper-Chat-Token`. It checks the same channel/member/private
 grant and session permissions as sending. Unicode qualification variants are
 canonicalized; arbitrary text, multiple emoji, and emoji newer than 15.0 are
-rejected. Membership is unique by message, canonical emoji, and stable public
-author ID; separate account chat sessions therefore cannot inflate counts.
+rejected. Membership is unique by internal message ID, canonical emoji, and
+internal user ID; separate account chat sessions therefore cannot inflate counts.
+Both reaction membership and rate-limit activity use `user_id` foreign keys to
+`users.id`. Snapshot/event generation joins those keys to `users.external_id`;
+only public IDs appear in `authorIds`, including the stored history/outbox payloads.
 Account membership is required; the retired public General demo is not writable.
 
 The response and transactional outbox use
