@@ -28,9 +28,7 @@ import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
 type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
-const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const MAX_WATCHED_CHANNELS = 24;
-const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { import: "default", query: "?url" });
 
 /** How close (px) the pointer must come to a Join button to start preparing the join. */
 const JOIN_PREPARE_RADIUS = 120;
@@ -132,20 +130,6 @@ function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: {
     <button type="button" className="call-settings-trigger" title={label} aria-label={label} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => onOpenChange(!open)}>{settings ? <Settings aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
     {open && <div ref={panelRef} id={panelId} className="call-settings-panel" popover="manual" role="group" aria-label={`${label} panel`} tabIndex={-1}>{children}</div>}
   </div>;
-}
-
-function ParticipantCountry({ code }: { code?: string }) {
-  const [flag, setFlag] = useState<{ code: string; source: string }>();
-  useEffect(() => {
-    if (!code || !/^[A-Z]{2}$/.test(code)) return;
-    let current = true;
-    const load = flags[`../../../../node_modules/flag-icons/flags/4x3/${code.toLowerCase()}.svg`];
-    void load?.().then((source) => { if (current) setFlag({ code, source }); }).catch(() => undefined);
-    return () => { current = false; };
-  }, [code]);
-  if (!code || flag?.code !== code) return null;
-  const name = regionNames.of(code) ?? code;
-  return <img className="participant-country" src={flag.source} alt={`From ${name}`} title={name} />;
 }
 
 function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStream; muted: boolean; name: string; output: string; volume: number }) {
@@ -622,7 +606,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
                   <span className="participant-avatar">
                     <span className={`avatar ${speaking ? "speaking" : "quiet"}`}><Avatar avatarId={participant.avatarId} name={participant.name} /></span>
                   </span>
-                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}
+                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}
                     {!self && mutedParticipants.has(participant.id) && <span className="participant-local-muted"><VolumeX aria-hidden="true" />You muted {participant.name}</span>}
                   </span>
                   {own && <VoiceActivity

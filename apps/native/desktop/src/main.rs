@@ -11,7 +11,6 @@ mod media;
 mod media_gateway;
 mod model;
 mod navigation;
-mod regions;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
 mod updates;
@@ -371,7 +370,6 @@ impl CaperApp {
                                 id: "fixture-maya".into(),
                                 avatar_id: Some(15),
                                 name: "Maya".into(),
-                                country_code: Some("CA".into()),
                                 muted: false,
                                 deafened: false,
                             },
@@ -379,7 +377,6 @@ impl CaperApp {
                                 id: "fixture-alex".into(),
                                 avatar_id: Some(16),
                                 name: "Alex".into(),
-                                country_code: None,
                                 muted: true,
                                 deafened: false,
                             },
@@ -473,7 +470,6 @@ impl CaperApp {
                                 id: member.id.clone(),
                                 avatar_id: member.avatar_id,
                                 name: member.display_name.clone(),
-                                country_code: None,
                                 muted: false,
                                 deafened: false,
                                 tracks: vec![media::Track {
@@ -3061,7 +3057,6 @@ impl CaperApp {
                 id: participant.id.clone(),
                 avatar_id: participant.avatar_id,
                 name: participant.name.clone(),
-                country_code: participant.country_code.clone(),
                 muted: participant.muted,
                 deafened: participant.deafened,
             })
@@ -3279,34 +3274,17 @@ impl CaperApp {
                                 ui.vertical(|ui| {
                                     ui.set_min_width(ui.available_width());
                                     ui.spacing_mut().item_spacing.y = 0.0;
-                                    let region =
-                                        participant.country_code.as_deref().and_then(|code| {
-                                            regions::name(code).map(|name| (code, name))
-                                        });
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 6.0;
-                                        ui.scope(|ui| {
-                                            ui.set_max_width(
-                                                (ui.available_width()
-                                                    - if region.is_some() { 28.0 } else { 0.0 })
-                                                .max(0.0),
-                                            );
-                                            ui.add(
-                                                egui::Label::new(
-                                                    bold(if is_self {
-                                                        format!("{} (you)", participant.name)
-                                                    } else {
-                                                        participant.name.clone()
-                                                    })
-                                                    .size(12.0),
-                                                )
-                                                .truncate(),
-                                            );
-                                        });
-                                        if let Some((code, name)) = region {
-                                            region_badge(ui, code, name);
-                                        }
-                                    });
+                                    ui.add(
+                                        egui::Label::new(
+                                            bold(if is_self {
+                                                format!("{} (you)", participant.name)
+                                            } else {
+                                                participant.name.clone()
+                                            })
+                                            .size(12.0),
+                                        )
+                                        .truncate(),
+                                    );
                                     if local_muted {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 4.0;
@@ -6430,33 +6408,6 @@ fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool)
         .inner
     })
     .inner
-}
-
-/// Web shows the participant's flag (alt "From {region}", title the region).
-/// egui's bundled fonts cannot draw emoji flags, so desktop shows the region
-/// code in a small flag-sized badge with the same name and label.
-fn region_badge(ui: &mut egui::Ui, code: &str, name: &str) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(
-        code.into(),
-        egui::FontId::new(8.0, egui::FontFamily::Name("Satoshi Bold".into())),
-        MUTED,
-    );
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(galley.size().x.max(14.0) + 6.0, 12.0),
-        egui::Sense::hover(),
-    );
-    ui.painter().rect_stroke(
-        rect,
-        2.0,
-        Stroke::new(1.0, BORDER),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, MUTED);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("From {name}"))
-    });
-    response.on_hover_text(name)
 }
 
 /// Web's `.chat-state`: a 120 px block at the top of the list, content centered.

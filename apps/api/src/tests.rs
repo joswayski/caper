@@ -704,7 +704,7 @@ async fn account_channel_join_without_account_header_omits_country() {
 }
 
 #[tokio::test]
-async fn snapshot_includes_only_valid_cloudflare_country_codes() {
+async fn snapshots_ignore_location_headers_and_old_stored_country() {
     let (s, _) = state();
     let join = |name: &str, country: &str| {
         Request::builder()
@@ -731,7 +731,7 @@ async fn snapshot_includes_only_valid_cloudflare_country_codes() {
     )
     .unwrap();
     let snapshot = call(
-        app(s),
+        app(s.clone()),
         "POST",
         "/api/media/snapshot",
         Some(located["token"].as_str().unwrap()),
@@ -740,20 +740,37 @@ async fn snapshot_includes_only_valid_cloudflare_country_codes() {
     .await
     .1;
     let participants = snapshot["participants"].as_array().unwrap();
-    assert_eq!(
+    assert_eq!(participants.len(), 2);
+    assert!(
         participants
             .iter()
-            .find(|participant| participant["name"] == "located")
-            .unwrap()["countryCode"],
-        "US"
+            .any(|participant| participant["id"] == unknown["id"])
     );
     assert!(
         participants
             .iter()
-            .find(|participant| participant["id"] == unknown["id"])
+            .all(|participant| participant.get("countryCode").is_none())
+    );
+
+    let mut stored = serde_json::to_value(s.registry.lock().await.clone()).unwrap();
+    for participant in stored["participants"].as_object_mut().unwrap().values_mut() {
+        participant["country_code"] = json!("US");
+    }
+    let decoded: Registry = serde_json::from_value(stored).unwrap();
+    for projection in [public_snapshot(&decoded), presence_snapshot(&decoded)] {
+        assert_eq!(projection["participants"].as_array().unwrap().len(), 2);
+        assert!(
+            projection["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|participant| participant.get("countryCode").is_none())
+        );
+    }
+    assert!(
+        !serde_json::to_string(&decoded)
             .unwrap()
-            .get("countryCode")
-            .is_none()
+            .contains("country_code")
     );
 }
 

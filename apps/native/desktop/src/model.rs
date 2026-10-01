@@ -42,7 +42,6 @@ pub struct VoiceOccupant {
     #[serde(default)]
     pub avatar_id: Option<i32>,
     pub name: String,
-    pub country_code: Option<String>,
     pub muted: bool,
     pub deafened: bool,
 }

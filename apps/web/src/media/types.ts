@@ -12,7 +12,6 @@ export interface Participant {
   id: string;
   avatarId?: number | null;
   name: string;
-  countryCode?: string;
   muted: boolean;
   deafened: boolean;
   tracks: CallTrack[];
