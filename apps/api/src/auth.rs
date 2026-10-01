@@ -92,6 +92,7 @@ struct Challenge {
 struct VerifiedUser {
     id: i64,
     external_id: String,
+    avatar_id: i16,
     email: Option<String>,
     username: Option<String>,
     display_name: Option<String>,
@@ -342,7 +343,7 @@ impl AuthVerifier {
             "UPDATE public.users SET
                 email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
              WHERE email = $1 AND deleted_at IS NULL
-             RETURNING id, external_id, email, username, display_name, false AS created",
+             RETURNING id, external_id, avatar_id, email, username, display_name, false AS created",
         )
         .bind(&challenge.email)
         .fetch_optional(&mut *transaction)
@@ -364,7 +365,7 @@ impl AuthVerifier {
                     sqlx::query_as(
                         "INSERT INTO public.users (external_id, email, email_verified_at)
                          VALUES ($1, $2, now())
-                         RETURNING id, external_id, email, username, display_name, true AS created",
+                         RETURNING id, external_id, avatar_id, email, username, display_name, true AS created",
                     )
                     .bind(random_external_id())
                     .bind(&challenge.email)
@@ -396,6 +397,7 @@ impl AuthVerifier {
             user: accounts::User {
                 id: user.id,
                 external_id: user.external_id,
+                avatar_id: user.avatar_id,
                 email: user.email,
                 username: user.username,
                 display_name: user.display_name,
@@ -416,6 +418,7 @@ impl AuthVerifier {
                 user: accounts::User {
                     id: 1,
                     external_id: "V1StGXR8_Z5jdHi6B-myT".into(),
+                    avatar_id: 42,
                     email: None,
                     username: Some("test".into()),
                     display_name: Some("Test User".into()),
@@ -429,7 +432,7 @@ impl AuthVerifier {
         let pool = pool.ok_or_else(unavailable)?;
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
         let user = sqlx::query_as(
-            "SELECT u.id, u.external_id, u.email, u.username, u.display_name
+            "SELECT u.id, u.external_id, u.avatar_id, u.email, u.username, u.display_name
              FROM public.account_sessions s
              JOIN public.users u ON u.id = s.user_id
              WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
@@ -669,6 +672,8 @@ mod tests {
             .unwrap();
         assert!(!repeat_session.user_created);
         assert_eq!(repeat_session.user.id, session.user.id);
+        assert_eq!(repeat_session.user.avatar_id, session.user.avatar_id);
+        assert!((0..800).contains(&session.user.avatar_id));
         let next_user_id: i64 = sqlx::query_scalar(
             "INSERT INTO public.users (external_id, email)
              VALUES ('sequence-regression-check', 'next@example.com')
@@ -684,6 +689,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(principal.user.id, session.user.id);
+        assert_eq!(principal.user.avatar_id, session.user.avatar_id);
         verifier
             .logout(Some(&pool), &principal.token_hash)
             .await
