@@ -38,6 +38,23 @@ class CaperApiTest {
         assertNull(request.requestUrl?.query)
     }
 
+    @Test fun `direct message contract uses global routes and string read cursor`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"conversations":[{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertEquals("9007199254740993", api.directConversations("account-secret").conversations.single().lastSeq)
+        api.startDirectConversation("account-secret", " mira ")
+        api.markDirectConversationRead("account-secret", "direct000001", "9007199254740993")
+
+        assertEquals("/api/dms", server.takeRequest().path)
+        assertEquals("{\"username\":\"mira\"}", server.takeRequest().body.readUtf8())
+        val read = server.takeRequest()
+        assertEquals("/api/dms/direct000001/read", read.path)
+        assertEquals("{\"seq\":\"9007199254740993\"}", read.body.readUtf8())
+        assertEquals("Bearer account-secret", read.headers["Authorization"])
+    }
+
     @Test fun `redirect is rejected without forwarding bearer credential`() = runTest {
         val target = MockWebServer()
         try {

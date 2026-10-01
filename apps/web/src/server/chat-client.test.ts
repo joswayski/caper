@@ -714,6 +714,20 @@ test("snapshots include older pages and live messages; returning replays the mis
   assert.equal(f.requests.length, 1, "return does not request another history page");
 });
 
+test("unscoped direct-message history can be retained in a timeline snapshot", async (t) => {
+  installBrowser(t);
+  const history: GeneralChatHistory = {
+    space: { id: "", name: "Direct messages" },
+    channel: { id: "direct000001", name: "Mira", direct: true },
+    messages: [], cursor: "0", hasMore: false,
+  };
+  const client = new ChatClient(() => undefined, "direct000001");
+  t.after(() => client.stop());
+  client.start(history);
+  assert.equal(client.snapshotHistory()?.space.id, "");
+  assert.equal(client.snapshotHistory()?.channel.name, "Mira");
+});
+
 test("resync retains visible messages through transient failures but clears them on access denial", async (t) => {
   const f = await paginationFixture(t);
   let finish!: (response: Response) => void;

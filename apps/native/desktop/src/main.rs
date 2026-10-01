@@ -125,6 +125,7 @@ enum Dialog {
     },
     CreateChannel,
     ManageChannel(String),
+    StartDirect,
 }
 
 #[derive(Clone)]
@@ -169,6 +170,10 @@ struct CaperApp {
     token: Option<String>,
     account: Option<Account>,
     spaces: Vec<model::Space>,
+    directs: Vec<model::DirectConversation>,
+    selected_direct: Option<String>,
+    directs_refreshed: Instant,
+    foreground: bool,
     limits: Option<SpaceLimits>,
     selected_space: Option<String>,
     detail: Option<SpaceDetail>,
@@ -255,6 +260,10 @@ impl CaperApp {
             token: None,
             account: None,
             spaces: Vec::new(),
+            directs: Vec::new(),
+            selected_direct: None,
+            directs_refreshed: now - Duration::from_secs(15),
+            foreground: false,
             limits: None,
             selected_space: None,
             detail: None,
@@ -325,7 +334,38 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name == "parity-admin" {
+                if matches!(
+                    name,
+                    "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
+                ) {
+                    let id = "dm0000000001".to_owned();
+                    app.directs = vec![model::DirectConversation {
+                        id: id.clone(),
+                        peer: model::DirectPeer {
+                            id: "fixture-maya".into(),
+                            username: "maya".into(),
+                            display_name: "TEST FIXTURE Maya".into(),
+                        },
+                        last_seq: "2".into(),
+                        read_seq: "2".into(),
+                    }];
+                    let mut messages: Vec<_> = app.timeline.messages().take(2).cloned().collect();
+                    for message in &mut messages {
+                        message.channel_id = id.clone();
+                    }
+                    app.timeline.reset(messages, "2").expect("valid DM fixture");
+                    app.selected_channel = Some(id.clone());
+                    app.selected_direct = Some(id);
+                    if name == "parity-direct-new" {
+                        app.dialog = Some(Dialog::StartDirect);
+                    } else if name == "parity-direct-no-spaces" {
+                        app.spaces.clear();
+                        app.detail = None;
+                        app.selected_space = None;
+                        app.selected_direct = None;
+                        app.clear_channel_state();
+                    }
+                } else if name == "parity-admin" {
                     app.form_name = "Fixture Studio".into();
                     app.managed_members = app
                         .detail
@@ -679,7 +719,10 @@ impl CaperApp {
     /// Web re-reads `/status` whenever the viewed media root changes.
     fn refresh_media_status(&mut self) {
         let (root, channel) = self.media_root();
-        if !self.persist_preferences || self.media_status_root.as_deref() == Some(root.as_str()) {
+        if self.selected_direct.is_some()
+            || !self.persist_preferences
+            || self.media_status_root.as_deref() == Some(root.as_str())
+        {
             return;
         }
         self.media_status_root = Some(root.clone());
@@ -740,6 +783,24 @@ impl CaperApp {
         let events: Vec<_> = self.worker.events.try_iter().collect();
         for event in events {
             match event {
+                Event::DirectsLoaded {
+                    generation,
+                    result: Ok(directs),
+                } if generation == self.generation => {
+                    self.directs = directs;
+                }
+                Event::DirectCreated { generation, result } if generation == self.generation => {
+                    self.loading = false;
+                    match result {
+                        Ok(direct) => {
+                            self.directs.retain(|item| item.id != direct.id);
+                            self.directs.push(direct.clone());
+                            self.dialog = None;
+                            self.select_direct(direct);
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
                 Event::Restored { generation, result } if generation == self.generation => {
                     self.loading = false;
                     match result {
@@ -921,6 +982,7 @@ impl CaperApp {
         let needs_profile = account.username.is_none() || account.display_name.is_none();
         self.account = Some(account);
         self.set_spaces(spaces);
+        self.refresh_directs();
         self.error = None;
         self.dialog = None;
         if needs_profile {
@@ -938,6 +1000,7 @@ impl CaperApp {
         self.invalidate_navigation_cache();
         self.account = Some(account);
         self.set_spaces(spaces);
+        self.refresh_directs();
         self.dialog = None;
         if let Some(space) = self.spaces.first() {
             self.select_space(space.id.clone());
@@ -951,6 +1014,22 @@ impl CaperApp {
     fn set_spaces(&mut self, spaces: Spaces) {
         self.spaces = spaces.spaces;
         self.limits = spaces.limits;
+    }
+
+    fn refresh_directs(&mut self) {
+        if let Some(token) = self.token.clone() {
+            self.directs_refreshed = Instant::now();
+            self.worker.send(Command::LoadDirects {
+                generation: self.generation,
+                token,
+            });
+        }
+    }
+
+    fn select_direct(&mut self, direct: model::DirectConversation) {
+        self.remember_conversation();
+        self.selected_direct = Some(direct.id.clone());
+        self.reload_selected_channel(direct.id, false);
     }
 
     fn accept_channel(
@@ -1006,6 +1085,25 @@ impl CaperApp {
         self.session = session.ok();
         self.live = "Connecting…".into();
         self.connect_gateway();
+        self.mark_selected_direct_read();
+    }
+
+    fn mark_selected_direct_read(&mut self) {
+        if !self.foreground || self.selected_channel != self.selected_direct {
+            return;
+        }
+        if let (Some(id), Some(token)) = (self.selected_direct.clone(), self.token.clone()) {
+            let seq = self.timeline.cursor();
+            if let Some(direct) = self.directs.iter_mut().find(|item| item.id == id) {
+                if model::sequence(&direct.read_seq).unwrap_or(0)
+                    >= model::sequence(&seq).unwrap_or(0)
+                {
+                    return;
+                }
+                direct.read_seq = seq.clone();
+            }
+            self.worker.send(Command::ReadDirect { token, id, seq });
+        }
     }
 
     fn connect_gateway(&mut self) {
@@ -1186,6 +1284,7 @@ impl CaperApp {
                 }
                 self.generation += 1;
                 self.clear_channel_state();
+                self.selected_direct = None;
                 self.loading = false;
                 self.error = None;
                 self.navigation_error = None;
@@ -1462,7 +1561,10 @@ impl CaperApp {
                     .as_ref()
                     .is_some_and(|session| session.author.id != message.author.id);
                 match self.timeline.apply(*message) {
-                    Ok(model::Apply::Applied) if remote => self.effects.play(Effect::Message),
+                    Ok(model::Apply::Applied) if remote => {
+                        self.effects.play(Effect::Message);
+                        self.mark_selected_direct_read();
+                    }
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
                 }
@@ -1692,6 +1794,8 @@ impl CaperApp {
         self.account = None;
         self.invalidate_navigation_cache();
         self.spaces.clear();
+        self.directs.clear();
+        self.selected_direct = None;
         self.detail = None;
         self.selected_space = None;
         self.selected_channel = None;
@@ -1840,15 +1944,18 @@ impl CaperApp {
             }
             AdminResult::SpaceDeleted(id) | AdminResult::SpaceLeft(id) => {
                 self.voice.revoke_space(&id);
-                self.generation += 1;
                 self.invalidate_navigation_cache();
-                self.clear_channel_state();
-                self.selected_space = None;
                 self.spaces.retain(|space| space.id != id);
                 self.dialog = None;
                 self.detail = None;
                 self.managed_members.clear();
                 self.presence.clear();
+                self.selected_space = None;
+                if self.selected_direct.is_none() {
+                    self.generation += 1;
+                    self.worker.send(Command::StopGateway);
+                    self.clear_channel_state();
+                }
                 // General is retired, so only an account space can follow.
                 if let Some(space) = self.spaces.iter().find(|space| !space.demo) {
                     self.select_space(space.id.clone());
@@ -1919,6 +2026,11 @@ impl CaperApp {
 
     fn periodic(&mut self, context: &egui::Context) {
         let now = Instant::now();
+        if self.token.is_some()
+            && now.duration_since(self.directs_refreshed) >= Duration::from_secs(15)
+        {
+            self.refresh_directs();
+        }
         let live = self.live == "Live";
         if live != self.was_live {
             self.was_live = live;
@@ -1986,7 +2098,12 @@ impl eframe::App for CaperApp {
         if context.input(|input| !input.events.is_empty()) {
             self.worker.send(Command::Activity);
         }
+        let was_foreground = self.foreground;
+        self.foreground = context.input(|input| input.viewport().focused.unwrap_or(false));
         self.receive();
+        if self.foreground && !was_foreground {
+            self.mark_selected_direct_read();
+        }
         self.refresh_media_status();
         self.periodic(context);
         self.update_banner(context);
@@ -2072,6 +2189,8 @@ impl CaperApp {
         self.account.is_some()
             && self.limits.is_some()
             && self.dialog.is_none()
+            && self.selected_direct.is_none()
+            && !self.navigation_open
             && !self.spaces.iter().any(|space| !space.demo)
     }
 
@@ -2153,6 +2272,9 @@ impl CaperApp {
                                     .clicked()
                                 {
                                     self.logout();
+                                }
+                                if secondary_button(ui, "Direct messages", true).clicked() {
+                                    self.navigation_open = true;
                                 }
                             });
                         });
@@ -2470,7 +2592,10 @@ impl CaperApp {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
                             self.conversation(ui, true)
                         });
-                        if self.narrow_members_visible && !self.no_accessible_channels() {
+                        if self.selected_direct.is_none()
+                            && self.narrow_members_visible
+                            && !self.no_accessible_channels()
+                        {
                             let members_rect = egui::Rect::from_min_max(
                                 egui::pos2(
                                     (content.right() - 280.0).max(content.left()),
@@ -2504,7 +2629,9 @@ impl CaperApp {
                     // Reserve 320px for chat; otherwise show members as a right-side
                     // overlay below the header, never as a second row below chat.
                     let wide_members = stage_rect.width() >= 540.0;
-                    let members_visible = self.members_visible && !self.no_accessible_channels();
+                    let members_visible = self.selected_direct.is_none()
+                        && self.members_visible
+                        && !self.no_accessible_channels();
                     let (conversation_rect, members_rect) = if members_visible && wide_members {
                         let members = egui::Rect::from_min_max(
                             egui::pos2(stage_rect.right() - 220.0, stage_rect.top()),
@@ -2752,6 +2879,47 @@ impl CaperApp {
                     .show_separator_line(false)
                     .frame(egui::Frame::NONE)
                     .show_inside(ui, |ui| self.account_bar(ui));
+                if self.account.is_some() {
+                    let height = (60.0 + self.directs.len() as f32 * 41.0)
+                        .min(ui.available_height() * 0.45);
+                    egui::TopBottomPanel::bottom("native-directs")
+                        .exact_height(height)
+                        .show_separator_line(true)
+                        .frame(egui::Frame::NONE)
+                        .show_inside(ui, |ui| {
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.label(bold("Direct messages").size(12.0).color(MUTED));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if drawn_icon_button(ui, NavIcon::Plus, "Start direct message").clicked() {
+                                        self.member_username.clear();
+                                        self.error = None;
+                                        self.dialog = Some(Dialog::StartDirect);
+                                    }
+                                });
+                            });
+                            egui::ScrollArea::vertical().id_salt("directs-scroll").show(ui, |ui| {
+                                if self.directs.is_empty() {
+                                    ui.label(RichText::new("No direct messages yet").size(11.0).color(MUTED));
+                                }
+                                let directs = self.directs.clone();
+                                for direct in directs {
+                                    let active = self.selected_direct.as_deref() == Some(&direct.id);
+                                    let unread = model::sequence(&direct.last_seq).unwrap_or(0)
+                                        > model::sequence(&direct.read_seq).unwrap_or(0);
+                                    ui.horizontal(|ui| {
+                                        let (response, _) = channel_button(
+                                            ui, ui.available_width() - 18.0,
+                                            &direct.peer.display_name, NavIcon::Speech, active, false,
+                                        );
+                                        if unread { ui.label(RichText::new("●").size(9.0).color(TERRACOTTA_BRIGHT)); }
+                                        if response.clicked() { self.select_direct(direct.clone()); }
+                                    });
+                                    ui.add_space(3.0);
+                                }
+                            });
+                        });
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar-scroll")
                     .show(ui, |ui| {
@@ -3011,7 +3179,7 @@ impl CaperApp {
                                     ui,
                                     channel_width,
                                     &name,
-                                    private,
+                                    if private { NavIcon::Lock } else { NavIcon::Hash },
                                     active,
                                     self.owner(),
                                 );
@@ -4283,9 +4451,12 @@ impl CaperApp {
 
     /// An account space whose channels are all hidden from this member.
     fn no_accessible_channels(&self) -> bool {
-        self.detail
-            .as_ref()
-            .is_some_and(|detail| !detail.space.demo && detail.channels.is_empty())
+        self.selected_direct.is_none()
+            && ((self.account.is_some() && self.selected_channel.is_none())
+                || self
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| !detail.space.demo && detail.channels.is_empty()))
     }
 
     /// Web's `.empty-channel` stage.
@@ -4293,6 +4464,7 @@ impl CaperApp {
         egui::Frame::new().fill(CONVERSATION).show(ui, |ui| {
             ui.set_min_size(ui.available_size());
             let owner = self.owner();
+            let no_spaces = !self.spaces.iter().any(|space| !space.demo);
             let height = if owner { 170.0 } else { 110.0 } + if narrow { 56.0 } else { 0.0 };
             ui.vertical_centered(|ui| {
                 ui.add_space(((ui.available_height() - height) / 2.0).max(24.0));
@@ -4306,10 +4478,19 @@ impl CaperApp {
                     ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
                 paint_icon(ui.painter(), rect, NavIcon::Hash, TERRACOTTA_BRIGHT);
                 ui.add_space(14.0);
-                ui.label(bold("No accessible channels").size(20.0));
+                ui.label(
+                    bold(if no_spaces {
+                        "Select a direct message"
+                    } else {
+                        "No accessible channels"
+                    })
+                    .size(20.0),
+                );
                 ui.add_space(7.0);
                 ui.label(
-                    RichText::new(if owner {
+                    RichText::new(if no_spaces {
+                        "Open a conversation from Direct messages."
+                    } else if owner {
                         "Create a channel to start a conversation."
                     } else {
                         "The owner has not shared a channel with you yet."
@@ -4367,9 +4548,11 @@ impl CaperApp {
                             if narrow && navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
                                 self.navigation_open = true;
                             }
-                            ui.label(
-                                RichText::new(format!("# {}", self.channel_name())).size(13.76),
-                            );
+                            let direct = self.selected_direct.as_ref().and_then(|id| self.directs.iter().find(|item| &item.id == id));
+                            ui.label(RichText::new(match direct {
+                                Some(item) => item.peer.display_name.clone(),
+                                None => format!("# {}", self.channel_name()),
+                            }).size(13.76));
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
                             if let Some(error) = self.load_error.clone().filter(|_| self.timeline.messages().next().is_some()) {
                                 ui.add(egui::Label::new(RichText::new(error).size(11.2).color(ERROR)).truncate());
@@ -4380,7 +4563,7 @@ impl CaperApp {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if self
+                                    if self.selected_direct.is_none() && self
                                         .detail
                                         .as_ref()
                                         .is_some_and(|detail| !detail.members.is_empty())
@@ -4436,7 +4619,11 @@ impl CaperApp {
                         });
                     }
                     let before = self.draft.clone();
-                    let channel_name = self.channel_name().to_owned();
+                    let placeholder = if self.selected_direct.is_some() {
+                        format!("Message {}", self.channel_name())
+                    } else {
+                        format!("Message #{}", self.channel_name())
+                    };
                     let editor = egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height((ui.ctx().viewport_rect().height() * 0.4).min(320.0))
@@ -4452,7 +4639,7 @@ impl CaperApp {
                             .font(egui::FontId::proportional(13.6))
                             .margin(egui::vec2(11.0, 10.0))
                             .hint_text(
-                                RichText::new(format!("Message #{channel_name}"))
+                                RichText::new(placeholder)
                                     .color(Color32::from_rgb(142, 149, 152)),
                             )
                             .background_color(COMPOSER)
@@ -4622,10 +4809,11 @@ impl CaperApp {
                             ui.vertical_centered(|ui| {
                                 ui.label("No messages yet.");
                                 ui.label(
-                                    RichText::new(format!(
-                                        "Start the conversation in #{}.",
-                                        self.channel_name()
-                                    ))
+                                    RichText::new(if self.selected_direct.is_some() {
+                                        "Only you and this person can read this conversation.".to_owned()
+                                    } else {
+                                        format!("Start the conversation in #{}.", self.channel_name())
+                                    })
                                     .color(MUTED),
                                 );
                             });
@@ -4759,6 +4947,15 @@ impl CaperApp {
     }
 
     fn channel_name(&self) -> &str {
+        if let Some(id) = &self.selected_direct {
+            return self
+                .directs
+                .iter()
+                .find(|conversation| conversation.id == *id)
+                .map_or("Direct message", |conversation| {
+                    conversation.peer.display_name.as_str()
+                });
+        }
         let id = self.selected_channel.as_deref();
         self.detail
             .as_ref()
@@ -4868,6 +5065,7 @@ impl CaperApp {
             }
             Dialog::CreateChannel => "Create a channel",
             Dialog::ManageChannel(_) => "Overview",
+            Dialog::StartDirect => "Start a direct message",
         };
         context
             .layer_painter(egui::LayerId::new(
@@ -5012,6 +5210,18 @@ impl CaperApp {
                                             }
                                             Dialog::CreateChannel => self.channel_dialog(ui, None),
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
+                                            Dialog::StartDirect => {
+                                                ui.label("Enter the exact username of the person you want to message.");
+                                                ui.add_space(12.0);
+                                                ui.add(egui::TextEdit::singleline(&mut self.member_username).hint_text("Username"));
+                                                ui.add_space(16.0);
+                                                if ui.add_enabled(!self.loading && !self.member_username.trim().is_empty(), egui::Button::new(if self.loading { "Starting…" } else { "Start conversation" })).clicked()
+                                                    && let Some(token) = self.token.clone() {
+                                                    self.loading = true;
+                                                    self.error = None;
+                                                    self.worker.send(Command::CreateDirect { generation: self.generation, token, username: self.member_username.trim().to_owned() });
+                                                }
+                                            }
                                         }
                                         notices(ui, &self.error, &self.warning);
                                     });
@@ -5788,7 +5998,7 @@ fn channel_button(
     ui: &mut egui::Ui,
     width: f32,
     name: &str,
-    private: bool,
+    icon: NavIcon,
     active: bool,
     manageable: bool,
 ) -> (egui::Response, Option<egui::Response>) {
@@ -5819,11 +6029,7 @@ fn channel_button(
             egui::pos2(rect.left() + 17.5, rect.center().y),
             egui::vec2(17.0, 17.0),
         ),
-        if private {
-            NavIcon::Lock
-        } else {
-            NavIcon::Hash
-        },
+        icon,
         if active { TERRACOTTA_BRIGHT } else { color },
     );
     ui.painter()
@@ -7237,6 +7443,84 @@ mod tests {
     }
 
     #[test]
+    fn leaving_last_space_preserves_global_direct_conversation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct"),
+        );
+        let space = app.selected_space.clone().unwrap();
+        app.spaces.retain(|entry| entry.id == space);
+        app.draft = "global draft".into();
+        app.admin_result(crate::worker::AdminResult::SpaceLeft(space));
+        assert!(app.spaces.is_empty());
+        assert!(app.selected_space.is_none());
+        assert_eq!(app.selected_direct.as_deref(), Some("dm0000000001"));
+        assert_eq!(app.selected_channel.as_deref(), Some("dm0000000001"));
+        assert_eq!(app.timeline.messages().count(), 2);
+        assert_eq!(app.draft, "global draft");
+        assert!(
+            !app.needs_first_space(),
+            "first-space page cannot hide an open global DM"
+        );
+    }
+
+    #[test]
+    fn first_space_page_can_open_global_direct_navigation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct-no-spaces"),
+        );
+        assert!(app.needs_first_space());
+        assert_eq!(app.directs.len(), 1);
+        app.navigation_open = true;
+        assert!(!app.needs_first_space());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"Direct messages"));
+        assert!(texts.contains(&"Select a direct message"));
+        assert!(!texts.contains(&"# general"));
+        app.navigation_open = false;
+        assert!(app.needs_first_space());
+    }
+
+    #[test]
+    fn direct_conversation_chrome_does_not_use_channel_labels() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct"),
+        );
+        app.timeline.reset(vec![], "0").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"Message TEST FIXTURE Maya"));
+        assert!(texts.contains(&"Only you and this person can read this conversation."));
+        assert!(!texts.contains(&"Message #general"));
+        assert!(!texts.contains(&"Members"));
+    }
+
+    #[test]
     fn deletion_requires_confirmation_and_cancel_preserves_editor_and_data() {
         for (fixture, label) in [
             ("parity-admin", "Delete space"),
@@ -8490,11 +8774,13 @@ mod tests {
             Some("parity-desktop"),
         );
         let original = app.selected_channel.clone();
+        app.selected_direct = original.clone();
         let count = app.timeline.messages().count();
         app.draft = "Unsent draft".into();
         app.select_channel("next".into(), false);
         let old_request = app.navigation;
         assert_eq!(app.selected_channel, original);
+        assert_eq!(app.selected_direct, original);
         assert_eq!(app.timeline.messages().count(), count);
         assert_eq!(app.draft, "Unsent draft");
         app.accept_navigation(
@@ -8508,6 +8794,7 @@ mod tests {
         );
         assert_eq!(app.navigation_error.as_deref(), Some("Unavailable"));
         assert_eq!(app.selected_channel, original);
+        assert_eq!(app.selected_direct, original);
         assert_eq!(app.draft, "Unsent draft");
         app.navigate(app.navigation_target.clone().unwrap());
         assert!(app.opening);
@@ -8530,9 +8817,49 @@ mod tests {
             }),
         );
         assert_eq!(app.selected_channel.as_deref(), Some("next"));
+        assert!(app.selected_direct.is_none());
         assert!(!app.opening);
         assert!(app.navigation_error.is_none());
         assert!(app.draft.is_empty());
+    }
+
+    #[test]
+    fn direct_read_cursor_requires_foreground_and_never_regresses() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.selected_direct = app.selected_channel.clone();
+        app.token = Some("fixture-only-token".into());
+        app.directs = vec![crate::model::DirectConversation {
+            id: app.selected_channel.clone().unwrap(),
+            peer: crate::model::DirectPeer {
+                id: "peer".into(),
+                username: "peer".into(),
+                display_name: "TEST FIXTURE peer".into(),
+            },
+            last_seq: "9".into(),
+            read_seq: "1".into(),
+        }];
+        app.mark_selected_direct_read();
+        assert_eq!(
+            app.directs[0].read_seq, "1",
+            "background arrival is not a read"
+        );
+        app.foreground = true;
+        app.mark_selected_direct_read();
+        assert_eq!(
+            app.directs[0].read_seq, "4",
+            "only the retained timeline is read"
+        );
+        app.directs[0].read_seq = "8".into();
+        app.mark_selected_direct_read();
+        assert_eq!(
+            app.directs[0].read_seq, "8",
+            "older retained history cannot undo another device's read"
+        );
     }
 
     #[test]

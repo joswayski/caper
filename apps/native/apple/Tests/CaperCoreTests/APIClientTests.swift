@@ -391,6 +391,16 @@ final class APIClientTests: XCTestCase {
         model.selectedSpaceID = "Space1234567"
         model.selectedChannelID = "Chan12345678"
         model.challengeID = "challenge"
+        model.selectedDirectMessageID = "Dm1234567890"
+        model.spacesLoaded = true
+        model.spacesError = "offline"
+        model.configurePush(available: true, enabled: true)
+        var locallyDisabled = false
+        model.disablePushLocally = { locallyDisabled = true }
+        model.setPushEnabled = { _ in
+            XCTFail("logout must not await optional push unregister")
+            try? await Task.sleep(for: .seconds(2))
+        }
         let revokeStarted = expectation(description: "remote revoke started")
         var delayedRevoke: MockURLProtocol?
         MockURLProtocol.deferred = { request, urlRequest in
@@ -408,6 +418,12 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(model.selectedSpaceID)
         XCTAssertNil(model.selectedChannelID)
         XCTAssertNil(model.challengeID)
+        XCTAssertNil(model.selectedDirectMessageID)
+        XCTAssertFalse(model.spacesLoaded)
+        XCTAssertNil(model.spacesError)
+        XCTAssertTrue(locallyDisabled)
+        XCTAssertFalse(model.pushEnabled)
+        XCTAssertFalse(model.pushAvailable)
         XCTAssertNil(store.token)
         delayedRevoke?.respond(status: 204)
         await logout.value
@@ -877,5 +893,55 @@ final class APIClientTests: XCTestCase {
         await model.select(channel: first)
         XCTAssertEqual(firstHistoryReads, 1, "returning should resume from the retained cursor, not refetch page one")
         XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "41")
+    }
+
+    func testDirectMessageContractsAndReadRequest() async throws {
+        let api = client()
+        var requests: [(String, String, Data?)] = []
+        MockURLProtocol.handler = { request in
+            requests.append((request.httpMethod ?? "", request.url!.path, request.httpBody))
+            switch (request.httpMethod, request.url!.path) {
+            case ("GET", "/api/dms"):
+                return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"exact_name","displayName":"Exact Name"},"lastSeq":"12","readSeq":"9"}]}"#.utf8))
+            case ("POST", "/api/dms"):
+                return (200, Data(#"{"id":"dm0000000001","peer":{"id":"peer","username":"exact_name","displayName":"Exact Name"},"lastSeq":"12","readSeq":"9"}"#.utf8))
+            case ("POST", "/api/dms/dm0000000001/read"): return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        let listed = try await api.directMessages()
+        XCTAssertTrue(listed[0].unread)
+        let created = try await api.createDirectMessage(username: "exact_name")
+        XCTAssertEqual(created.peer.displayName, "Exact Name")
+        try await api.markDirectMessageRead(id: created.id, seq: "12")
+        XCTAssertEqual(requests.map { "\($0.0) \($0.1)" }, ["GET /api/dms", "POST /api/dms", "POST /api/dms/dm0000000001/read"])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: requests[1].2!) as? [String: String], ["username": "exact_name"])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: requests[2].2!) as? [String: String], ["seq": "12"])
+    }
+
+    @MainActor
+    func testDirectMessageNavigationWorksWithoutSpaceAndClearsOnLogout() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        let dm = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "peer", username: "peer", displayName: "Peer"), lastSeq: "1", readSeq: "0")
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/chat/channels/dm0000000001/messages":
+                return (200, Data(#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000001","name":"Peer","direct":true},"messages":[],"cursor":"1","hasMore":false}"#.utf8))
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/dms/dm0000000001/read": return (204, Data())
+            case "/api/dms": return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.select(directMessage: dm)
+        XCTAssertNil(model.selectedSpaceID)
+        XCTAssertEqual(model.selectedDirectMessageID, dm.id)
+        XCTAssertEqual(model.chat.spaceName, "Direct messages")
+        XCTAssertEqual(model.chat.channelName, "Peer")
+        await model.logout()
+        XCTAssertTrue(model.directMessages.isEmpty)
+        XCTAssertNil(model.selectedDirectMessageID)
     }
 }

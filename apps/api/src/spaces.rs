@@ -66,7 +66,7 @@ fn limit(value: Option<String>, default: i64, name: &str) -> Result<i64, String>
 pub(crate) struct ChannelAccess {
     pub(crate) id: i64,
     pub(crate) last_seq: i64,
-    pub(crate) space_id: i64,
+    pub(crate) space_id: Option<i64>,
 }
 
 fn database_error(_: sqlx::Error) -> ApiError {
@@ -107,14 +107,20 @@ pub(crate) async fn channel_access(
     channel: &str,
     user: Option<i64>,
 ) -> Result<ChannelAccess, ApiError> {
-    sqlx::query_as::<_, (i64, i64, i64)>(
+    sqlx::query_as::<_, (i64, i64, Option<i64>)>(
         "SELECT c.id, c.last_seq, s.id
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
            AND NOT s.demo AND $2::bigint IS NOT NULL
                  AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)
                  AND (s.owner_id = $2 OR NOT c.private OR
-                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))",
+                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))
+         UNION ALL
+         SELECT c.id,c.last_seq,NULL::bigint FROM public.channels c
+         JOIN public.direct_conversations d ON d.channel_id=c.id
+         JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+         WHERE c.external_id=$1 AND c.space_id IS NULL AND c.deleted_at IS NULL
+           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL",
     )
     .bind(channel)
     .bind(user)

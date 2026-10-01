@@ -124,7 +124,7 @@ export class ChatClient {
   setSounds(enabled: boolean) { this.sounds = enabled; }
 
   snapshotHistory(): GeneralChatHistory | undefined {
-    if (this.state.phase !== "ready" || !this.spaceId || !this.state.channelId) return;
+    if (this.state.phase !== "ready" || this.spaceId === undefined || !this.state.channelId) return;
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: { id: this.state.channelId, name: this.state.channelName },

@@ -17,6 +17,18 @@
 .channel-navigation { margin: -4px -4px 0; }
 .spaces-room .sidebar-channels { padding-top: 0; }
 .spaces-room .channel-navigation { margin-top: 0; }
+.spaces-room .sidebar-channels { overflow: hidden; }
+.spaces-room .channel-navigation { height: 100%; display: flex; flex-direction: column; }
+.spaces-room .channel-navigation > :is(header, .channel-section-heading) { flex-shrink: 0; }
+.spaces-room .channel-navigation > #space-channel-list { flex: 1; min-height: 0; align-content: start; overflow-y: auto; }
+.direct-section { flex: 0 1 auto; min-height: 76px; max-height: 45%; display: flex; flex-direction: column; margin-top: auto; padding: 10px 0 4px; border-top: 1px solid var(--border); }
+.direct-section .channel-section-heading { flex-shrink: 0; margin-top: 0; }
+.direct-section-title { flex: 1; display: flex; align-items: center; gap: 7px; padding-left: 6px; color: var(--text-muted); font-size: .76rem; font-weight: 750; }
+.spaces-room .direct-section > ul { min-height: 0; overflow-y: auto; }
+.direct-section .direct-select { padding-right: 9px; }
+.direct-select .direct-avatar { flex: 0 0 24px; display: grid; place-items: center; height: 24px; border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: .7rem; }
+.direct-select .direct-unread { flex: 0 0 6px; width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--terracotta-bright); }
+.direct-empty { margin: 8px 8px 10px; color: var(--text-muted); font-size: .72rem; line-height: 1.5; }
 .channel-navigation > header { display: flex; align-items: center; gap: 4px; height: 54px; border-bottom: 1px solid var(--border); }
 .spaces-room .chat-heading { min-height: 54px; }
 .space-menu { position: relative; flex: 1; min-width: 0; }
@@ -233,6 +245,8 @@
   /* The member list overlays the conversation below its header. */
   .spaces-room:has(.voice-panel):not(.navigation-open) > .space-member-presence { position: relative; grid-area: 2 / 1; top: auto; justify-self: end; margin-top: 54px; }
   .spaces-room:has(.voice-panel):not(.navigation-open) .sidebar-channels { flex: none; padding: 12px 12px 0; }
+  .spaces-room:not(.navigation-open) .direct-section { display: none; }
+  .spaces-room[data-direct]:not(.navigation-open) .sidebar-channels { display: none; }
   .spaces-room:not(.navigation-open) .channel-navigation > :is(header, .channel-section-heading),
   .spaces-room:not(.navigation-open) .channel-navigation > ul > li:not(:has(.channel-select[aria-current="page"])) { display: none; }
   .spaces-room:not(.navigation-open) .channel-navigation > ul { margin: 0; }

@@ -34,6 +34,7 @@ public enum CaperTheme {
 @MainActor public struct CaperRootView: View {
     @State private var model: AppModel
     @State private var announcedVoice = false
+    @Environment(\.scenePhase) private var scenePhase
     public init(model: AppModel? = nil) { _model = State(initialValue: model ?? CaperRuntime.makeModel()) }
 
     public var body: some View {
@@ -42,8 +43,8 @@ public enum CaperTheme {
             case .loading: LoadingView()
             case .onboarding: ProfileView(model: model)
             case .signedOut, .ready:
-                if model.phase == .ready && model.spaces.isEmpty && model.spacesLoaded { FirstSpaceView(model: model) }
-                else if model.phase == .ready && model.spaces.isEmpty, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
+                if model.phase == .ready && model.spaces.isEmpty && model.selectedDirectMessageID == nil && !model.navigationOpen && model.spacesLoaded { FirstSpaceView(model: model) }
+                else if model.phase == .ready && model.spaces.isEmpty && model.selectedDirectMessageID == nil && !model.navigationOpen, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
                 else { WorkspaceView(model: model) }
             }
         }
@@ -52,6 +53,7 @@ public enum CaperTheme {
         .tint(CaperTheme.terracottaBright)
         .buttonStyle(CaperSecondaryButton())
         .background(CaperTheme.blackout.ignoresSafeArea())
+        .onChange(of: scenePhase, initial: true) { _, phase in model.applicationActivityChanged(active: phase == .active) }
         .task {
             CaperFontLoader.register()
             CaperEffects.shared.preload()
@@ -111,6 +113,8 @@ private struct FirstSpaceView: View {
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
                     .accessibilityIdentifier("first-space-create")
+                Button("Direct messages") { model.navigationOpen = true }
+                    .accessibilityIdentifier("first-space-direct-messages")
                 if !model.canCreateSpace, model.limits != nil {
                     Text("You have reached your space limit.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
@@ -147,6 +151,7 @@ private struct SpacesUnavailableView: View {
             Text(error).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.terracottaBright).multilineTextAlignment(.center)
             Button(model.busy ? "Trying…" : "Try again") { Task { await model.loadSpaces() } }
                 .buttonStyle(CaperSecondaryButton()).disabled(model.busy)
+            Button("Direct messages") { model.navigationOpen = true }
             Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
                 .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
         }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.blackout)
@@ -174,13 +179,14 @@ private struct CaperIcon: View {
 }
 
 private enum WorkspaceSheet: Identifiable {
-    case login, profile, createSpace, createChannel, manageSpace, manageChannel(Channel), leaveSpace, audio, connection, diagnostics
+    case login, profile, createSpace, createChannel, newDirectMessage, manageSpace, manageChannel(Channel), leaveSpace, audio, connection, diagnostics
     var id: String {
         switch self {
         case .login: "login"
         case .profile: "profile"
         case .createSpace: "create-space"
         case .createChannel: "create-channel"
+        case .newDirectMessage: "new-direct-message"
         case .manageSpace: "manage-space"
         case .manageChannel(let channel): "manage-\(channel.id)"
         case .leaveSpace: "leave-space"
@@ -232,7 +238,7 @@ private struct WorkspaceView: View {
                             ConversationStage(model: model, narrow: true, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                 membersPreference = !membersVisible
                             }
-                            if membersVisible {
+                            if membersVisible && model.selectedDirectMessageID == nil {
                                 MemberPresenceView(model: model)
                                     .frame(width: min(280, geometry.size.width - 24)).padding(.top, 50)
                             }
@@ -305,14 +311,14 @@ private struct WorkspaceView: View {
                                             ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
-                                            if membersVisible { MemberPresenceView(model: model).frame(width: 220) }
+                                            if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220) }
                                         }
                                     } else {
                                         ZStack(alignment: .trailing) {
                                             ConversationStage(model: model, narrow: false, browse: { model.navigationOpen = true }, createChannel: { sheet = .createChannel }, membersVisible: membersVisible) {
                                                 membersPreference = !membersVisible
                                             }
-                                            if membersVisible { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
+                                            if membersVisible && model.selectedDirectMessageID == nil { MemberPresenceView(model: model).frame(width: 220).padding(.top, 50) }
                                         }
                                     }
                                 }
@@ -566,6 +572,46 @@ private struct ChannelSidebar: View {
                         }.padding(.top, 8)
                     }
                 }.padding(.horizontal, 16)
+            }
+            if model.account != nil {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Direct messages").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        Spacer()
+                        Button { sheet = .newDirectMessage } label: { CaperIcon(name: "plus") }
+                            .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
+                    }.frame(height: 44)
+                    ScrollView {
+                        VStack(spacing: 3) {
+                            if model.directMessages.isEmpty {
+                                Text("No direct messages yet.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            }
+                            ForEach(model.directMessages) { conversation in
+                                Button { Task { await model.select(directMessage: conversation) } } label: {
+                                    HStack(spacing: 9) {
+                                        CaperIcon(name: "speech", size: 17)
+                                        Text(conversation.peer.displayName).lineLimit(1)
+                                        Spacer()
+                                        if conversation.unread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                                    }.font(CaperTheme.font(13, weight: .medium))
+                                        .foregroundStyle(model.selectedDirectMessageID == conversation.id ? CaperTheme.text : CaperTheme.muted)
+                                        .padding(.horizontal, 9).frame(height: 38)
+                                        .background(model.selectedDirectMessageID == conversation.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }.buttonStyle(.plain).accessibilityIdentifier("dm-\(conversation.id)")
+                                    .accessibilityValue(model.selectedDirectMessageID == conversation.id ? "Selected" : conversation.unread ? "Unread" : "")
+                            }
+                        }
+                    }.frame(height: min(180, max(30, CGFloat(model.directMessages.count) * 41)))
+                    if model.pushAvailable {
+                        Toggle("Direct message notifications", isOn: Binding(
+                            get: { model.pushEnabled },
+                            set: { value in Task { await model.changePushEnabled(value) } }
+                        )).font(CaperTheme.font(11)).padding(.vertical, 10)
+                            .accessibilityIdentifier("dm-push-opt-in")
+                    }
+                }.padding(.horizontal, 16).padding(.bottom, 8)
+                    .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             }
             AccountBar(model: model, sheet: $sheet)
         }
@@ -1052,12 +1098,12 @@ private struct ConversationStage: View {
     let membersVisible: Bool
     let toggleMembers: () -> Void
     var body: some View {
-        if model.selectedChannelID == nil {
+        if model.selectedChannelID == nil && model.selectedDirectMessageID == nil {
             VStack(spacing: 8) {
                 Button(action: browse) { Label("Browse spaces", systemImage: "number") }.buttonStyle(CaperSecondaryButton())
                 CaperIcon(name: "hash", size: 30).foregroundStyle(CaperTheme.terracottaBright)
-                Text("No accessible channels").font(CaperTheme.font(20, weight: .bold))
-                Text(model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
+                Text(model.spaces.isEmpty ? "Select a direct message" : "No accessible channels").font(CaperTheme.font(20, weight: .bold))
+                Text(model.spaces.isEmpty ? "Open a conversation from Direct messages." : model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
                     .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                 if model.isOwner { Button("Create channel", action: createChannel).buttonStyle(VoiceJoinButton()).padding(.top, 6) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.conversation)
@@ -1103,17 +1149,19 @@ private struct ChatView: View {
                             .frame(minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityLabel("Browse")
                 }
-                Text("# \(chat.channelName.lowercased())").font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
-                    .accessibilityLabel("# \(chat.channelName.lowercased())")
+                Text(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : chat.channelName).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
+                    .accessibilityLabel(model.selectedDirectMessageID == nil ? "# \(chat.channelName.lowercased())" : "Direct message with \(chat.channelName)")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
                 }
-                Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }
-                    .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
-                    .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
+                if model.selectedDirectMessageID == nil {
+                    Button(action: toggleMembers) { CaperIcon(name: "users", size: 20) }
+                        .buttonStyle(SidebarIconButton()).help(membersVisible ? "Hide member list" : "Show member list")
+                        .accessibilityLabel(membersVisible ? "Hide member list" : "Show member list")
+                }
             }.padding(.leading, narrow ? 13 : 18).padding(.trailing, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
 
@@ -1163,7 +1211,7 @@ private struct ChatView: View {
                         } else if chat.messages.isEmpty && !chat.loading && chat.pendingMessage == nil {
                             VStack(spacing: 7) {
                                 Text("No messages yet.").font(CaperTheme.font(14, weight: .medium))
-                                Text("Start the conversation in #\(chat.channelName.lowercased()).").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                             }.padding(.top, 80)
                         }
                     }
@@ -1434,6 +1482,7 @@ private struct WorkspaceSheetView: View {
             case .profile: ProfileSheet(model: model, close: close)
             case .createSpace: SpaceEditor(model: model, close: close, managing: false)
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
+            case .newDirectMessage: NewDirectMessageSheet(model: model, close: close)
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
@@ -1448,6 +1497,26 @@ private struct WorkspaceSheetView: View {
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct NewDirectMessageSheet: View {
+    @Bindable var model: AppModel
+    let close: () -> Void
+    @State private var username = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", close: close)
+            TextField("Exact username", text: $username).textFieldStyle(.roundedBorder)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .autocorrectionDisabled()
+                .accessibilityIdentifier("dm-username")
+            HStack { Spacer(); Button("Start conversation") {
+                Task { if await model.createDirectMessage(username: username) { close() } }
+            }.buttonStyle(VoiceJoinButton()).disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+        }.padding(22)
     }
 }
 

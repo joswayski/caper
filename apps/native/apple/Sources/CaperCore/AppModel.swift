@@ -10,6 +10,12 @@ public final class AppModel {
     public var detail: SpaceDetail?
     public var selectedSpaceID: String?
     public var selectedChannelID: String?
+    public var directMessages: [DirectMessageConversation] = []
+    public var selectedDirectMessageID: String?
+    public var pushAvailable = false
+    public var pushEnabled = false
+    @ObservationIgnored public var setPushEnabled: ((Bool) async -> Void)?
+    @ObservationIgnored public var disablePushLocally: (() -> Void)?
     public var error: String?
     public var busy = false
     public var challengeID: String? { didSet { if challengeID != oldValue { loginAttemptsRemaining = nil } } }
@@ -53,6 +59,8 @@ public final class AppModel {
     private var visited: [String: PreparedNavigation] = [:]
     private var visitedOrder: [String] = []
     private var lastChannelBySpace: [String: String] = [:]
+    private var directMessageRefreshTask: Task<Void, Never>?
+    private var foreground = false
 
     public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
         self.api = api
@@ -63,6 +71,7 @@ public final class AppModel {
         voice = voiceClient
         presence = PresenceModel(api: api)
         voicePresence = VoicePresenceModel(api: api)
+        chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         chatModel.onAccessRevoked = { [weak self, weak voiceClient] channelID in
             if let channelID, voiceClient?.isActive(channelID: channelID) == true { voiceClient?.leaveImmediately() }
             if let channelID { self?.voicePresence.revoke(channelID: channelID) }
@@ -82,7 +91,7 @@ public final class AppModel {
             guard generation == attempt else { return }
             self.account = account
             phase = account == nil ? .signedOut : needsProfile ? .onboarding : .ready
-            if phase != .onboarding { await loadSpaces() }
+            if phase == .ready { await loadSpaces(); startDirectMessageRefresh() }
         } catch {
             guard generation == attempt else { return }
             self.error = error.localizedDescription; phase = .signedOut
@@ -120,7 +129,7 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.account = account
             self.phase = self.needsProfile ? .onboarding : .ready
-            if self.phase == .ready { await self.loadSpaces() }
+            if self.phase == .ready { await self.loadSpaces(); self.startDirectMessageRefresh() }
         }
     }
 
@@ -148,17 +157,23 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.account = account
             self.phase = .ready
-            if onboarding { await self.loadSpaces() }
+            if onboarding { await self.loadSpaces(); self.startDirectMessageRefresh() }
             else { self.chat.updateAuthor(account: account) }
         }
     }
 
     public func logout() async {
+        // Opt out synchronously. Session revocation handles server cleanup;
+        // optional provider/network work must never hold the signed-in UI open.
+        disablePushLocally?()
+        pushEnabled = false; pushAvailable = false
         generation += 1
         voiceJoinGeneration += 1
         clearNavigationCache()
         voice.leaveImmediately()
-        account = nil; spaces = []; detail = nil; spacesLoaded = false; spacesError = nil
+        directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
+        account = nil; spaces = []; detail = nil; directMessages = []; selectedDirectMessageID = nil
+        spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
@@ -202,6 +217,107 @@ public final class AppModel {
     public func select(channel: Channel) async {
         guard let space = detail?.space else { return }
         await navigate(space: space, channelID: channel.id)
+    }
+
+    public func refreshDirectMessages() async {
+        guard account != nil else { return }
+        let attempt = generation
+        do {
+            let conversations = try await api.directMessages()
+            guard generation == attempt, account != nil else { return }
+            directMessages = conversations
+        } catch is CancellationError {} catch {
+            guard generation == attempt else { return }
+            self.error = error.localizedDescription
+        }
+    }
+
+    public func createDirectMessage(username: String) async -> Bool {
+        let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !exact.isEmpty, account != nil else { return false }
+        let attempt = generation
+        do {
+            let conversation = try await api.createDirectMessage(username: exact)
+            guard generation == attempt else { return false }
+            if let index = directMessages.firstIndex(where: { $0.id == conversation.id }) { directMessages[index] = conversation }
+            else { directMessages.append(conversation) }
+            await select(directMessage: conversation)
+            return generation == attempt
+        } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
+    }
+
+    public func select(directMessage conversation: DirectMessageConversation) async {
+        let attempt = generation
+        navigationGeneration += 1
+        let navigation = navigationGeneration
+        navigationTarget = nil; navigationError = nil
+        openingSpaceID = nil; openingChannelID = nil
+        do {
+            let history = try await api.history(channelID: conversation.id)
+            guard generation == attempt, navigationGeneration == navigation,
+                  history.space?.id == "", history.channel?.id == conversation.id,
+                  history.channel?.direct == true else {
+                throw APIError(status: 502, message: "Caper returned another conversation.")
+            }
+            selectedDirectMessageID = conversation.id; selectedChannelID = nil
+            navigationOpen = false
+            await presence.stop(); await voicePresence.stop()
+            await chat.open(history: history, displayName: account?.displayName ?? "")
+            guard generation == attempt, navigationGeneration == navigation else { return }
+            markSelectedDirectRead()
+        } catch { if generation == attempt, navigationGeneration == navigation { navigationError = error.localizedDescription } }
+    }
+
+    public func openDirectMessage(id: String) async {
+        await refreshDirectMessages()
+        guard let conversation = directMessages.first(where: { $0.id == id }) else { return }
+        await select(directMessage: conversation)
+    }
+
+    public func applicationActivityChanged(active: Bool) {
+        foreground = active
+        if active, account != nil {
+            markSelectedDirectRead()
+            Task { await refreshDirectMessages() }
+        }
+    }
+
+    private func markSelectedDirectRead() {
+        guard foreground, account != nil, let id = selectedDirectMessageID,
+              let history = chat.currentSnapshot(), history.channel?.id == id,
+              let index = directMessages.firstIndex(where: { $0.id == id }),
+              (try? Sequence.compare(history.cursor, directMessages[index].readSeq)) == .orderedDescending else { return }
+        let attempt = generation
+        Task {
+            do {
+                try await api.markDirectMessageRead(id: id, seq: history.cursor)
+                guard generation == attempt, let current = directMessages.firstIndex(where: { $0.id == id }) else { return }
+                let old = directMessages[current]
+                let seq = (try? Sequence.compare(history.cursor, old.readSeq)) == .orderedDescending ? history.cursor : old.readSeq
+                directMessages[current] = DirectMessageConversation(id: old.id, peer: old.peer, lastSeq: old.lastSeq, readSeq: seq)
+            } catch { /* A later foreground refresh retries the read cursor. */ }
+        }
+    }
+
+    public func configurePush(available: Bool, enabled: Bool) {
+        pushAvailable = available; pushEnabled = available && enabled
+    }
+
+    public func changePushEnabled(_ enabled: Bool) async {
+        guard pushAvailable else { return }
+        await setPushEnabled?(enabled)
+    }
+
+    private func startDirectMessageRefresh() {
+        directMessageRefreshTask?.cancel()
+        let attempt = generation
+        directMessageRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshDirectMessages()
+                try? await Task.sleep(for: .seconds(15))
+                guard self?.generation == attempt else { return }
+            }
+        }
     }
 
     /// Performs read-only speculative work. It never opens chat, starts a socket, or creates a chat session.
@@ -306,6 +422,7 @@ public final class AppModel {
                 guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             }
             selectedSpaceID = space.id
+            selectedDirectMessageID = nil
             selectedChannelID = channel?.id
             self.detail = detail
             lastChannelBySpace[space.id] = channel?.id
@@ -545,10 +662,11 @@ public final class AppModel {
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
         spaces.removeAll { $0.id == id }
-        detail = nil; selectedSpaceID = nil; selectedChannelID = nil
+        detail = nil; selectedSpaceID = nil; selectedChannelID = nil; selectedDirectMessageID = nil
         await chat.stop()
         await presence.stop()
         await voicePresence.stop()
+        startDirectMessageRefresh()
         if let first = spaces.first { await select(space: first) }
     }
 
@@ -685,6 +803,7 @@ public final class ChatModel {
     public var pendingMessage: PendingMessage? { delivery.pending }
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
+    @ObservationIgnored public var onReadCursor: (() -> Void)?
     private let api: APIClient
     private var channelID: String?
     private var spaceID: String?
@@ -792,6 +911,7 @@ public final class ChatModel {
                 return
             }
             subscriptionID = newSubscription
+            onReadCursor?()
             if CaperRuntime.isChatPreview("chat-rejected") {
                 let preview = delivery.begin(text: "Fixture message that was rejected")
                 delivery.reject(id: preview.id)
@@ -937,6 +1057,7 @@ public final class ChatModel {
             let newMessage = (try? Sequence.compare(message.seq, delivery.cursor)) == .orderedDescending
             if delivery.receive(seq: message.seq) {
                 merge([message])
+                onReadCursor?()
                 if newMessage, let author = session?.author, author.id != message.author.id { CaperEffects.shared.play(.message) }
                 if delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     error = nil
