@@ -14,9 +14,11 @@ const directory = mkdtempSync(join(tmpdir(), 'caper-invitations-'));
 const init = join(directory, 'fixture.js');
 function fixture() {
   if (location.protocol === 'about:') return;
-  const recipient = new URL(location.href).searchParams.has('recipient');
+  const params = new URL(location.href).searchParams;
+  const recipient = params.has('recipient');
   const account = { id: recipient ? 'member123456' : 'owner1234567', username: recipient ? 'member' : 'owner', displayName: 'TEST FIXTURE account' };
   const space = { id: 'space1234567', name: 'TEST FIXTURE · Studio', ownerId: 'owner1234567' };
+  const inviter = params.has('legacy') ? undefined : { username: 'fixture_host', displayName: params.has('long') ? 'A'.repeat(64) : 'TEST FIXTURE host' };
   const member = { id: 'friend123456', username: 'friend', displayName: 'TEST FIXTURE friend', owner: false };
   const control = window.inviteFixture = { requests: [], pending: [], accepted: false, declined: false, revoked: false, fail: false };
   const originalFetch = window.fetch.bind(window);
@@ -29,7 +31,7 @@ function fixture() {
     if (path === '/api/account/me') return Response.json(account);
     if (path === '/api/spaces') return Response.json({
       spaces: !control.revoked && (!recipient || control.accepted) ? [space] : [],
-      invitations: recipient && !control.accepted && !control.declined ? [space] : [],
+      invitations: recipient && !control.accepted && !control.declined ? [{ ...space, inviter }] : [],
       limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
     });
     if (path === `/api/spaces/${space.id}/invitation`) {
@@ -105,6 +107,8 @@ try {
     wait('!!document.querySelector(".pending-space-invite")');
     browser('click', '.pending-space-invite');
     wait('!!document.querySelector(".invitation-consent")');
+    assert.ok(evaluate('document.querySelector(".invitation-consent").textContent.includes("TEST FIXTURE host (@fixture_host) invited you")'));
+    assert.ok(evaluate('document.querySelector(".invitation-consent").textContent.includes("Invitations expire seven days after they’re sent.")'));
     assert.equal(evaluate('inviteFixture.requests.some(r => r.path === "/api/spaces/space1234567" || /channels|messages|presence|media/.test(r.path))'), false, 'no private data is requested before acceptance');
     assert.equal(evaluate('document.activeElement.textContent'), 'Decline');
     assert.equal(evaluate('document.querySelector(".invitation-shell").inert'), true);
@@ -129,7 +133,19 @@ try {
       screenshot('space-revoked-390');
     }
   }
-  console.log('PASS: normalized usernames, missing/duplicate/member/rate-limit errors, cancel, consent privacy, retry, decline, acceptance and revocation; desktop + narrow Chromium.');
+  for (const variant of ['long', 'legacy']) {
+    browser('open', `${url}?recipient&${variant}`);
+    wait('!!document.querySelector(".pending-space-invite")');
+    browser('click', '.pending-space-invite');
+    wait('!!document.querySelector(".invitation-consent")');
+    const text = evaluate('document.querySelector(".invitation-consent").textContent');
+    assert.ok(text.includes(variant === 'long' ? `${'A'.repeat(64)} (@fixture_host) invited you` : 'You’ve been invited to this space.'));
+    assert.ok(!text.includes('undefined'));
+    assert.equal(evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+    assert.equal(evaluate('inviteFixture.requests.some(r => r.path === "/api/spaces/space1234567" || /channels|messages|presence|media/.test(r.path))'), false);
+    screenshot(`invitation-consent-${variant}-390`);
+  }
+  console.log('PASS: normalized usernames, missing/duplicate/member/rate-limit errors, cancel, inviter identity/expiry/legacy fallback, consent privacy, retry, decline, acceptance and revocation; desktop + narrow Chromium.');
 } finally {
   browser('close');
   rmSync(directory, { recursive: true, force: true });

@@ -2,6 +2,7 @@ package chat.caper.android.data
 
 import chat.caper.android.model.TurnResponse
 import chat.caper.android.model.ChatAuthor
+import chat.caper.android.model.Space
 import chat.caper.android.model.SpaceList
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -78,6 +79,16 @@ class CaperApiTest {
             """{"spaces":[],"limits":{"ownedSpaces":20,"totalSpaces":100,"channelsPerSpace":100}}""",
         )
         assertTrue(response.invitations.isEmpty())
+    }
+
+    @Test fun `space invitation decodes inviter while older metadata stays compatible`() {
+        val legacy = """{"id":"space0000001","name":"Studio","ownerId":"owner0000001"}"""
+        assertNull(Json.decodeFromString<Space>(legacy).inviter)
+        val response = Json.decodeFromString<Space>(
+            """{"id":"space0000001","name":"Studio","ownerId":"owner0000001","inviter":{"username":"host_user","displayName":"Space Host"}}""",
+        )
+        assertEquals("host_user", response.inviter?.username)
+        assertEquals("Space Host", response.inviter?.displayName)
     }
 
     @Test fun `invitation operations use consent endpoints`() = runTest {

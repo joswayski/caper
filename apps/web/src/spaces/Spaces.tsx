@@ -802,7 +802,10 @@ function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
     <div className="invitation-consent">
       <LockKeyhole aria-hidden="true" />
       <h3>Join {space.name}?</h3>
-      <p>You’ve been invited to this space. Its channels, conversations, and members stay hidden until you accept.</p>
+      <p>{space.inviter
+        ? <><strong>{space.inviter.displayName}</strong> (@{space.inviter.username}) invited you to this space.</>
+        : "You’ve been invited to this space."} Its channels, conversations, and members stay hidden until you accept.</p>
+      <p>Invitations expire seven days after they’re sent.</p>
       {error && <p className="space-form-error" role="alert">{error}</p>}
       <div className="space-dialog-actions">
         <button className="secondary" type="button" data-initial-focus disabled={pending} onClick={() => void respond(false)}>Decline</button>

@@ -15,10 +15,18 @@ pub struct Account {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Inviter {
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Space {
     pub id: String,
     pub name: String,
     pub owner_id: String,
+    pub inviter: Option<Inviter>,
     #[serde(default)]
     pub demo: bool,
 }
@@ -253,6 +261,23 @@ mod tests {
         }))
         .unwrap();
         assert!(spaces.invitations.is_empty());
+    }
+
+    #[test]
+    fn invitation_decodes_inviter_and_legacy_metadata() {
+        let legacy: Space = serde_json::from_value(serde_json::json!({
+            "id": "space", "name": "Studio", "ownerId": "owner"
+        }))
+        .unwrap();
+        assert!(legacy.inviter.is_none());
+        let invitation: Space = serde_json::from_value(serde_json::json!({
+            "id": "space", "name": "Studio", "ownerId": "owner",
+            "inviter": { "username": "host_user", "displayName": "Space Host" }
+        }))
+        .unwrap();
+        let inviter = invitation.inviter.unwrap();
+        assert_eq!(inviter.username, "host_user");
+        assert_eq!(inviter.display_name, "Space Host");
     }
 
     fn message(id: &str, seq: u64) -> Message {

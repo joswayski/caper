@@ -2,6 +2,7 @@ export interface Space {
   id: string;
   name: string;
   ownerId: string;
+  inviter?: { username: string; displayName: string };
   demo?: boolean;
 }
 

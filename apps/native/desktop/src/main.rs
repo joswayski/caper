@@ -114,10 +114,7 @@ enum Dialog {
     Diagnostics,
     CreateSpace,
     ManageSpace,
-    Invitation {
-        id: String,
-        name: String,
-    },
+    Invitation(model::Space),
     LeaveSpace {
         id: String,
         name: String,
@@ -339,16 +336,17 @@ impl CaperApp {
                         name: "TEST FIXTURE · Invited Studio".into(),
                         owner_id: "fixture-inviter".into(),
                         demo: false,
+                        inviter: Some(model::Inviter {
+                            username: "fixture_host".into(),
+                            display_name: "TEST FIXTURE host".into(),
+                        }),
                     };
                     app.spaces.clear();
                     app.detail = None;
                     app.selected_space = None;
                     app.clear_channel_state();
                     app.invitations.push(invitation.clone());
-                    app.dialog = Some(Dialog::Invitation {
-                        id: invitation.id,
-                        name: invitation.name,
-                    });
+                    app.dialog = Some(Dialog::Invitation(invitation));
                 } else if matches!(name, "parity-admin" | "parity-admin-invitations") {
                     app.form_name = "Fixture Studio".into();
                     app.managed_members = app
@@ -564,12 +562,14 @@ impl CaperApp {
             id: "demo00000002".into(),
             name: "General".into(),
             owner_id: String::new(),
+            inviter: None,
             demo: true,
         };
         let space = Space {
             id: "space0000001".into(),
             name: "Fixture Studio".into(),
             owner_id: "fixture-owner".into(),
+            inviter: None,
             demo: false,
         };
         let channel = Channel {
@@ -1013,6 +1013,7 @@ impl CaperApp {
                 id: history.space.id.clone(),
                 name: history.space.name.clone(),
                 owner_id: String::new(),
+                inviter: None,
                 demo: true,
             };
             self.spaces.retain(|space| !space.demo);
@@ -2632,12 +2633,7 @@ impl CaperApp {
                     }
                     ui.add_space(10.0);
                 }
-                let invitations: Vec<_> = self
-                    .invitations
-                    .iter()
-                    .map(|space| (space.id.clone(), space.name.clone()))
-                    .collect();
-                for (id, name) in invitations {
+                for invitation in self.invitations.clone() {
                     let response = ui
                         .add(
                             egui::Button::new(RichText::new("?").strong().color(TERRACOTTA_BRIGHT))
@@ -2646,9 +2642,9 @@ impl CaperApp {
                                 .stroke(Stroke::new(1.0, TERRACOTTA))
                                 .corner_radius(12),
                         )
-                        .on_hover_text(format!("Invitation to {name}"));
+                        .on_hover_text(format!("Invitation to {}", invitation.name));
                     if response.clicked() {
-                        self.dialog = Some(Dialog::Invitation { id, name });
+                        self.dialog = Some(Dialog::Invitation(invitation));
                     }
                     ui.add_space(10.0);
                 }
@@ -4862,7 +4858,7 @@ impl CaperApp {
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
-            Dialog::Invitation { .. } => "Space invitation",
+            Dialog::Invitation(_) => "Space invitation",
             Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::ConfirmDelete { channel, .. } => {
                 if channel.is_some() {
@@ -4973,15 +4969,19 @@ impl CaperApp {
                                             Dialog::Diagnostics => self.audio_diagnostics(ui),
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
-                                            Dialog::Invitation { id, name } => {
-                                                ui.label(format!("You have been invited to join {name}. Accept to load its channels and conversations."));
+                                            Dialog::Invitation(invitation) => {
+                                                if let Some(inviter) = &invitation.inviter {
+                                                    ui.label(format!("{} (@{}) invited you.", inviter.display_name, inviter.username));
+                                                }
+                                                ui.label(format!("You have been invited to join {}. Accept to load its channels and conversations.", invitation.name));
+                                                ui.label("Invitations expire seven days after they’re sent.");
                                                 ui.add_space(16.0);
                                                 ui.horizontal(|ui| {
                                                     if ui.add_enabled(!self.loading, egui::Button::new("Decline")).clicked() {
-                                                        self.admin(AdminOperation::DeclineInvitation { space: id.clone() });
+                                                        self.admin(AdminOperation::DeclineInvitation { space: invitation.id.clone() });
                                                     }
                                                     if primary_button(ui, if self.loading { "Accepting…" } else { "Accept invitation" }, !self.loading).clicked() {
-                                                        self.admin(AdminOperation::AcceptInvitation { space: id });
+                                                        self.admin(AdminOperation::AcceptInvitation { space: invitation.id });
                                                     }
                                                 });
                                             }
@@ -7099,6 +7099,14 @@ mod tests {
             .collect();
         assert!(labels.contains(&"Decline"), "{labels:?}");
         assert!(labels.contains(&"Accept invitation"), "{labels:?}");
+        assert!(
+            labels.contains(&"TEST FIXTURE host (@fixture_host) invited you."),
+            "{labels:?}"
+        );
+        assert!(
+            labels.contains(&"Invitations expire seven days after they’re sent."),
+            "{labels:?}"
+        );
         app.admin_result(crate::worker::AdminResult::InvitationDeclined(
             invitation.id,
         ));
@@ -8217,6 +8225,7 @@ mod tests {
             id: "first-account-space".into(),
             name: "First".into(),
             owner_id: "account".into(),
+            inviter: None,
             demo: false,
         };
 
@@ -8331,6 +8340,7 @@ mod tests {
                 id: "space".into(),
                 name: "Space".into(),
                 owner_id: "member-0".into(),
+                inviter: None,
                 demo: false,
             },
             channels: Vec::new(),

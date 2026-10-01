@@ -78,6 +78,7 @@ test('space invitation consent and channel grants enforce distinct access contra
   assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
   const pending = await request('/api/spaces', { auth: 'fixture-member-token' });
   assert.deepEqual(pending.value.invitations.map(({ id }) => id), [spaceId]);
+  assert.deepEqual(pending.value.invitations[0].inviter, { username: 'fixture_owner', displayName: 'Fixture Owner' });
   assert.ok(!pending.value.spaces.some(({ id }) => id === spaceId));
   const channel = await request(`/api/spaces/${spaceId}/channels`, { method: 'POST', auth: true, body: { name: 'private-notes', private: true } });
   assert.equal(channel.response.status, 201);

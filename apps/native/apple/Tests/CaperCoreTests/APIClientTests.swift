@@ -48,6 +48,14 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(response.invitations, [])
     }
 
+    func testInvitationDecodesInviterAndLegacyMetadata() throws {
+        let legacy = try JSONDecoder().decode(Space.self, from: Data(#"{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"}"#.utf8))
+        XCTAssertNil(legacy.inviter)
+        let invitation = try JSONDecoder().decode(Space.self, from: Data(#"{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567","inviter":{"username":"host_user","displayName":"Space Host"}}"#.utf8))
+        XCTAssertEqual(invitation.inviter?.username, "host_user")
+        XCTAssertEqual(invitation.inviter?.displayName, "Space Host")
+    }
+
     func testInvitationMembershipEndpoints() async throws {
         let spaceID = "Space1234567"
         let userID = "Member123456"

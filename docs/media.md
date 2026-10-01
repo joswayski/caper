@@ -526,7 +526,11 @@ paths check membership and channel visibility, including replay and live deliver
 ### Invitation consent and abuse limits
 
 `GET /api/spaces` returns active `spaces`, metadata-only pending `invitations`
-(space ID, name and owner ID), and `limits`. Pending invitations live in
+(space ID, name, owner ID and `inviter: {username, displayName}`), and `limits`.
+Only owners can invite; inviter metadata uses the owner's current public profile,
+not a snapshot at send time. Clients also accept older metadata without `inviter`.
+This additive response needs no migration beyond the invitation tables below.
+Pending invitations live in
 `space_invitations`, not `space_members`: they grant no space-detail, membership,
 channel, history, presence, WebSocket or media access. Acceptance alone inserts
 membership and checks the current total-membership quota under database locks.
@@ -561,7 +565,10 @@ not count. One row per pair retains state/cooldown, rather than an invitation
 event log. These are fixed product limits, not new configuration/secrets.
 
 The browser opens an inert empty shell behind a blurred consent dialog; it never
-downloads private content to blur it. Decline has initial keyboard focus. Owners
+downloads private content to blur it. Consent identifies the inviter's display
+name and `@username` and explains the seven-day expiry. Expired invites disappear
+from pending lists and cannot be accepted; accepted memberships do not expire.
+Decline has initial keyboard focus. Owners
 see pending invitees separately from active members and can cancel them. Browser
 space lists refresh on focus/visibility and every 15 seconds while visible;
 revocation removes the rail entry, invalidates cached navigation and clears the
@@ -672,11 +679,11 @@ node scripts/test-space-invitations.mjs
 
 | Platform/check | Invitation validation |
 | --- | --- |
-| API | Real disposable Postgres 15 lifecycle/privacy/concurrency test passed; default Rust tests and clippy passed |
-| Browser | Build/287 unit tests passed; Chromium at 1280px and 390px exercised normalization, missing/duplicate/member/429 errors, cancel, consent retry/decline/accept and focus-triggered revocation. DOM confirms no private requests before acceptance; screenshots inspected |
+| API | Real disposable Postgres 15 lifecycle/privacy/concurrency and current-owner inviter metadata test passed; default Rust tests and clippy passed |
+| Browser | Build/287 unit tests passed; Chromium at 1280px and 390px exercised normalization, missing/duplicate/member/429 errors, cancel, inviter/expiry, long names, legacy metadata, consent retry/decline/accept and focus-triggered revocation. DOM confirms no private requests before acceptance; screenshots inspected |
 | Rust desktop (Linux; shared source with Windows) | Native unit tests and Linux build; consent/pending-owner desktop and narrow fixtures rendered and inspected separately from browser. Not Windows execution or live SFU evidence |
 | Apple iOS/macOS | Consent, pending/cancel, validation and 404 cleanup implemented; Swift/Xcode tests and device rendering unavailable in this Linux orb |
-| Android | Consent, pending/cancel, validation and 404 cleanup implemented; JDK/Android SDK tests and physical-device rendering unavailable in this orb |
+| Android | Consent, pending/cancel, validation and 404 cleanup implemented. Initial PR CI found a MemberManager callback compile error; fixed with explicit callback arguments in the follow-up. JDK/Android SDK tests and physical-device rendering unavailable in this orb; platform CI must verify the fix |
 | Docker/production/live media | No Docker daemon available; image build stages validated directly. No shared database migration, deployment, live SFU or physical-device test performed |
 
 **Deployment order** (operator commands only; merging does not deploy):

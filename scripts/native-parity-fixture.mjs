@@ -209,7 +209,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (!spaceId) {
           if (method === 'GET') return json(response, 200, {
             spaces: state.spaces.filter((detail) => detail.members.some((member) => member.id === user.id)).map((detail) => detail.space),
-            invitations: state.spaces.filter((detail) => state.invitations.get(`${detail.space.id}:${user.id}`)?.status === 'pending').map((detail) => detail.space), limits,
+            invitations: state.spaces.filter((detail) => state.invitations.get(`${detail.space.id}:${user.id}`)?.status === 'pending').map((detail) => ({
+              ...detail.space, inviter: { username: state.account.username, displayName: state.account.displayName },
+            })), limits,
           });
           if (method === 'POST') {
             const name = typeof body.name === 'string' ? body.name.trim() : '';

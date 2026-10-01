@@ -129,7 +129,7 @@
 .invitation-consent { margin: 24px 22px; }
 .invitation-consent > svg { width: 28px; height: 28px; color: var(--text-muted); }
 .invitation-consent h3 { margin: 16px 0 10px; font-size: 1.25rem; overflow-wrap: anywhere; }
-.invitation-consent p { color: var(--text-muted); font-size: .84rem; line-height: 1.6; }
+.invitation-consent p { color: var(--text-muted); font-size: .84rem; line-height: 1.6; overflow-wrap: anywhere; }
 .invitation-consent .space-form-error { color: #ff9b82; }
 .invitation-consent .space-dialog-actions { flex-wrap: wrap; }
 .space-rail .invited-space { color: var(--terracotta-bright); border-color: var(--terracotta); border-style: dashed; }

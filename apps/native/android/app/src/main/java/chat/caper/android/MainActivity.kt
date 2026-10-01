@@ -1015,7 +1015,9 @@ internal fun counterTone(count: Int): Color = when {
 
 @Composable private fun InvitationDialog(space: Space, busy: Boolean, error: String?, close: () -> Unit, accept: () -> Unit, decline: () -> Unit) {
     CaperDialog("Invitation to ${space.name}", close) {
+        space.inviter?.let { Text("${it.displayName} (@${it.username}) invited you.", color = TextMuted) }
         Text("Accept this invitation to access ${space.name}'s channels and conversations.", color = TextMuted)
+        Text("Invitations expire seven days after they’re sent.", color = TextMuted, fontSize = 12.sp)
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             OutlinedButton(decline, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Decline") }
@@ -1062,7 +1064,7 @@ internal fun counterTone(count: Int): Color = when {
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space") { private = it }
         if (channel.private) {
             HorizontalDivider(color = Border)
-            MemberManager(state.channelGrants, state.busy, { viewModel.addChannelGrant(channel, it) }) { viewModel.removeChannelGrant(channel, it) }
+            MemberManager(state.channelGrants, state.busy, { viewModel.addChannelGrant(channel, it) }, { viewModel.removeChannelGrant(channel, it) })
         }
         HorizontalDivider(color = Border)
         DangerZone("Delete channel", "Delete this channel for everyone in the space.", state.busy) { confirmingDelete = true }

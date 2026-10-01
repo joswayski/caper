@@ -255,9 +255,9 @@ async fn list_spaces(
     .into_iter()
     .map(|(id, name, owner_id)| Space { id, name, owner_id })
     .collect();
-    // Only metadata explicitly shared by an invite; never channels, members or messages.
-    let invitations: Vec<Space> = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT s.external_id,s.name,o.external_id FROM public.space_invitations i
+    // Owners are the only inviters; share their public identity, never the member list.
+    let invitations: Vec<Value> = sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT s.external_id,s.name,o.external_id,o.username,o.display_name FROM public.space_invitations i
          JOIN public.spaces s ON s.id=i.space_id JOIN public.users o ON o.id=s.owner_id
          WHERE i.user_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days'
            AND s.deleted_at IS NULL AND NOT s.demo
@@ -268,7 +268,10 @@ async fn list_spaces(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, name, owner_id)| Space { id, name, owner_id })
+    .map(|(id, name, owner_id, username, display_name)| {
+        json!({"id":id,"name":name,"ownerId":owner_id,
+            "inviter":{"username":username,"displayName":display_name}})
+    })
     .collect();
     Ok(Json(
         json!({"spaces":spaces,"invitations":invitations,"limits":state.config.space_limits}),
@@ -1433,6 +1436,11 @@ mod tests {
             first.err().or_else(|| duplicate.err()).unwrap().message,
             "user already invited"
         );
+        sqlx::query("UPDATE public.users SET display_name='Space Host' WHERE id=$1")
+            .bind(owner.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
         let listed = list_spaces(State(state.clone()), Extension(member.clone()))
             .await
             .unwrap()
@@ -1446,7 +1454,8 @@ mod tests {
         );
         assert_eq!(
             listed["invitations"][0],
-            json!({"id":consent,"name":"Consent","ownerId":owner.user.external_id})
+            json!({"id":consent,"name":"Consent","ownerId":owner.user.external_id,
+                "inviter":{"username":"owner","displayName":"Space Host"}})
         );
         assert_eq!(members(&pool, consent_id).await.unwrap().len(), 1);
         assert_eq!(

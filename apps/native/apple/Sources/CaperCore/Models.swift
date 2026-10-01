@@ -7,11 +7,17 @@ public struct Account: Codable, Equatable, Sendable {
     public var debugEnabled: Bool?
 }
 
+public struct Inviter: Codable, Equatable, Sendable {
+    public let username: String
+    public let displayName: String
+}
+
 public struct Space: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let ownerId: String
     public var demo: Bool?
+    public var inviter: Inviter?
 }
 
 public struct Channel: Codable, Equatable, Identifiable, Sendable {

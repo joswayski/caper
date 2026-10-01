@@ -1556,6 +1556,10 @@ private struct InvitationSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SheetHeader(title: "Space invitation", detail: "You were invited to \(invitation.name). Accept to view its channels and conversations.", close: close)
+            if let inviter = invitation.inviter {
+                Text("\(inviter.displayName) (@\(inviter.username)) invited you.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
+            }
+            Text("Invitations expire seven days after they’re sent.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
             if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(.red).padding(.horizontal, 22) }
             HStack {
                 Spacer()
