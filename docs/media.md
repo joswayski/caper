@@ -565,8 +565,8 @@ not count. One row per pair retains state/cooldown, rather than an invitation
 event log. These are fixed product limits, not new configuration/secrets.
 
 The browser opens an inert empty shell behind a blurred consent dialog; it never
-downloads private content to blur it. Consent identifies the inviter's display
-name and `@username` and explains the seven-day expiry. Expired invites disappear
+downloads private content to blur it. Consent shows the space name and inviter's
+display name and `@username`, without explanatory paragraphs. Expired invites disappear
 from pending lists and cannot be accepted; accepted memberships do not expire.
 Decline has initial keyboard focus. Owners
 see pending invitees separately from active members and can cancel them. Browser

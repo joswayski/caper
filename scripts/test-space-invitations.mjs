@@ -110,8 +110,8 @@ try {
     assert.equal(evaluate('document.querySelector(".space-dialog h2").textContent'), 'You’re invited!');
     wait('document.querySelector(".invitation-consent > img")?.naturalWidth === 64');
     assert.deepEqual(evaluate('(() => { const image = document.querySelector(".invitation-consent > img"); const rect = image.getBoundingClientRect(); return [image.getAttribute("src"), image.alt, rect.width, rect.height]; })()'), ['/images/invitation/1f4e8.png', '', 32, 32]);
-    assert.ok(evaluate('document.querySelector(".invitation-consent").textContent.includes("TEST FIXTURE host (@fixture_host) invited you")'));
-    assert.ok(evaluate('document.querySelector(".invitation-consent").textContent.includes("Invitations expire seven days after they’re sent.")'));
+    assert.equal(evaluate('document.querySelector(".invitation-consent h3").textContent'), 'Join TEST FIXTURE · Studio?');
+    assert.deepEqual(evaluate('[...document.querySelectorAll(".invitation-consent > p")].map(p => p.textContent)'), ['TEST FIXTURE host (@fixture_host) invited you.']);
     assert.equal(evaluate('inviteFixture.requests.some(r => r.path === "/api/spaces/space1234567" || /channels|messages|presence|media/.test(r.path))'), false, 'no private data is requested before acceptance');
     assert.equal(evaluate('document.activeElement.textContent'), 'Decline');
     assert.equal(evaluate('document.querySelector(".invitation-shell").inert'), true);
@@ -141,14 +141,13 @@ try {
     wait('!!document.querySelector(".pending-space-invite")');
     browser('click', '.pending-space-invite');
     wait('!!document.querySelector(".invitation-consent")');
-    const text = evaluate('document.querySelector(".invitation-consent").textContent');
-    assert.ok(text.includes(variant === 'long' ? `${'A'.repeat(64)} (@fixture_host) invited you` : 'You’ve been invited to this space.'));
-    assert.ok(!text.includes('undefined'));
+    assert.equal(evaluate('document.querySelector(".invitation-consent h3").textContent'), 'Join TEST FIXTURE · Studio?');
+    assert.deepEqual(evaluate('[...document.querySelectorAll(".invitation-consent > p")].map(p => p.textContent)'), variant === 'long' ? [`${'A'.repeat(64)} (@fixture_host) invited you.`] : []);
     assert.equal(evaluate('document.documentElement.scrollWidth > innerWidth'), false);
     assert.equal(evaluate('inviteFixture.requests.some(r => r.path === "/api/spaces/space1234567" || /channels|messages|presence|media/.test(r.path))'), false);
     screenshot(`invitation-consent-${variant}-390`);
   }
-  console.log('PASS: shared invitation artwork/title, normalized usernames, missing/duplicate/member/rate-limit errors, cancel, inviter identity/expiry/legacy fallback, consent privacy, retry, decline, acceptance and revocation; desktop + narrow Chromium.');
+  console.log('PASS: concise invitation name/inviter copy, shared artwork/title, normalized usernames, missing/duplicate/member/rate-limit errors, cancel, long names/legacy metadata, consent privacy, retry, decline, acceptance and revocation; desktop + narrow Chromium.');
 } finally {
   browser('close');
   rmSync(directory, { recursive: true, force: true });

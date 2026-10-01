@@ -816,11 +816,7 @@ function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
     <div className="invitation-consent">
       <img src="/images/invitation/1f4e8.png" width={32} height={32} alt="" />
       <h3>Join {space.name}?</h3>
-      <p>{space.inviter
-        ? <><strong>{space.inviter.displayName}</strong> (@{space.inviter.username}) invited you to this space.</>
-        : "You’ve been invited to this space."} Its channels, conversations, and members stay hidden until you accept.</p>
-      <p>Invitations expire seven days after they’re sent.</p>
-      <p>You’ll start with one public channel, if available. Browse and join the others whenever you want.</p>
+      {space.inviter && <p><strong>{space.inviter.displayName}</strong> (@{space.inviter.username}) invited you.</p>}
       {error && <p className="space-form-error" role="alert">{error}</p>}
       <div className="space-dialog-actions">
         <button className="secondary" type="button" data-initial-focus disabled={pending} onClick={() => void respond(false)}>Decline</button>

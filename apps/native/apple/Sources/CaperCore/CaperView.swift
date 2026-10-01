@@ -1633,14 +1633,13 @@ private struct InvitationSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SheetHeader(title: "You’re invited!", detail: "You were invited to \(invitation.name). Accept to view its channels and conversations.", close: close)
+            SheetHeader(title: "You’re invited!", detail: nil, close: close)
             Image("IncomingEnvelope", bundle: artworkBundle).resizable().interpolation(.high)
                 .frame(width: 32, height: 32).accessibilityHidden(true).padding(.horizontal, 22)
+            Text("Join \(invitation.name)?").font(CaperTheme.font(20, weight: .bold)).padding(.horizontal, 22)
             if let inviter = invitation.inviter {
                 Text("\(inviter.displayName) (@\(inviter.username)) invited you.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
             }
-            Text("Invitations expire seven days after they’re sent.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
-            Text("Acceptance joins one public starter channel. Browse and join other channels when you want; it never starts voice.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
             if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(.red).padding(.horizontal, 22) }
             HStack {
                 Spacer()
