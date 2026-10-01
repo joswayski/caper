@@ -615,12 +615,55 @@ async fn authenticated_join_uses_the_account_display_name() {
         .1;
 
         assert!(
-            snapshot["participants"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|participant| participant["name"] == "Test User")
+            snapshot["participants"].as_array().unwrap().iter().all(
+                |participant| participant["name"] == "Test User"
+                    && participant["avatarId"] == 42
+                    && participant.get("token").is_none()
+                    && participant.get("account_session").is_none()
+            )
         );
+
+        let presence = call(
+            app(s.clone()),
+            "GET",
+            "/api/media/presence",
+            None,
+            json!({}),
+        )
+        .await
+        .1;
+        assert!(
+            presence["participants"].as_array().unwrap().iter().all(
+                |participant| participant["avatarId"] == 42
+                    && participant.get("token").is_none()
+                    && participant.get("account_session").is_none()
+            )
+        );
+    }
+}
+
+#[tokio::test]
+async fn stored_participant_without_avatar_id_decodes_and_omits_avatar() {
+    let (s, _) = state();
+    joined(&s, "legacy").await;
+    let registry = s.registry.lock().await.clone();
+    let mut stored = serde_json::to_value(registry).unwrap();
+    let participant = stored["participants"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    participant.remove("avatar_id");
+    let decoded: Registry = serde_json::from_value(stored).unwrap();
+
+    for snapshot in [public_snapshot(&decoded), presence_snapshot(&decoded)] {
+        let participant = snapshot["participants"][0].as_object().unwrap();
+        assert!(participant.get("avatarId").is_none());
+        assert!(participant.get("token").is_none());
+        assert!(participant.get("account_session").is_none());
     }
 }
 

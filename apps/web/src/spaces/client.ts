@@ -14,6 +14,7 @@ export interface Channel {
 
 export interface Member {
   id: string;
+  avatarId?: number | null;
   username: string;
   displayName: string;
   owner: boolean;

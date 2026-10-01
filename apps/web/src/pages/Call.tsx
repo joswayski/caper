@@ -10,6 +10,7 @@ import Chat from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
+import Avatar from "../components/Avatar";
 import Tooltip from "../components/Tooltip";
 import Wordmark from "../components/Wordmark";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
@@ -556,7 +557,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     let frame = 0, x = 0, y = 0;
     const check = () => {
       frame = 0;
-      for (const button of document.querySelectorAll<HTMLElement>(".channel-join[data-channel]")) {
+      for (const button of document.querySelectorAll<HTMLElement>(".channel-join[data-channel]:not([inert])")) {
         const box = button.getBoundingClientRect();
         if (!box.width || !box.height) continue;
         const dx = Math.max(box.left - x, 0, x - box.right);
@@ -619,7 +620,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
                 const speaking = isSpeaking(participant);
                 return <li ref={own && volumeParticipant === participant.id ? volumeMenuRef : undefined} className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={!own || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                   <span className="participant-avatar">
-                    <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                    <span className={`avatar ${speaking ? "speaking" : "quiet"}`}><Avatar avatarId={participant.avatarId} name={participant.name} /></span>
                   </span>
                   <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}
                     {!self && mutedParticipants.has(participant.id) && <span className="participant-local-muted"><VolumeX aria-hidden="true" />You muted {participant.name}</span>}
@@ -692,20 +693,23 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       setVolumeParticipant(undefined);
     }}>
       <span className="voice-stack-faces" aria-hidden="true">
-        {people.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && !open && isSpeaking(participant) ? " speaking" : ""}`}>{participant.name.slice(0, 1).toUpperCase()}</span>)}
+        {people.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && !open && isSpeaking(participant) ? " speaking" : ""}`}><Avatar avatarId={participant.avatarId} name={participant.name} /></span>)}
         {people.length > 3 && <small>+{people.length - 3}</small>}
       </span>
       <ChevronDown aria-hidden="true" />
     </button>;
     // Join shows on the channel being viewed, and on channels with people in
     // voice when you hover or focus their line (hidden on touch screens).
+    // Animate the slot closed rather than unmounting Join: independent roster
+    // and connection updates should move the avatars smoothly, not snap them.
     const viewed = channelId === channel?.id;
-    const join = !inVoiceHere(channelId) && (viewed || people.length > 0) && <Tooltip content={joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
-      <button ref={channelId === channel?.id ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-live={people.length > 0 ? "" : undefined} data-hover-only={viewed ? undefined : ""} aria-label={channelId === channel?.id ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
+    const joinedHere = inVoiceHere(channelId);
+    const join = (viewed || people.length > 0 || joinedHere) && <Tooltip content={joinedHere ? undefined : joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Switch voice to #${label}` : `Join voice in #${label}`}>
+      <button ref={viewed && !joinedHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={joinedHere ? "" : undefined} data-live={people.length > 0 && !joinedHere ? "" : undefined} data-hover-only={viewed ? undefined : ""} inert={joinedHere} aria-hidden={joinedHere || undefined} aria-label={joinedHere ? undefined : viewed ? "Join voice" : `Join voice in #${label}`} aria-disabled={joinedHere || joinBlocked || busy} aria-busy={busy} onPointerEnter={() => prepareChannel(channelId)} onPointerDown={() => prepareChannel(channelId)} onFocus={() => prepareChannel(channelId)} onClick={() => joinChannel(channelId)}><Speech aria-hidden="true" /><span className="channel-join-label">Join</span></button>
     </Tooltip>;
     if (!stack && !join) return null;
     return {
-      summary: <span className="channel-voice">{stack}{join}</span>,
+      summary: <span className="channel-voice">{stack}{join && <span className="channel-join-slot" data-connected={joinedHere ? "" : undefined} data-hover-only={viewed ? undefined : ""}><span className="channel-join-slot-inner">{join}</span></span>}</span>,
       list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
       </div> : null,
@@ -762,7 +766,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
           </div>}
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
-              <span className="account-avatar"><span aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span><PresenceDot status={accountPresence ? selfPresence : localPresence} live={accountPresence ? presenceLive : true} /></span>
+              <span className="account-avatar"><Avatar avatarId={account?.avatarId} name={identityName} /><PresenceDot status={accountPresence ? selfPresence : localPresence} live={accountPresence ? presenceLive : true} /></span>
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className={`voice-action-group${state.muted ? " active" : ""}`}>

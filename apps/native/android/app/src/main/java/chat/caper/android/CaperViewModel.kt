@@ -64,10 +64,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     screen = SessionScreen.Home, account = account,
                     spaces = list.spaces, limits = list.limits,
                 )
-                list.spaces.firstOrNull()?.let { selectSpace(it.id) }
-                // Sending needs this account's chat session. General used to
-                // create it at startup; without it every send was refused.
                 createChatSession(requestAccountGeneration)
+                if (requestAccountGeneration != accountGeneration) return@launch
+                list.spaces.firstOrNull()?.let { selectSpace(it.id) }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
                     mutable.value = AppUiState(screen = SessionScreen.Home, error = message(error))

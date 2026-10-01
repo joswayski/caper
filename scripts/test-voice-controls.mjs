@@ -1,6 +1,7 @@
 // Real Call/Chat components and voice client; synthetic audio and mocked HTTP,
 // WebSocket and WebRTC. This is UI regression coverage, not live SFU validation.
 // Run against Vite: node scripts/test-voice-controls.mjs [http://localhost:5174]
+// Focus only on channel transitions with VOICE_TEST_CHANNEL_MOTION=1.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -66,6 +67,7 @@ async function fixture() {
       return Response.json({ token: 'fixture-voice', id: 'self', iceServers: [] });
     }
     if (path === '/api/media/publish') return Response.json({ sessionDescription: { type: 'answer', sdp: 'v=0' } });
+    if (path === '/api/media/warm') return Response.json({ error: 'Warm voice is not supported by this fixture' }, { status: 422 });
     if (['/api/media/state', '/api/media/leave', '/api/media/close', '/api/media/prepare'].includes(path)) return new Response(null, { status: 204 });
     if (path.startsWith('/api/')) throw Error(`Unexpected fixture request: ${path}`);
     return originalFetch(input, options);
@@ -118,6 +120,14 @@ async function fixture() {
       socket.frame({ type: 'event', id, event: { type: 'typing.updated', channelId: 'general', author: peer, typing: true, revision: String(Date.now() * 1000) } });
     }
   });
+  f.publishPresence = people => {
+    f.people = people; f.revision++;
+    f.sockets.forEach(socket => {
+      for (const [id, subscription] of socket.subscriptions) if (subscription.kind === 'media' && !subscription.token) {
+        socket.frame({ type: 'event', id, event: { type: 'snapshot', ...snapshot(), participants: people.map(({ tracks, ...person }) => person) } });
+      }
+    });
+  };
   const context = new AudioContext(); await context.resume();
   const signal = context.createOscillator(); signal.start();
   // Device IDs are synthetic; exercise selection without requiring host hardware.
@@ -162,8 +172,11 @@ async function fixture() {
   };
   window.RTCPeerConnection = class extends EventTarget {
     connectionState = 'connected'; iceGatheringState = 'complete'; senders = [];
-    addTransceiver(track) { const sender = { track, async replaceTrack(next) { this.track = next; } }; this.senders.push(sender); return { mid: '0', sender }; }
-    async createOffer() { return { type: 'offer', sdp: 'v=0' }; }
+    configuration = {};
+    getConfiguration() { return this.configuration; }
+    setConfiguration(value) { this.configuration = value; }
+    addTransceiver(track) { const sender = { track: typeof track === 'string' ? null : track, async replaceTrack(next) { this.track = next; } }; this.senders.push(sender); return { mid: '0', sender }; }
+    async createOffer() { return { type: 'offer', sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n' }; }
     async setLocalDescription(value) { this.localDescription = { toJSON: () => value }; }
     async setRemoteDescription() {}
     getSenders() { return this.senders; }
@@ -189,8 +202,105 @@ async function fixture() {
 try {
   browser('open', origin.href);
   browser('set', 'viewport', '1280', '900', '2');
+  // Wait for Start's document-level hydration before adding a second root.
+  // Otherwise hydration can replace the body and discard the fixture mount.
+  browser('wait', '1500');
   evaluate(`await (${fixture.toString()})();`);
   wait(`document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.voice-button[aria-disabled="false"]')`);
+  if (process.env.VOICE_TEST_CHANNEL_MOTION === '1') {
+    evaluate(`voiceFixture.showSpaces();`);
+    wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
+    evaluate(`await document.fonts.ready;`);
+    for (const width of [1280, 390]) {
+      browser('set', 'viewport', String(width), '900', '2');
+      evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
+      if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+      evaluate(`voiceFixture.publishPresence([{ id: 'self', name: 'UI fixture', muted: false, deafened: false, tracks: [] }]);`);
+      wait(`document.querySelector('.voice-stack-avatar')`);
+      const position = () => evaluate(`const r = document.querySelector('.voice-stack').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width };`);
+      browser('hover', '.channel-select[aria-current="page"]');
+      browser('wait', '250');
+      const before = position();
+      screenshot(`channel-${width}-before-join`);
+      evaluate(`
+        voiceFixture.joinMotion = [];
+        const stack = document.querySelector('.voice-stack');
+        const start = performance.now();
+        const sample = () => { voiceFixture.joinMotion.push(stack.getBoundingClientRect().left); if (performance.now() - start < 1000) requestAnimationFrame(sample); };
+        requestAnimationFrame(sample);
+      `);
+      click('Join voice');
+      wait(`document.querySelector('[aria-label="Leave voice"]')`);
+      wait(`getComputedStyle(document.querySelector('.channel-join')).visibility === 'hidden'`);
+      wait(`document.querySelector('.channel-join-slot').getBoundingClientRect().width < 1`);
+      assert.ok(position().left > before.left + 20, 'Avatars must slide right into the removed Join slot');
+      assert.ok(evaluate(`return new Set(voiceFixture.joinMotion.map(x => Math.round(x))).size > 3;`), 'Join collapse must animate through intermediate avatar positions');
+      assert.ok(evaluate(`const join = document.querySelector('.channel-join'); join.focus(); return join.inert && join.getAttribute('aria-hidden') === 'true' && document.activeElement !== join && !join.hasAttribute('aria-describedby');`), 'Connected Join must be inert and have no tooltip');
+      browser('hover', '.channel-select[aria-current="page"]');
+      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join')).opacity;`), '0', 'Hover must not reveal connected Join');
+      screenshot(`channel-${width}-joined`);
+      if (evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`)) {
+        const hovered = position();
+        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); const gap = line.querySelector('.channel-manage').getBoundingClientRect().left - line.querySelector('.voice-stack').getBoundingClientRect().right; return gap >= 0 && gap <= 8;`), 'Connected dropdown must sit immediately beside the Settings gear');
+        const motion = evaluate(`
+          const line = document.querySelector('.channel-line');
+          const stack = line.querySelector('.voice-stack');
+          const samples = [];
+          // Move the real pointer outside the channel in the next command.
+          voiceFixture.sampleMotion = samples;
+          const start = performance.now();
+          const sample = () => { samples.push(stack.getBoundingClientRect().left); if (performance.now() - start < 800) requestAnimationFrame(sample); };
+          requestAnimationFrame(sample);
+          return getComputedStyle(line).paddingRight;
+        `);
+        assert.equal(motion, '34px');
+        browser('mouse', 'move', '5', '5');
+        browser('wait', '850');
+        assert.ok(position().left > hovered.left + 30, 'Hidden settings must release its layout space');
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '0px');
+        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); return line.getBoundingClientRect().right - line.querySelector('.voice-stack').getBoundingClientRect().right < 8;`), 'Unhovered dropdown must reach the row right edge');
+        assert.ok(evaluate(`return new Set(voiceFixture.sampleMotion.map(x => Math.round(x))).size > 3;`), 'Settings reveal/hide must move through intermediate positions, not snap');
+        screenshot(`channel-${width}-joined-no-hover`);
+        browser('focus', '.channel-manage');
+        browser('wait', '250');
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '34px', 'Keyboard focus reveals settings space');
+        browser('hover', '.channel-select[aria-current="page"]');
+      } else {
+        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '48px', 'Always-visible touch-style settings keeps its full hit target');
+        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); return line.querySelector('.voice-stack').getBoundingClientRect().right <= line.querySelector('.channel-manage').getBoundingClientRect().left;`), 'Touch-style settings must not overlap the dropdown');
+      }
+      browser('set', 'media', 'reduced-motion');
+      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join')).transitionDuration;`), '0s');
+      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.voice-stack-avatar')).animationName;`), 'none');
+      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join-slot')).transitionDuration;`), '0s');
+      browser('set', 'media', 'no-preference');
+      click('Leave voice');
+      wait(`document.querySelector('[aria-label="Join voice"]')`);
+      wait(`getComputedStyle(document.querySelector('.channel-join')).opacity === '1'`);
+      browser('hover', '.channel-select[aria-current="page"]');
+      browser('wait', '250');
+      assert.deepEqual(position(), before, 'Join returns to its original slot after leaving');
+      assert.equal(evaluate(`return document.querySelector('.channel-join').inert;`), false);
+      screenshot(`channel-${width}-left`);
+      evaluate(`voiceFixture.publishPresence([]);`);
+      wait(`!document.querySelector('.voice-stack')`);
+      // Also exercise connection-first ordering with no early public roster.
+      click('Join voice');
+      wait(`document.querySelector('[aria-label="Leave voice"]') && document.querySelector('.voice-stack')`);
+      wait(`document.querySelector('.channel-join-slot').getBoundingClientRect().width < 1`);
+      const connected = position();
+      evaluate(`voiceFixture.publishPresence(voiceFixture.people);`);
+      click('Leave voice');
+      wait(`document.querySelector('[aria-label="Join voice"]')`);
+      browser('hover', '.channel-select[aria-current="page"]');
+      browser('wait', '250');
+      assert.ok(position().left < connected.left - 20, 'Connection-first disconnect must reopen the Join slot');
+      evaluate(`voiceFixture.publishPresence([]);`);
+      wait(`!document.querySelector('.voice-stack')`);
+    }
+    evaluate(`await voiceFixture.cleanup();`);
+    console.log('PASS collapsing Join slot at 1280px and 390px, both roster timing orders, animated hover/focus settings space, hidden Join accessibility, and reduced motion (mock signaling/WebRTC)');
+  } else {
   for (const label of ['Input Options', 'Output Options', 'User Settings']) {
     click(label);
     for (const position of ['top', 'side', 'bottom']) {
@@ -496,8 +606,10 @@ try {
   assert.equal(evaluate(`return voiceFixture.client.phase;`), 'idle', 'Late microphone capture must not resurrect a cancelled join');
   evaluate(`await voiceFixture.cleanup();`);
   console.log('PASS voice navigation persistence, explicit channel switching, pre-join mute/deafen and red hover/dropdown states, busy-device errors, join cancellation, profile, audio settings, recording cleanup, and narrow layout (mock signaling/WebRTC)');
+  }
 } catch (error) {
   screenshot('failure');
+  console.error(browser('errors'));
   console.error(evaluate(`return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase, channels: [...document.querySelectorAll('.channel-select')].map(node => [node.textContent, node.getAttribute('aria-current')]), voice: [...document.querySelectorAll('.voice-button')].map(node => [node.textContent, node.getAttribute('aria-disabled')]), pages: document.querySelectorAll('.call-page').length };`));
   throw error;
 } finally {

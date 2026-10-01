@@ -368,6 +368,7 @@ impl CaperApp {
                         vec![
                             model::VoiceOccupant {
                                 id: "fixture-maya".into(),
+                                avatar_id: Some(15),
                                 name: "Maya".into(),
                                 country_code: Some("CA".into()),
                                 muted: false,
@@ -375,6 +376,7 @@ impl CaperApp {
                             },
                             model::VoiceOccupant {
                                 id: "fixture-alex".into(),
+                                avatar_id: Some(16),
                                 name: "Alex".into(),
                                 country_code: None,
                                 muted: true,
@@ -389,6 +391,7 @@ impl CaperApp {
                         Typer {
                             author: Author {
                                 id: "fixture-maya".into(),
+                                avatar_id: Some(15),
                                 name: "Maya".into(),
                                 is_guest: false,
                             },
@@ -467,6 +470,7 @@ impl CaperApp {
                             .iter()
                             .map(|member| media::Participant {
                                 id: member.id.clone(),
+                                avatar_id: member.avatar_id,
                                 name: member.display_name.clone(),
                                 country_code: None,
                                 muted: false,
@@ -548,6 +552,7 @@ impl CaperApp {
         };
         self.account = Some(Account {
             id: "fixture-owner".into(),
+            avatar_id: Some(0),
             username: Some("fixture_owner".into()),
             display_name: Some("Fixture Owner".into()),
             debug_enabled: false,
@@ -581,18 +586,21 @@ impl CaperApp {
             members: vec![
                 Member {
                     id: "fixture-owner".into(),
+                    avatar_id: Some(0),
                     username: "fixture_owner".into(),
                     display_name: "Fixture Owner".into(),
                     owner: true,
                 },
                 Member {
                     id: "fixture-maya".into(),
+                    avatar_id: Some(15),
                     username: "maya".into(),
                     display_name: "Maya".into(),
                     owner: false,
                 },
                 Member {
                     id: "fixture-alex".into(),
+                    avatar_id: Some(16),
                     username: "alex".into(),
                     display_name: "Alex".into(),
                     owner: false,
@@ -640,6 +648,7 @@ impl CaperApp {
                 client_message_id: format!("fixture-client-{index}"),
                 author: Author {
                     id: id.into(),
+                    avatar_id: Some(index as i32),
                     name: name.into(),
                     is_guest: false,
                 },
@@ -1834,16 +1843,16 @@ impl CaperApp {
             }
             AdminResult::SpaceDeleted(id) | AdminResult::SpaceLeft(id) => {
                 self.voice.revoke_space(&id);
+                self.generation += 1;
+                self.invalidate_navigation_cache();
+                self.clear_channel_state();
+                self.selected_space = None;
                 self.spaces.retain(|space| space.id != id);
                 self.dialog = None;
                 self.detail = None;
                 self.managed_members.clear();
                 self.presence.clear();
-                // The left or deleted space's conversation must not stay on
-                // screen while (or instead of) opening the next space. General
-                // is retired, so only an account space can follow.
-                self.selected_space = None;
-                self.clear_channel_state();
+                // General is retired, so only an account space can follow.
                 if let Some(space) = self.spaces.iter().find(|space| !space.demo) {
                     self.select_space(space.id.clone());
                 }
@@ -2952,6 +2961,7 @@ impl CaperApp {
             .iter()
             .map(|participant| model::VoiceOccupant {
                 id: participant.id.clone(),
+                avatar_id: participant.avatar_id,
                 name: participant.name.clone(),
                 country_code: participant.country_code.clone(),
                 muted: participant.muted,
@@ -3027,6 +3037,12 @@ impl CaperApp {
                     };
                     let speaking = own && self.voice.speaking(&person.id, muted, now);
                     ui.painter().circle_filled(center, 11.0, SURFACE);
+                    paint_avatar(
+                        ui,
+                        egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0)),
+                        &person.name,
+                        person.avatar_id,
+                    );
                     if speaking {
                         // Web: caper border plus a 1px caper ring.
                         ui.painter()
@@ -3035,19 +3051,6 @@ impl CaperApp {
                         ui.painter()
                             .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
                     }
-                    ui.painter().text(
-                        center,
-                        egui::Align2::CENTER_CENTER,
-                        person
-                            .name
-                            .chars()
-                            .next()
-                            .unwrap_or('?')
-                            .to_uppercase()
-                            .to_string(),
-                        egui::FontId::proportional(11.0),
-                        TEXT,
-                    );
                 }
                 if people.len() > 3 {
                     ui.painter().text(
@@ -3157,6 +3160,7 @@ impl CaperApp {
                         avatar(
                             ui,
                             &participant.name,
+                            participant.avatar_id,
                             28.0,
                             own && self.voice.speaking(&participant.id, muted, now),
                         );
@@ -3432,6 +3436,7 @@ impl CaperApp {
                 presence_avatar(
                     ui,
                     &self.identity_name(),
+                    self.account.as_ref().and_then(|account| account.avatar_id),
                     30.0,
                     if self.live == "Live" {
                         "online"
@@ -4170,7 +4175,7 @@ impl CaperApp {
                     .presence
                     .get(&member.id)
                     .map_or("unknown", String::as_str);
-                presence_avatar(ui, &member.display_name, 30.0, status);
+                presence_avatar(ui, &member.display_name, member.avatar_id, 30.0, status);
                 ui.label(bold(&member.display_name).size(12.0));
             });
         }
@@ -4508,7 +4513,8 @@ impl CaperApp {
                             || self.identity_name(),
                             |session| session.author.name.clone(),
                         );
-                        message_row(ui, &author, "Now", &pending.text, false, true);
+                        let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
+                        message_row(ui, &author, avatar_id, "Now", &pending.text, false, true);
                         if let Some(rejection) = &pending.rejection {
                             egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                 ui.colored_label(ERROR, format!("Not sent. {rejection}"));
@@ -4668,6 +4674,7 @@ impl CaperApp {
         message_row(
             ui,
             &message.author.name,
+            message.author.avatar_id,
             &time,
             &message.content.text,
             message.author.is_guest,
@@ -5319,7 +5326,7 @@ impl CaperApp {
             .show(ui, |ui| {
                 for member in members {
                     ui.horizontal(|ui| {
-                        avatar(ui, &member.display_name, 30.0, false);
+                        avatar(ui, &member.display_name, member.avatar_id, 30.0, false);
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&member.display_name).strong());
                             ui.label(
@@ -5801,6 +5808,7 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 fn message_row(
     ui: &mut egui::Ui,
     author: &str,
+    avatar_id: Option<i32>,
     time: &str,
     text: &str,
     guest: bool,
@@ -5811,7 +5819,7 @@ fn message_row(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
             ui.horizontal_top(|ui| {
-                avatar(ui, author, 34.0, false);
+                avatar(ui, author, avatar_id, 34.0, false);
                 ui.vertical(|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(bold(author).size(13.0));
@@ -5858,10 +5866,50 @@ fn date_divider(ui: &mut egui::Ui, label: &str) {
     });
 }
 
-fn avatar(ui: &mut egui::Ui, name: &str, size: f32, speaking: bool) {
+fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
+    avatar_id.and_then(|index| u16::try_from(index).ok().filter(|index| *index < 800))
+}
+
+fn paint_avatar(ui: &egui::Ui, rect: egui::Rect, name: &str, avatar_id: Option<i32>) {
+    if let Some(index) = caper_avatar_index(avatar_id).map(usize::from) {
+        let uv = egui::Rect::from_min_max(
+            egui::pos2((index % 32) as f32 / 32.0, (index / 32) as f32 / 25.0),
+            egui::pos2(
+                (index % 32 + 1) as f32 / 32.0,
+                (index / 32 + 1) as f32 / 25.0,
+            ),
+        );
+        egui::Image::new(egui::include_image!(
+            "../../../web/public/images/avatars/capers-v1.png"
+        ))
+        .uv(uv)
+        .paint_at(ui, rect);
+    } else {
+        ui.painter()
+            .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            name.chars()
+                .next()
+                .unwrap_or('C')
+                .to_uppercase()
+                .to_string(),
+            egui::FontId::proportional(rect.width() * 0.38),
+            TEXT,
+        );
+    }
+}
+
+fn avatar(
+    ui: &mut egui::Ui,
+    name: &str,
+    avatar_id: Option<i32>,
+    size: f32,
+    speaking: bool,
+) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), size / 2.0, RAISED);
+    paint_avatar(ui, rect, name, avatar_id);
     if speaking {
         // Web: caper border with a soft 3px caper halo.
         ui.painter().circle_stroke(
@@ -5872,34 +5920,11 @@ fn avatar(ui: &mut egui::Ui, name: &str, size: f32, speaking: bool) {
         ui.painter()
             .circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(2.0, CAPER));
     }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        name.chars()
-            .next()
-            .unwrap_or('C')
-            .to_uppercase()
-            .to_string(),
-        egui::FontId::proportional(size * 0.38),
-        TEXT,
-    );
+    rect
 }
 
-fn presence_avatar(ui: &mut egui::Ui, name: &str, size: f32, status: &str) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), size / 2.0, RAISED);
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        name.chars()
-            .next()
-            .unwrap_or('C')
-            .to_uppercase()
-            .to_string(),
-        egui::FontId::proportional(size * 0.38),
-        TEXT,
-    );
+fn presence_avatar(ui: &mut egui::Ui, name: &str, avatar_id: Option<i32>, size: f32, status: &str) {
+    let rect = avatar(ui, name, avatar_id, size, false);
     let dot = egui::pos2(rect.right() - 2.0, rect.bottom() - 3.0);
     ui.painter().circle_filled(dot, 5.0, SIDEBAR);
     ui.painter().circle_filled(
@@ -5911,6 +5936,20 @@ fn presence_avatar(ui: &mut egui::Ui, name: &str, size: f32, status: &str) {
             _ => BORDER,
         },
     );
+}
+
+#[cfg(test)]
+mod avatar_tests {
+    use super::caper_avatar_index;
+    #[test]
+    fn persisted_indices_and_fallback() {
+        for index in [0, 31, 32, 255, 256, 799] {
+            assert_eq!(caper_avatar_index(Some(index)), Some(index as u16));
+        }
+        assert_eq!(caper_avatar_index(None), None);
+        assert_eq!(caper_avatar_index(Some(-1)), None);
+        assert_eq!(caper_avatar_index(Some(800)), None);
+    }
 }
 
 fn normalize_username(value: &str) -> String {
@@ -6603,6 +6642,14 @@ mod tests {
         assert_eq!(app.selected_channel, selected);
         assert!(app.voice_target("not-in-space").is_none());
         render(&mut app, &context, vec![]);
+        // PNG decoding is asynchronous on native; wait for the real atlas rather
+        // than inspecting its loading spinner in the first two frames.
+        let started = std::time::Instant::now();
+        while context.has_pending_images() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            render(&mut app, &context, vec![]);
+        }
         let output = render(&mut app, &context, vec![]);
         let sidebar_text = |output: &egui::FullOutput, label: &str| {
             output.shapes.iter().find_map(|shape| match &shape.shape {
@@ -6613,7 +6660,24 @@ mod tests {
             })
         };
         assert!(sidebar_text(&output, "Maya").is_some());
-        let stack = sidebar_text(&output, "M").unwrap() + egui::vec2(3.0, 3.0);
+        // The saved avatar is an image now, not the old clickable "M" initial.
+        let stack = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect
+                        .brush
+                        .as_ref()
+                        .is_some_and(|brush| brush.uv.min == egui::pos2(15.0 / 32.0, 0.0))
+                        && rect.rect.width() == 20.0
+                        && rect.rect.center().x < 340.0 =>
+                {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .expect("Maya's saved avatar is rendered in the voice stack");
         click(&mut app, &context, stack);
         assert!(app.collapsed_rosters.contains("chan00000002"));
         assert!(sidebar_text(&render(&mut app, &context, vec![]), "Maya").is_none());
@@ -6932,20 +6996,54 @@ mod tests {
         assert!(!app.owner());
         assert!(app.can_leave_space());
         let space = app.selected_space.clone().unwrap();
+        // There is no public General fallback after leaving the last space.
+        app.spaces.retain(|entry| !entry.demo);
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
         assert!(app.timeline.messages().next().is_some());
         app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
         assert!(!app.spaces.iter().any(|entry| entry.id == space));
         assert!(app.detail.is_none());
-        // General is retired: with no other account space, nothing is open
-        // and the left space's conversation is gone.
-        assert_eq!(app.selected_space, None);
-        assert_eq!(app.selected_channel, None);
+        assert!(app.selected_space.is_none());
+        assert!(app.selected_channel.is_none());
+        assert!(app.session.is_none());
         assert!(app.timeline.messages().next().is_none());
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
         assert!(!app.can_leave_space());
+    }
+
+    #[test]
+    fn leaving_space_clears_private_state_before_opening_remaining_space() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-token".into());
+        app.spaces.retain(|entry| !entry.demo);
+        let mut remaining = app.spaces[0].clone();
+        remaining.id = "remaining-space".into();
+        app.spaces.push(remaining);
+        let space = app.selected_space.clone().unwrap();
+        let generation = app.generation;
+        app.session = Some(session());
+        app.draft = "private draft".into();
+        app.admin_result(crate::worker::AdminResult::SpaceLeft(space));
+
+        assert!(app.generation > generation);
+        assert!(app.selected_space.is_none());
+        assert!(app.selected_channel.is_none());
+        assert!(app.session.is_none());
+        assert!(app.timeline.messages().next().is_none());
+        assert!(app.draft.is_empty());
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.space.as_deref()),
+            Some("remaining-space")
+        );
     }
 
     #[test]
@@ -7698,6 +7796,7 @@ mod tests {
     fn account(profile: bool) -> Account {
         Account {
             id: "account".into(),
+            avatar_id: None,
             username: profile.then(|| "member".into()),
             display_name: profile.then(|| "Member".into()),
             debug_enabled: false,
@@ -7732,6 +7831,7 @@ mod tests {
             token: "chat-token".into(),
             author: Author {
                 id: "account".into(),
+                avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
             },
@@ -8141,6 +8241,7 @@ mod tests {
         let members = (0..26)
             .map(|index| Member {
                 id: format!("member-{index}"),
+                avatar_id: Some(index),
                 username: format!("member_{index}"),
                 display_name: format!("Member {index}"),
                 owner: index == 0,
@@ -8171,6 +8272,7 @@ mod tests {
             client_message_id: pending.id.clone(),
             author: Author {
                 id: "author".into(),
+                avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
             },

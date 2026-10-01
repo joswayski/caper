@@ -289,11 +289,16 @@ def main() -> None:
 
     # The first launch after a fresh install also compiles and warms the app,
     # which can take well over 20 s on a loaded CI emulator.
-    # General is retired: signed out, Caper opens straight to email sign-in.
+    # Signed-out users now land at authentication. The retired public General
+    # demo must not be reconstructed by the fixture; authenticate before
+    # exercising the populated account-space coverage below.
     login = capture("caper-android-login", "Come on in.", seconds=60)
-    assert find(login, contains="as a guest") is None, "The public guest room is gone"
     for required in ("WELCOME TO CAPER", "Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
+    for retired in ("general", "Join", "TEST FIXTURE"):
+        assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
+    assert find(login, description="Channel options") is None
+    assert find(login, description="Create channel") is None
 
     fixture({"failure": {"path": "/api/auth/email/request", "method": "POST", "status": 503}})
     enter_first_field("fixture@example.test")
@@ -311,10 +316,6 @@ def main() -> None:
     for required in ("Channels", "general", "design", "planning", "Members", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
-    general = find(desktop, text="general")
-    join = find(desktop, text="Join")
-    assert general is not None and join is not None
-    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
 
     # Hide the list while reading a non-default channel: collapsing must not
     # silently select General, disconnect chat, or expose hidden row actions.

@@ -1,10 +1,15 @@
 import Foundation
 
+public enum CaperAvatar {
+    public static func index(for avatarID: Int?) -> Int? { avatarID.flatMap { (0...799).contains($0) ? $0 : nil } }
+}
+
 public struct Account: Codable, Equatable, Sendable {
     public let id: String
     public var username: String?
     public var displayName: String?
     public var debugEnabled: Bool?
+    public var avatarId: Int? = nil
 }
 
 public struct Space: Codable, Equatable, Identifiable, Sendable {
@@ -26,6 +31,7 @@ public struct Member: Codable, Equatable, Identifiable, Sendable {
     public let username: String
     public let displayName: String
     public let owner: Bool
+    public var avatarId: Int? = nil
 }
 
 public struct SpaceLimits: Codable, Equatable, Sendable {
@@ -86,6 +92,7 @@ public struct ChatAuthor: Codable, Equatable, Sendable {
     public let id: String
     public let name: String
     public let isGuest: Bool
+    public var avatarId: Int? = nil
 }
 
 public struct ChatContent: Codable, Equatable, Sendable {

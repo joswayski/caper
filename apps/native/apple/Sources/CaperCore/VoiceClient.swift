@@ -39,6 +39,7 @@ private struct EmptyBody: Encodable {}
 private struct VoiceTrack: Decodable, Hashable { let id: String; let kind: String }
 public struct VoiceParticipant: Decodable, Identifiable, Sendable {
     public let id: String
+    public var avatarId: Int? = nil
     public let name: String
     public let countryCode: String?
     public let muted: Bool
