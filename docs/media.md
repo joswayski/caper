@@ -856,7 +856,8 @@ npx wrangler deploy --env staging
 | Platform | Send files | Show files |
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
-| Android, Apple, Rust desktop | No | Message text only. They ignore the additive `attachments` field; a file-only message shows an empty text row. |
+| Android, Apple | No | Message text only. They ignore the additive `attachments` field; a file-only message shows an empty text row. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills: exact-palette indexed PNG or JPEG (pure Rust; no WebP encoder) with the server settings. Videos upload unchanged (no transcoder); MP4/QuickTime size and duration from headers | Inline images (decoded off the UI thread, cached by attachment id). Video posters, audio and files open in the system browser or player; no in-app playback. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 ### Validation
 
@@ -874,9 +875,18 @@ npx wrangler deploy --env staging
   and the real Worker code: a 1.6 MB PNG uploaded as a 143 KB WebP, a second
   member received it live through the gateway, history reload and a 390 px
   layout rendered, a tampered signature returned 404.
+- Rust desktop unit tests: tolerant attachment parsing, URL expiry and
+  refresh batching with one retry after 403/404, compression decisions, a
+  pixel-exact palette PNG round trip, MP4 header probing, and the upload
+  request sequence against a loopback fake server (exact storage headers and
+  length, no credentials on storage `PUT`s, `attachmentIds` only when present,
+  storage-full errors). The labelled `--fixture parity-attachments` preview
+  was rendered under Xvfb (software Vulkan) at 1440×900 and 900×700.
 - Not yet validated: live R2 (signature acceptance, signed `content-length`
   and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders,
-  and physical phones.
+  and physical phones. Desktop has not uploaded to a live API/R2/CDN; its
+  Windows file dialog and drag and drop and the Linux portal dialog have not
+  been exercised interactively.
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus. On

@@ -5,6 +5,10 @@ use crate::model::{
     SpaceDetail, Spaces,
 };
 use eframe::egui;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -108,6 +112,25 @@ pub enum Command {
         channel: String,
         client_id: String,
         text: String,
+        /// Resent unchanged on retry: ids join the idempotency hash.
+        attachment_ids: Vec<String>,
+    },
+    /// Whether uploads are configured, and the compression settings.
+    AssetUsage {
+        token: String,
+    },
+    RefreshAttachmentUrls {
+        token: String,
+        ids: Vec<String>,
+    },
+    /// Prepare and upload one file off the UI thread, reporting progress.
+    Upload {
+        key: u64,
+        token: String,
+        channel: String,
+        path: PathBuf,
+        settings: crate::compress::Compression,
+        cancel: Arc<AtomicBool>,
     },
     React {
         generation: u64,
@@ -335,6 +358,21 @@ pub enum Event {
         active: bool,
         result: Result<crate::model::ReactionUpdate, SendFailure>,
     },
+    /// Fenced by account token: channel loads advance the generation.
+    AssetUsage {
+        token: String,
+        settings: Option<crate::compress::Compression>,
+    },
+    AttachmentUrls {
+        token: String,
+        ids: Vec<String>,
+        result: Result<BTreeMap<String, crate::attachments::FreshUrl>, String>,
+    },
+    /// Fenced by draft key: removed or abandoned drafts ignore late updates.
+    Upload {
+        key: u64,
+        update: UploadUpdate,
+    },
     Credential {
         generation: u64,
         result: Result<(), String>,
@@ -348,6 +386,18 @@ pub enum Event {
         result: Result<AdminResult, String>,
     },
     Gateway(GatewayEvent),
+}
+
+pub enum UploadUpdate {
+    Prepared {
+        name: String,
+        kind: crate::model::AttachmentKind,
+        source_size: u64,
+        stored_size: u64,
+        thumbnail: Option<egui::ColorImage>,
+    },
+    Progress(f32),
+    Finished(Result<crate::model::Attachment, crate::uploads::UploadError>),
 }
 
 pub struct SendFailure {
@@ -655,8 +705,93 @@ fn advance_generation(current: &mut u64, candidate: u64) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
+fn upload_file(
+    api: &Api,
+    key: u64,
+    token: &str,
+    channel: &str,
+    path: &std::path::Path,
+    settings: &crate::compress::Compression,
+    cancel: Arc<AtomicBool>,
+    events: &Sender<Event>,
+    context: &egui::Context,
+) {
+    let update = |update| send(events, context, Event::Upload { key, update });
+    let mut prepared = match crate::uploads::prepare_path(path, settings) {
+        Ok(prepared) => prepared,
+        Err(message) => {
+            update(UploadUpdate::Finished(Err(
+                crate::uploads::UploadError::new(message),
+            )));
+            return;
+        }
+    };
+    update(UploadUpdate::Prepared {
+        name: prepared.name.clone(),
+        kind: prepared.kind,
+        source_size: prepared.source_size,
+        stored_size: prepared.size,
+        thumbnail: prepared.thumbnail.take().map(|image| {
+            egui::ColorImage::from_rgba_unmultiplied(
+                [image.width() as usize, image.height() as usize],
+                image.as_raw(),
+            )
+        }),
+    });
+    // Whole-percent steps keep the event queue small for large files.
+    let progress: Arc<dyn Fn(f32) + Send + Sync> = {
+        let events = events.clone();
+        let context = context.clone();
+        let last = std::sync::Mutex::new(-1_i32);
+        Arc::new(move |fraction: f32| {
+            let percent = (fraction.clamp(0.0, 1.0) * 100.0) as i32;
+            let mut last = last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if percent > *last {
+                *last = percent;
+                send(
+                    &events,
+                    &context,
+                    Event::Upload {
+                        key,
+                        update: UploadUpdate::Progress(fraction),
+                    },
+                );
+            }
+        })
+    };
+    let result = crate::uploads::upload(api, token, channel, prepared, progress, cancel);
+    update(UploadUpdate::Finished(result));
+}
+
 fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::Context) {
     let event = match command {
+        Command::Upload {
+            key,
+            token,
+            channel,
+            path,
+            settings,
+            cancel,
+        } => {
+            upload_file(
+                api, key, &token, &channel, &path, &settings, cancel, events, context,
+            );
+            return;
+        }
+        Command::AssetUsage { token } => Event::AssetUsage {
+            settings: api.asset_usage(&token).ok(),
+            token,
+        },
+        Command::RefreshAttachmentUrls { token, ids } => Event::AttachmentUrls {
+            result: api
+                .attachment_urls(&token, &ids)
+                .map_err(|error| error.to_string()),
+            token,
+            ids,
+        },
         Command::LoadDirects { generation, token } => Event::DirectsLoaded {
             generation,
             result: api
@@ -874,12 +1009,20 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             channel,
             client_id,
             text,
+            attachment_ids,
         } => Event::Sent {
             generation,
             channel: channel.clone(),
             client_id: client_id.clone(),
             result: api
-                .send(token.as_deref(), &chat_token, &channel, &client_id, &text)
+                .send(
+                    token.as_deref(),
+                    &chat_token,
+                    &channel,
+                    &client_id,
+                    &text,
+                    &attachment_ids,
+                )
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
                     message: error.to_string(),

@@ -1,7 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
+mod attachments;
 mod avatar_images;
+mod compress;
 mod credentials;
 mod daily_icon;
 mod effects;
@@ -16,6 +18,7 @@ mod navigation;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
 mod updates;
+mod uploads;
 mod voice;
 mod worker;
 
@@ -67,23 +70,29 @@ enum NavIcon {
     PhoneOff,
     HeadphoneOff,
     AudioLines,
+    Paperclip,
+    FileText,
+    Play,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingSend {
     id: String,
     text: String,
+    /// Uploaded files sent with this message; retries resend the same ids.
+    attachments: Vec<model::Attachment>,
     created_at: String,
     sending: bool,
     rejection: Option<String>,
 }
 
 impl PendingSend {
-    fn prepare(previous: Option<&Self>, draft: &str) -> Self {
+    fn prepare(previous: Option<&Self>, draft: &str, attachments: Vec<model::Attachment>) -> Self {
         previous.map_or_else(
             || Self {
                 id: uuid::Uuid::new_v4().to_string(),
                 text: draft.into(),
+                attachments,
                 created_at: Local::now().to_rfc3339(),
                 sending: true,
                 rejection: None,
@@ -91,6 +100,7 @@ impl PendingSend {
             |pending| Self {
                 id: pending.id.clone(),
                 text: pending.text.clone(),
+                attachments: pending.attachments.clone(),
                 created_at: pending.created_at.clone(),
                 sending: true,
                 rejection: None,
@@ -148,6 +158,23 @@ struct Typer {
 struct NavigationTarget {
     space: Option<String>,
     channel: Option<String>,
+}
+
+/// A file in the composer: preparing, uploading, uploaded or failed.
+struct DraftUpload {
+    key: u64,
+    channel: String,
+    name: String,
+    kind: model::AttachmentKind,
+    source_size: u64,
+    stored_size: Option<u64>,
+    progress: f32,
+    error: Option<String>,
+    attachment: Option<model::Attachment>,
+    /// Local decode for the chip and for the sent message before its URL loads.
+    thumbnail_image: Option<egui::ColorImage>,
+    thumbnail: Option<egui::TextureHandle>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -255,12 +282,24 @@ struct CaperApp {
     connection_copy_status: &'static str,
     diagnostics_copied: bool,
     updates: updates::Updates,
+    /// Compression settings while uploads are configured; `None` hides Attach.
+    uploads: Option<compress::Compression>,
+    uploads_checked: Option<Instant>,
+    drafts: Vec<DraftUpload>,
+    draft_keys: u64,
+    media: attachments::Media,
+    file_picker: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    /// Decoded local images of finished uploads, shown without a download.
+    local_media: Vec<(String, egui::ColorImage)>,
+    open_after_refresh: Option<String>,
 }
 
 impl CaperApp {
     fn new(context: &egui::Context, api: api::Api, fixture: Option<&str>) -> Self {
         configure(context);
         let voice = Voice::new(api.base().clone(), context.clone());
+        // Fixtures never fetch attachment media.
+        let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
         let worker = Worker::new(api, context.clone());
         let now = Instant::now();
         let mut app = Self {
@@ -355,6 +394,14 @@ impl CaperApp {
             connection_copy_status: "",
             diagnostics_copied: false,
             updates: updates::Updates::start(context, fixture.is_none()),
+            uploads: None,
+            uploads_checked: None,
+            drafts: Vec::new(),
+            draft_keys: 0,
+            media,
+            file_picker: None,
+            local_media: Vec::new(),
+            open_after_refresh: None,
         };
         if let Some(name @ ("parity-update" | "parity-update-download")) = fixture {
             app.updates = updates::Updates::preview(updates::Available {
@@ -402,6 +449,8 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
+                } else if name == "parity-attachments" {
+                    app.install_attachments_fixture();
                 } else if matches!(
                     name,
                     "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
@@ -574,6 +623,7 @@ impl CaperApp {
                     let mut pending = PendingSend::prepare(
                         None,
                         "This fixture message was rejected. Edit or dismiss it without losing your next draft.",
+                        Vec::new(),
                     );
                     pending.sending = false;
                     pending.rejection =
@@ -817,6 +867,7 @@ impl CaperApp {
                     version: 1,
                     kind: "text".into(),
                     text: text.into(),
+                    attachments: Vec::new(),
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
@@ -828,6 +879,159 @@ impl CaperApp {
         for root in ["general", "chan00000001", "chan00000002", "chan00000003"] {
             self.media_availability.insert(root.into(), true);
         }
+    }
+
+    /// Static attachment preview: synthetic local images, never fetched, and
+    /// `.invalid` URLs. Uploads read as available without contacting a server.
+    fn install_attachments_fixture(&mut self) {
+        self.token = Some("fixture-account".into());
+        self.session = Some(ChatSession {
+            token: "fixture-token".into(),
+            author: Author {
+                id: "fixture-owner".into(),
+                name: "Fixture Owner".into(),
+                is_guest: false,
+                avatar_id: Some(0),
+            },
+        });
+        self.uploads = Some(compress::Compression::default());
+        let url = |kind: &str, id: &str| format!("https://fixture.invalid/{kind}/{id}");
+        let file = |id: &str, kind, content_type: &str, name: &str, size| model::Attachment {
+            id: id.into(),
+            kind,
+            content_type: content_type.into(),
+            name: name.into(),
+            size,
+            width: None,
+            height: None,
+            duration_ms: None,
+            preview: false,
+            url: Some(url("original", id)),
+            preview_url: None,
+            unavailable: false,
+        };
+        let mut screenshot = file(
+            "fixture-image",
+            model::AttachmentKind::Image,
+            "image/png",
+            "TEST FIXTURE screenshot.png",
+            146_432,
+        );
+        (screenshot.width, screenshot.height) = (Some(1280), Some(720));
+        let mut video = file(
+            "fixture-video",
+            model::AttachmentKind::Video,
+            "video/mp4",
+            "TEST FIXTURE walkthrough.mp4",
+            8_400_000,
+        );
+        (video.width, video.height) = (Some(1920), Some(1080));
+        let audio = file(
+            "fixture-audio",
+            model::AttachmentKind::Audio,
+            "audio/mpeg",
+            "TEST FIXTURE voice note.mp3",
+            1_250_000,
+        );
+        let report = file(
+            "fixture-pdf",
+            model::AttachmentKind::File,
+            "application/pdf",
+            "TEST FIXTURE report.pdf",
+            2_400_000,
+        );
+        let mut removed = file(
+            "fixture-removed",
+            model::AttachmentKind::File,
+            "application/zip",
+            "TEST FIXTURE archive.zip",
+            4_096,
+        );
+        removed.url = None;
+        removed.unavailable = true;
+        let mut messages: Vec<_> = self.timeline.messages().cloned().collect();
+        messages[2].content.attachments = vec![screenshot, video];
+        messages[3].content.text.clear();
+        messages[3].content.attachments = vec![audio, report, removed];
+        self.timeline
+            .reset(messages, "4")
+            .expect("valid attachments fixture");
+        let [width, height] = [320_usize, 180];
+        let pixels: Vec<u8> = (0..width * height)
+            .flat_map(|index| {
+                let (x, y) = (index % width, index / width);
+                if (40..140).contains(&x) && (40..140).contains(&y) {
+                    [182, 77, 50, 255]
+                } else {
+                    [21 + (x / 8) as u8, 23 + (y / 6) as u8, 25, 255]
+                }
+            })
+            .collect();
+        let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
+        self.local_media
+            .push(("fixture-image".into(), image.clone()));
+        let channel = self.selected_channel.clone().unwrap_or_default();
+        let draft = |key, name: &str, source_size, stored_size, progress, error: Option<&str>| {
+            DraftUpload {
+                key,
+                channel: channel.clone(),
+                name: name.into(),
+                kind: model::AttachmentKind::Image,
+                source_size,
+                stored_size,
+                progress,
+                error: error.map(str::to_owned),
+                attachment: None,
+                thumbnail_image: Some(image.clone()),
+                thumbnail: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }
+        };
+        let mut done = draft(
+            1,
+            "TEST FIXTURE photo.jpg",
+            1_677_722,
+            Some(146_432),
+            1.0,
+            None,
+        );
+        done.attachment = Some(model::Attachment {
+            id: "fixture-draft".into(),
+            kind: model::AttachmentKind::Image,
+            content_type: "image/jpeg".into(),
+            name: "TEST FIXTURE photo.jpg".into(),
+            size: 146_432,
+            width: None,
+            height: None,
+            duration_ms: None,
+            preview: false,
+            url: None,
+            preview_url: None,
+            unavailable: false,
+        });
+        let mut failed = draft(
+            3,
+            "TEST FIXTURE large.mov",
+            900_000_000,
+            Some(900_000_000),
+            0.0,
+            Some("You’ve used all of your file storage."),
+        );
+        failed.kind = model::AttachmentKind::Video;
+        failed.thumbnail_image = None;
+        self.drafts = vec![
+            done,
+            draft(
+                2,
+                "TEST FIXTURE diagram.png",
+                640_000,
+                Some(52_000),
+                0.45,
+                None,
+            ),
+            failed,
+        ];
+        self.draft_keys = 3;
     }
 
     /// Voice actions use their own channel's media root, independently of text.
@@ -1087,6 +1291,17 @@ impl CaperApp {
                 {
                     self.sent(result)
                 }
+                Event::AssetUsage { token, settings } if self.token.as_ref() == Some(&token) => {
+                    self.uploads = settings;
+                }
+                Event::AttachmentUrls { token, ids, result }
+                    if self.token.as_ref() == Some(&token) =>
+                {
+                    if let Some(url) = self.media.refreshed(&ids, result.unwrap_or_default()) {
+                        self.open_after_refresh = Some(url);
+                    }
+                }
+                Event::Upload { key, update } => self.upload_update(key, update),
                 Event::Reacted {
                     generation,
                     channel,
@@ -1163,6 +1378,9 @@ impl CaperApp {
         self.selected_space = None;
         self.clear_channel_state();
         self.token = Some(token);
+        self.uploads = None;
+        self.uploads_checked = None;
+        self.check_uploads();
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
         let needs_profile = account.username.is_none() || account.display_name.is_none();
@@ -1346,10 +1564,28 @@ impl CaperApp {
         })
     }
 
+    /// Web `uploadsAvailable`: any failure hides Attach. Rechecked at most
+    /// once a minute on channel loads while unavailable.
+    fn check_uploads(&mut self) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        if self.uploads.is_some()
+            || self
+                .uploads_checked
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(60))
+        {
+            return;
+        }
+        self.uploads_checked = Some(Instant::now());
+        self.worker.send(Command::AssetUsage { token });
+    }
+
     fn connect_gateway(&mut self) {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
+        self.check_uploads();
         self.roster_generation += 1;
         self.channel_rosters.clear();
         self.unavailable_rosters.clear();
@@ -1614,6 +1850,7 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.drop_drafts();
         self.reaction_picker = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
@@ -1983,6 +2220,7 @@ impl CaperApp {
             let general = self.detail.as_ref().is_some_and(|detail| detail.space.demo);
             let mut pending = self.pending.take();
             let draft = std::mem::take(&mut self.draft);
+            let drafts = std::mem::take(&mut self.drafts);
             let timeline = std::mem::take(&mut self.timeline);
             let has_more = self.has_more;
             if let Some(pending) = &mut pending {
@@ -1991,18 +2229,23 @@ impl CaperApp {
             self.reload_selected_channel(channel, general);
             self.pending = pending;
             self.draft = draft;
+            self.drafts = drafts;
             self.timeline = timeline;
             self.has_more = has_more;
         }
     }
 
     fn discard_rejected(&mut self) -> Option<String> {
+        self.take_rejected().map(|pending| pending.text)
+    }
+
+    fn take_rejected(&mut self) -> Option<PendingSend> {
         if self
             .pending
             .as_ref()
             .is_some_and(|pending| !pending.sending && pending.rejection.is_some())
         {
-            self.pending.take().map(|pending| pending.text)
+            self.pending.take()
         } else {
             None
         }
@@ -2063,6 +2306,7 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.drop_drafts();
         self.reaction_picker = None;
         self.pending_reactions.clear();
         self.reaction_errors.clear();
@@ -2086,6 +2330,11 @@ impl CaperApp {
             });
         }
         self.account = None;
+        self.uploads = None;
+        self.uploads_checked = None;
+        self.media.clear();
+        self.local_media.clear();
+        self.open_after_refresh = None;
         self.invalidate_navigation_cache();
         self.spaces.clear();
         self.directs.clear();
@@ -2122,8 +2371,33 @@ impl CaperApp {
             .pending
             .as_ref()
             .map_or_else(|| self.draft.clone(), |pending| pending.text.clone());
+        let attachments = if let Some(pending) = &self.pending {
+            pending.attachments.clone()
+        } else {
+            let drafts: Vec<_> = self
+                .drafts
+                .iter()
+                .filter(|draft| draft.channel == channel)
+                .collect();
+            if drafts.iter().any(|draft| draft.attachment.is_none()) {
+                self.error = Some(
+                    if drafts.iter().any(|draft| draft.error.is_some()) {
+                        "Remove files that failed to upload first."
+                    } else {
+                        "Wait for files to finish uploading."
+                    }
+                    .into(),
+                );
+                return;
+            }
+            drafts
+                .iter()
+                .filter_map(|draft| draft.attachment.clone())
+                .collect()
+        };
         let count = text.chars().count();
-        if text.trim().is_empty()
+        // Text may be empty only when files are attached.
+        if (text.trim().is_empty() && attachments.is_empty())
             || count > 4_000
             || text
                 .chars()
@@ -2141,10 +2415,24 @@ impl CaperApp {
             );
             return;
         }
-        let pending = PendingSend::prepare(self.pending.as_ref(), &text);
+        let pending = PendingSend::prepare(self.pending.as_ref(), &text, attachments);
         let id = pending.id.clone();
-        if self.pending.is_none() && self.draft == text {
-            self.draft.clear();
+        let attachment_ids: Vec<String> = pending
+            .attachments
+            .iter()
+            .map(|attachment| attachment.id.clone())
+            .collect();
+        if self.pending.is_none() {
+            if self.draft == text {
+                self.draft.clear();
+            }
+            // The pending row now owns the sent files.
+            self.drafts.retain(|draft| {
+                draft
+                    .attachment
+                    .as_ref()
+                    .is_none_or(|attachment| !attachment_ids.contains(&attachment.id))
+            });
         }
         self.pending = Some(pending);
         self.error = None;
@@ -2156,7 +2444,169 @@ impl CaperApp {
             channel,
             client_id: id,
             text,
+            attachment_ids,
         });
+    }
+
+    fn can_attach(&self) -> bool {
+        self.uploads.is_some()
+            && self.token.is_some()
+            && self.session.is_some()
+            && self.selected_is_joined()
+            && !self.detail.as_ref().is_some_and(|detail| detail.space.demo)
+    }
+
+    fn pick_files(&mut self, context: &egui::Context) {
+        if self.file_picker.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let context = context.clone();
+        // The native dialog blocks its own thread, never the UI.
+        std::thread::spawn(move || {
+            let files = rfd::FileDialog::new()
+                .set_title("Attach files")
+                .pick_files()
+                .unwrap_or_default();
+            let _ = sender.send(files);
+            context.request_repaint();
+        });
+        self.file_picker = Some(receiver);
+    }
+
+    /// Start preparing and uploading picked or dropped files (at most 10).
+    fn add_files(&mut self, paths: Vec<std::path::PathBuf>) {
+        if paths.is_empty() || !self.can_attach() {
+            return;
+        }
+        let (Some(settings), Some(token), Some(channel)) = (
+            self.uploads.clone(),
+            self.token.clone(),
+            self.selected_channel.clone(),
+        ) else {
+            return;
+        };
+        let room = compress::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
+        if room == 0 {
+            self.error = Some(format!(
+                "You can attach up to {} files.",
+                compress::MAX_ATTACHMENTS
+            ));
+            return;
+        }
+        self.error = (paths.len() > room).then(|| {
+            format!(
+                "Only {room} more file{} can be attached.",
+                if room == 1 { "" } else { "s" }
+            )
+        });
+        for path in paths.into_iter().take(room) {
+            self.draft_keys += 1;
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.drafts.push(DraftUpload {
+                key: self.draft_keys,
+                channel: channel.clone(),
+                name: path
+                    .file_name()
+                    .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned()),
+                kind: model::AttachmentKind::File,
+                source_size: 0,
+                stored_size: None,
+                progress: 0.0,
+                error: None,
+                attachment: None,
+                thumbnail_image: None,
+                thumbnail: None,
+                cancel: cancel.clone(),
+            });
+            self.worker.send(Command::Upload {
+                key: self.draft_keys,
+                token: token.clone(),
+                channel: channel.clone(),
+                path,
+                settings: settings.clone(),
+                cancel,
+            });
+        }
+    }
+
+    /// Editing a rejected message returns its uploaded files to the composer.
+    fn restore_drafts(&mut self, attachments: Vec<model::Attachment>) {
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
+        let room = compress::MAX_ATTACHMENTS.saturating_sub(self.drafts.len());
+        for attachment in attachments.into_iter().take(room) {
+            self.draft_keys += 1;
+            self.drafts.push(DraftUpload {
+                key: self.draft_keys,
+                channel: channel.clone(),
+                name: attachment.name.clone(),
+                kind: attachment.kind,
+                source_size: attachment.size,
+                stored_size: Some(attachment.size),
+                progress: 1.0,
+                error: None,
+                attachment: Some(attachment),
+                thumbnail_image: None,
+                thumbnail: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+        }
+    }
+
+    fn remove_draft(&mut self, key: u64) {
+        if let Some(index) = self.drafts.iter().position(|draft| draft.key == key) {
+            self.drafts[index]
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.drafts.remove(index);
+        }
+    }
+
+    /// Uploads belong to one channel; abandon them when it changes.
+    fn drop_drafts(&mut self) {
+        for draft in self.drafts.drain(..) {
+            draft
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn upload_update(&mut self, key: u64, update: worker::UploadUpdate) {
+        let Some(draft) = self.drafts.iter_mut().find(|draft| draft.key == key) else {
+            return;
+        };
+        match update {
+            worker::UploadUpdate::Prepared {
+                name,
+                kind,
+                source_size,
+                stored_size,
+                thumbnail,
+            } => {
+                draft.name = name;
+                draft.kind = kind;
+                draft.source_size = source_size;
+                draft.stored_size = Some(stored_size);
+                draft.thumbnail_image = thumbnail;
+            }
+            worker::UploadUpdate::Progress(progress) => {
+                draft.progress = progress.max(draft.progress);
+            }
+            worker::UploadUpdate::Finished(Ok(attachment)) => {
+                draft.progress = 1.0;
+                if attachment.kind == model::AttachmentKind::Image
+                    && let Some(image) = draft.thumbnail_image.clone()
+                {
+                    self.local_media.push((attachment.id.clone(), image));
+                }
+                draft.attachment = Some(attachment);
+            }
+            worker::UploadUpdate::Finished(Err(error)) => {
+                draft.error = Some(error.message);
+            }
+        }
     }
 
     fn set_typing(&mut self, typing: bool) {
@@ -2499,6 +2949,7 @@ impl eframe::App for CaperApp {
         }
         self.refresh_media_status();
         self.periodic(context);
+        self.attachment_housekeeping(context);
         self.update_banner(context);
         self.page(context);
         if !matches!(self.dialog, Some(Dialog::Audio)) {
@@ -5092,15 +5543,23 @@ impl CaperApp {
             );
             // A persisted bottom-panel height otherwise constrains the scroll
             // viewport to the previous draft's size, even when the text grows.
+            let attach = self.can_attach();
+            let attach_width = if attach { 36.0 } else { 0.0 };
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
-                (ui.available_width() - 36.0 - 22.0).max(1.0),
+                (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
             ).size().y);
+            let chip_rows = if attach && !self.drafts.is_empty() {
+                let per_row = (((ui.available_width() - 36.0 + 8.0) / 244.0).floor() as usize).max(1);
+                self.drafts.len().div_ceil(per_row) as f32
+            } else {
+                0.0
+            };
             let editor_height = (draft_height + 20.0).clamp(42.0, (ui.ctx().viewport_rect().height() * 0.4).min(320.0));
             let session_row = if self.session_error.is_some() { 24.0 } else { 0.0 };
             let joined = self.selected_is_joined();
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(if joined { editor_height + 24.0 + session_row } else { 44.0 })
+                .min_height(if joined { editor_height + 24.0 + session_row + chip_rows * 56.0 } else { 44.0 })
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
@@ -5144,19 +5603,23 @@ impl CaperApp {
                             }
                         });
                     }
+                    if attach && !self.drafts.is_empty() {
+                        self.draft_chips(ui);
+                        ui.add_space(8.0);
+                    }
                     let before = self.draft.clone();
                     let placeholder = if self.selected_direct.is_some() {
                         format!("Message {}", self.channel_name())
                     } else {
                         format!("Message #{}", self.channel_name())
                     };
-                    let editor = egui::ScrollArea::vertical()
+                    let editor_area = |ui: &mut egui::Ui, draft: &mut String| egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height((ui.ctx().viewport_rect().height() * 0.4).min(320.0))
                         .min_scrolled_height(42.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| ui.add(
-                        egui::TextEdit::multiline(&mut self.draft)
+                        egui::TextEdit::multiline(draft)
                             .id(egui::Id::new("message-composer"))
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, 42.0))
@@ -5171,6 +5634,27 @@ impl CaperApp {
                             .background_color(COMPOSER)
                             .char_limit(4_000),
                     ));
+                    let editor = if attach {
+                        let full = self.drafts.len() >= compress::MAX_ATTACHMENTS;
+                        let mut pick = false;
+                        let editor = ui.horizontal_top(|ui| {
+                            ui.vertical(|ui| {
+                                ui.add_space(7.0);
+                                let enabled = !full && self.file_picker.is_none();
+                                let button = ui
+                                    .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Paperclip, "Attach files"))
+                                    .inner;
+                                pick = button.clicked();
+                            });
+                            editor_area(ui, &mut self.draft)
+                        }).inner;
+                        if pick {
+                            self.pick_files(ui.ctx());
+                        }
+                        editor
+                    } else {
+                        editor_area(ui, &mut self.draft)
+                    };
                     let response = editor.inner;
                     ui.painter().rect_stroke(
                         editor.inner_rect,
@@ -5305,6 +5789,7 @@ impl CaperApp {
                         );
                         let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
                         message_row(ui, &author, avatar_id, "Now", &pending.text, false, true);
+                        self.attachment_list(ui, &pending.attachments, true);
                         if let Some(rejection) = &pending.rejection {
                             egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                 ui.colored_label(ERROR, format!("Not sent. {rejection}"));
@@ -5312,8 +5797,9 @@ impl CaperApp {
                                     let button = |label| egui::Button::new(RichText::new(label).size(12.0)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, BORDER)).corner_radius(8).min_size(egui::vec2(60.0, 32.0));
                                     if ui.add_enabled(self.draft.is_empty(), button("Edit"))
                                         .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
-                                        && let Some(text) = self.discard_rejected() {
-                                        self.draft = text;
+                                        && let Some(rejected) = self.take_rejected() {
+                                        self.draft = rejected.text;
+                                        self.restore_drafts(rejected.attachments);
                                         ui.memory_mut(|memory| memory.request_focus(egui::Id::new("message-composer")));
                                     }
                                     if ui.add(button("Dismiss")).clicked() { self.discard_rejected(); }
@@ -5347,6 +5833,19 @@ impl CaperApp {
                         });
                     }
                 });
+            if self.can_attach() && ui.ctx().input(|input| !input.raw.hovered_files.is_empty()) {
+                let rect = history.inner_rect.shrink(12.0);
+                let painter = ui.painter();
+                painter.rect_filled(rect, 8.0, Color32::from_rgba_unmultiplied(12, 13, 15, 225));
+                painter.rect_stroke(rect, 8.0, Stroke::new(1.5, TERRACOTTA), egui::StrokeKind::Inside);
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("Drop files to attach (up to {})", compress::MAX_ATTACHMENTS),
+                    egui::FontId::new(14.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                    TEXT,
+                );
+            }
             self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
@@ -5472,6 +5971,7 @@ impl CaperApp {
             message.author.is_guest,
             false,
         );
+        self.attachment_list(ui, &message.content.attachments, false);
         let author = self
             .session
             .as_ref()
@@ -5580,6 +6080,336 @@ impl CaperApp {
                     });
                 }
             });
+    }
+
+    /// Files under a message: inline images, video posters that open the
+    /// system player, and cards for audio and other files.
+    fn attachment_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        attachments: &[model::Attachment],
+        pending: bool,
+    ) {
+        if attachments.is_empty() {
+            return;
+        }
+        let unix_now = chrono::Utc::now().timestamp();
+        let now = Instant::now();
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 62,
+                right: 18,
+                top: 0,
+                bottom: 4,
+            })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                ui.horizontal_wrapped(|ui| {
+                    for attachment in attachments {
+                        let attachment = self.media.resolve(attachment);
+                        if !pending {
+                            self.media.visible(&attachment, unix_now, now);
+                        }
+                        let inline = !attachment.unavailable
+                            && (pending || attachment.url.is_some())
+                            && matches!(
+                                attachment.kind,
+                                model::AttachmentKind::Image | model::AttachmentKind::Video
+                            );
+                        let clicked = if inline {
+                            self.media_tile(ui, &attachment, pending)
+                        } else {
+                            file_card(ui, &attachment, pending)
+                        };
+                        if clicked && !pending {
+                            self.media.open(ui.ctx(), &attachment, unix_now);
+                        }
+                    }
+                });
+            });
+        if self.media.busy() {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn media_tile(
+        &mut self,
+        ui: &mut egui::Ui,
+        attachment: &model::Attachment,
+        pending: bool,
+    ) -> bool {
+        let video = attachment.kind == model::AttachmentKind::Video;
+        // Narrow conversations shrink the frame, keeping its aspect ratio.
+        let frame = attachments::frame_size(attachment);
+        let size = frame * (ui.max_rect().width() / frame.x).clamp(0.1, 1.0);
+        let (rect, response) = ui.allocate_exact_size(
+            size,
+            if pending {
+                egui::Sense::hover()
+            } else {
+                egui::Sense::click()
+            },
+        );
+        let source = if pending {
+            None
+        } else if video {
+            attachment.preview_url.as_deref()
+        } else {
+            attachment
+                .preview_url
+                .as_deref()
+                .or(attachment.url.as_deref())
+        };
+        let state = if video && source.is_none() && !pending {
+            attachments::ImageState::Failed
+        } else {
+            self.media.image(&attachment.id, source)
+        };
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 8.0, SURFACE);
+        match state {
+            attachments::ImageState::Ready(texture) => {
+                egui::Image::new((texture, size))
+                    .corner_radius(8)
+                    .paint_at(ui, rect);
+            }
+            attachments::ImageState::Loading => {}
+            attachments::ImageState::Failed if !video => {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    if pending {
+                        "Uploaded"
+                    } else {
+                        "Image unavailable"
+                    },
+                    egui::FontId::proportional(11.5),
+                    MUTED,
+                );
+            }
+            attachments::ImageState::Failed => {}
+        }
+        if video {
+            let center = rect.center();
+            painter.circle_filled(center, 22.0, Color32::from_black_alpha(170));
+            paint_icon(
+                &painter,
+                egui::Rect::from_center_size(center + egui::vec2(1.5, 0.0), egui::vec2(20.0, 20.0)),
+                NavIcon::Play,
+                TEXT,
+            );
+        }
+        painter.rect_stroke(
+            rect,
+            8.0,
+            Stroke::new(
+                1.0,
+                if response.hovered() && !pending {
+                    MUTED
+                } else {
+                    BORDER
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        let label = if video {
+            format!("Play {} in your browser or video player", attachment.name)
+        } else {
+            format!("Open {}", attachment.name)
+        };
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, !pending, label.clone())
+        });
+        if pending {
+            return false;
+        }
+        let response = response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(label);
+        response.clicked()
+    }
+
+    /// File chips above the composer: name, size saving, progress, remove.
+    fn draft_chips(&mut self, ui: &mut egui::Ui) {
+        let mut remove = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            for draft in &mut self.drafts {
+                let (rect, chip) =
+                    ui.allocate_exact_size(egui::vec2(236.0, 48.0), egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 8.0, SURFACE);
+                let thumb = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(8.0, 8.0),
+                    egui::vec2(32.0, 32.0),
+                );
+                if draft.thumbnail.is_none()
+                    && let Some(image) = draft.thumbnail_image.clone()
+                {
+                    draft.thumbnail = Some(ui.ctx().load_texture(
+                        format!("draft-{}", draft.key),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+                if let Some(texture) = &draft.thumbnail {
+                    // Centre-crop the local preview into the square.
+                    let [width, height] = texture.size().map(|value| value.max(1) as f32);
+                    let side = width.min(height);
+                    let uv = egui::Rect::from_min_size(
+                        egui::pos2((width - side) / 2.0 / width, (height - side) / 2.0 / height),
+                        egui::vec2(side / width, side / height),
+                    );
+                    egui::Image::new((texture.id(), thumb.size()))
+                        .uv(uv)
+                        .corner_radius(6)
+                        .paint_at(ui, thumb);
+                } else {
+                    paint_icon(&painter, thumb.shrink(7.0), NavIcon::FileText, MUTED);
+                }
+                let uploading = draft.attachment.is_none() && draft.error.is_none();
+                let status = if let Some(error) = &draft.error {
+                    error.clone()
+                } else if draft.attachment.is_some() {
+                    uploads::size_label(draft.source_size, draft.stored_size)
+                } else if draft.stored_size.is_none() {
+                    "Preparing…".into()
+                } else {
+                    format!("Uploading… {}%", (draft.progress * 100.0).round() as u32)
+                };
+                // Names and errors truncate in the chip; the tooltip has them in full.
+                chip.on_hover_text(format!(
+                    "{}
+{status}",
+                    draft.name
+                ));
+                let text_left = thumb.right() + 8.0;
+                let text_width = rect.right() - 34.0 - text_left;
+                let line = |text: String, font: egui::FontId, color: Color32| {
+                    let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+                    ui.fonts_mut(|fonts| fonts.layout_job(job))
+                };
+                painter.galley(
+                    egui::pos2(text_left, rect.top() + 8.0),
+                    line(
+                        draft.name.clone(),
+                        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+                        TEXT,
+                    ),
+                    TEXT,
+                );
+                painter.galley(
+                    egui::pos2(text_left, rect.top() + 26.0),
+                    line(
+                        status,
+                        egui::FontId::proportional(11.0),
+                        if draft.error.is_some() { ERROR } else { MUTED },
+                    ),
+                    MUTED,
+                );
+                if uploading {
+                    let track = egui::Rect::from_min_max(
+                        egui::pos2(text_left, rect.bottom() - 5.0),
+                        egui::pos2(rect.right() - 34.0, rect.bottom() - 3.0),
+                    );
+                    painter.rect_filled(track, 1.0, BORDER);
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            track.min,
+                            egui::vec2(
+                                track.width() * draft.progress.clamp(0.0, 1.0),
+                                track.height(),
+                            ),
+                        ),
+                        1.0,
+                        TERRACOTTA,
+                    );
+                }
+                painter.rect_stroke(
+                    rect,
+                    8.0,
+                    Stroke::new(1.0, if draft.error.is_some() { ERROR } else { BORDER }),
+                    egui::StrokeKind::Inside,
+                );
+                let close = egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - 17.0, rect.center().y),
+                    egui::vec2(22.0, 22.0),
+                );
+                let response = ui.interact(
+                    close,
+                    egui::Id::new(("draft-remove", draft.key)),
+                    egui::Sense::click(),
+                );
+                if response.hovered() {
+                    painter.rect_filled(close, 6.0, RAISED);
+                }
+                paint_icon(
+                    &painter,
+                    close.shrink(4.0),
+                    NavIcon::Close,
+                    if response.hovered() { TEXT } else { MUTED },
+                );
+                let label = format!("Remove {}", draft.name);
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                });
+                if response.on_hover_text(label).clicked() {
+                    remove = Some(draft.key);
+                }
+            }
+        });
+        if let Some(key) = remove {
+            self.remove_draft(key);
+        }
+    }
+
+    /// Picker results, abandoned drafts, local previews, image loads and
+    /// URL refreshes.
+    fn attachment_housekeeping(&mut self, context: &egui::Context) {
+        if let Some(receiver) = &self.file_picker {
+            match receiver.try_recv() {
+                Ok(files) => {
+                    self.file_picker = None;
+                    self.add_files(files);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.file_picker = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let channel = self.selected_channel.clone();
+        for draft in &self.drafts {
+            if Some(&draft.channel) != channel.as_ref() {
+                draft
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        self.drafts
+            .retain(|draft| Some(&draft.channel) == channel.as_ref());
+        for (id, image) in std::mem::take(&mut self.local_media) {
+            self.media.insert_local(context, &id, image);
+        }
+        self.media.poll(context);
+        let ids = self.media.take_refresh(Instant::now());
+        if let (Some(token), false) = (self.token.clone(), ids.is_empty()) {
+            self.worker
+                .send(Command::RefreshAttachmentUrls { token, ids });
+        }
+        if let Some(url) = self.open_after_refresh.take() {
+            context.open_url(egui::OpenUrl::new_tab(url));
+        }
+        let dropped: Vec<std::path::PathBuf> = context.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .filter_map(|file| file.path.clone())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.add_files(dropped);
+        }
     }
 
     fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
@@ -6799,6 +7629,9 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::PhoneOff => egui::include_image!("../resources/icons/phone-off.svg"),
         NavIcon::HeadphoneOff => egui::include_image!("../resources/icons/headphone-off.svg"),
         NavIcon::AudioLines => egui::include_image!("../resources/icons/audio-lines.svg"),
+        NavIcon::Paperclip => egui::include_image!("../resources/icons/paperclip.svg"),
+        NavIcon::FileText => egui::include_image!("../resources/icons/file-text.svg"),
+        NavIcon::Play => egui::include_image!("../resources/icons/play.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -6980,14 +7813,107 @@ fn message_row(
                         }
                         ui.label(RichText::new(time).size(10.0).color(MUTED));
                     });
-                    ui.label(RichText::new(text).size(14.0).color(if pending {
-                        MUTED
-                    } else {
-                        Color32::from_rgb(222, 223, 224)
-                    }));
+                    // File-only messages have no text row.
+                    if !text.is_empty() {
+                        ui.label(RichText::new(text).size(14.0).color(if pending {
+                            MUTED
+                        } else {
+                            Color32::from_rgb(222, 223, 224)
+                        }));
+                    }
                 });
             });
         });
+}
+
+/// Audio and other files open in the system browser or player; removed files
+/// say so and are not clickable.
+fn file_card(ui: &mut egui::Ui, attachment: &model::Attachment, pending: bool) -> bool {
+    let clickable = !pending && !attachment.unavailable && attachment.url.is_some();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.max_rect().width().clamp(120.0, 280.0), 52.0),
+        if clickable {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(
+        rect,
+        8.0,
+        if clickable && response.hovered() {
+            RAISED
+        } else {
+            SURFACE
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, BORDER),
+        egui::StrokeKind::Inside,
+    );
+    paint_icon(
+        &painter,
+        egui::Rect::from_min_size(rect.min + egui::vec2(13.0, 16.0), egui::vec2(20.0, 20.0)),
+        NavIcon::FileText,
+        MUTED,
+    );
+    let width = rect.width() - 56.0;
+    let line = |text: String, font: egui::FontId, color: Color32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    };
+    let detail = if attachment.unavailable {
+        "File removed".to_owned()
+    } else if attachment.kind == model::AttachmentKind::Audio {
+        format!("Audio · {}", uploads::format_bytes(attachment.size))
+    } else {
+        uploads::format_bytes(attachment.size)
+    };
+    painter.galley(
+        rect.min + egui::vec2(44.0, 9.0),
+        line(
+            attachment.name.clone(),
+            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            TEXT,
+        ),
+        TEXT,
+    );
+    painter.galley(
+        rect.min + egui::vec2(44.0, 29.0),
+        line(detail.clone(), egui::FontId::proportional(11.0), MUTED),
+        MUTED,
+    );
+    let label = if clickable {
+        format!("Open {}", attachment.name)
+    } else {
+        format!("{}, {detail}", attachment.name)
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            if clickable {
+                egui::WidgetType::Button
+            } else {
+                egui::WidgetType::Label
+            },
+            clickable,
+            label.clone(),
+        )
+    });
+    if !clickable {
+        return false;
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if attachment.kind == model::AttachmentKind::Audio {
+            "Opens in your browser or audio player"
+        } else {
+            "Opens in your browser"
+        })
+        .clicked()
 }
 
 fn date_divider(ui: &mut egui::Ui, label: &str) {
@@ -8325,7 +9251,7 @@ mod tests {
         app.spaces.retain(|entry| entry.id == space);
         assert!(!app.needs_first_space());
         app.draft = "private draft".into();
-        app.pending = Some(PendingSend::prepare(None, "private draft"));
+        app.pending = Some(PendingSend::prepare(None, "private draft", Vec::new()));
         app.pending_reactions.insert(
             ("message".into(), "👍".into()),
             PendingReaction {
@@ -9804,9 +10730,9 @@ mod tests {
 
     #[test]
     fn unknown_send_retry_preserves_id_and_original_text() {
-        let mut first = PendingSend::prepare(None, "first payload");
+        let mut first = PendingSend::prepare(None, "first payload", Vec::new());
         first.created_at = "2026-09-28T23:59:00Z".into();
-        let retry = PendingSend::prepare(Some(&first), "edited payload");
+        let retry = PendingSend::prepare(Some(&first), "edited payload", Vec::new());
         assert_eq!(retry.id, first.id);
         assert_eq!(retry.text, "first payload");
         assert_eq!(retry.created_at, "2026-09-28T23:59:00Z");
@@ -9832,6 +10758,210 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("missing {label}"))
+    }
+
+    fn opened_url(output: &egui::FullOutput) -> Option<String> {
+        output.platform_output.commands.iter().find_map(|command| {
+            if let egui::OutputCommand::OpenUrl(url) = command {
+                Some(url.url.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    #[test]
+    fn attachments_render_under_messages_and_open_in_the_system_browser() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        app.attachment_housekeeping(&context);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        for label in [
+            "TEST FIXTURE report.pdf",
+            "TEST FIXTURE archive.zip",
+            "File removed",
+            "Audio · 1.2 MB",
+            "TEST FIXTURE photo.jpg",
+            "1.6 MB → 143 KB",
+            "Uploading… 45%",
+            "You’ve used all of your file storage.",
+        ] {
+            text_position(&output, label);
+        }
+        // The file-only message renders no empty text row.
+        assert!(!output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text.is_empty() && text.galley.size().y > 0.0
+                && text.pos.x > 60.0 && text.pos.x < 80.0
+        )));
+        let pdf = text_position(&output, "TEST FIXTURE report.pdf");
+        let mut opened = None;
+        for pressed in [true, false] {
+            let output = render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(pdf),
+                    egui::Event::PointerButton {
+                        pos: pdf,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            opened = opened.or_else(|| opened_url(&output));
+        }
+        assert_eq!(
+            opened.as_deref(),
+            Some("https://fixture.invalid/original/fixture-pdf")
+        );
+        // A removed file is not a link.
+        let removed = text_position(&output, "File removed");
+        for pressed in [true, false] {
+            let output = render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(removed),
+                    egui::Event::PointerButton {
+                        pos: removed,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            assert_eq!(opened_url(&output), None);
+        }
+    }
+
+    #[test]
+    fn attach_needs_uploads_and_a_writable_channel_and_drafts_gate_sending() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        assert!(app.can_attach());
+        app.uploads = None;
+        assert!(!app.can_attach(), "usage failure hides Attach");
+        app.uploads = Some(crate::compress::Compression::default());
+        let channel = app.selected_channel.clone().unwrap();
+        app.detail
+            .as_mut()
+            .unwrap()
+            .channels
+            .iter_mut()
+            .find(|entry| entry.id == channel)
+            .unwrap()
+            .joined = false;
+        assert!(!app.can_attach(), "read-only previews cannot attach");
+        app.detail
+            .as_mut()
+            .unwrap()
+            .channels
+            .iter_mut()
+            .find(|entry| entry.id == channel)
+            .unwrap()
+            .joined = true;
+
+        // Unfinished or failed files block sending; nothing is sent.
+        app.send_message();
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Remove files that failed to upload first.")
+        );
+        assert!(app.pending.is_none());
+        app.remove_draft(3);
+        app.send_message();
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Wait for files to finish uploading.")
+        );
+        app.remove_draft(2);
+        assert!(app.draft.is_empty());
+        // A file-only message sends with empty text and its attachment ids.
+        app.send_message();
+        let pending = app.pending.clone().unwrap();
+        assert_eq!(pending.text, "");
+        assert_eq!(
+            pending
+                .attachments
+                .iter()
+                .map(|attachment| attachment.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fixture-draft"]
+        );
+        assert!(app.drafts.is_empty(), "the pending row owns sent files");
+        // A retry resends the same id and files.
+        app.pending.as_mut().unwrap().sending = false;
+        app.send_message();
+        assert_eq!(app.pending.as_ref().unwrap().id, pending.id);
+        assert_eq!(
+            app.pending.as_ref().unwrap().attachments,
+            pending.attachments
+        );
+        let output = render(&mut app, &context, vec![]);
+        text_position(&output, "Uploaded");
+    }
+
+    #[test]
+    fn upload_updates_fill_drafts_and_abandoned_uploads_are_cancelled() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachments"),
+        );
+        app.upload_update(2, crate::worker::UploadUpdate::Progress(0.75));
+        app.upload_update(2, crate::worker::UploadUpdate::Progress(0.5));
+        assert_eq!(app.drafts[1].progress, 0.75, "progress never goes back");
+        let attachment = model::Attachment {
+            id: "uploaded".into(),
+            kind: model::AttachmentKind::Image,
+            content_type: "image/png".into(),
+            name: "diagram.png".into(),
+            size: 52_000,
+            width: Some(320),
+            height: Some(180),
+            duration_ms: None,
+            preview: false,
+            url: None,
+            preview_url: None,
+            unavailable: false,
+        };
+        app.upload_update(
+            2,
+            crate::worker::UploadUpdate::Finished(Ok(attachment.clone())),
+        );
+        assert_eq!(app.drafts[1].attachment, Some(attachment));
+        assert!(
+            app.local_media.iter().any(|(id, _)| id == "uploaded"),
+            "own images show without a download"
+        );
+        // Late updates for removed drafts are ignored.
+        app.remove_draft(2);
+        app.upload_update(2, crate::worker::UploadUpdate::Progress(1.0));
+        let cancels: Vec<_> = app
+            .drafts
+            .iter()
+            .map(|draft| draft.cancel.clone())
+            .collect();
+        app.selected_channel = Some("another-channel".into());
+        app.attachment_housekeeping(&context);
+        assert!(app.drafts.is_empty());
+        assert!(
+            cancels
+                .iter()
+                .all(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        );
     }
 
     #[test]
@@ -10402,7 +11532,8 @@ mod tests {
 
     #[test]
     fn matching_gateway_event_confirms_pending_send() {
-        let pending = PendingSend::prepare(None, "delivered despite lost HTTP response");
+        let pending =
+            PendingSend::prepare(None, "delivered despite lost HTTP response", Vec::new());
         let message = Message {
             id: "server-id".into(),
             channel_id: "channel".into(),
@@ -10419,6 +11550,7 @@ mod tests {
                 version: 1,
                 kind: "text".into(),
                 text: pending.text.clone(),
+                attachments: Vec::new(),
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -10496,6 +11628,7 @@ mod tests {
                     version: 1,
                     kind: "text".into(),
                     text: "sent".into(),
+                    attachments: Vec::new(),
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
@@ -10831,7 +11964,7 @@ mod tests {
         let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
         let mut app = CaperApp::new(&context, api, Some("signed-out"));
         app.selected_channel = Some("one".into());
-        let pending = PendingSend::prepare(None, "unconfirmed payload");
+        let pending = PendingSend::prepare(None, "unconfirmed payload", Vec::new());
         let id = pending.id.clone();
         app.pending = Some(pending);
         app.draft = "different draft".into();

@@ -28,6 +28,28 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
+- File attachments, when the server has storage configured (otherwise the
+  attach control is hidden). Images render inline, decoded off the UI thread
+  and cached by attachment id; clicking opens the full file in the system
+  browser. Videos show their poster with a play button, and audio and other
+  files show cards; these open in the system browser or player. Desktop has
+  **no in-app video or audio playback**. Removed files read "File removed".
+  Signed URLs are refreshed (`POST /api/assets/urls`) before they expire and
+  once after a 403/404 image load, so a window left open for days keeps
+  working.
+- Sending up to 10 files per message from the paperclip file dialog (Win32 on
+  Windows; on Linux the XDG desktop portal, which needs a file-chooser backend
+  such as xdg-desktop-portal-gtk, -gnome or -kde) or by dropping files on the
+  window.
+  Chips show the name, saving ("1.6 MB → 143 KB"), progress, errors such as
+  storage full, and remove. Stills use the server's compression settings:
+  scaled to the maximum edge, then an exact-palette indexed PNG when the
+  colours fit (pixel-exact screenshots), otherwise JPEG at the server quality
+  (pure-Rust encoders; no WebP encoder), kept only when at least 10% smaller.
+  Videos upload **unchanged** (no bundled transcoder); MP4/QuickTime
+  dimensions and duration come from the file header. Bytes go straight to
+  storage with exactly the presigned headers. Pasting images from the
+  clipboard is not supported (egui does not deliver image pastes).
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
   replay. Desktop does not provide OS push notifications in this stage.
@@ -220,7 +242,9 @@ speaking rings for you and Maya.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
 `parity-direct-no-spaces` previews the first-space page's Direct messages entry
-and the global list without any space membership.
+and the global list without any space membership. `parity-attachments` previews
+inline images, a video poster, file/audio/removed cards and upload chips from
+synthetic local images; it never fetches media or uploads.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.
