@@ -3129,6 +3129,13 @@ certificates and does not publish releases or submit to stores.
   `.app` cannot run on a phone, even with a paid developer membership. TestFlight
   also has review/distribution requirements; no automatic approval is promised.
   See [Apple's preparation guide](https://developer.apple.com/documentation/xcode/preparing_your_app_for_distribution).
+  Release CI archives with a local ad-hoc signature (`CODE_SIGN_IDENTITY=-`,
+  `AD_HOC_CODE_SIGNING_ALLOWED=YES`) to retain push entitlements without creating
+  an Apple Development certificate on each fresh runner. This intermediate
+  archive is not a phone-installable release. Only export uses the App Store
+  Connect key and automatic cloud-managed distribution signing/upload; do not
+  disable signing or clear entitlements on the archive. Existing development
+  certificates do not need to be revoked for this CI path.
 - **Windows:** unsigned installers and executables can be distributed, but SmartScreen,
   Smart App Control, and organization policy may warn or block execution. There
   is no guaranteed per-app override. Trusted code signing may use a certificate

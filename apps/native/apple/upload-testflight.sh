@@ -2,7 +2,9 @@
 # Archive the iOS app for the App Store and upload it to TestFlight. Signing is
 # cloud-managed: xcodebuild uses the App Store Connect API key to create or
 # reuse the Apple Distribution certificate and App Store profile, so no
-# distribution certificate or profile is stored anywhere.
+# distribution certificate or profile is persisted between runners.
+# The intermediate archive uses a local ad-hoc signature, preserving its
+# entitlements without issuing an Apple Development certificate on every run.
 #
 # Environment: APPLE_TEAM_ID, NOTARY_KEY_PATH (.p8), NOTARY_KEY_ID,
 # NOTARY_ISSUER, BUILD_NUMBER (unique and increasing per upload).
@@ -26,7 +28,8 @@ xcodebuild -project "$ROOT/CaperApple.xcodeproj" -scheme CaperIOS -configuration
   -destination 'generic/platform=iOS' -archivePath "$work/Caper.xcarchive" \
   -derivedDataPath "$ROOT/DerivedData-TestFlight" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CAPER_IOS_BUNDLE_ID="$IOS_BUNDLE_ID" \
-  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" "${auth[@]}" archive
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES archive
 
 cat >"$work/ExportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
