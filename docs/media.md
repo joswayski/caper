@@ -9,6 +9,25 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
+Web channel names and owner-only `⋯` actions have a separate row above voice
+activity. Join, Joining and Switch here use one fixed-width action slot;
+connected channels reserve that space without an inline Leave action.
+Disconnect lives in the bottom voice dock beside the account.
+Voice actions are neutral until hover/focus, and empty channels have no voice
+status text. Only occupied channels show a voice count. Hover and connection/roster
+updates do not shift the action target. The Channels count stays beside its label
+in both owned and shared spaces. Selecting a channel
+opens text without switching voice. Participant lists start collapsed and expand
+from the voice count. Channel actions open the existing privacy/member settings;
+at the minimum sidebar width, counts take priority over avatars; narrow web
+layouts retain 44px action targets.
+Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
+against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
+owner permissions, settings focus return, voice switching and pending/error/cancel
+states. This is browser UI coverage, not live SFU or physical-device validation.
+Web, Android, Apple and Rust desktop implement these stable rows independently.
+No shared protocol change is required, but updated native binaries must be
+released separately; browser checks do not establish native rendering parity.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
@@ -2854,6 +2873,35 @@ WebSocket, not a native-only backend. Keep the website available while native
 feature parity and platform acceptance remain incomplete. No backend migration,
 provider secret, production restart, or infrastructure change is required by the
 native development build workflow.
+
+**Stable channel controls, October 3, 2026:** web, Android, shared iOS/macOS
+SwiftUI, and Rust Windows/Linux desktop use separate channel-name/settings and
+voice rows. Owners get a permanent channel-options menu opening existing privacy
+and member settings. Quiet speaking-icon
+actions keep their slot through Join voice, Joining, and Switch here. Connected
+channels reserve that space without a duplicate Leave action: disconnect lives
+only in the voice-connected dock beside the account. Desktop name/voice rows are
+32px/28px with no extra gap; mobile retains its touch targets. Empty channels
+show no occupancy status; occupied rosters start collapsed.
+Selecting text leaves the current call intact. Pending authorization disables
+competing joins, and explicit switching still verifies fresh channel access.
+
+Intentional platform differences: Android uses 48dp targets and count-only
+occupancy; iOS uses 44pt targets; macOS and Rust desktop use 28pt/28px voice
+targets. Apple and Rust desktop drop summary avatars before crowding the count
+at narrow sidebar widths. Rust desktop may shorten `N in voice` to `N` at its
+220px minimum; its accessible name retains the complete occupancy description.
+Android's channel menu also contains Leave channel for joined account channels;
+this changes membership and is separate from disconnecting voice in the dock.
+
+Local acceptance: Android unit tests, lint and four-ABI debug packaging, Rust
+desktop unit/accessibility-geometry tests and a Linux fixture render, plus web
+build/tests and mocked browser interactions. Fixtures do not establish live SFU
+behavior. Android smoke/device execution, Apple build/XCTest/UI rendering,
+Windows execution, physical touch targets, and live multi-network voice remain
+pending platform acceptance. Ship updated native binaries after those checks;
+web and native releases can proceed independently without API/gateway changes,
+database migrations, infrastructure apply, or new secrets.
 
 **Apple chat confirmation/recovery correction, October 3, 2026:** Swift sends
 lowercase message and gateway-command UUIDs to match Rust's canonical result IDs.

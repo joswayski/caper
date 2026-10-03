@@ -206,6 +206,53 @@ final class CaperParityUITests: XCTestCase {
         capture("populated", app: app)
     }
 
+    func testStableChannelRowsAndOwnerSettingsMenu() {
+        let app = launch()
+        #if os(iOS)
+        app.buttons["Browse"].tap()
+        #endif
+        let general = app.buttons["channel-chan00000001"]
+        let design = app.buttons["channel-chan00000002"]
+        let generalVoice = app.buttons["join-voice-chan00000001"]
+        let designVoice = app.buttons["join-voice-chan00000002"]
+        XCTAssertTrue(general.waitForExistence(timeout: 10))
+        XCTAssertTrue(design.exists)
+        XCTAssertTrue(generalVoice.exists, "An empty accessible channel keeps its quiet voice action")
+        XCTAssertTrue(designVoice.exists, "An unselected accessible channel keeps its quiet voice action")
+        XCTAssertEqual(generalVoice.label, "Join voice in #general")
+        XCTAssertEqual(designVoice.label, "Join voice in #design")
+        XCTAssertFalse(app.buttons["voice-stack-chan00000001"].exists, "Empty channels expose no voice count or status")
+        XCTAssertGreaterThanOrEqual(generalVoice.frame.minY, general.frame.maxY, "Voice stays below the channel name")
+        XCTAssertLessThanOrEqual(generalVoice.frame.minY - general.frame.maxY, 2, "No extra gap separates the voice action from its channel")
+        XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, "Actions share one stable slot")
+        #if os(iOS)
+        XCTAssertGreaterThanOrEqual(general.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(generalVoice.frame.height, 44)
+        #else
+        XCTAssertEqual(general.frame.height, 32)
+        XCTAssertEqual(generalVoice.frame.height, 28)
+        #endif
+
+        let generalFrame = general.frame
+        let voiceFrame = generalVoice.frame
+        let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
+        let stack = app.buttons["voice-stack-chan00000002"]
+        XCTAssertEqual(stack.value as? String, "Collapsed", "Occupied rosters start collapsed")
+        stack.tap()
+        XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
+        XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move Join")
+        XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
+                       "Expanding another roster must not move the channel menu")
+
+        let options = app.descendants(matching: .any)["channel-options-chan00000001"]
+        XCTAssertTrue(options.exists, "Owners have a permanent channel menu")
+        options.tap()
+        let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        settings.tap()
+        assertStaticText("Channel settings", in: app, timeout: 3)
+    }
+
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
@@ -215,7 +262,7 @@ final class CaperParityUITests: XCTestCase {
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertTrue(stack.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
         XCTAssertTrue(stack.label.contains("in voice in design"))
-        XCTAssertEqual(stack.value as? String, "Expanded")
+        XCTAssertEqual(stack.value as? String, "Collapsed")
         #if os(iOS)
         let selected = app.buttons["channel-chan00000001"]
         XCTAssertEqual(selected.value as? String, "Selected")
@@ -225,14 +272,14 @@ final class CaperParityUITests: XCTestCase {
         #endif
         XCTAssertTrue(app.buttons["join-voice-chan00000002"].exists)
         stack.tap()
-        XCTAssertEqual(stack.value as? String, "Collapsed")
+        XCTAssertEqual(stack.value as? String, "Expanded")
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected", "Collapsing voice occupants must not navigate text chat")
         #else
         XCTAssertEqual(selected.value as? String, "# general", "Collapsing voice occupants must not navigate text chat")
         #endif
         stack.tap()
-        XCTAssertEqual(stack.value as? String, "Expanded")
+        XCTAssertEqual(stack.value as? String, "Collapsed")
         capture("spectator-voice-roster", app: app)
 
         var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
@@ -244,7 +291,9 @@ final class CaperParityUITests: XCTestCase {
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: stack)
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed,
                        "Revoked private-channel occupancy must disappear without altering selected chat")
-        XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists)
+        let deniedAction = app.buttons["join-voice-chan00000002"]
+        XCTAssertTrue(deniedAction.exists, "Revocation keeps the stable action slot")
+        XCTAssertFalse(deniedAction.isEnabled, "A revoked channel cannot be joined")
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected")
         #else
@@ -272,22 +321,24 @@ final class CaperParityUITests: XCTestCase {
         #if os(iOS)
         assertStaticText("general / Fixture Studio", in: app)
         #endif
-        assertStaticText("TEST FIXTURE You (you)", in: app)
-        assertStaticText("TEST FIXTURE Maya", in: app)
         XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
         XCTAssertFalse(app.sliders["TEST FIXTURE Maya volume"].exists, "Volume stays in the remote-only Audio menu")
-        let audio = app.buttons["participant-audio-fixture-remote"]
-        XCTAssertTrue(audio.exists)
+        XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists, "Participant controls stay hidden while the roster starts collapsed")
+        XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel has no redundant Leave action")
+        XCTAssertEqual(app.buttons.matching(identifier: "Leave voice").count, 1, "Disconnect lives only in the dock")
         let stack = app.buttons["voice-stack-chan00000001"]
         XCTAssertTrue(stack.exists)
+        XCTAssertEqual(stack.value as? String, "Collapsed")
         capture("active-voice-compact-test-fixture", app: app)
         stack.tap()
-        XCTAssertEqual(stack.value as? String, "Collapsed")
-        XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists)
+        XCTAssertEqual(stack.value as? String, "Expanded")
+        assertStaticText("TEST FIXTURE You (you)", in: app)
+        assertStaticText("TEST FIXTURE Maya", in: app)
+        XCTAssertTrue(app.buttons["participant-audio-fixture-remote"].exists)
         XCTAssertTrue(context.exists, "Call context and Disconnect remain outside the collapsed participant roster")
         XCTAssertTrue(app.buttons["Leave voice"].exists)
-        capture("active-voice-collapsed-test-fixture", app: app)
-        stack.tap()
+        capture("active-voice-expanded-test-fixture", app: app)
+        let audio = app.buttons["participant-audio-fixture-remote"]
         audio.tap()
         XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
         #if os(macOS)

@@ -983,11 +983,12 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const [navigationOpen, setNavigationOpen] = useState(false);
   const spaceMenu = useRef<HTMLDetailsElement>(null);
   const channelMenu = useRef<HTMLDetailsElement>(null);
+  const channelNavigationRef = useRef<HTMLElement>(null);
   const [channelsExpanded, setChannelsExpanded] = useState(true);
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
-      for (const menu of [spaceMenu.current, channelMenu.current]) {
+      for (const menu of [spaceMenu.current, channelMenu.current, ...channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]") ?? []]) {
         if (menu && !menu.contains(event.target as Node)) menu.open = false;
       }
     };
@@ -998,6 +999,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const choose = (spaceId?: string, channelId?: string, replace = false, dmId?: string) => {
     if (spaceMenu.current) spaceMenu.current.open = false;
     if (channelMenu.current) channelMenu.current.open = false;
+    channelNavigationRef.current?.querySelectorAll<HTMLDetailsElement>(".channel-menu[open]").forEach((menu) => { menu.open = false; });
     activeSpace.current = spaceId;
     setMembershipError(undefined);
     setBrowseOpen(false);
@@ -1405,6 +1407,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   );
   const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
     <nav
+      ref={channelNavigationRef}
       className="channel-navigation"
       data-demo={detail.space.demo ? "" : undefined}
       aria-label={`${detail.space.name} channels`}
@@ -1518,17 +1521,31 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
               )}
               <span>{item.name}</span>
             </button>
-            {voice?.summary}
             {owner && (
-              <button
-                className="channel-manage"
-                type="button"
-                aria-label={`Manage ${item.name}`}
-                onClick={() => setManageChannel(item)}
+              <details
+                className="channel-menu"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.currentTarget.open = false;
+                    event.currentTarget.querySelector("summary")?.focus();
+                  }
+                }}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
+                }}
               >
-                <Settings aria-hidden="true" />
-              </button>
+                <summary className="channel-manage" aria-label={`Manage ${item.name}`} title={`Channel actions for ${item.name}`}><MoreHorizontal aria-hidden="true" /></summary>
+                <div className="space-actions">
+                  <button type="button" onClick={(event) => {
+                    const menu = event.currentTarget.closest("details")!;
+                    menu.open = false;
+                    menu.querySelector("summary")?.focus();
+                    setManageChannel(item);
+                  }}><Settings aria-hidden="true" />Channel settings</button>
+                </div>
+              </details>
             )}
+            {voice?.summary}
             </div>
             {voice?.list}
           </li>

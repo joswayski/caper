@@ -36,6 +36,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var accountGeneration = 0L
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
+    internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
     private var directRefresh: Job? = null
@@ -366,21 +367,26 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         watchVisiblePresence()
     }
 
-    private var availabilityRequest: Job? = null
+    private val availabilityRequests = mutableMapOf<String, Job>()
 
-    /** Web: fetch `${mediaRoot}/status` for the viewed channel; failure or timeout means unavailable. */
-    fun checkVoiceAvailability() {
+    /** Fetch `${mediaRoot}/status` independently for each stable channel action. */
+    fun checkVoiceAvailability(channel: Channel? = mutable.value.selectedChannel) {
         val current = mutable.value
-        val channel = current.selectedChannel?.takeIf { it.joined } ?: return
-        val demo = current.selectedSpace?.space?.demo == true
+        channel ?: return
+        val detail = current.selectedSpace ?: return
+        if (!channel.joined || detail.channels.none { it.id == channel.id && it.joined }) return
+        val spaceId = detail.space.id
+        val demo = detail.space.demo
         val key = voiceRootKey(demo, channel.id)
         val token = accountToken
-        availabilityRequest?.cancel()
-        availabilityRequest = viewModelScope.launch {
+        val accountRequest = accountGeneration
+        availabilityRequests[key]?.cancel()
+        availabilityRequests[key] = viewModelScope.launch {
             val enabled = withTimeoutOrNull(10_000) {
                 runCatching { api.mediaStatus(token, channel.id, demo).enabled }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; false }
             } ?: false
-            mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (key to enabled))
+            if (accountRequest == accountGeneration && mutable.value.selectedSpace?.let { it.space.id == spaceId && it.channels.any { item -> item.id == channel.id } } == true)
+                mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (key to enabled))
         }
     }
 
@@ -394,8 +400,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun prepareVoiceJoin(channel: Channel) {
         val current = mutable.value
         val token = accountToken ?: return
-        if (current.selectedSpace?.space?.demo != false || current.voiceAvailable != true ||
-            !channel.joined || current.selectedSpace.channels.none { it.id == channel.id } || channel.id in current.deniedVoiceChannels) return
+        if (current.selectedSpace?.space?.demo != false || current.voiceAvailable(channel) != true ||
+            !channel.joined || current.selectedSpace.channels.none { it.id == channel.id && it.joined } || channel.id in current.deniedVoiceChannels) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (preparedVoice[channel.id]?.let { now - it < 4_000 } == true) return
         preparedVoice[channel.id] = now

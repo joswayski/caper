@@ -964,6 +964,53 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testEachChannelActionUsesItsOwnAvailabilityAndRevocation() async {
+        let model = AppModel(api: client())
+        let text = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let other = Channel(id: "chan00000002", spaceId: text.spaceId, name: "design", private: true)
+        let space = Space(id: text.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [text, other], members: [])
+        model.selectedChannelID = text.id
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/channels/\(text.id)/media/status": return (200, Data(#"{"enabled":false}"#.utf8))
+            case "/api/channels/\(other.id)/media/status": return (200, Data(#"{"enabled":true}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.refreshVoiceAvailability(channel: text)
+        await model.refreshVoiceAvailability(channel: other)
+        XCTAssertEqual(model.voiceAvailable(in: text), false)
+        XCTAssertEqual(model.voiceAvailable(in: other), true)
+        XCTAssertEqual(model.selectedChannelID, text.id)
+        model.voicePresence.revoke(channelID: other.id)
+        XCTAssertEqual(model.voiceAvailable(in: other), false, "A revoked channel keeps its action disabled")
+    }
+
+    @MainActor
+    func testLateChannelAvailabilityCannotPublishAfterLogout() async {
+        let model = AppModel(api: client())
+        let channel = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let space = Space(id: channel.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [channel], members: [])
+        model.selectedChannelID = channel.id
+        let requested = expectation(description: "channel status request")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/channels/\(channel.id)/media/status" else { return false }
+            held = request; requested.fulfill(); return true
+        }
+        MockURLProtocol.handler = { _ in (204, Data()) }
+        let checking = Task { await model.refreshVoiceAvailability(channel: channel) }
+        await fulfillment(of: [requested], timeout: 2)
+        await model.logout()
+        held?.respond(status: 200, data: Data(#"{"enabled":true}"#.utf8))
+        await checking.value
+        XCTAssertTrue(model.voiceAvailability.isEmpty)
+        XCTAssertNil(model.voiceAvailable(in: channel))
+    }
+
+    @MainActor
     func testFreshUnjoinedVoiceTargetPreservesExistingCall() async {
         let model = AppModel(api: client())
         let current = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
@@ -1042,13 +1089,18 @@ final class APIClientTests: XCTestCase {
         let requested = expectation(description: "target permission request")
         var held: MockURLProtocol?
         MockURLProtocol.deferred = { request, urlRequest in
-            guard urlRequest.url?.path == "/api/spaces/\(space.id)" else { return false }
+            guard held == nil, urlRequest.url?.path == "/api/spaces/\(space.id)" else { return false }
             held = request; requested.fulfill(); return true
         }
         MockURLProtocol.handler = { _ in throw URLError(.badURL) }
         let joining = Task { await model.joinVoice(channel: target) }
         await fulfillment(of: [requested], timeout: 2)
+        XCTAssertEqual(model.pendingVoiceChannelID, target.id)
+        await model.joinVoice(channel: target)
+        XCTAssertEqual(model.pendingVoiceChannelID, target.id, "Duplicate taps cannot replace the pending authorization")
+        XCTAssertNil(model.navigationError)
         model.leaveVoice()
+        XCTAssertNil(model.pendingVoiceChannelID)
         held?.respond(status: 200, data: Data("""
         {"space":{"id":"\(space.id)","name":"Fixture","ownerId":"owner0000001"},"channels":[
         {"id":"\(current.id)","spaceId":"\(space.id)","name":"general","private":false},

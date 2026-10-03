@@ -1,8 +1,8 @@
 // Real Call/Chat components and voice client; synthetic audio and mocked HTTP,
 // WebSocket and WebRTC. This is UI regression coverage, not live SFU validation.
 // Run against Vite: node scripts/test-voice-controls.mjs [http://localhost:5174]
-// Focus only on channel transitions with VOICE_TEST_CHANNEL_MOTION=1.
-// Focus only on avatar borders with VOICE_TEST_AVATARS=1 (use /privacy to avoid the hidden homepage simulation).
+// Focus on stable channel rows with VOICE_TEST_CHANNEL_ROWS=1.
+// Focus only on avatar borders with VOICE_TEST_AVATARS=1.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -32,12 +32,14 @@ async function fixture() {
   const { PublicCallClient } = await import(source.match(/from "(\/src\/media\/client\.ts[^"]*)"/)[1]);
   const { default: Call } = await import('/src/pages/Call.tsx');
   const { default: Spaces } = await import('/src/spaces/Spaces.tsx');
-  for (const element of document.body.children) element.hidden = true;
+  // Remove the homepage's simulated channels from document-level test queries.
+  for (const element of [...document.body.children]) element.remove();
   const mount = document.createElement('div'); document.body.append(mount);
   const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], commands: [], revision: 0 };
   const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture', avatarId: 0, debugEnabled: true };
   const space = { id: 'workspace123', name: 'Test space', ownerId: account.id };
   const channels = ['alpha', 'beta'].map(name => ({ id: name.padEnd(12, '0'), name, spaceId: space.id, private: false }));
+  channels.push({ id: 'private00000', name: 'planning-for-the-next-release', spaceId: space.id, private: true });
   const author = { id: account.id, name: account.displayName, isGuest: false };
   const peer = { id: 'peer', name: 'Peach Donkey', isGuest: true };
   const snapshot = () => ({ participants: f.people, revision: f.revision });
@@ -45,8 +47,10 @@ async function fixture() {
   const respond = async (input, options = {}) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
     if (path === '/api/account/me') return Response.json(account);
+    if (path === '/api/dms') return Response.json({ conversations: [] });
     if (path === '/api/spaces') return Response.json({ spaces: [space], limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 } });
     if (path === '/api/spaces/workspace123') return Response.json({ space, channels, members: [{ ...account, owner: true }] });
+    if (path === '/api/spaces/workspace123/channels/private00000/members') return Response.json({ members: [account] });
     if (path.startsWith('/api/chat/channels/') && path.endsWith('/messages')) return Response.json({ space, channel: channels.find(channel => path.includes(`/${channel.id}/`)), messages: [], cursor: '0', hasMore: false });
     if (path.endsWith('/media/status')) return Response.json({ enabled: true });
     if (path === '/api/account/profile') {
@@ -193,9 +197,10 @@ async function fixture() {
   history.pushState = History.prototype.pushState.bind(history);
   history.replaceState = History.prototype.replaceState.bind(history);
   const root = createRoot(mount); root.render(React.createElement(Call));
-  f.showSpaces = () => {
+  f.showSpaces = (owner = true) => {
+    space.ownerId = owner ? account.id : 'other-owner';
     history.replaceState({}, '', `/spaces?space=${space.id}&channel=${channels[0].id}`);
-    root.render(React.createElement(Spaces));
+    root.render(React.createElement(Spaces, { key: owner ? 'owner' : 'member' }));
   };
   f.cleanup = async () => { root.unmount(); f.captures.forEach(track => track.stop()); f.remoteStream?.getTracks().forEach(track => track.stop()); await context.close(); };
 }
@@ -215,6 +220,7 @@ try {
     click('Join voice');
     wait(`document.querySelector('[aria-label="Leave voice"]')`);
     evaluate(`voiceFixture.addRemoteAudio(); await document.fonts.ready;`);
+    browser('click', '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
     wait(`document.querySelectorAll('.voice-occupants .avatar.quiet').length === 2`);
     for (const width of [1280, 390]) {
       browser('set', 'viewport', String(width), '900', '2');
@@ -233,99 +239,184 @@ try {
     }
     evaluate(`await voiceFixture.cleanup();`);
     console.log('PASS borderless idle image/initial avatars and green speaking indicator at 1280px and 390px (mock signaling/WebRTC)');
-  } else if (process.env.VOICE_TEST_CHANNEL_MOTION === '1') {
+  } else if (process.env.VOICE_TEST_CHANNEL_ROWS === '1') {
     evaluate(`voiceFixture.showSpaces();`);
     wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
     evaluate(`await document.fonts.ready;`);
+    const geometry = () => evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => [...line.querySelectorAll('.channel-select, .channel-manage, .channel-join, .channel-join-slot')].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }));`);
+    const countPosition = () => evaluate(`const r = document.querySelector('.channel-section-toggle .section-count').getBoundingClientRect(); return [r.x, r.y];`);
+    const actionContentsFit = () => evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => { const bounds = button.getBoundingClientRect(), icon = button.querySelector('svg').getBoundingClientRect(), label = button.querySelector('.channel-join-label').getBoundingClientRect(); return icon.width === 14 && icon.height === 14 && icon.left > bounds.left && icon.right < label.left && label.right < bounds.right && label.top >= bounds.top && label.bottom <= bounds.bottom; });`);
     for (const width of [1280, 390]) {
       browser('set', 'viewport', String(width), '900', '2');
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
       if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
-      evaluate(`voiceFixture.publishPresence([{ id: 'self', name: 'UI fixture', muted: false, deafened: false, tracks: [] }]);`);
-      wait(`document.querySelector('.voice-stack-avatar')`);
-      const position = () => evaluate(`const r = document.querySelector('.voice-stack').getBoundingClientRect(); return { left: r.left, top: r.top, width: r.width };`);
+      browser('mouse', 'move', '5', '5');
+      evaluate(`document.activeElement.blur();`);
+      const joinsBeforeSettings = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`);
+      const before = geometry();
+      assert.equal(before.length, 3, 'Every channel, including empty/unselected/private channels, has voice actions');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top >= name.bottom && getComputedStyle(line.querySelector('.channel-manage')).opacity === '1'; });`), 'Voice actions must sit below the name; channel actions never depend on hover');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top - name.bottom <= 1 && (matchMedia('(hover: hover) and (pointer: fine) and (min-width: 761px)').matches ? name.height === 32 && action.height === 28 : name.height >= 44 && action.height >= 44); });`), 'Compact desktop rows have no extra gap; mobile/no-hover keeps 44px targets');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => button.querySelector('.lucide-speech')?.getAttribute('aria-hidden') === 'true');`), 'Join actions have a decorative speaking icon without changing their accessible names');
+      assert.ok(actionContentsFit(), 'Speaking icons and Join labels must fit inside the fixed-width actions');
+      assert.equal(evaluate(`return document.querySelectorAll('.voice-stack').length;`), 0, 'Empty channels do not show a zero-occupancy count');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-voice')].every(row => row.innerText.trim() === 'Join voice');`), 'Empty channels retain Join without redundant no-one-in-voice text');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => { const style = getComputedStyle(button); return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.borderTopColor === 'rgba(0, 0, 0, 0)' && style.color === 'rgb(185, 188, 190)' && style.fontWeight === '600'; });`), 'Resting voice actions use muted neutral text without a colored fill or outline');
+      screenshot(`channel-${width}-empty`);
+      if (evaluate(`return matchMedia('(hover: hover)').matches;`)) {
+        browser('hover', '[aria-label="Join voice"]');
+        wait(`getComputedStyle(document.querySelector('[aria-label="Join voice"]')).color === 'rgb(243, 244, 245)'`);
+        assert.ok(evaluate(`const style = getComputedStyle(document.querySelector('[aria-label="Join voice"]')); return style.backgroundColor === 'rgb(28, 31, 33)' && style.borderTopColor === 'rgb(52, 56, 59)' && style.color === 'rgb(243, 244, 245)';`), 'Hover gives neutral feedback, not a primary-action fill');
+        assert.deepEqual(geometry(), before, 'Hover feedback cannot move actions');
+        screenshot(`channel-${width}-hover`);
+        browser('mouse', 'move', '5', '5');
+      }
+      browser('focus', '[aria-label="Manage alpha"]');
+      browser('press', 'Tab');
+      assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), 'Join voice', 'Join remains reachable immediately after channel settings');
+      wait(`getComputedStyle(document.activeElement).color === 'rgb(243, 244, 245)'`);
+      assert.ok(evaluate(`const button = document.activeElement, style = getComputedStyle(button); return button.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px' && style.color === 'rgb(243, 244, 245)';`), 'Keyboard focus retains a visible outline and readable action text');
+      assert.deepEqual(geometry(), before, 'Keyboard feedback cannot move actions');
+      screenshot(`channel-${width}-focus`);
+      evaluate(`document.activeElement.blur();`);
+      evaluate(`voiceFixture.publishPresence([{ id: 'peer', name: 'Mock peer', muted: false, deafened: false, tracks: [] }, { id: 'other', name: 'Other mock peer', muted: true, deafened: false, tracks: [] }]);`);
+      wait(`document.querySelector('.voice-stack-count')?.textContent === '2 in voice'`);
+      assert.deepEqual(geometry(), before, 'Roster arrivals cannot move names, menus or actions');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.voice-occupants-inner')].every(node => node.inert);`), 'Participant lists start collapsed');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.voice-stack-count')].every(node => node.scrollWidth <= node.clientWidth);`), 'Voice counts must remain readable, not ellipsized');
       browser('hover', '.channel-select[aria-current="page"]');
-      browser('wait', '250');
-      const before = position();
+      browser('mouse', 'move', '5', '5');
+      assert.deepEqual(geometry(), before, 'Hover cannot move any controls');
+      click('Manage planning-for-the-next-release');
+      assert.deepEqual(geometry(), before, 'Opening channel actions must overlay, not reflow the channel list');
+      assert.ok(evaluate(`const menu = document.querySelector('.channel-menu[open]'); return menu.querySelector('.space-actions').getBoundingClientRect().top >= menu.closest('.channel-line').getBoundingClientRect().bottom;`), 'Channel actions must not cover their own Join button');
+      screenshot(`channel-${width}-menu`);
+      browser('press', 'Escape');
+      assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), 'Manage planning-for-the-next-release');
+      browser('press', 'Enter');
+      browser('mouse', 'move', '5', '5'); browser('mouse', 'down', 'left'); browser('mouse', 'up', 'left');
+      assert.equal(evaluate(`return !!document.querySelector('.channel-menu[open]');`), false, 'Outside clicks dismiss channel actions');
+      click('Manage planning-for-the-next-release');
+      browser('find', 'role', 'button', 'click', '--name', 'Channel settings', '--exact');
+      wait(`document.querySelector('.space-dialog[open] .member-manager')`);
+      assert.equal(evaluate(`return document.querySelector('.channel-privacy input').checked;`), true);
+      browser('press', 'Escape');
+      assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), 'Manage planning-for-the-next-release', 'Settings dismissal must restore focus to the visible channel action');
+      assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`), joinsBeforeSettings, 'Opening settings must not connect voice');
       screenshot(`channel-${width}-before-join`);
       evaluate(`
-        voiceFixture.joinMotion = [];
-        const stack = document.querySelector('.voice-stack');
+        voiceFixture.joinPositions = [];
+        const button = document.querySelector('.channel-join[data-channel="alpha0000000"]');
+        voiceFixture.actionNode = button;
+        const row = button.closest('.channel-line');
         const start = performance.now();
-        const sample = () => { voiceFixture.joinMotion.push(stack.getBoundingClientRect().left); if (performance.now() - start < 1000) requestAnimationFrame(sample); };
+        const sample = () => { const r = row.querySelector('.channel-join, .channel-join-slot').getBoundingClientRect(); voiceFixture.joinPositions.push([r.x, r.y, r.width, r.height]); if (performance.now() - start < 600) requestAnimationFrame(sample); };
         requestAnimationFrame(sample);
       `);
-      click('Join voice');
-      wait(`document.querySelector('[aria-label="Leave voice"]')`);
-      wait(`getComputedStyle(document.querySelector('.channel-join')).visibility === 'hidden'`);
-      wait(`document.querySelector('.channel-join-slot').getBoundingClientRect().width < 1`);
-      assert.ok(position().left > before.left + 20, 'Avatars must slide right into the removed Join slot');
-      assert.ok(evaluate(`return new Set(voiceFixture.joinMotion.map(x => Math.round(x))).size > 3;`), 'Join collapse must animate through intermediate avatar positions');
-      assert.ok(evaluate(`const join = document.querySelector('.channel-join'); join.focus(); return join.inert && join.getAttribute('aria-hidden') === 'true' && document.activeElement !== join && !join.hasAttribute('aria-describedby');`), 'Connected Join must be inert and have no tooltip');
-      browser('hover', '.channel-select[aria-current="page"]');
-      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join')).opacity;`), '0', 'Hover must not reveal connected Join');
+      browser('focus', '[aria-label="Join voice"]');
+      browser('press', 'Enter');
+      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
+      browser('wait', '650');
+      assert.deepEqual(geometry(), before, 'Connecting removes the duplicate action without moving other targets');
+      assert.equal(evaluate(`return new Set(voiceFixture.joinPositions.map(r => JSON.stringify(r))).size;`), 1, 'No intermediate animation may shift the Join target');
+      assert.ok(evaluate(`return !voiceFixture.actionNode.isConnected && document.querySelectorAll('[aria-label="Leave voice"]').length === 1 && !document.querySelector('[aria-label="Leave voice in #alpha"]') && document.activeElement === document.querySelector('.voice-hangup');`), 'Disconnect exists only in the dock, which receives keyboard focus after joining');
+      assert.ok(evaluate(`return !!document.querySelector('.voice-hangup .lucide-phone-off') && !!document.querySelector('[aria-label="Switch voice to #beta"] .lucide-speech');`), 'The dock uses the disconnect icon; switching retains the speaking icon');
+      assert.ok(actionContentsFit(), 'Switch labels must fit with their icons');
       screenshot(`channel-${width}-joined`);
-      if (evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`)) {
-        const hovered = position();
-        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); const gap = line.querySelector('.channel-manage').getBoundingClientRect().left - line.querySelector('.voice-stack').getBoundingClientRect().right; return gap >= 0 && gap <= 8;`), 'Connected dropdown must sit immediately beside the Settings gear');
-        const motion = evaluate(`
-          const line = document.querySelector('.channel-line');
-          const stack = line.querySelector('.voice-stack');
-          const samples = [];
-          // Move the real pointer outside the channel in the next command.
-          voiceFixture.sampleMotion = samples;
-          const start = performance.now();
-          const sample = () => { samples.push(stack.getBoundingClientRect().left); if (performance.now() - start < 800) requestAnimationFrame(sample); };
-          requestAnimationFrame(sample);
-          return getComputedStyle(line).paddingRight;
-        `);
-        assert.equal(motion, '34px');
-        browser('mouse', 'move', '5', '5');
-        browser('wait', '850');
-        assert.ok(position().left > hovered.left + 30, 'Hidden settings must release its layout space');
-        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '0px');
-        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); return line.getBoundingClientRect().right - line.querySelector('.voice-stack').getBoundingClientRect().right < 8;`), 'Unhovered dropdown must reach the row right edge');
-        assert.ok(evaluate(`return new Set(voiceFixture.sampleMotion.map(x => Math.round(x))).size > 3;`), 'Settings reveal/hide must move through intermediate positions, not snap');
-        screenshot(`channel-${width}-joined-no-hover`);
-        browser('focus', '.channel-manage');
-        browser('wait', '250');
-        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '34px', 'Keyboard focus reveals settings space');
-        browser('hover', '.channel-select[aria-current="page"]');
-      } else {
-        assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-line')).paddingRight;`), '48px', 'Always-visible touch-style settings keeps its full hit target');
-        assert.ok(evaluate(`const line = document.querySelector('.channel-line'); return line.querySelector('.voice-stack').getBoundingClientRect().right <= line.querySelector('.channel-manage').getBoundingClientRect().left;`), 'Touch-style settings must not overlap the dropdown');
+      if (width === 390) {
+        click('Close navigation');
+        // This fixture resized an existing desktop session with members open.
+        click('Hide member list');
+        assert.ok(evaluate(`const composer = document.querySelector('#chat-message'), r = composer.getBoundingClientRect(); return document.querySelector('.voice-hangup').getBoundingClientRect().height >= 44 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === composer;`), 'Narrow conversation retains the dock disconnect target and unobscured text entry');
+        screenshot('channel-390-conversation');
+        browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
       }
+      browser('click', '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
+      wait(`document.querySelector('#voice-occupants-alpha0000000').getBoundingClientRect().height > 20`);
+      assert.equal(evaluate(`return document.querySelector('#voice-occupants-alpha0000000 .voice-occupants-inner').inert;`), false);
+      screenshot(`channel-${width}-expanded`);
+      browser('click', '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
+      wait(`document.querySelector('#voice-occupants-alpha0000000').getBoundingClientRect().height === 0`);
+      assert.deepEqual(geometry(), before, 'Collapsing the roster returns to the same row layout');
+      evaluate(`voiceFixture.joinedTrack = voiceFixture.captures.at(-1); voiceFixture.leaveCount = voiceFixture.commands.filter(c => c.method === 'media.leave').length;`);
+      browser('find', 'role', 'button', 'click', '--name', 'beta', '--exact');
+      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta'`);
+      assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), 'live', 'Selecting text must not leave the current voice channel');
+      assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`), evaluate(`return voiceFixture.leaveCount;`));
+      if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+      assert.equal(evaluate(`return document.querySelector('[aria-label="Switch voice to #beta"]').textContent;`), 'Switch here');
+      click('Switch voice to #beta');
+      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('.channel-line:has(.channel-select[aria-current="page"]) .channel-join-slot')`);
+      assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), 'ended', 'Explicit switch must release the old capture');
+      assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').at(-1).channelId;`), 'beta00000000');
+      assert.equal(evaluate(`return document.querySelectorAll('[aria-label="Leave voice"]').length;`), 1, 'Switching preserves only the dock disconnect');
+      click('Leave voice');
+      wait(`voiceFixture.client.phase === 'idle'`);
+      browser('find', 'role', 'button', 'click', '--name', 'alpha', '--exact');
+      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+      if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+      evaluate(`voiceFixture.publishPresence([]); voiceFixture.holdCapture = true; voiceFixture.releaseCapture = undefined;`);
+      click('Join voice');
+      wait(`document.querySelector('[aria-label="Joining voice in #alpha"]') && voiceFixture.releaseCapture`);
+      assert.deepEqual(geometry(), before, 'Pending microphone permission/capture must not shift controls');
+      assert.equal(evaluate(`return document.querySelector('[aria-label="Joining voice in #alpha"]').getAttribute('aria-disabled');`), 'true');
+      assert.ok(evaluate(`return !!document.querySelector('[aria-label="Joining voice in #alpha"] .lucide-speech');`), 'Joining retains the speaking icon');
+      assert.ok(actionContentsFit(), 'Pending labels must fit with their icons');
+      const joins = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`);
+      evaluate(`document.querySelector('[aria-label="Joining voice in #alpha"]').click();`);
+      assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`), joins, 'Busy action must not issue a second Join');
+      screenshot(`channel-${width}-joining`);
+      wait(`document.querySelector('[aria-label="Cancel joining voice"]')`);
+      click('Cancel joining voice');
+      wait(`document.querySelector('[aria-label="Join voice"]')`);
+      evaluate(`voiceFixture.holdCapture = false; voiceFixture.releaseCapture();`);
+      wait(`voiceFixture.captures.at(-1).readyState === 'ended'`);
+      assert.deepEqual(geometry(), before, 'Cancelled joins restore the same targets');
+      evaluate(`voiceFixture.captureError = 'NotAllowedError';`);
+      click('Join voice');
+      wait(`voiceFixture.client.phase === 'failed' && document.querySelector('.voice-error')`);
+      assert.deepEqual(geometry(), before, 'Failed joins keep the channel controls stable and retryable');
+      assert.equal(evaluate(`return document.querySelector('[aria-label="Join voice"]').getAttribute('aria-disabled');`), 'false');
+      screenshot(`channel-${width}-error`);
+      evaluate(`voiceFixture.captureError = undefined;`);
+      click('Dismiss voice error');
       browser('set', 'media', 'reduced-motion');
       assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join')).transitionDuration;`), '0s');
-      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.voice-stack-avatar')).animationName;`), 'none');
-      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.channel-join-slot')).transitionDuration;`), '0s');
       browser('set', 'media', 'no-preference');
-      click('Leave voice');
-      wait(`document.querySelector('[aria-label="Join voice"]')`);
-      wait(`getComputedStyle(document.querySelector('.channel-join')).opacity === '1'`);
-      browser('hover', '.channel-select[aria-current="page"]');
-      browser('wait', '250');
-      assert.deepEqual(position(), before, 'Join returns to its original slot after leaving');
-      assert.equal(evaluate(`return document.querySelector('.channel-join').inert;`), false);
+      assert.deepEqual(geometry(), before);
       screenshot(`channel-${width}-left`);
-      evaluate(`voiceFixture.publishPresence([]);`);
-      wait(`!document.querySelector('.voice-stack')`);
-      // Also exercise connection-first ordering with no early public roster.
-      click('Join voice');
-      wait(`document.querySelector('[aria-label="Leave voice"]') && document.querySelector('.voice-stack')`);
-      wait(`document.querySelector('.channel-join-slot').getBoundingClientRect().width < 1`);
-      const connected = position();
-      evaluate(`voiceFixture.publishPresence(voiceFixture.people);`);
-      click('Leave voice');
-      wait(`document.querySelector('[aria-label="Join voice"]')`);
-      browser('hover', '.channel-select[aria-current="page"]');
-      browser('wait', '250');
-      assert.ok(position().left < connected.left - 20, 'Connection-first disconnect must reopen the Join slot');
-      evaluate(`voiceFixture.publishPresence([]);`);
-      wait(`!document.querySelector('.voice-stack')`);
+      if (width === 1280) {
+        browser('focus', '[aria-label="Channel sidebar width"]');
+        browser('press', 'Home');
+        assert.equal(evaluate(`return document.querySelector('.people-panel').getBoundingClientRect().width;`), 220);
+        assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => line.querySelector('.channel-join').getBoundingClientRect().right <= line.getBoundingClientRect().right);`), 'Actions must fit at the 220px sidebar minimum');
+        assert.ok(evaluate(`return [...document.querySelectorAll('.channel-voice')].every(row => row.innerText.trim() === 'Join voice');`), 'Minimum-width empty rows also omit redundant status text');
+        assert.ok(actionContentsFit(), 'Icons and labels must fit at the 220px sidebar minimum');
+        screenshot('channel-minimum-sidebar');
+        browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight');
+      } else {
+        assert.ok(before.every(row => row[1][2] >= 44 && row[1][3] >= 44 && row[2][3] >= 44), 'Narrow controls need 44px tap targets');
+      }
     }
+    const ownerNarrowCount = countPosition();
+    browser('set', 'viewport', '1280', '900', '2');
+    evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
+    const ownerDesktopCount = countPosition();
+    browser('hover', '.channel-section-heading');
+    browser('mouse', 'move', '5', '5');
+    assert.deepEqual(countPosition(), ownerDesktopCount, 'Revealing owner section actions cannot shift the count');
+    screenshot('channel-1280-owner');
+    evaluate(`voiceFixture.showSpaces(false);`);
+    wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && !document.querySelector('.channel-manage')`);
+    assert.equal(evaluate(`return document.querySelectorAll('.channel-join').length;`), 3, 'Members retain voice actions without owner management controls');
+    assert.deepEqual(countPosition(), ownerDesktopCount, 'Owned and shared spaces keep the channel count in the same position');
+    screenshot('channel-1280-member');
+    browser('set', 'viewport', '390', '900', '2');
+    browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+    assert.deepEqual(countPosition(), ownerNarrowCount, 'Narrow owned and shared spaces also align the count');
+    screenshot('channel-390-member');
     evaluate(`await voiceFixture.cleanup();`);
-    console.log('PASS collapsing Join slot at 1280px and 390px, both roster timing orders, animated hover/focus settings space, hidden Join accessibility, and reduced motion (mock signaling/WebRTC)');
+    console.log('PASS quiet stable channel rows at 1280px/390px and 220px sidebar, empty-status omission, neutral actions and visible keyboard focus, owned/shared count alignment, empty/live/private channels, owner menu and focus return, join/leave/switch/cancel, browsing preserves voice, busy guard, reduced motion and member permissions (mock signaling/WebRTC)');
   } else {
   for (const label of ['Input Options', 'Output Options', 'User Settings']) {
     click(label);
@@ -600,14 +691,14 @@ try {
   assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`), evaluate(`return voiceFixture.leaveCount;`), 'Navigation must not send Leave');
   assert.ok(evaluate(`return document.querySelector('.connected-channel').textContent.includes('Test space / alpha');`), 'Connected channel must remain visible');
   assert.ok(evaluate(`return document.querySelector('[aria-label="User Settings"]') === voiceFixture.settingsNode;`), 'Settings must not remount on navigation');
-  assert.ok(evaluate(`return !!document.querySelector('[aria-label="Join voice"]') && !!document.querySelector('[aria-label="Unmute microphone"]');`));
+  assert.ok(evaluate(`return !!document.querySelector('[aria-label="Switch voice to #beta"]') && !!document.querySelector('[aria-label="Unmute microphone"]');`));
   screenshot('voice-browsing-another-channel');
   browser('click', '.connected-channel button:first-child');
   wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
   assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice"]');`));
   browser('find', 'role', 'button', 'click', '--name', 'beta', '--exact');
   wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta' && document.querySelector('.voice-button[aria-disabled="false"]')`);
-  click('Join voice');
+  click('Switch voice to #beta');
   wait(`document.querySelector('[aria-label="Leave voice"]')`);
   assert.equal(evaluate(`return voiceFixture.callTrack.readyState;`), 'ended', 'Explicit Join must release the previous call');
   assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`), evaluate(`return voiceFixture.leaveCount + 1;`));
