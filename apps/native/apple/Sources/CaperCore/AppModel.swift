@@ -936,6 +936,20 @@ public final class ChatModel {
     public var typingNames: [String] = []
     public var reactionSaving: Set<String> = []
     public var reactionErrors: [String: String] = [:]
+    /// `GET /api/assets/usage` succeeded; otherwise the attach control stays hidden.
+    public private(set) var uploadsEnabled = false
+    public private(set) var attachmentCompression = AttachmentCompression()
+    public private(set) var attachmentDrafts: [AttachmentDraft] = []
+    /// Composer-level attachment message, such as the 10-file limit.
+    public var attachmentNotice: String?
+    public var canAttach: Bool { uploadsEnabled && !isPreview && session != nil && channelID != nil && !loadFailed }
+    /// The send control's enabled state: text or uploaded files, nothing still uploading.
+    public var canSubmit: Bool {
+        if sending || delivery.rejected { return false }
+        if delivery.pending != nil { return true }
+        return attachmentDrafts.allSatisfy { $0.attachment != nil }
+            && MessageValidation.error(for: draft, attachmentCount: attachmentDrafts.count) == nil
+    }
     public var currentAuthor: ChatAuthor? { session?.author }
     public private(set) var isPreview = false
     /// Web's failed first load: no conversation to show, only the error.
@@ -962,6 +976,13 @@ public final class ChatModel {
     private var typingTask: Task<Void, Never>?
     private var typingIdleTask: Task<Void, Never>?
     private var typingExpiryTask: Task<Void, Never>?
+    private var uploadTasks: [String: Task<Void, Never>] = [:]
+    private var uploadGeneration = 0
+    private var urlRefreshQueue: Set<String> = []
+    /// The URL each attachment held when its refresh was requested: a stale
+    /// URL is refreshed at most once, but a later expiry can refresh again.
+    private var urlRefreshAttempts: [String: String] = [:]
+    private var urlRefreshTask: Task<Void, Never>?
     @ObservationIgnored private lazy var gateway: Gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, error in
         self?.receiveGatewayState(state, error: error)
     }
@@ -1208,15 +1229,29 @@ public final class ChatModel {
     public func send() async {
         guard !sending, !delivery.rejected else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
-        if delivery.pending == nil, let validation = MessageValidation.error(for: draft) { error = validation; return }
+        if delivery.pending == nil {
+            if attachmentDrafts.contains(where: { $0.attachment == nil }) {
+                error = attachmentDrafts.contains { $0.error != nil } ? "Remove files that failed to upload first." : "Wait for files to finish uploading."
+                return
+            }
+            if let validation = MessageValidation.error(for: draft, attachmentCount: attachmentDrafts.count) { error = validation; return }
+        }
         let newSubmission = delivery.pending == nil
-        let command = delivery.begin(text: draft)
-        if newSubmission { draft = "" }
+        // The pending row previews local copies until the server's signed URLs arrive.
+        let localAttachments: [ChatAttachment] = newSubmission ? attachmentDrafts.compactMap { item in
+            guard var attachment = item.attachment else { return nil }
+            attachment.url = item.localURL.absoluteString
+            attachment.previewUrl = nil
+            return attachment
+        } : []
+        let command = delivery.begin(text: draft, attachments: localAttachments)
+        if newSubmission { draft = ""; attachmentDrafts = []; attachmentNotice = nil }
         let requestGeneration = generation
         sending = true; error = nil
         await gateway.reportActivity()
         do {
-            let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text)
+            let message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
+                                             attachmentIDs: command.attachmentIDs)
             guard self.channelID == channelID,
                   generation == requestGeneration || delivery.pending?.id == command.id else { return }
             guard MessageValidation.acceptsResponse(message, channelID: channelID, command: command, authorID: session.author.id) else {
@@ -1386,6 +1421,8 @@ public final class ChatModel {
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
         reactionSnapshots.reset(); reactionSaving = []; reactionErrors = [:]; failedReactions = [:]
+        if !preservingPending { discardAttachmentDrafts() }
+        urlRefreshTask?.cancel(); urlRefreshTask = nil; urlRefreshQueue = []; urlRefreshAttempts = [:]
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
@@ -1408,6 +1445,155 @@ public final class ChatModel {
         }
         guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
         messages = messages.map { reactionSnapshots.overlay($0) }
+    }
+
+    // MARK: Attachments
+
+    /// Uploads are optional server configuration; only a successful usage
+    /// response shows the attach control.
+    public func checkUploadAvailability() async {
+        do {
+            let usage = try await api.assetUsage()
+            attachmentCompression = usage.compression
+            uploadsEnabled = true
+        } catch {
+            uploadsEnabled = false
+        }
+    }
+
+    /// Prepares and uploads staged files for the next message, up to 10.
+    public func addAttachments(_ files: [LocalAttachmentFile]) {
+        guard canAttach, let channelID, !files.isEmpty else {
+            files.forEach { AttachmentStaging.remove($0.url) }
+            return
+        }
+        let room = AttachmentPolicy.maxAttachments - attachmentDrafts.count
+        guard room > 0 else {
+            attachmentNotice = "You can attach up to \(AttachmentPolicy.maxAttachments) files."
+            files.forEach { AttachmentStaging.remove($0.url) }
+            return
+        }
+        attachmentNotice = files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil
+        files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
+        if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
+        let settings = attachmentCompression
+        let expectedGeneration = uploadGeneration
+        for file in files.prefix(room) {
+            let id = UUID().uuidString
+            attachmentDrafts.append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind(contentType: file.contentType),
+                                                    localURL: file.url, sourceSize: file.size))
+            uploadTasks[id] = Task { [weak self, api] in
+                let prepared = await AttachmentPreparer.prepare(file, settings: settings)
+                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled,
+                      self.attachmentDrafts.contains(where: { $0.id == id }) else {
+                    AttachmentStaging.remove(prepared.fileURL)
+                    if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
+                    return
+                }
+                if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
+                self.updateDraft(id) {
+                    $0.name = prepared.name; $0.kind = prepared.kind; $0.storedSize = prepared.byteSize; $0.localURL = prepared.fileURL
+                }
+                do {
+                    let attachment = try await AttachmentUploader.upload(prepared, channelID: channelID, api: api) { fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.uploadGeneration == expectedGeneration else { return }
+                            self.updateDraft(id) { if $0.attachment == nil && $0.error == nil { $0.progress = fraction } }
+                        }
+                    }
+                    guard self.uploadGeneration == expectedGeneration else { return }
+                    self.updateDraft(id) { $0.attachment = attachment; $0.progress = 1; $0.error = nil }
+                } catch {
+                    guard self.uploadGeneration == expectedGeneration, !Task.isCancelled else { return }
+                    self.updateDraft(id) { $0.error = AttachmentPolicy.uploadErrorMessage(error) }
+                }
+                self.uploadTasks[id] = nil
+            }
+        }
+    }
+
+    public func removeAttachmentDraft(id: String) {
+        uploadTasks[id]?.cancel()
+        uploadTasks[id] = nil
+        if let draft = attachmentDrafts.first(where: { $0.id == id }) { AttachmentStaging.remove(draft.localURL) }
+        attachmentDrafts.removeAll { $0.id == id }
+        attachmentNotice = nil
+    }
+
+    private func discardAttachmentDrafts() {
+        uploadGeneration += 1
+        uploadTasks.values.forEach { $0.cancel() }
+        uploadTasks = [:]
+        attachmentDrafts.forEach { AttachmentStaging.remove($0.localURL) }
+        attachmentDrafts = []
+        attachmentNotice = nil
+    }
+
+    private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {
+        guard let index = attachmentDrafts.firstIndex(where: { $0.id == id }) else { return }
+        change(&attachmentDrafts[index])
+    }
+
+    /// Batches `POST /api/assets/urls` for attachments whose signed URLs are
+    /// expiring or failed to load. Each stale URL is refreshed at most once.
+    public func requestFreshAttachmentURLs(ids: [String]) {
+        for id in ids {
+            guard let current = attachment(id: id)?.url, !current.hasPrefix("file:"), urlRefreshAttempts[id] != current else { continue }
+            urlRefreshQueue.insert(id)
+        }
+        guard !urlRefreshQueue.isEmpty, urlRefreshTask == nil else { return }
+        urlRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            await self?.flushAttachmentURLRefresh()
+        }
+    }
+
+    private func flushAttachmentURLRefresh() async {
+        urlRefreshTask = nil
+        let ids = Array(urlRefreshQueue.prefix(100))
+        urlRefreshQueue.subtract(ids)
+        for id in ids { urlRefreshAttempts[id] = attachment(id: id)?.url ?? "" }
+        if !urlRefreshQueue.isEmpty { requestFreshAttachmentURLs(ids: []) }
+        guard !ids.isEmpty else { return }
+        let requestChannel = channelID
+        guard let urls = try? await api.refreshAttachmentURLs(ids: ids), !urls.isEmpty, channelID == requestChannel else { return }
+        applyFreshAttachmentURLs(urls)
+    }
+
+    /// The URL to open or play now, refreshed first when it is expiring.
+    public func currentURL(for attachment: ChatAttachment) async -> URL? {
+        var latest = self.attachment(id: attachment.id) ?? attachment
+        if AttachmentURLPolicy.needsRefresh(latest.url) {
+            let requestChannel = channelID
+            if let urls = try? await api.refreshAttachmentURLs(ids: [attachment.id]), !urls.isEmpty, channelID == requestChannel {
+                applyFreshAttachmentURLs(urls)
+                latest = self.attachment(id: attachment.id) ?? latest
+            }
+        }
+        return latest.url.flatMap { URL(string: $0) }
+    }
+
+    private func attachment(id: String) -> ChatAttachment? {
+        for message in messages.reversed() {
+            if let match = message.content.attachments?.first(where: { $0.id == id }) { return match.unavailable ? nil : match }
+        }
+        return nil
+    }
+
+    private func applyFreshAttachmentURLs(_ urls: [String: AttachmentURLs]) {
+        messages = messages.map { message in
+            guard let attachments = message.content.attachments, attachments.contains(where: { urls[$0.id] != nil }) else { return message }
+            var updated = message
+            updated.content.attachments = attachments.map { attachment in
+                guard let fresh = urls[attachment.id], !attachment.unavailable else { return attachment }
+                var refreshed = attachment
+                refreshed.url = fresh.url
+                refreshed.previewUrl = fresh.previewUrl
+                return refreshed
+            }
+            return updated
+        }
     }
 
     private func flushTyping() {

@@ -881,7 +881,30 @@ npx wrangler deploy --env staging
 | Platform | Send files | Show files |
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
-| Android, Apple, Rust desktop | No | Message text only. They ignore the additive `attachments` field; a file-only message shows an empty text row. |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed" |
+| Android, Rust desktop | No | Message text only. They ignore the additive `attachments` field; a file-only message shows an empty text row. |
+
+Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
+Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
+within an hour, or after a 403/404, at most once per stale URL; decoded images
+are cached by attachment id. Stills follow the shared policy: an exact indexed
+PNG (Swift encoder over the Compression framework's DEFLATE) when the colours
+fit `paletteColors`, otherwise WebP if ImageIO can encode it at runtime, else
+JPEG on white, at `imageQuality`, scaled to `imageMaxEdge`; HEIC is never
+uploaded when conversion succeeds. Videos use the largest
+`AVAssetExportSession` size preset whose output height stays within
+`videoMaxHeight` (H.264/AAC MP4, kept only if smaller, original on failure).
+Presets choose their own bitrates, so `videoBitrateKbps` and
+`audioBitrateKbps` are not applied. Previews and poster frames use
+`previewEdge`. Taps open images and files at their signed URL in the system
+browser or viewer; there is no in-app full-screen viewer. GIFs show their
+first frame. Audio plays through `AVPlayer` with the app's existing audio
+session. Unit tests cover decoding, URL refresh decisions, compression
+decisions, the indexed-PNG round trip through ImageIO, the upload request
+sequence and a file-only send against a stubbed `URLProtocol`. They were
+written without a Swift toolchain and await macOS CI; Photos/file pickers,
+drag and drop, AVKit playback, export presets on real media, live R2 uploads
+and physical devices are not yet validated.
 
 ### Validation
 

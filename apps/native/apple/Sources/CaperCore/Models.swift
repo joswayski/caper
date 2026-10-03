@@ -183,6 +183,33 @@ public struct ChatContent: Codable, Equatable, Sendable {
     public let version: Int
     public let type: String
     public let text: String
+    /// Additive and optional. Malformed entries are skipped, never failing the
+    /// message or its history page; `nil` when the field is absent or unusable.
+    public var attachments: [ChatAttachment]?
+
+    private enum CodingKeys: String, CodingKey { case version, type, text, attachments }
+    public init(version: Int, type: String, text: String, attachments: [ChatAttachment]? = nil) {
+        self.version = version; self.type = type; self.text = text; self.attachments = attachments
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        type = try values.decode(String.self, forKey: .type)
+        text = try values.decode(String.self, forKey: .text)
+        // Not an array (or null): ignore the field. Otherwise keep valid entries.
+        if var list = try? values.nestedUnkeyedContainer(forKey: .attachments) {
+            var decoded: [ChatAttachment] = []
+            while !list.isAtEnd {
+                let index = list.currentIndex
+                if (try? list.decodeNil()) == true { continue }
+                if let entry = try? list.decode(LossyAttachment.self), let value = entry.value { decoded.append(value) }
+                if list.currentIndex == index { break }
+            }
+            attachments = decoded
+        } else {
+            attachments = nil
+        }
+    }
 }
 
 public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
@@ -190,7 +217,7 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let channelId: String
     public let seq: String
     public let author: ChatAuthor
-    public let content: ChatContent
+    public var content: ChatContent
     public let createdAt: String
     public let clientMessageId: String
     public var reactions: [MessageReaction]? = nil
@@ -284,8 +311,9 @@ public enum ProfileValidation {
 }
 
 public enum MessageValidation {
-    public static func error(for text: String) -> String? {
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Write a message first." }
+    public static func error(for text: String, attachmentCount: Int = 0) -> String? {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachmentCount == 0 { return "Write a message first." }
+        if attachmentCount > AttachmentPolicy.maxAttachments { return "You can attach up to \(AttachmentPolicy.maxAttachments) files." }
         if text.unicodeScalars.count > 4_000 { return "Messages can be at most 4,000 characters." }
         if text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control && $0 != "\n" && $0 != "\t" }) {
             return "Messages cannot contain control characters."
@@ -307,11 +335,17 @@ public enum MessageValidation {
 public struct PendingMessage: Equatable, Sendable {
     public let id: String
     public let text: String
+    /// Uploaded files sent with this command. Until the server confirms the
+    /// message, their `url` points at the local copy for previews.
+    public let attachments: [ChatAttachment]
     public let createdAt: String
+    /// Ids join the server's idempotency hash, so retries resend the same ids.
+    public var attachmentIDs: [String] { attachments.map(\.id) }
 
-    public init(id: String, text: String, createdAt: String = ISO8601DateFormatter().string(from: Date())) {
+    public init(id: String, text: String, attachments: [ChatAttachment] = [], createdAt: String = ISO8601DateFormatter().string(from: Date())) {
         self.id = id
         self.text = text
+        self.attachments = attachments
         self.createdAt = createdAt
     }
 }
@@ -326,10 +360,10 @@ public struct ChatDeliveryState: Sendable {
 
     public init(cursor: String = "0") { self.cursor = cursor }
 
-    public mutating func begin(text: String, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
+    public mutating func begin(text: String, attachments: [ChatAttachment] = [], makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
-        let command = PendingMessage(id: makeID().lowercased(), text: text)
+        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments)
         pending = command
         return command
     }

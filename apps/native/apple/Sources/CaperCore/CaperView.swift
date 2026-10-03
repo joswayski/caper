@@ -1504,7 +1504,13 @@ private struct ChatView: View {
                 }
                 if let joinError { Text(joinError).font(CaperTheme.font(11)).foregroundStyle(.red) }
                 }.padding(12)
-            } else { HStack(alignment: .bottom, spacing: 8) {
+            } else { VStack(alignment: .leading, spacing: 8) {
+            if let notice = chat.attachmentNotice {
+                Text(notice).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51))
+            }
+            AttachmentDraftsView(chat: chat)
+            HStack(alignment: .bottom, spacing: 8) {
+                if chat.canAttach { AttachmentPickerButton(chat: chat) }
                 TextField("Message #\(chat.channelName.lowercased())", text: $chat.draft, axis: .vertical)
                     .font(CaperTheme.font(14)).lineLimit(1...8).textFieldStyle(.plain).padding(11)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 6))
@@ -1522,11 +1528,12 @@ private struct ChatView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PrimaryIconButton())
-                .disabled(chat.sending || chat.sendRejected || (chat.pendingMessage == nil && MessageValidation.error(for: chat.draft) != nil))
+                .disabled(!chat.canSubmit)
                 .help(chat.sending ? "Sending…" : chat.sendRejected ? "Edit or dismiss the rejected message before sending another." : "Send message")
                 .accessibilityLabel("Send message")
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
+            }
             }
             }
             }.padding(.horizontal, 18).padding(.vertical, 12)
@@ -1539,6 +1546,17 @@ private struct ChatView: View {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
         }.background(CaperTheme.conversation)
+            // Uploads are optional server configuration; recheck per conversation.
+            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID) { await chat.checkUploadAvailability() }
+            #if os(macOS)
+            .dropDestination(for: URL.self) { urls, _ in
+                guard chat.canAttach else { return false }
+                let files = urls.filter(\.isFileURL).prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
+                guard !files.isEmpty else { return false }
+                chat.addAttachments(files)
+                return true
+            }
+            #endif
             .task(id: chat.liveState) {
                 showConnectionStatus = false
                 guard chat.liveState != .connected else { return }
@@ -1651,8 +1669,14 @@ private struct MessageRow: View {
                     if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                     Text(timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                 }
-                Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // File-only messages carry empty text; hide the empty row.
+                if !message.content.text.isEmpty {
+                    Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let attachments = message.content.attachments, !attachments.isEmpty {
+                    MessageAttachmentsView(attachments: attachments, chat: chat)
+                }
                 ReactionRow(message: message, chat: chat) { pickerVisible = true }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
@@ -1817,7 +1841,13 @@ private struct PendingMessageRow: View {
             Avatar(name: author?.name ?? "Guest", size: 34, avatarID: author?.avatarId)
             VStack(alignment: .leading, spacing: 4) {
                 Text(author?.name ?? "Guest").font(CaperTheme.font(13, weight: .bold))
-                Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                if !pending.text.isEmpty {
+                    Text(pending.text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                }
+                if !pending.attachments.isEmpty {
+                    // Local copies until the server's signed URLs arrive.
+                    MessageAttachmentsView(attachments: pending.attachments, chat: nil).opacity(0.7)
+                }
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
