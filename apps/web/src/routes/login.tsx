@@ -91,7 +91,7 @@ function Login() {
           <label className="my-2 mt-5 block text-[.9rem] font-bold" htmlFor="email">Email address</label>
           <input className="w-full rounded-control border border-border bg-surface px-3.5 py-[13px] text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4 disabled:cursor-not-allowed disabled:opacity-55" id="email" name="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="you@example.com" required autoFocus />
           {error && <p className="mt-5 rounded-control border border-terracotta px-3.5 py-3 leading-[1.5]" role="alert">{error}</p>}
-          <button className="mt-3 flex w-full cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" type="submit" disabled={pending}>{pending ? "Sending…" : <>Email me a code <span aria-hidden="true">→</span></>}</button>
+          <button className="mt-3 ml-auto flex w-fit cursor-pointer items-center justify-between gap-4 rounded-control border border-terracotta bg-terracotta px-5 py-4 font-bold text-content disabled:cursor-wait disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-4" type="submit" disabled={pending}>{pending ? "Sending…" : <>Email me a code <span aria-hidden="true">→</span></>}</button>
         </form>
       </>}
     </section>
