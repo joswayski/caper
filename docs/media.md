@@ -1450,6 +1450,9 @@ Keep this temporary test separate from any future production app/key.
 | `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
 | `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source-IP hash in one hour; default `10` |
 | `AUTH_GLOBAL_HOURLY_LIMIT` | Code requests accepted across the service in one hour; default `500` |
+| `TURNSTILE_SITE_KEY` | Public Cloudflare Turnstile widget key, served at runtime by `/api/auth/config`; no web build secret or build-time key. |
+| `TURNSTILE_SECRET_KEY` | API-only Siteverify secret. Configure together with the site key and hostnames; all three absent/blank disables verification, partial configuration fails startup. |
+| `TURNSTILE_HOSTNAMES` | Exact comma-separated browser hostnames accepted from Siteverify, e.g. `caper.chat`. No URLs, wildcards, or implicit subdomain allowance. |
 | `NOTIFICATIONS_WEBHOOK_URL` | Optional server-only HTTPS URL for best-effort application notifications. The current event is `user.created`; URLs with credentials, query strings, or fragments are rejected and leave notifications disabled. |
 | `AWS_REGION` | SES region; production and staging use `us-east-1` |
 | `SES_FROM_ADDRESS` | Verified Caper sender, including the friendly name |
@@ -3473,6 +3476,126 @@ build stages were validated directly rather than building container images.
    Rollback images independently if necessary; **leave the additive column and its
    assignments intact**. Old code ignores it. Do not drop/recreate the column or
    regenerate assignments. No shared migration or deployment was run during development.
+
+### Login email abuse protection
+
+The API rejects reserved `example.com`, `example.net`, `example.org`, `.example`,
+`.test`, `.invalid`, and `.localhost` email domains, including subdomains, before
+creating challenges or calling SES. This is not a mailbox-existence check: real
+domains and addresses such as `test@gmail.com` remain valid. SES account-level
+suppression, not a Caper database list, handles suppressed recipients. A bounce
+alarm alone does not mean the SES account is under review. Turnstile reduces
+automated requests; it cannot prevent a person entering an invalid real address.
+
+Cloudflare's [free Turnstile plan](https://developers.cloudflare.com/turnstile/plans/)
+supports unlimited challenges. The web login uses a Managed widget with
+`appearance: interaction-only`: no visible challenge unless interaction is needed.
+The existing login introduction remains unchanged. Each email-code request,
+including an exhausted-code resend, sends a fresh in-memory `turnstileToken`.
+When configured, the API calls the fixed Cloudflare Siteverify endpoint and checks
+success, action `login_email`, and an exact configured hostname **before** database
+or SES work. Missing, invalid, expired, replayed, and wrong-action/hostname tokens
+fail closed with 403; provider failures return 503. Existing email/IP/global
+quotas still apply. Tokens, credentials and provider responses are not logged.
+Outbound HTTPS to `challenges.cloudflare.com` is required from both browser and API.
+
+`GET /api/auth/config` is public and `Cache-Control: no-store`; it exposes only the
+site key or null. Never place the secret key in the web container, bundle, or
+native client. Public Cloudflare testing keys are rejected at startup unless
+process `ENVIRONMENT` is explicitly `development` or `test`; do not install them
+in staging/production. Browser test keys and mocked Siteverify responses are not
+evidence of real bot detection or email delivery.
+
+**Native limitation:** Android, iOS/macOS and Rust desktop do not yet implement a
+browser/WebView challenge or browser-to-app sign-in handoff. Enabling enforcement
+blocks their new email-code requests; existing sessions and code verification
+remain usable. These clients explain the limitation and direct people to the
+website, but web sign-in does not authenticate the native app. Do not enable
+production enforcement unless this limitation is accepted or native challenge
+support ships first. There is no user-agent/header-based native bypass.
+
+Local verification: `node scripts/test-login-turnstile.mjs http://localhost:5174`
+uses explicitly mocked callbacks/API responses to check missing/expired/spent and
+stale tokens, retries, exhausted-code resend, cleanup and 1280/390/320px layouts.
+Rust tests use a local mock Siteverify server for hostname/action/replay/error
+checks and disposable Postgres for ordinary email authentication. Actual provider
+test-key rendering is separate from these fixtures. Native builds/device checks,
+real widget verification with production keys, and live SES delivery remain
+separate rollout checks.
+
+#### Deployment order for login abuse protection
+
+1. No Terraform/OpenTofu, database migration, IAM, gateway deployment, or native
+   release is required to deploy the reserved-domain rejection and dormant web
+   integration. Keep all three Turnstile settings absent/blank initially. Wait
+   for the merged commit's immutable API/web images; merging does not deploy.
+   From an authenticated operator machine, deploy API first, then web. Wait for
+   each exact workflow run to succeed before checking rollout and continuing:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   curl -fsS https://caper.chat/api/auth/config
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ```
+   Expect `{"turnstileSiteKey":null}`. Verify ordinary sign-in and reserved-domain
+   rejection. Old loaded web clients can still send while verification is disabled.
+2. After resolving/accepting the native limitation, create a **free Managed**
+   Turnstile widget in Cloudflare for `caper.chat`. Use separate widgets/keys for
+   other environments and include their exact hostnames on both sides. No DNS
+   change or paid plan is needed. Provisioning and activation are operator
+   actions; development did not create a widget or alter production configuration.
+3. On the operator's trusted machine, merge the three settings into the existing
+   `production/apps/caper` JSON record, preserving every other property. Use a
+   private temporary file; never paste the secret into shell arguments or logs:
+   ```sh
+   aws sso login --profile production
+   umask 077
+   RUNTIME_DIR=$(mktemp -d)
+   aws --profile production --region us-east-1 secretsmanager get-secret-value \
+     --secret-id production/apps/caper --query SecretString --output text > "$RUNTIME_DIR/before.json"
+   cp "$RUNTIME_DIR/before.json" "$RUNTIME_DIR/runtime.json"
+   "${EDITOR:-vi}" "$RUNTIME_DIR/runtime.json"
+   # Add TURNSTILE_SITE_KEY, TURNSTILE_SECRET_KEY, TURNSTILE_HOSTNAMES=caper.chat.
+   jq -e 'all([.TURNSTILE_SITE_KEY,.TURNSTILE_SECRET_KEY,.TURNSTILE_HOSTNAMES][]; type == "string" and length > 0)' \
+     "$RUNTIME_DIR/runtime.json" >/dev/null
+   aws --profile production --region us-east-1 secretsmanager put-secret-value \
+     --secret-id production/apps/caper --secret-string "file://$RUNTIME_DIR/runtime.json" >/dev/null
+   kubectl -n default annotate externalsecret/caper-api-account force-sync="$(date +%s)" --overwrite
+   kubectl -n default wait --for=condition=Ready externalsecret/caper-api-account --timeout=5m
+   ```
+   The existing ExternalSecret extracts the full record into the API's environment;
+   no infrastructure manifest change is needed. Wait for its five-minute refresh
+   or forced synchronization and verify the new key names exist without printing
+   values before restarting API pods:
+   ```sh
+   kubectl -n default get secret caper-api-account -o json | jq -e \
+     '.data | has("TURNSTILE_SITE_KEY") and has("TURNSTILE_SECRET_KEY") and has("TURNSTILE_HOSTNAMES")' >/dev/null
+   kubectl -n default rollout restart deployment/caper-api
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   curl -fsS https://caper.chat/api/auth/config
+   ```
+4. Reload login on desktop and narrow browsers. Verify an actual code reaches a
+   controlled inbox, fresh verification after failed requests/resends, and 403
+   without a token. Monitor SES bounce/reputation metrics separately. Old loaded
+   web clients must reload after activation. Existing native sessions stay valid;
+   new native sign-in is unavailable until native challenge support is released.
+5. Rollback: restore the reviewed pre-activation JSON (or remove/blank all three
+   settings while preserving subsequent unrelated secret changes), synchronize
+   the ExternalSecret, restart the API, and verify the config returns null:
+   ```sh
+   aws --profile production --region us-east-1 secretsmanager put-secret-value \
+     --secret-id production/apps/caper --secret-string "file://$RUNTIME_DIR/before.json" >/dev/null
+   kubectl -n default annotate externalsecret/caper-api-account force-sync="$(date +%s)" --overwrite
+   # Wait for synchronization before restarting, as in step 3.
+   kubectl -n default rollout restart deployment/caper-api
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   curl -fsS https://caper.chat/api/auth/config
+   ```
+   Never leave partial configuration. Reload browsers. API/web image rollback is
+   independent after disabling verification; no database rollback is needed.
+   Securely remove the private temporary files after verification/rollback.
 
 ### Removed account lifecycle integration
 

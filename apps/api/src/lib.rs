@@ -66,6 +66,7 @@ mod notifications;
 mod presence;
 mod push;
 mod spaces;
+mod turnstile;
 use media_store::Timestamp;
 
 pub use db::{connect_database, connect_runtime_database, migrate_database};
@@ -1084,6 +1085,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         account_auth,
     ));
     let account_login = Router::new()
+        .route("/api/auth/config", get(auth_config))
         .route("/api/auth/email/request", post(auth_email_request))
         .route("/api/auth/email/verify", post(auth_email_verify));
     Router::new()
@@ -1211,9 +1213,17 @@ fn session_cookie(headers: &HeaderMap) -> Option<&str> {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct EmailRequestInput {
     email: String,
+    turnstile_token: Option<String>,
+}
+
+async fn auth_config(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(json!({"turnstileSiteKey": state.auth.turnstile_site_key()})),
+    )
 }
 
 async fn auth_email_request(
@@ -1228,7 +1238,12 @@ async fn auth_email_request(
         .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
     let challenge_id = state
         .auth
-        .request_code(state.database.as_ref(), &input.email, ip)
+        .request_code(
+            state.database.as_ref(),
+            &input.email,
+            ip,
+            input.turnstile_token.as_deref(),
+        )
         .await?;
     Ok((
         StatusCode::ACCEPTED,

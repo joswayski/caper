@@ -1423,6 +1423,9 @@ pub fn login_error(error: &crate::api::ApiError) -> String {
             "That code is incorrect or expired. Request a new one if needed."
         }
         Some(StatusCode::BAD_REQUEST) => "Enter a valid email address.",
+        Some(StatusCode::FORBIDDEN) => {
+            "Sign-in requires browser verification. Use caper.chat for now."
+        }
         Some(StatusCode::SERVICE_UNAVAILABLE) => {
             "Sign-in is temporarily unavailable. Please try again later."
         }
@@ -1469,6 +1472,10 @@ mod login_copy_tests {
         assert_eq!(
             login_error(&error(StatusCode::SERVICE_UNAVAILABLE, None)),
             "Sign-in is temporarily unavailable. Please try again later."
+        );
+        assert_eq!(
+            login_error(&error(StatusCode::FORBIDDEN, None)),
+            "Sign-in requires browser verification. Use caper.chat for now."
         );
         assert_eq!(
             profile_error(&error(StatusCode::CONFLICT, None)),

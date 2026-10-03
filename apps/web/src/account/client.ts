@@ -58,10 +58,14 @@ export async function getAccount(): Promise<Account | null> {
   }
 }
 
-export function requestEmailCode(email: string) {
+export function getAuthConfig() {
+  return request<{ turnstileSiteKey: string | null }>("/api/auth/config");
+}
+
+export function requestEmailCode(email: string, turnstileToken?: string) {
   return request<{ challengeId: string }>("/api/auth/email/request", {
     method: "POST",
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, turnstileToken }),
   });
 }
 

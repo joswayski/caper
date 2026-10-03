@@ -898,6 +898,7 @@ public final class AppModel {
         case 401 where api.attemptsRemaining == 0: return UserFacingError(message: "That code can no longer be used. Request a new one.")
         case 401: return UserFacingError(message: "That code is incorrect or expired. Request a new one if needed.")
         case 400: return UserFacingError(message: "Enter a valid email address.")
+        case 403 where api.code == "turnstile_required": return UserFacingError(message: "Sign-in requires browser verification. Use caper.chat for now.")
         case 503: return UserFacingError(message: "Sign-in is temporarily unavailable. Please try again later.")
         default: return UserFacingError(message: "Something went wrong. Please try again.")
         }

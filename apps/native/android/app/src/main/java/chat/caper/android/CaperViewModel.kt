@@ -962,6 +962,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         400 -> "Enter a valid email address."
         401 -> if ((error as ApiException).attemptsRemaining == 0) "That code can no longer be used. Request a new one."
             else "That code is incorrect or expired. Request a new one if needed."
+        403 -> if ((error as ApiException).code == "turnstile_required") "Sign-in requires browser verification. Use caper.chat for now."
+            else "Something went wrong. Please try again."
         503 -> "Sign-in is temporarily unavailable. Please try again later."
         else -> "Something went wrong. Please try again."
     }
