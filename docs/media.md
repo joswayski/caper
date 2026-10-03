@@ -856,7 +856,8 @@ npx wrangler deploy --env staging
 | Platform | Send files | Show files |
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
-| Android, Apple, Rust desktop | No | Message text only. They ignore the additive `attachments` field; a file-only message shows an empty text row. |
+| Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device (indexed PNG within `paletteColors`, else lossy WebP; Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview, tap for full size), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Apple, Rust desktop | No | Message text only. They ignore the additive `attachments` field; a file-only message shows an empty text row. |
 
 ### Validation
 
@@ -877,6 +878,14 @@ npx wrangler deploy --env staging
 - Not yet validated: live R2 (signature acceptance, signed `content-length`
   and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders,
   and physical phones.
+- Android: JVM unit tests cover tolerant attachment parsing, URL expiry and
+  refresh decisions, the compression decisions (palette PNG versus lossy versus
+  keep, preview sizing, video target height), a lossless indexed-PNG round trip
+  through the JDK decoder, and the reserve, presigned `PUT`, complete and send
+  sequence against MockWebServer (exact headers, no credentials sent to
+  storage). Not yet validated on Android: the Compose attachment UI and pickers
+  on an emulator or device, Bitmap/WebP encoding and EXIF handling, Media3
+  Transformer transcoding and playback, and uploads to live R2/CDN.
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus. On
