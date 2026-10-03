@@ -2291,7 +2291,7 @@ impl CaperApp {
                         } else {
                             "Welcome to Caper"
                         }).size(40.0));
-                        ui.add_space(28.0);
+                        ui.add_space(8.0);
                         ui.label(
                             RichText::new(if self.challenge.is_some() {
                                 format!(

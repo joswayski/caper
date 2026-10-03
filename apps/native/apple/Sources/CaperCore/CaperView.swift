@@ -1561,7 +1561,7 @@ private struct LoginPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 Wordmark().padding(.bottom, 58)
                 Text(model.challengeID == nil ? "Welcome to Caper" : "Check your email.")
-                    .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 18)
+                    .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 8)
                 Text(model.challengeID == nil ? "Use your email to create an account or return to one. No password needed." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 30)
                 if model.challengeID == nil {
