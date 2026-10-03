@@ -131,8 +131,9 @@ pub struct Track {
 #[serde(rename_all = "camelCase")]
 pub struct Participant {
     pub id: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
     pub name: String,
-    pub country_code: Option<String>,
     pub muted: bool,
     pub deafened: bool,
     pub tracks: Vec<Track>,
@@ -2290,8 +2291,8 @@ mod tests {
         let snapshot = Snapshot {
             participants: vec![Participant {
                 id: "p1".into(),
+                avatar_id: None,
                 name: "Test fixture".into(),
-                country_code: None,
                 muted: false,
                 deafened: false,
                 tracks: vec![Track {

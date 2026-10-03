@@ -13,7 +13,7 @@ let package = Package(
         .package(url: "https://github.com/stasel/WebRTC.git", exact: "153.0.0"),
     ],
     targets: [
-        .target(name: "CaperCore", dependencies: [.product(name: "WebRTC", package: "WebRTC")], resources: [.process("InvitationAssets.xcassets"), .process("InvitationAssets")]),
+        .target(name: "CaperCore", dependencies: [.product(name: "WebRTC", package: "WebRTC")], resources: [.process("CaperAvatars.xcassets"), .process("InvitationAssets.xcassets"), .process("InvitationAssets")]),
         .executableTarget(name: "CaperMacOS", dependencies: ["CaperCore"]),
         .executableTarget(name: "CaperIOS", dependencies: ["CaperCore"]),
         .testTarget(name: "CaperCoreTests", dependencies: ["CaperCore", .product(name: "WebRTC", package: "WebRTC")]),

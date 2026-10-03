@@ -146,11 +146,15 @@ async fn history_page(
     .map_err(database_error)?
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     // Bound by the captured committed head. Later commits are replayed by WS.
-    let mut rows: Vec<Value> = sqlx::query_scalar("SELECT payload FROM public.messages WHERE channel_id = $1 AND channel_seq <= $2 AND ($3::bigint IS NULL OR channel_seq < $3) ORDER BY channel_seq DESC LIMIT $4")
+    let mut rows: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id = $1 AND m.channel_seq <= $2 AND ($3::bigint IS NULL OR m.channel_seq < $3) ORDER BY m.channel_seq DESC LIMIT $4")
         .bind(access.id).bind(access.last_seq).bind(before).bind(PAGE + 1).fetch_all(pool).await.map_err(database_error)?;
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     rows.reverse();
+    let rows: Vec<Value> = rows
+        .into_iter()
+        .map(|(payload, avatar)| enrich_author(payload, avatar))
+        .collect();
     Ok(
         json!({"messages":rows,"cursor":access.last_seq.to_string(),"hasMore":more,
         "space":{"id":space,"name":space_name},"channel":{"id":channel,"name":channel_name}}),
@@ -203,7 +207,7 @@ async fn session(
         .execute(&mut *tx).await.map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok(Json(
-        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false}}),
+        json!({"token":token,"author":{"id":account.external_id,"name":name,"isGuest":false,"avatarId":account.avatar_id}}),
     ))
 }
 
@@ -262,9 +266,9 @@ fn sender_token(headers: &HeaderMap) -> Result<&str, ApiError> {
 async fn authorize_sender(
     connection: &mut sqlx::PgConnection,
     token: &str,
-) -> Result<(i64, String, String, Option<i64>), ApiError> {
+) -> Result<(i64, String, String, Option<i64>, Option<i16>), ApiError> {
     sqlx::query_as(
-        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
+        "SELECT s.id, COALESCE(u.external_id, s.external_id), COALESCE(u.display_name, s.name), s.user_id, u.avatar_id FROM public.chat_sessions s LEFT JOIN public.users u ON u.id = s.user_id WHERE s.token_hash = $1 AND s.expires_at > now() AND (s.user_id IS NULL OR (u.deleted_at IS NULL AND EXISTS (SELECT 1 FROM public.account_sessions a WHERE a.token_hash = s.account_session_hash AND a.user_id = s.user_id AND a.revoked_at IS NULL AND a.expires_at > now())))")
         .bind(Sha256::digest(token.as_bytes()).as_slice()).fetch_optional(connection).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "guest session expired"))
 }
@@ -297,12 +301,12 @@ async fn publish_typing(
     token: &str,
     typing: bool,
 ) -> Result<(), ApiError> {
-    let (_, author_id, name, user_id) = {
+    let (_, author_id, name, user_id, avatar_id) = {
         let mut connection = chat.pool.acquire().await.map_err(database_error)?;
         authorize_sender(&mut connection, token).await?
     };
     channel_participation(&chat.pool, channel, user_id).await?;
-    let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none()},"typing":typing});
+    let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"typing":typing});
     // Atomic shared limits and publication. No draft text, DB write, outbox, or
     // sequence allocation. Broker time orders duplicate/overlapping streams;
     // keep microseconds as a string rather than rounding through Lua/JS numbers.
@@ -354,7 +358,8 @@ async fn persist(
 ) -> Result<Value, ApiError> {
     let content = prepare_text(text)?;
     let mut tx = pool.begin().await.map_err(database_error)?;
-    let (session_id, author_id, name, user_id) = authorize_sender(&mut tx, token).await?;
+    let (session_id, author_id, name, user_id, avatar_id) =
+        authorize_sender(&mut tx, token).await?;
     // Membership mutations lock the space first. Take that lock in a separate
     // statement so the access query gets a fresh READ COMMITTED snapshot after
     // waiting; a predicate in the locking query can see pre-removal grants.
@@ -385,7 +390,7 @@ async fn persist(
         .bind(channel_id).bind(client_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     if let Some((sender, original, payload)) = existing {
         return if sender == session_id && original == hash {
-            Ok(payload)
+            Ok(enrich_author(payload, avatar_id))
         } else {
             Err(ApiError::new(
                 StatusCode::CONFLICT,
@@ -403,7 +408,7 @@ async fn persist(
     }
     let seq = head + 1;
     let id = random_id(15);
-    let payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none()},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
+    let payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
     sqlx::query("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)")
         .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("INSERT INTO public.channel_events (channel_id, seq, payload) VALUES ($1,$2,$3)")
@@ -438,7 +443,7 @@ pub(crate) fn spawn_publisher(chat: Chat) {
 }
 async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     let mut tx = chat.pool.begin().await.map_err(|_| ())?;
-    let rows: Vec<(i64, i64, Value)> = sqlx::query_as("SELECT channel_id, seq, payload FROM public.channel_events WHERE published_at IS NULL ORDER BY channel_id, seq LIMIT 64 FOR UPDATE SKIP LOCKED")
+    let rows: Vec<(i64, i64, Value, Option<i16>)> = sqlx::query_as("SELECT e.channel_id,e.seq,e.payload,u.avatar_id FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.channel_seq=e.seq LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.published_at IS NULL ORDER BY e.channel_id,e.seq LIMIT 64 FOR UPDATE OF e SKIP LOCKED")
         .fetch_all(&mut *tx).await.map_err(|_| ())?;
     if rows.is_empty() {
         return Ok(false);
@@ -450,7 +455,8 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     .await
     .map_err(|_| ())?
     .map_err(|_| ())?;
-    for (channel, seq, event) in &rows {
+    for (channel, seq, event, avatar_id) in &rows {
+        let event = enrich_author(event.clone(), *avatar_id);
         tokio::time::timeout(
             Duration::from_secs(2),
             redis::cmd("PUBLISH")
@@ -474,6 +480,18 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
         "outbox batch published"
     );
     Ok(true)
+}
+
+pub(crate) fn enrich_author(mut payload: Value, avatar_id: Option<i16>) -> Value {
+    let author = if payload.get("message").is_some() {
+        payload.pointer_mut("/message/author")
+    } else {
+        payload.get_mut("author")
+    };
+    if let Some(author) = author.and_then(Value::as_object_mut) {
+        author.insert("avatarId".into(), json!(avatar_id));
+    }
+    payload
 }
 
 #[cfg(test)]

@@ -160,8 +160,9 @@ pub(super) async fn add_channel_member(
         StatusCode::CREATED,
         Json(Member {
             id: member.1,
-            username: member.2,
-            display_name: member.3,
+            avatar_id: member.2,
+            username: member.3,
+            display_name: member.4,
             owner: false,
         }),
     ))

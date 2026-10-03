@@ -25,7 +25,6 @@ function Privacy() {
           <li><b className="text-content">Your username and display name</b>, which other people see in conversations.</li>
           <li><b className="text-content">Messages you send</b>, stored so the people in that channel can read them.</li>
           <li><b className="text-content">Your spaces and channels</b>: what you create, join, and who you add.</li>
-          <li><b className="text-content">Your approximate country</b>, taken from your connection when you join voice, and shown as a flag next to your name.</li>
           <li><b className="text-content">Basic service logs</b>, such as errors and connection timings, used to keep Caper working. Sign-in requests record a one-way hash of your IP address to limit abuse.</li>
         </ul>
       </Section>

@@ -465,8 +465,10 @@ async fn isolation_and_revocation(shared: bool) {
     }
     drop(events);
     pool.close().await;
+    // Backend shutdown can lag pool closure. This uniquely named loopback
+    // database belongs only to this test, like the chat/space test databases.
     admin
-        .execute(format!("DROP DATABASE {database}").as_str())
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
         .await
         .unwrap();
 }

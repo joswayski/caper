@@ -131,7 +131,7 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     seed(&pool).await.unwrap();
     seed(&pool).await.unwrap();
     let user_external = random_id(12);
-    let user: i64 = sqlx::query_scalar("INSERT INTO public.users (external_id, display_name, username) VALUES ($1,'Account Name','chat_test') RETURNING id")
+    let user: i64 = sqlx::query_scalar("INSERT INTO public.users (external_id, display_name, username, avatar_id) VALUES ($1,'Account Name','chat_test',255) RETURNING id")
         .bind(&user_external).fetch_one(&pool).await.unwrap();
     let account_cookie = "durable-account-cookie";
     let account_hash = Sha256::digest(account_cookie.as_bytes()).to_vec();
@@ -191,6 +191,7 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     );
     let one = one.unwrap();
     assert_eq!(one, retry.unwrap());
+    assert_eq!(one["author"]["avatarId"], 255);
     assert_eq!(one["seq"], "1");
     assert_eq!(one["id"].as_str().unwrap().len(), 15);
     assert_eq!(
@@ -228,12 +229,24 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     ];
     positions.sort();
     assert_eq!(positions, ["2", "3"]);
+    // Simulate history/outbox written before avatars existed. Reads and replay
+    // must use the saved profile without rewriting those persisted snapshots.
+    pool.execute("UPDATE public.messages SET payload = payload #- '{author,avatarId}'")
+        .await
+        .unwrap();
+    pool.execute(
+        "UPDATE public.channel_events SET payload = payload #- '{message,author,avatarId}'",
+    )
+    .await
+    .unwrap();
     let history = history_page(&pool, &channel, Some(3), Some(user))
         .await
         .unwrap();
     assert_eq!(history["messages"].as_array().unwrap().len(), 2);
     assert_eq!(history["messages"][0]["seq"], "1");
     assert_eq!(history["messages"][1]["seq"], "2");
+    assert_eq!(history["messages"][0]["author"]["avatarId"], 255);
+    assert_eq!(history["messages"][1]["author"]["avatarId"], 255);
 
     let broker_url = std::env::var("CHAT_TEST_VALKEY_URL").expect("disposable broker required");
     let broker = redis::Client::open(broker_url).unwrap();
@@ -325,7 +338,9 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     .await
     .unwrap();
     for seq in ["1", "2", "3"] {
-        assert_eq!(event(&mut socket).await["seq"], seq);
+        let replayed = event(&mut socket).await;
+        assert_eq!(replayed["seq"], seq);
+        assert_eq!(replayed["message"]["author"]["avatarId"], 255);
     }
     assert_eq!(
         event(&mut socket).await,
