@@ -690,7 +690,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       <button ref={viewed && !activeHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={activeHere ? "" : undefined} aria-label={actionName} aria-disabled={blocked} aria-busy={joiningHere || leavingHere} onPointerEnter={() => { if (!activeHere) prepareChannel(channelId); }} onPointerDown={() => { if (!activeHere) prepareChannel(channelId); }} onFocus={() => { if (!activeHere) prepareChannel(channelId); }} onClick={() => { if (blocked) return; if (activeHere) leave(); else joinChannel(channelId); }}>{activeHere && !joiningHere ? <PhoneOff aria-hidden="true" /> : <Speech aria-hidden="true" />}<span className="channel-join-label">{actionLabel}</span></button>
     </Tooltip>;
     return {
-      summary: <span className="channel-voice">{stack || <span className="voice-empty">No one in voice</span>}{join}</span>,
+      summary: <span className="channel-voice">{stack}{join}</span>,
       list: people.length > 0 ? <div className="voice-occupants" id={listId} data-open={open ? "" : undefined}>
         <div className="voice-occupants-inner" inert={!open}>{renderRoster(people, own, label)}</div>
       </div> : null,

@@ -249,13 +249,34 @@ try {
       browser('set', 'viewport', String(width), '900', '2');
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
       if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+      browser('mouse', 'move', '5', '5');
+      evaluate(`document.activeElement.blur();`);
       const joinsBeforeSettings = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`);
       const before = geometry();
       assert.equal(before.length, 3, 'Every channel, including empty/unselected/private channels, has voice actions');
       assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top >= name.bottom && getComputedStyle(line.querySelector('.channel-manage')).opacity === '1'; });`), 'Voice actions must sit below the name; channel actions never depend on hover');
       assert.ok(evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => button.querySelector('.lucide-speech')?.getAttribute('aria-hidden') === 'true');`), 'Join actions have a decorative speaking icon without changing their accessible names');
       assert.ok(actionContentsFit(), 'Speaking icons and Join labels must fit inside the fixed-width actions');
+      assert.equal(evaluate(`return document.querySelectorAll('.voice-stack').length;`), 0, 'Empty channels do not show a zero-occupancy count');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-voice')].every(row => row.innerText.trim() === 'Join voice');`), 'Empty channels retain Join without redundant no-one-in-voice text');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => { const style = getComputedStyle(button); return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.borderTopColor === 'rgba(0, 0, 0, 0)' && style.color === 'rgb(185, 188, 190)' && style.fontWeight === '600'; });`), 'Resting voice actions use muted neutral text without a colored fill or outline');
       screenshot(`channel-${width}-empty`);
+      if (evaluate(`return matchMedia('(hover: hover)').matches;`)) {
+        browser('hover', '[aria-label="Join voice"]');
+        wait(`getComputedStyle(document.querySelector('[aria-label="Join voice"]')).color === 'rgb(243, 244, 245)'`);
+        assert.ok(evaluate(`const style = getComputedStyle(document.querySelector('[aria-label="Join voice"]')); return style.backgroundColor === 'rgb(28, 31, 33)' && style.borderTopColor === 'rgb(52, 56, 59)' && style.color === 'rgb(243, 244, 245)';`), 'Hover gives neutral feedback, not a primary-action fill');
+        assert.deepEqual(geometry(), before, 'Hover feedback cannot move actions');
+        screenshot(`channel-${width}-hover`);
+        browser('mouse', 'move', '5', '5');
+      }
+      browser('focus', '[aria-label="Manage alpha"]');
+      browser('press', 'Tab');
+      assert.equal(evaluate(`return document.activeElement.getAttribute('aria-label');`), 'Join voice', 'Join remains reachable immediately after channel settings');
+      wait(`getComputedStyle(document.activeElement).color === 'rgb(243, 244, 245)'`);
+      assert.ok(evaluate(`const button = document.activeElement, style = getComputedStyle(button); return button.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px' && style.color === 'rgb(243, 244, 245)';`), 'Keyboard focus retains a visible outline and readable action text');
+      assert.deepEqual(geometry(), before, 'Keyboard feedback cannot move actions');
+      screenshot(`channel-${width}-focus`);
+      evaluate(`document.activeElement.blur();`);
       evaluate(`voiceFixture.publishPresence([{ id: 'peer', name: 'Mock peer', muted: false, deafened: false, tracks: [] }, { id: 'other', name: 'Other mock peer', muted: true, deafened: false, tracks: [] }]);`);
       wait(`document.querySelector('.voice-stack-count')?.textContent === '2 in voice'`);
       assert.deepEqual(geometry(), before, 'Roster arrivals cannot move names, menus or actions');
@@ -364,7 +385,7 @@ try {
         browser('press', 'Home');
         assert.equal(evaluate(`return document.querySelector('.people-panel').getBoundingClientRect().width;`), 220);
         assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => line.querySelector('.channel-join').getBoundingClientRect().right <= line.getBoundingClientRect().right);`), 'Actions must fit at the 220px sidebar minimum');
-        assert.ok(evaluate(`return [...document.querySelectorAll('.voice-empty')].every(node => node.scrollWidth <= node.clientWidth);`), 'Empty voice status must fit at the minimum width');
+        assert.ok(evaluate(`return [...document.querySelectorAll('.channel-voice')].every(row => row.innerText.trim() === 'Join voice');`), 'Minimum-width empty rows also omit redundant status text');
         assert.ok(actionContentsFit(), 'Icons and labels must fit at the 220px sidebar minimum');
         screenshot('channel-minimum-sidebar');
         browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight');
@@ -390,7 +411,7 @@ try {
     assert.deepEqual(countPosition(), ownerNarrowCount, 'Narrow owned and shared spaces also align the count');
     screenshot('channel-390-member');
     evaluate(`await voiceFixture.cleanup();`);
-    console.log('PASS stable channel rows at 1280px/390px and 220px sidebar, owned/shared count alignment, empty/live/private channels, owner menu and focus return, join/leave/switch/cancel, browsing preserves voice, busy guard, reduced motion and member permissions (mock signaling/WebRTC)');
+    console.log('PASS quiet stable channel rows at 1280px/390px and 220px sidebar, empty-status omission, neutral actions and visible keyboard focus, owned/shared count alignment, empty/live/private channels, owner menu and focus return, join/leave/switch/cancel, browsing preserves voice, busy guard, reduced motion and member permissions (mock signaling/WebRTC)');
   } else {
   for (const label of ['Input Options', 'Output Options', 'User Settings']) {
     click(label);
