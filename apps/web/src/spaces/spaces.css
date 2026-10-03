@@ -64,17 +64,18 @@
 .channel-select:hover { color: var(--text); background: var(--surface-raised); }
 .channel-select[aria-current="page"] { color: var(--text); background: rgb(182 77 50 / .16); }
 .channel-select[aria-current="page"] svg { color: var(--terracotta-bright); }
-.channel-manage { position: absolute; z-index: 1; right: 4px; width: 28px; height: 28px; display: grid; place-items: center; padding: 0; opacity: 0; pointer-events: none; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) {
-  .channel-navigation li:hover .channel-manage { opacity: 1; pointer-events: auto; }
+.channel-menu { margin-right: 4px; }
+.channel-menu[open] { z-index: 6; }
+.channel-manage { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; color: var(--text-muted); background: transparent; cursor: pointer; list-style: none; }
+.channel-manage::-webkit-details-marker { display: none; }
+.channel-menu .space-actions { top: calc(100% + 4px); left: auto; right: 6px; width: 180px; }
+@media (max-width: 760px), (hover: none), (pointer: coarse) {
+  .channel-select { min-height: 44px; }
+  .channel-manage { width: 44px; height: 44px; }
+  .channel-menu .space-actions button { min-height: 44px; }
 }
-.channel-navigation li:has(:focus-visible) .channel-manage, .channel-manage:focus { opacity: 1; pointer-events: auto; }
-@media (hover: none), (pointer: coarse) {
-  .channel-select { min-height: 44px; padding-right: 48px; }
-  .channel-manage { width: 44px; height: 44px; opacity: 1; pointer-events: auto; }
-}
-.channel-manage:hover { color: var(--text); background: var(--border); }
-.channel-manage svg { width: 14px; }
+.channel-manage:hover, .channel-menu[open] > .channel-manage { color: var(--text); background: var(--border); }
+.channel-manage svg { width: 18px; }
 .space-sidebar-error { margin: 14px 5px; color: #ff9b82; font-size: .7rem; line-height: 1.4; }
 .space-member-presence { min-height: 0; min-width: 0; border-left: 1px solid var(--border); background: var(--surface-sidebar); overflow-y: auto; }
 .member-presence-heading { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 54px; margin: 0; padding: 8px 12px; color: var(--text-muted); font-size: .75rem; font-weight: 700; }

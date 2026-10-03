@@ -9,6 +9,20 @@ unified text/voice channels; history, live messages, presence and calls require
 membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
+Web channel names and owner-only `⋯` actions have a separate row above voice
+activity. Join, Joining, Leave and Switch here reuse one fixed-width button;
+hover and connection/roster updates do not shift its target. Selecting a channel
+opens text without switching voice. Participant lists start collapsed and expand
+from the voice count. Channel actions open the existing privacy/member settings;
+no invite controls are added. At the minimum sidebar width, counts take priority
+over avatars; narrow web layouts retain 44px action targets.
+Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
+against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
+owner permissions, settings focus return, voice switching and pending/error/cancel
+states. This is browser UI coverage, not live SFU or physical-device validation.
+The web-only layout replaces its sliding controls; Android, Apple and Rust desktop
+retain their independent native channel controls. No shared protocol or native
+release is required; browser checks do not establish native rendering parity.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so

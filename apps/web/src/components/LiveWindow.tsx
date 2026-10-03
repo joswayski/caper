@@ -174,6 +174,7 @@ export default function LiveWindow() {
                         <span className="channel-voice">
                           <span className="voice-stack" aria-label={`${voicePeople.length} in demo voice`}>
                             <span className="voice-stack-faces" aria-hidden="true">{voicePeople.slice(0, 3).map((person) => <span className="voice-stack-avatar" key={person.name}>{person.name[0]}</span>)}{voicePeople.length > 3 && <small>+{voicePeople.length - 3}</small>}</span>
+                            <span className="voice-stack-count">{voicePeople.length} in voice</span>
                           </span>
                         </span>
                       </div>

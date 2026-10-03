@@ -135,6 +135,7 @@ const opens = () => evaluate('document.querySelectorAll(".space-dialog[open]").l
 function openOverview() {
   browser('focus', '[aria-label="Manage fixture-channel"]');
   browser('press', 'Enter');
+  browser('find', 'role', 'button', 'click', '--name', 'Channel settings', '--exact');
   browser('click', '.danger-outline');
   wait('!!document.querySelector(".delete-confirmation")');
 }
@@ -180,6 +181,7 @@ function testModalGeometry() {
     }
     browser('focus', '[aria-label="Manage fixture-channel"]');
     browser('press', 'Enter');
+    browser('find', 'role', 'button', 'click', '--name', 'Channel settings', '--exact');
     const selectors = ['.space-dialog[open]', '.space-field input', '.channel-privacy input'];
     const before = selectors.map(geometry);
     assert.ok(evaluate('document.querySelector(".channel-save-bar").inert'));
@@ -549,6 +551,7 @@ try {
         assert.ok(evaluate('document.querySelector(".live-stage").hasAttribute("data-active")'), 'Dialog Escape must not exit the demo');
         browser('focus', '.live-app [aria-label="Manage fixture-channel"]');
         browser('press', 'Enter');
+        browser('find', 'role', 'button', 'click', '--name', 'Channel settings', '--exact');
         wait('!!document.querySelector(".space-dialog[open]")');
         browser('press', 'Escape');
         if (width === 390) browser('click', '.live-app .channel-select');
