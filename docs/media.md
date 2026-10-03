@@ -2975,9 +2975,7 @@ only as HMAC-SHA-256 values. Session tokens contain 256 random bits and only the
 SHA-256 hashes are stored. Request limits are enforced in PostgreSQL across API
 replicas: three sends per address per 15 minutes, ten per address per day, twenty
 per keyed IP hash per hour, and a 500-email global hourly budget. Throttled requests
-return an indistinguishable synthetic challenge ID and do not call SES. Challenges
-and sessions are retained after they are consumed, expire, or are revoked; nothing
-prunes them.
+return an indistinguishable synthetic challenge ID and do not call SES.
 
 External-provider middleware, callbacks, token verification, key fetching, session
 hooks, and browser forwarding remain removed. Server functions retain CSRF middleware.
@@ -3504,8 +3502,6 @@ rejected for migrations with no runtime-URL fallback. Both URLs must target the 
 existing `/caperchat` database. Startup does not create the database or roles. It
 connects with `DATABASE_URL` to identify the actual runtime role, then the migration
 connection grants that role only the application table and sequence access it needs.
-It also revokes `DELETE` and `TRUNCATE` on every `public` table on each startup, so
-the API cannot hard-delete records; removals use `deleted_at` or `revoked_at`.
 The direct migration connection explicitly sets `search_path=public`, so a schema
 named for the migration role or a database-level custom search path cannot redirect
 new tables or SQLx's ledger. This startup override is not applied to the runtime

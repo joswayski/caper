@@ -176,6 +176,20 @@ impl AuthVerifier {
                 .await
                 .map_err(database_unavailable)?;
         }
+        sqlx::query(
+            "DELETE FROM public.auth_email_challenges
+             WHERE created_at < now() - interval '7 days'",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_unavailable)?;
+        sqlx::query(
+            "DELETE FROM public.account_sessions
+             WHERE expires_at < now() - interval '7 days'",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_unavailable)?;
 
         let email_recent: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM public.auth_email_challenges

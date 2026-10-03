@@ -17,7 +17,7 @@ Adapted from the conventions in `joswayski/captures`.
 - Other agents may work concurrently. Use an isolated worktree for new concurrent work; never stash, overwrite, or publish another agent's changes.
 - Treat native clients as independent implementations. Browser WebRTC success does not prove native capture or playback support.
 - Never expose provider secrets or log SDP, credentials, or raw media. No unrestricted Cloudflare API proxy.
-- Retain product records (users, spaces, channels, messages, memberships, channel joins, reactions, invitations, DMs). Removals set `deleted_at` (or a status), reads filter on it, and product tables get no `DELETE`, `TRUNCATE` or `ON DELETE CASCADE`. Operational records (sign-in codes/sessions, rate-limit logs, push delivery state) are not product data and may keep cascades. The runtime role has no `DELETE`/`TRUNCATE`; data deletion is a deliberate operator action.
+- Keep data that is or might be useful (users, spaces, channels, messages, memberships, channel joins, reactions, invitations, DMs): removals set `deleted_at` (or a status) and reads filter on it, instead of `DELETE` or `ON DELETE CASCADE`. Short-lived operational records (expired sign-in codes/sessions, rate-limit logs, push delivery state) may be pruned.
 - Keep one desired API replica until every API pod uses the same `VALKEY_URL` and compatible state schema. Never mix in-memory and shared-mode pods. Follow the staged cutover in `docs/media.md`; shared-mode shutdown must not close healthy Cloudflare tracks. Web replicas are independent.
 
 ## Visual design
