@@ -15,6 +15,7 @@ const POLL: Duration = Duration::from_millis(200);
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const WATCHDOG: Duration = Duration::from_secs(30);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(5);
+pub(crate) const CATCHUP_DEADLINE: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
 pub enum Event {
@@ -89,9 +90,155 @@ pub fn spawn(
 }
 
 #[derive(Debug)]
-enum Failure {
+pub(crate) enum Failure {
     Retry(String),
     Denied(String),
+}
+
+// Shared by the desktop chat and voice streams. Replacement handshakes run on
+// another thread so DNS/TLS/upgrade cannot stop delivery on the draining socket.
+pub(crate) struct Connection {
+    pub socket: tungstenite::WebSocket<MaybeTlsStream<std::net::TcpStream>>,
+    pub hello: bool,
+    pub opened: Instant,
+    last_server: Instant,
+    last_heartbeat: Instant,
+}
+
+impl Connection {
+    pub fn open(
+        endpoint: &url::Url,
+        token: Option<&str>,
+        stop: &Arc<AtomicBool>,
+    ) -> Result<Self, Failure> {
+        let opened = Instant::now();
+        let mut request = endpoint
+            .as_str()
+            .into_client_request()
+            .map_err(|_| Failure::Retry("invalid gateway endpoint".into()))?;
+        if let Some(token) = token {
+            let mut value = tungstenite::http::HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| Failure::Denied("invalid account credential".into()))?;
+            value.set_sensitive(true);
+            request
+                .headers_mut()
+                .insert(tungstenite::http::header::AUTHORIZATION, value);
+        }
+        let (mut socket, _) =
+            connect_bounded(endpoint, request, stop).map_err(|error| match *error {
+                tungstenite::Error::Http(response)
+                    if matches!(response.status().as_u16(), 401 | 403 | 404) =>
+                {
+                    Failure::Denied("channel access or account session expired".into())
+                }
+                _ => Failure::Retry("live updates are offline".into()),
+            })?;
+        set_timeout(socket.get_mut(), POLL)
+            .map_err(|_| Failure::Retry("could not configure gateway".into()))?;
+        Ok(Self {
+            socket,
+            hello: false,
+            opened,
+            last_server: Instant::now(),
+            last_heartbeat: Instant::now(),
+        })
+    }
+
+    pub fn send(&mut self, frame: Value) -> Result<(), Failure> {
+        self.socket
+            .send(Message::Text(frame.to_string().into()))
+            .map_err(|_| Failure::Retry("gateway send failed".into()))
+    }
+
+    pub fn read(&mut self, activity: &Mutex<Instant>) -> Result<Option<Value>, Failure> {
+        if self.hello && self.last_heartbeat.elapsed() >= HEARTBEAT {
+            let age = activity.lock().map_or(86_400_000, |at| {
+                at.elapsed().as_millis().min(86_400_000) as u64
+            });
+            self.send(json!({"type":"heartbeat", "activityAgeMs":age}))?;
+            self.last_heartbeat = Instant::now();
+        }
+        if self.last_server.elapsed() >= WATCHDOG {
+            return Err(Failure::Retry("gateway timed out".into()));
+        }
+        match self.socket.read() {
+            Ok(Message::Text(text)) => {
+                self.last_server = Instant::now();
+                serde_json::from_str(&text)
+                    .map(Some)
+                    .map_err(|_| Failure::Retry("gateway returned an invalid frame".into()))
+            }
+            Ok(Message::Close(_)) => Err(Failure::Retry("gateway disconnected".into())),
+            Ok(_) => {
+                self.last_server = Instant::now();
+                Ok(None)
+            }
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(_) => Err(Failure::Retry("gateway disconnected".into())),
+        }
+    }
+
+    pub fn close(&mut self) {
+        let _ = self.socket.close(None);
+    }
+}
+
+pub(crate) struct ConnectionAttempt {
+    receive: Receiver<Result<Connection, Failure>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl ConnectionAttempt {
+    pub fn start(endpoint: &url::Url, token: Option<&str>) -> Self {
+        let endpoint = endpoint.clone();
+        let token = token.map(str::to_owned);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stopped = cancel.clone();
+        let (send, receive) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = send.send(Connection::open(&endpoint, token.as_deref(), &stopped));
+        });
+        Self { receive, cancel }
+    }
+
+    pub fn take(&self) -> Option<Result<Connection, Failure>> {
+        match self.receive.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(Failure::Retry("gateway connection failed".into())))
+            }
+        }
+    }
+}
+
+impl Drop for ConnectionAttempt {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+struct MediaStream {
+    connection: Connection,
+    subscribed: bool,
+    revision: Option<u64>,
+}
+
+impl MediaStream {
+    fn new(connection: Connection) -> Self {
+        Self {
+            connection,
+            subscribed: false,
+            revision: None,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -153,114 +300,123 @@ fn connect_once(
     stop: &Arc<AtomicBool>,
     activity: &Mutex<Instant>,
 ) -> Result<(), Failure> {
-    let mut request = endpoint
-        .as_str()
-        .into_client_request()
-        .map_err(|_| Failure::Retry("invalid voice gateway endpoint".into()))?;
-    if let Some(token) = account_token {
-        let mut value = tungstenite::http::HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| Failure::Denied("invalid account credential".into()))?;
-        value.set_sensitive(true);
-        request
-            .headers_mut()
-            .insert(tungstenite::http::header::AUTHORIZATION, value);
-    }
-    let (mut socket, _) =
-        connect_bounded(endpoint, request, stop).map_err(|error| match *error {
-            tungstenite::Error::Http(response)
-                if matches!(response.status().as_u16(), 401 | 403 | 404) =>
-            {
-                Failure::Denied("voice access or account session expired".into())
-            }
-            _ => Failure::Retry("voice updates are offline".into()),
-        })?;
-    set_timeout(socket.get_mut(), POLL)
-        .map_err(|_| Failure::Retry("could not configure voice gateway".into()))?;
+    let mut active = MediaStream::new(Connection::open(endpoint, account_token, stop)?);
+    let mut candidate: Option<MediaStream> = None;
+    let mut opening: Option<ConnectionAttempt> = None;
+    let mut migrating = false;
+    let mut retry_at = Instant::now();
+    let mut applied_revision = None;
     let subscription = uuid::Uuid::new_v4().to_string();
-    let mut subscribed = false;
-    let mut last_server = Instant::now();
-    let mut last_heartbeat = Instant::now();
     loop {
         if stop.load(Ordering::Relaxed) {
-            let _ = socket.close(None);
+            active.connection.close();
+            if let Some(candidate) = &mut candidate {
+                candidate.connection.close();
+            }
             return Ok(());
         }
-        if subscribed && last_heartbeat.elapsed() >= HEARTBEAT {
-            let activity_age = activity.lock().map_or(86_400_000, |at| {
-                at.elapsed().as_millis().min(86_400_000) as u64
-            });
-            socket
-                .send(Message::Text(
-                    json!({"type":"heartbeat","activityAgeMs":activity_age})
-                        .to_string()
-                        .into(),
-                ))
-                .map_err(|_| Failure::Retry("voice gateway heartbeat failed".into()))?;
-            last_heartbeat = Instant::now();
+        if migrating && candidate.is_none() && opening.is_none() && Instant::now() >= retry_at {
+            opening = Some(ConnectionAttempt::start(endpoint, account_token));
         }
-        if last_server.elapsed() >= WATCHDOG {
-            return Err(Failure::Retry("voice gateway timed out".into()));
+        if let Some(result) = opening.as_ref().and_then(ConnectionAttempt::take) {
+            opening = None;
+            match result {
+                Ok(connection) => candidate = Some(MediaStream::new(connection)),
+                Err(_) => retry_at = Instant::now() + Duration::from_millis(250),
+            }
         }
-        let frame = match socket.read() {
-            Ok(frame) => {
-                last_server = Instant::now();
-                frame
-            }
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
-            Err(_) => return Err(Failure::Retry("voice gateway disconnected".into())),
-        };
-        let Message::Text(text) = frame else {
-            continue;
-        };
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|_| Failure::Retry("voice gateway returned an invalid frame".into()))?;
-        match value["type"].as_str() {
-            Some("hello") if !subscribed => {
-                socket
-                    .send(Message::Text(
-                        json!({
-                            "type":"subscribe", "id":subscription, "kind":"media",
-                            "token":media_token,
-                            "channelId":channel_id
-                        })
-                        .to_string()
-                        .into(),
-                    ))
-                    .map_err(|_| Failure::Retry("voice subscription failed".into()))?;
-                subscribed = true;
-            }
-            Some("heartbeat") => {}
-            Some("subscribed") if value["id"] == subscription => {
-                let _ = events.send(Event::Online { generation });
-            }
-            Some("event") if value["id"] == subscription => {
-                let snapshot: Snapshot = serde_json::from_value(value["event"].clone())
-                    .map_err(|_| Failure::Retry("voice gateway returned invalid state".into()))?;
-                let _ = events.send(Event::Snapshot {
-                    generation,
-                    snapshot,
-                });
-            }
-            Some("error") if value["id"] == subscription => {
-                let status = value["status"].as_u64().unwrap_or(500);
-                let detail = value["error"]
-                    .as_str()
-                    .unwrap_or("voice subscription rejected")
-                    .to_owned();
-                if matches!(status, 401 | 403 | 404) {
-                    return Err(Failure::Denied(detail));
+        for replacement in [false, true] {
+            let stream = if replacement {
+                let Some(stream) = &mut candidate else {
+                    continue;
+                };
+                stream
+            } else {
+                &mut active
+            };
+            let result = (|| {
+                if replacement && stream.connection.opened.elapsed() >= CATCHUP_DEADLINE {
+                    return Err(Failure::Retry("replacement did not catch up".into()));
                 }
-                return Err(Failure::Retry(detail));
+                let Some(value) = stream.connection.read(activity)? else {
+                    return Ok(false);
+                };
+                match value["type"].as_str() {
+                    Some("hello") if !stream.connection.hello => {
+                        stream.connection.hello = true;
+                        stream.connection.send(json!({"type":"subscribe", "id":subscription, "kind":"media", "token":media_token, "channelId":channel_id}))?;
+                    }
+                    Some("subscribed") if value["id"] == subscription => {
+                        stream.subscribed = true;
+                        if !replacement {
+                            let _ = events.send(Event::Online { generation });
+                        }
+                    }
+                    Some("event") if value["id"] == subscription => {
+                        let snapshot: Snapshot = serde_json::from_value(value["event"].clone())
+                            .map_err(|_| {
+                                Failure::Retry("voice gateway returned invalid state".into())
+                            })?;
+                        let revision = snapshot
+                            .revision
+                            .ok_or_else(|| Failure::Retry("missing voice revision".into()))?;
+                        stream.revision = Some(
+                            stream
+                                .revision
+                                .map_or(revision, |previous| previous.max(revision)),
+                        );
+                        if applied_revision.is_none_or(|previous| revision > previous) {
+                            applied_revision = Some(revision);
+                            let _ = events.send(Event::Snapshot {
+                                generation,
+                                snapshot,
+                            });
+                        }
+                    }
+                    Some("error") if value["id"] == subscription => {
+                        let detail = value["error"]
+                            .as_str()
+                            .unwrap_or("voice subscription rejected")
+                            .to_owned();
+                        return Err(
+                            if matches!(value["status"].as_u64(), Some(401 | 403 | 404)) {
+                                Failure::Denied(detail)
+                            } else {
+                                Failure::Retry(detail)
+                            },
+                        );
+                    }
+                    Some("migrating") => {
+                        if replacement {
+                            return Err(Failure::Retry("replacement is draining".into()));
+                        }
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+                Ok(false)
+            })();
+            match result {
+                Ok(true) => migrating = true,
+                Ok(false) => {}
+                Err(_) if replacement => {
+                    if let Some(mut failed) = candidate.take() {
+                        failed.connection.close();
+                    }
+                    retry_at = Instant::now() + Duration::from_millis(250);
+                }
+                Err(error) => return Err(error),
             }
-            Some("migrating") => return Ok(()),
-            _ => {}
+        }
+        if candidate.as_ref().is_some_and(|stream| {
+            stream.subscribed
+                && stream.revision.is_some_and(|revision| {
+                    applied_revision.is_none_or(|applied| revision >= applied)
+                })
+        }) {
+            let mut old = std::mem::replace(&mut active, candidate.take().unwrap());
+            old.connection.close();
+            migrating = false;
         }
     }
 }
@@ -412,6 +568,113 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use tungstenite::handshake::server::{ErrorResponse, Request, Response};
+
+    #[test]
+    fn media_handoff_preserves_capability_and_current_roster_through_failed_candidates() {
+        type Socket = tungstenite::WebSocket<std::net::TcpStream>;
+        fn send(socket: &mut Socket, frame: Value) {
+            socket
+                .send(Message::Text(frame.to_string().into()))
+                .unwrap();
+        }
+        fn accept(listener: &TcpListener) -> (Socket, String) {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut socket =
+                tungstenite::accept_hdr(stream, |request: &Request, response: Response| {
+                    assert_eq!(request.headers()["authorization"], "Bearer account-secret");
+                    assert!(request.uri().query().is_none());
+                    Ok(response)
+                })
+                .unwrap();
+            send(&mut socket, json!({"type":"hello"}));
+            let frame: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(frame["token"], "stable-capability");
+            let id = frame["id"].as_str().unwrap().to_owned();
+            send(&mut socket, json!({"type":"subscribed", "id":id}));
+            (socket, id)
+        }
+        fn snapshot(socket: &mut Socket, id: &str, revision: u64) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{"type":"snapshot", "revision":revision, "participants":[]}}),
+            );
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (advance, advanced) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut old, id) = accept(&listener);
+            snapshot(&mut old, &id, 5);
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            send(&mut old, json!({"type":"migrating"}));
+            let (mut replacement, next_id) = accept(&listener);
+            assert_eq!(id, next_id);
+            snapshot(&mut replacement, &id, 4);
+            snapshot(&mut old, &id, 6);
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            snapshot(&mut replacement, &id, 6);
+            assert!(
+                matches!(old.read(), Ok(Message::Close(_))),
+                "stale revision cannot promote a replacement"
+            );
+            send(&mut replacement, json!({"type":"migrating"}));
+            let (stream, _) = listener.accept().unwrap();
+            let _: Result<_, _> = tungstenite::accept_hdr(stream, |_: &Request, _: Response| {
+                // Hold the replacement upgrade until delivery on the old
+                // socket is observed. A blocking handoff cannot pass this.
+                snapshot(&mut replacement, &id, 7);
+                advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+                let mut response = ErrorResponse::new(None);
+                *response.status_mut() = tungstenite::http::StatusCode::SERVICE_UNAVAILABLE;
+                Err(response)
+            });
+            let (mut last, last_id) = accept(&listener);
+            assert_eq!(id, last_id);
+            snapshot(&mut last, &id, 8);
+            assert!(matches!(replacement.read(), Ok(Message::Close(_))));
+            assert!(
+                matches!(last.read(), Ok(Message::Close(_))),
+                "stop closes promoted socket"
+            );
+        });
+        let (events, incoming) = mpsc::channel();
+        let control = spawn(
+            &url::Url::parse(&format!("http://{address}")).unwrap(),
+            Some("account-secret".into()),
+            "stable-capability".into(),
+            Some("voice".into()),
+            7,
+            events,
+        );
+        let mut revisions = vec![];
+        let mut online = 0;
+        loop {
+            match incoming.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::Snapshot { snapshot, .. } => {
+                    let revision = snapshot.revision.unwrap();
+                    revisions.push(revision);
+                    if revision == 8 {
+                        break;
+                    }
+                    advance.send(()).unwrap();
+                }
+                Event::Online { .. } => online += 1,
+                other => panic!("planned handoff must not go offline: {other:?}"),
+            }
+        }
+        assert_eq!(
+            revisions,
+            [5, 6, 7, 8],
+            "overlap and stale snapshots are delivered once"
+        );
+        assert_eq!(online, 1, "candidate acknowledgment is not a reconnect");
+        assert!(control.stop_and_wait());
+        server.join().unwrap();
+    }
 
     fn trickle_upgrade(listener: TcpListener, ready: mpsc::Sender<()>) -> thread::JoinHandle<()> {
         thread::spawn(move || {

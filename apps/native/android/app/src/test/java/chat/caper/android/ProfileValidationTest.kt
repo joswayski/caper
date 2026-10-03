@@ -4,6 +4,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProfileValidationTest {
+    @Test fun `member usernames use profile username rules`() {
+        assertTrue(usernameValid("abc"))
+        assertTrue(usernameValid("person_123"))
+        assertFalse(usernameValid("ab"))
+        assertFalse(usernameValid("Upper"))
+        assertFalse(usernameValid("person-name"))
+        assertFalse(usernameValid("a".repeat(33)))
+    }
+
     @Test fun `profile accepts Unicode scalars but rejects controls and invalid usernames`() {
         assertTrue(profileValid("ab_", "🪴".repeat(64)))
         assertFalse(profileValid("ab_", "🪴".repeat(65)))

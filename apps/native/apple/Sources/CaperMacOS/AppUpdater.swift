@@ -20,7 +20,12 @@ import Foundation
     private var declined: Set<String> = []
     private var timer: Timer?
 
-    static let downloadPage = URL(string: "https://github.com/joswayski/caper/releases/tag/native-latest")!
+    // Match the running app's architecture, including Intel builds under Rosetta.
+    #if arch(arm64)
+    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.zip")!
+    #else
+    static let downloadURL = URL(string: "https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.zip")!
+    #endif
 
     init(bundle: Bundle = .main, environment: [String: String] = ProcessInfo.processInfo.environment) {
         let updater = bundle.bundleURL.appendingPathComponent("Contents/MacOS/caper-updater")
@@ -85,7 +90,7 @@ import Foundation
         if update.canApply {
             restart()
         } else {
-            NSWorkspace.shared.open(Self.downloadPage)
+            NSWorkspace.shared.open(Self.downloadURL)
         }
     }
 

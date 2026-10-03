@@ -58,12 +58,14 @@ mod auth;
 mod channel_media;
 mod chat;
 mod db;
+mod direct;
 mod email;
 mod environment;
 pub mod gateway;
 mod media_store;
 mod notifications;
 mod presence;
+mod push;
 mod spaces;
 use media_store::Timestamp;
 
@@ -731,6 +733,7 @@ pub struct AppState {
     database: Option<PgPool>,
     chat: Option<chat::Chat>,
     assets: Option<assets::Assets>,
+    push: Option<push::Push>,
     events: watch::Sender<()>,
     room_events: Arc<std::sync::Mutex<HashMap<Option<String>, watch::Sender<()>>>>,
     room_interest: Arc<Notify>,
@@ -773,6 +776,7 @@ impl AppState {
             database,
             chat: None,
             assets: None,
+            push: None,
             events,
             room_events: Arc::new(std::sync::Mutex::new(HashMap::new())),
             room_interest: Arc::new(Notify::new()),
@@ -803,6 +807,11 @@ impl AppState {
         self.chat = chat::Chat::from_env(self.database.as_ref(), environment).await?;
         if let Some(chat) = self.chat.clone() {
             chat::spawn_publisher(chat);
+        }
+        if self.database.is_some() {
+            let push = push::Push::from_env(self.database.as_ref(), environment).await?;
+            push::spawn_worker(push.clone());
+            self.push = Some(push);
         }
         Ok(())
     }
@@ -1073,16 +1082,20 @@ pub fn app(state: AppState) -> Router {
 }
 
 fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
-    let protected = Router::new()
+    let mut protected = Router::new()
         .route("/api/account/me", get(account_me))
         .route("/api/account/profile", post(account_profile))
         .route("/api/auth/logout", post(auth_logout))
         .merge(spaces::routes())
         .merge(assets::routes())
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            account_auth,
-        ));
+        .merge(direct::routes());
+    if let Some(push) = state.push.clone() {
+        protected = protected.merge(push::routes(push));
+    }
+    let protected = protected.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        account_auth,
+    ));
     let account_login = Router::new()
         .route("/api/auth/email/request", post(auth_email_request))
         .route("/api/auth/email/verify", post(auth_email_verify));
@@ -1333,10 +1346,7 @@ async fn account_profile(
 ) -> Result<Json<Value>, ApiError> {
     let username = input.username.trim().to_ascii_lowercase();
     let display_name = input.display_name.trim();
-    if !(3..=32).contains(&username.len())
-        || !username
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    if !accounts::valid_username(&username)
         || !(1..=64).contains(&display_name.chars().count())
         || display_name.chars().any(char::is_control)
     {

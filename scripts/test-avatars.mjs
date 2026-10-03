@@ -23,6 +23,8 @@ function fixture() {
   const channel = { id: 'channel12345', spaceId: space.id, name: 'general', private: false };
   const messages = members.map((m, i) => ({ id: `message${i}`, clientMessageId: `client${i}`, channelId: channel.id, seq: String(i + 1), author: { id: m.id, name: m.displayName, isGuest: false, avatarId: m.avatarId }, content: { version: 1, type: 'text', text: ['Explicit test fixture — these are not real accounts or messages.', 'The same saved avatar appears beside my name everywhere.', 'Tile 32 starts the second row of the collection.', 'Tile 799 is the final avatar in the collection.', missingAvatar ? 'Deliberately incomplete response to test the initials fallback.' : 'Existing accounts get a saved default profile picture too.'][i] }, createdAt: '2026-09-30T12:00:00Z' }));
   const history = { space, channel, messages, cursor: '5', hasMore: false };
+  messages[0].reactions = [{ emoji: '👍', authorIds: [account.id, members[1].id] }, { emoji: '❤️', authorIds: [members[1].id] }];
+  messages[0].reactionSeq = '5';
   const author = () => ({ id: account.id, name: account.displayName, isGuest: false, avatarId: account.avatarId });
   const original = window.fetch.bind(window);
   window.fetch = async (input, options = {}) => {
@@ -73,7 +75,14 @@ try {
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e.parentElement).backgroundColor === "rgba(0, 0, 0, 0)")'), true, 'Image avatars and their containers must have transparent backing');
   assert.equal(evaluate('[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundImage.endsWith(`/images/avatars/v3/${e.dataset.avatarId}.svg")`))'), true);
   browser('eval', 'Promise.all([0,31,32,799,143].map(id => new Promise((resolve,reject) => { const image = new Image(); image.onload=()=>resolve(true); image.onerror=reject; image.src=`/images/avatars/v3/${id}.svg`; })))');
+  wait('document.querySelector(".chat-reaction[aria-pressed=true]") && !document.querySelector(".chat-add-reaction").disabled');
+  assert.deepEqual(evaluate('[...document.querySelectorAll(".chat-reaction")].map(e => [e.getAttribute("aria-pressed"), e.textContent])'), [['true', '2'], ['false', '1']]);
+  assert.equal(evaluate('document.querySelector(".chat-reaction").closest(".chat-message").querySelector("[data-avatar-id]").dataset.avatarId'), '0');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-desktop.png'));
+  browser('find', 'first', '.chat-add-reaction', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-reaction-picker.png'));
+  browser('click', '[aria-label="Close emoji picker"]');
   browser('click', '.space-menu summary');
   browser('click', '.space-actions button');
   wait('document.querySelectorAll(".member-avatar [data-avatar-id]").length === 5');
@@ -92,7 +101,14 @@ try {
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow-members.png'));
   browser('click', '.member-list-toggle');
   wait('!document.querySelector(".space-member-presence")');
+  browser('scroll', 'up', '1000', '--selector', '.chat-scroller');
+  wait('document.querySelector(".chat-scroller").scrollTop === 0');
   if (artifacts) browser('screenshot', join(artifacts, 'avatars-narrow.png'));
+  browser('find', 'first', '.chat-add-reaction', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker input")');
+  assert.equal(evaluate('(() => { const r=document.querySelector(".chat-reaction-picker").getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight; })()'), true);
+  if (artifacts) browser('screenshot', join(artifacts, 'avatars-reaction-picker-narrow.png'));
+  browser('click', '[aria-label="Close emoji picker"]');
 
   browser('open', `${origin}spaces?space=space1234567&channel=channel12345&missing-avatar-test=1`);
   wait('!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar").length === 5');

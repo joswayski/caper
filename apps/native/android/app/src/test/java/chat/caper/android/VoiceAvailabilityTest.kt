@@ -21,4 +21,15 @@ class VoiceAvailabilityTest {
         assertEquals(false, AppUiState(selectedSpace = studio, selectedChannel = planning, voiceAvailability = known).voiceAvailable)
         assertNull(AppUiState(selectedSpace = studio, selectedChannel = planning).voiceAvailable)
     }
+
+    @Test fun `unselected channels retain their own availability`() {
+        val general = Channel("chan00000001", "space0000001", "general", false)
+        val planning = Channel("chan00000002", "space0000001", "planning", true)
+        val studio = SpaceDetail(Space("space0000001", "Studio"), listOf(general, planning), emptyList())
+        val state = AppUiState(selectedSpace = studio, selectedChannel = general,
+            voiceAvailability = mapOf(general.id to false, planning.id to true))
+
+        assertEquals(false, state.voiceAvailable(general))
+        assertEquals(true, state.voiceAvailable(planning))
+    }
 }

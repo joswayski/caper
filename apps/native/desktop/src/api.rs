@@ -1,5 +1,6 @@
 use crate::model::{
-    Account, Channel, ChatSession, History, Member, Members, Message, Space, SpaceDetail, Spaces,
+    Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
+    Members, Message, ReactionUpdate, Space, SpaceDetail, Spaces,
 };
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
@@ -108,6 +109,35 @@ impl Api {
 
     pub fn spaces(&self, token: &str) -> Result<Spaces, ApiError> {
         self.request(Method::GET, "api/spaces", Some(token), None, None)
+    }
+
+    pub fn direct_conversations(&self, token: &str) -> Result<DirectConversations, ApiError> {
+        self.request(Method::GET, "api/dms", Some(token), None, None)
+    }
+
+    pub fn create_direct(
+        &self,
+        token: &str,
+        username: &str,
+    ) -> Result<DirectConversation, ApiError> {
+        self.request(
+            Method::POST,
+            "api/dms",
+            Some(token),
+            None,
+            Some(json!({"username": username})),
+        )
+    }
+
+    pub fn read_direct(&self, token: &str, id: &str, seq: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::POST,
+            &format!("api/dms/{id}/read"),
+            Some(token),
+            None,
+            Some(json!({"seq": seq})),
+        )?)
+        .map(|_| ())
     }
 
     pub fn general_history(&self, token: Option<&str>) -> Result<History, ApiError> {
@@ -239,6 +269,63 @@ impl Api {
         .map(|_| ())
     }
 
+    pub fn join_channel(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/membership"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn leave_channel(&self, token: &str, space: &str, channel: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/channels/{channel}/membership"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn accept_channel_invitation(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/invitation"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn decline_channel_invitation(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/channels/{channel}/invitation"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
     pub fn members(
         &self,
         token: &str,
@@ -272,6 +359,48 @@ impl Api {
         )
     }
 
+    pub fn invitations(&self, token: &str, space: &str) -> Result<Members, ApiError> {
+        self.request(
+            Method::GET,
+            &format!("api/spaces/{space}/invitations"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn cancel_invitation(&self, token: &str, space: &str, user: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/invitations/{user}"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn accept_invitation(&self, token: &str, space: &str) -> Result<Space, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/invitation"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn decline_invitation(&self, token: &str, space: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/invitation"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
     pub fn remove_member(
         &self,
         token: &str,
@@ -300,6 +429,24 @@ impl Api {
             token,
             Some(chat_token),
             Some(json!({"clientMessageId":client_id,"text":text})),
+        )
+    }
+
+    pub fn react(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        channel: &str,
+        message: &str,
+        emoji: &str,
+        active: bool,
+    ) -> Result<ReactionUpdate, ApiError> {
+        self.request(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{message}/reactions"),
+            token,
+            Some(chat_token),
+            Some(json!({"emoji":emoji,"active":active})),
         )
     }
 

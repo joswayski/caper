@@ -776,7 +776,7 @@ async fn execute(
         if !valid_id(channel) {
             return Err(invalid());
         }
-        channel_access(&state.chat.pool, channel, identity.user).await?;
+        crate::spaces::channel_participation(&state.chat.pool, channel, identity.user).await?;
     }
     // Typing pulses are disposable: authorize and publish them, but never retain
     // a receipt for every keystroke burst. Only media commands need replay safety.

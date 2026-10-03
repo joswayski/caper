@@ -11,6 +11,10 @@ Signed-in members can attach up to 10 files per message on the web: images
 storage allowance (1 GB by default). Android, Apple and Rust desktop show the
 message text but not its files yet. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
+Signed-in accounts can start persistent, private one-to-one messages by username.
+The Direct messages list is shared across spaces. Optional iOS/Android push needs
+provider configuration and signed-device validation; it is not enabled by default.
+
 ## Development
 
 You'll need Node.js 24, npm 11+, Docker Compose, and AWS CLI access to the `staging` profile.

@@ -2,7 +2,7 @@ import { ChatConnection } from "./connection.ts";
 import { ChatTimeline } from "./timeline.ts";
 import { playSound } from "../audio/effects.ts";
 import { appGateway } from "../gateway/client.ts";
-import { isChatMessage, sequence, type ChatAttachment, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
+import { isChatMessage, isChatReactionEvent, sequence, type ChatAttachment, type ChatAuthor, type ChatHistory, type ChatMessage, type ChatReactionEvent, type ChatSession, type ChatTypingEvent, type GeneralChatHistory } from "./types.ts";
 
 const SESSION_KEY = "caper.chat.session";
 
@@ -95,6 +95,8 @@ export class ChatClient {
   private connection?: ChatConnection;
   private readonly controller = new AbortController();
   private generation = 0;
+  private sessionGeneration = 0;
+  private loadingHistory = false;
   private name = "Guest";
   private session?: ChatSession;
   private sending = false;
@@ -126,7 +128,7 @@ export class ChatClient {
   setSounds(enabled: boolean) { this.sounds = enabled; }
 
   snapshotHistory(): GeneralChatHistory | undefined {
-    if (this.state.phase !== "ready" || !this.spaceId || !this.state.channelId) return;
+    if (this.state.phase !== "ready" || this.spaceId === undefined || !this.state.channelId) return;
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: { id: this.state.channelId, name: this.state.channelName },
@@ -213,18 +215,20 @@ export class ChatClient {
   }
 
   async loadOlder() {
-    if (this.state.phase !== "ready" || !this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length || this.controller.signal.aborted) return;
+    if (this.loadingHistory || this.state.phase !== "ready" || !this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length || this.controller.signal.aborted) return;
     const generation = this.generation;
+    const channelId = this.state.channelId;
     this.update({ loadingOlder: true, olderError: undefined });
     try {
       const before = this.state.messages[0].seq;
-      const response = await fetch(`/api/chat/channels/${encodeURIComponent(this.state.channelId)}/messages?before=${encodeURIComponent(before)}`, {
+      const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages?before=${encodeURIComponent(before)}`, {
         cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
       });
       if (!response.ok) throw await apiError(response, "Older messages could not be loaded.");
       const history: unknown = await response.json();
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
       if (generation !== this.generation) return;
+      if (history.messages.some((message) => message.channelId !== channelId)) throw new Error("The chat service returned messages from another channel.");
       this.timeline.prepend(history.messages);
       this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
     } catch (error) {
@@ -296,8 +300,50 @@ export class ChatClient {
     }
   }
 
+  async setReaction(messageId: string, emoji: string, active: boolean): Promise<void> {
+    const generation = this.generation;
+    const channelId = this.state.channelId;
+    const session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then react again.");
+    const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, {
+      method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+      body: JSON.stringify({ emoji, active }),
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        this.session = undefined;
+        void this.createSession();
+      }
+      throw await apiError(response, "Reaction could not be saved. Try again.");
+    }
+    const event: unknown = await response.json();
+    if (!isChatReactionEvent(event) || event.channelId !== channelId || event.messageId !== messageId) throw new Error("The chat service returned an invalid reaction.");
+    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
+    this.timeline.mergeReactions(event);
+    this.update({ messages: this.timeline.messages });
+  }
+
+  private receiveEvent(event: ChatMessage | ChatReactionEvent) {
+    const visible = new Set(this.timeline.messages.map((item) => item.id));
+    const result = this.timeline.applyEvent(event);
+    if (!("type" in event)) {
+      const typer = this.typers.get(event.author.id);
+      if (typer && result !== "duplicate") { typer.typing = false; this.refreshTypers(); }
+    }
+    if (result !== "buffered" && result !== "overflow") {
+      const messages = this.timeline.messages;
+      this.update({ messages });
+      const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
+      if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
+    }
+    return result;
+  }
+
   private async loadInitial(prepared?: GeneralChatHistory) {
     const generation = ++this.generation;
+    this.loadingHistory = true;
     const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
     this.connection?.stop();
     this.connection = undefined;
@@ -310,35 +356,37 @@ export class ChatClient {
       const history = prepared ?? await loadChatHistory(this.channelId, this.controller.signal);
       if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
       if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
+      if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
       if (generation !== this.generation) return;
       this.spaceId = history.space.id;
-      // Retain older pages only when the fresh page joins the saved range.
-      // A resync beyond the replay window must not leave an unpageable gap.
-      const contiguous = previous && history.messages[0]
-        && sequence(history.messages[0].seq) <= sequence(previous.cursor) + 1n;
+      // Retain older pages only when every missing event is a fresh message.
+      // An unaccounted sequence may be a reaction on an older cached row.
+      const applied = sequence(previous?.cursor ?? "0");
+      let accounted = applied;
+      const contiguous = previous && history.messages.length > 0
+        && history.messages.every((message) => {
+          const next = sequence(message.seq);
+          if (next <= applied) return true;
+          if (next !== accounted + 1n) return false;
+          accounted = next;
+          return true;
+        }) && accounted === sequence(history.cursor);
       const retainedOlder = previous?.messages[0] && history.messages[0]
         && contiguous
         && sequence(previous.messages[0].seq) < sequence(history.messages[0].seq);
-      this.timeline.reset([...(contiguous ? previous.messages : []), ...history.messages], history.cursor);
+      // reset deduplicates by first occurrence: fresh author metadata wins.
+      // Even across a gap, preserve newer HTTP reaction revisions on fresh rows.
+      const freshIds = new Set(history.messages.map((message) => message.id));
+      const retained = this.timeline.messages.filter((message) => contiguous || freshIds.has(message.id));
+      this.timeline.reset([...history.messages, ...retained], history.cursor);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
         channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
       });
       this.connection = new ChatConnection(history.channel.id, {
         cursor: () => this.timeline.cursor,
-        message: (message) => {
-          const visible = new Set(this.timeline.messages.map((item) => item.id));
-          const result = this.timeline.applyEvent(message);
-          const typer = this.typers.get(message.author.id);
-          if (typer && result !== "duplicate") { typer.typing = false; this.refreshTypers(); }
-          if (result !== "buffered" && result !== "overflow") {
-            const messages = this.timeline.messages;
-            this.update({ messages });
-            const ownAuthorId = this.session?.author.id ?? this.state.author?.id;
-            if (this.sounds && result === "applied" && messages.some((item) => !visible.has(item.id) && item.author.id !== ownAuthorId)) playSound("new-message");
-          }
-          return result;
-        },
+        message: (message) => this.receiveEvent(message),
+        reactions: (event) => this.receiveEvent(event),
         status: (online) => {
           if (!online) { this.typers.clear(); this.refreshTypers(); }
           this.update({ online });
@@ -357,10 +405,14 @@ export class ChatClient {
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }
+    } finally {
+      if (generation === this.generation) this.loadingHistory = false;
     }
   }
 
   private async createSession() {
+    if (this.controller.signal.aborted) return;
+    const generation = ++this.sessionGeneration;
     this.update({ sessionError: undefined });
     try {
       const response = await fetch("/api/chat/session", {
@@ -370,11 +422,12 @@ export class ChatClient {
       const session = await response.json() as Partial<ChatSession>;
       if (typeof session.token !== "string" || !session.token || !session.author || typeof session.author.id !== "string"
         || typeof session.author.name !== "string" || typeof session.author.isGuest !== "boolean") throw new Error("The chat service returned an invalid session.");
+      if (this.controller.signal.aborted || generation !== this.sessionGeneration) return;
       this.session = session as ChatSession;
       try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* The in-memory response still permits this page to render. */ }
       this.update({ author: session.author, sessionError: undefined });
     } catch (error) {
-      if (!this.controller.signal.aborted) this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
+      if (!this.controller.signal.aborted && generation === this.sessionGeneration) this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
     }
   }
 

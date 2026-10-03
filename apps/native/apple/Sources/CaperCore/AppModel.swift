@@ -7,9 +7,19 @@ public final class AppModel {
     public var phase: Phase = .loading
     public var account: Account?
     public var spaces: [Space] = []
+    public var invitations: [Space] = []
+    public var pendingMembers: [Member] = []
     public var detail: SpaceDetail?
     public var selectedSpaceID: String?
     public var selectedChannelID: String?
+    public var directMessages: [DirectMessageConversation] = []
+    public var selectedDirectMessageID: String?
+    public var pushAvailable = false
+    public var pushEnabled = false
+    @ObservationIgnored public var setPushEnabled: ((Bool) async -> Void)?
+    @ObservationIgnored public var disablePushLocally: (() -> Void)?
+    public var previewingChannel: Bool { selectedChannel?.joined == false }
+    public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
     public var busy = false
     public var challengeID: String? { didSet { if challengeID != oldValue { loginAttemptsRemaining = nil } } }
@@ -25,6 +35,7 @@ public final class AppModel {
     public var openingChannelID: String?
     /// Voice availability by media root ("general" or a channel id); nil while unchecked.
     public private(set) var voiceAvailability: [String: Bool] = [:]
+    public private(set) var pendingVoiceChannelID: String?
     public var navigationError: String?
     public let api: APIClient
     public let chat: ChatModel
@@ -53,6 +64,8 @@ public final class AppModel {
     private var visited: [String: PreparedNavigation] = [:]
     private var visitedOrder: [String] = []
     private var lastChannelBySpace: [String: String] = [:]
+    private var directMessageRefreshTask: Task<Void, Never>?
+    private var foreground = false
 
     public init(api: APIClient = APIClient(), preferredInitialSpaceID: String? = nil) {
         self.api = api
@@ -63,6 +76,7 @@ public final class AppModel {
         voice = voiceClient
         presence = PresenceModel(api: api)
         voicePresence = VoicePresenceModel(api: api)
+        chatModel.onReadCursor = { [weak self] in self?.markSelectedDirectRead() }
         chatModel.onAccessRevoked = { [weak self, weak voiceClient] channelID in
             if let channelID, voiceClient?.isActive(channelID: channelID) == true { voiceClient?.leaveImmediately() }
             if let channelID { self?.voicePresence.revoke(channelID: channelID) }
@@ -74,6 +88,8 @@ public final class AppModel {
     public func start() async {
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
+        voiceAvailability.removeAll()
         await voicePresence.stop()
         clearNavigationCache()
         let attempt = generation
@@ -82,7 +98,7 @@ public final class AppModel {
             guard generation == attempt else { return }
             self.account = account
             phase = account == nil ? .signedOut : needsProfile ? .onboarding : .ready
-            if phase != .onboarding { await loadSpaces() }
+            if phase == .ready { await loadSpaces(); startDirectMessageRefresh() }
         } catch {
             guard generation == attempt else { return }
             self.error = error.localizedDescription; phase = .signedOut
@@ -105,6 +121,8 @@ public final class AppModel {
         guard let challengeID else { return }
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
+        voiceAvailability.removeAll()
         await voicePresence.stop()
         clearNavigationCache()
         let attempt = generation
@@ -120,7 +138,7 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.account = account
             self.phase = self.needsProfile ? .onboarding : .ready
-            if self.phase == .ready { await self.loadSpaces() }
+            if self.phase == .ready { await self.loadSpaces(); self.startDirectMessageRefresh() }
         }
     }
 
@@ -148,17 +166,26 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.account = account
             self.phase = .ready
-            if onboarding { await self.loadSpaces() }
+            if onboarding { await self.loadSpaces(); self.startDirectMessageRefresh() }
             else { self.chat.updateAuthor(account: account) }
         }
     }
 
     public func logout() async {
+        // Opt out synchronously. Session revocation handles server cleanup;
+        // optional provider/network work must never hold the signed-in UI open.
+        disablePushLocally?()
+        pushEnabled = false; pushAvailable = false
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
+        voiceAvailability.removeAll()
         clearNavigationCache()
         voice.leaveImmediately()
-        account = nil; spaces = []; detail = nil; spacesLoaded = false; spacesError = nil
+        directMessageRefreshTask?.cancel(); directMessageRefreshTask = nil
+        account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
+        directMessages = []; selectedDirectMessageID = nil
+        spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
@@ -186,6 +213,7 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.limits = response.limits
             self.spaces = response.spaces
+            self.invitations = response.invitations
             self.spacesLoaded = true
             if let selected = self.spaces.first(where: { $0.id == self.selectedSpaceID })
                 ?? self.spaces.first(where: { $0.id == self.preferredInitialSpaceID })
@@ -202,6 +230,107 @@ public final class AppModel {
     public func select(channel: Channel) async {
         guard let space = detail?.space else { return }
         await navigate(space: space, channelID: channel.id)
+    }
+
+    public func refreshDirectMessages() async {
+        guard account != nil else { return }
+        let attempt = generation
+        do {
+            let conversations = try await api.directMessages()
+            guard generation == attempt, account != nil else { return }
+            directMessages = conversations
+        } catch is CancellationError {} catch {
+            guard generation == attempt else { return }
+            self.error = error.localizedDescription
+        }
+    }
+
+    public func createDirectMessage(username: String) async -> Bool {
+        let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !exact.isEmpty, account != nil else { return false }
+        let attempt = generation
+        do {
+            let conversation = try await api.createDirectMessage(username: exact)
+            guard generation == attempt else { return false }
+            if let index = directMessages.firstIndex(where: { $0.id == conversation.id }) { directMessages[index] = conversation }
+            else { directMessages.append(conversation) }
+            await select(directMessage: conversation)
+            return generation == attempt
+        } catch { if generation == attempt { self.error = error.localizedDescription }; return false }
+    }
+
+    public func select(directMessage conversation: DirectMessageConversation) async {
+        let attempt = generation
+        navigationGeneration += 1
+        let navigation = navigationGeneration
+        navigationTarget = nil; navigationError = nil
+        openingSpaceID = nil; openingChannelID = nil
+        do {
+            let history = try await api.history(channelID: conversation.id)
+            guard generation == attempt, navigationGeneration == navigation,
+                  history.space?.id == "", history.channel?.id == conversation.id,
+                  history.channel?.direct == true else {
+                throw APIError(status: 502, message: "Caper returned another conversation.")
+            }
+            selectedDirectMessageID = conversation.id; selectedChannelID = nil
+            navigationOpen = false
+            await presence.stop(); await voicePresence.stop()
+            await chat.open(history: history, displayName: account?.displayName ?? "")
+            guard generation == attempt, navigationGeneration == navigation else { return }
+            markSelectedDirectRead()
+        } catch { if generation == attempt, navigationGeneration == navigation { navigationError = error.localizedDescription } }
+    }
+
+    public func openDirectMessage(id: String) async {
+        await refreshDirectMessages()
+        guard let conversation = directMessages.first(where: { $0.id == id }) else { return }
+        await select(directMessage: conversation)
+    }
+
+    public func applicationActivityChanged(active: Bool) {
+        foreground = active
+        if active, account != nil {
+            markSelectedDirectRead()
+            Task { await refreshDirectMessages() }
+        }
+    }
+
+    private func markSelectedDirectRead() {
+        guard foreground, account != nil, let id = selectedDirectMessageID,
+              let history = chat.currentSnapshot(), history.channel?.id == id,
+              let index = directMessages.firstIndex(where: { $0.id == id }),
+              (try? Sequence.compare(history.cursor, directMessages[index].readSeq)) == .orderedDescending else { return }
+        let attempt = generation
+        Task {
+            do {
+                try await api.markDirectMessageRead(id: id, seq: history.cursor)
+                guard generation == attempt, let current = directMessages.firstIndex(where: { $0.id == id }) else { return }
+                let old = directMessages[current]
+                let seq = (try? Sequence.compare(history.cursor, old.readSeq)) == .orderedDescending ? history.cursor : old.readSeq
+                directMessages[current] = DirectMessageConversation(id: old.id, peer: old.peer, lastSeq: old.lastSeq, readSeq: seq)
+            } catch { /* A later foreground refresh retries the read cursor. */ }
+        }
+    }
+
+    public func configurePush(available: Bool, enabled: Bool) {
+        pushAvailable = available; pushEnabled = available && enabled
+    }
+
+    public func changePushEnabled(_ enabled: Bool) async {
+        guard pushAvailable else { return }
+        await setPushEnabled?(enabled)
+    }
+
+    private func startDirectMessageRefresh() {
+        directMessageRefreshTask?.cancel()
+        let attempt = generation
+        directMessageRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshDirectMessages()
+                try? await Task.sleep(for: .seconds(15))
+                guard self?.generation == attempt else { return }
+            }
+        }
     }
 
     /// Performs read-only speculative work. It never opens chat, starts a socket, or creates a chat session.
@@ -287,7 +416,7 @@ public final class AppModel {
             spaceVerified = true
             let restoredChannelID = channelID ?? prepared?.channelID ?? lastChannelBySpace[space.id]
             let restoredChannel = restoredChannelID.flatMap { id in detail.channels.first { $0.id == id } }
-            let channel = channelID == nil ? (restoredChannel ?? detail.channels.first) : restoredChannel
+            let channel = channelID == nil ? (restoredChannel?.joined == true ? restoredChannel : detail.channels.first { $0.joined }) : restoredChannel
             if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
             let history: ChatHistory?
             if let channel {
@@ -306,6 +435,7 @@ public final class AppModel {
                 guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
             }
             selectedSpaceID = space.id
+            selectedDirectMessageID = nil
             selectedChannelID = channel?.id
             self.detail = detail
             lastChannelBySpace[space.id] = channel?.id
@@ -313,7 +443,8 @@ public final class AppModel {
             navigationTarget = nil
             if let history {
                 remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
-                await chat.open(history: history, displayName: account?.displayName ?? "Guest")
+                if channel?.joined == true { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
+                else { await chat.preview(history: history) }
             }
             else { await chat.stop() }
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else {
@@ -326,11 +457,17 @@ public final class AppModel {
             if detail.space.demo == true { await self.presence.stop() }
             else { await self.presence.watch(spaceID: detail.space.id, members: detail.members) }
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
-            await voicePresence.watch(spaceID: detail.space.id, channels: detail.channels, demo: detail.space.demo == true)
+            await voicePresence.watch(spaceID: detail.space.id, channels: detail.channels.filter(\.joined), demo: detail.space.demo == true)
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
         } catch {
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
-            navigationError = error.localizedDescription
+            let missingSpace = (error as? APIError)?.status == 404 && !spaceVerified
+            navigationError = missingSpace ? "This space is no longer available." : error.localizedDescription
+            if missingSpace {
+                spaces.removeAll { $0.id == space.id }
+                invitations.removeAll { $0.id == space.id }
+                invalidateNavigation(spaceID: space.id)
+            }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status),
                selectedSpaceID == space.id, !spaceVerified || channelID == nil || selectedChannelID == channelID {
                 if !spaceVerified { detail = nil; selectedSpaceID = nil }
@@ -416,7 +553,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.spaceNameError(name) { throw APIError(status: 400, message: error) }
         let updated = try await api.updateSpace(id: detail.space.id, name: name)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        replace(detail: SpaceDetail(space: updated, channels: detail.channels, members: detail.members))
+        replace(detail: SpaceDetail(space: updated, channels: detail.channels, members: detail.members, channelInvitations: detail.channelInvitations))
     }
 
     public func deleteCurrentSpace() async throws {
@@ -440,13 +577,45 @@ public final class AppModel {
     }
 
     public func addSpaceMember(username: String) async throws {
-        guard var detail else { return }
-        clearNavigationCache()
+        guard let detail else { return }
+        if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         let attempt = generation
         let member = try await api.addSpaceMember(spaceID: detail.space.id, username: username)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id } + [member])
-        replace(detail: detail)
+        pendingMembers.removeAll { $0.id == member.id }
+        pendingMembers.append(member)
+    }
+
+    public func loadSpaceInvitations() async throws {
+        guard let id = detail?.space.id, isOwner else { pendingMembers = []; return }
+        let attempt = generation
+        let members = try await api.spaceInvitations(spaceID: id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        pendingMembers = members
+    }
+
+    public func cancelSpaceInvitation(_ member: Member) async throws {
+        guard let id = detail?.space.id else { return }
+        let attempt = generation
+        try await api.cancelSpaceInvitation(spaceID: id, userID: member.id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        pendingMembers.removeAll { $0.id == member.id }
+    }
+
+    public func acceptInvitation(_ invitation: Space) async throws {
+        let attempt = generation
+        let accepted = try await api.acceptSpaceInvitation(spaceID: invitation.id)
+        guard generation == attempt else { throw CancellationError() }
+        invitations.removeAll { $0.id == invitation.id }
+        spaces.removeAll { $0.id == accepted.id }; spaces.append(accepted)
+        await select(space: accepted)
+    }
+
+    public func declineInvitation(_ invitation: Space) async throws {
+        let attempt = generation
+        try await api.declineSpaceInvitation(spaceID: invitation.id)
+        guard generation == attempt else { throw CancellationError() }
+        invitations.removeAll { $0.id == invitation.id }
     }
 
     public func removeSpaceMember(_ member: Member) async throws {
@@ -455,7 +624,7 @@ public final class AppModel {
         let attempt = generation
         try await api.removeSpaceMember(spaceID: detail.space.id, memberID: member.id)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id })
+        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id }, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
     }
 
@@ -468,7 +637,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
         let channel = try await api.createChannel(spaceID: detail.space.id, name: clean, privateChannel: privateChannel)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels + [channel], members: detail.members)
+        detail = SpaceDetail(space: detail.space, channels: detail.channels + [channel], members: detail.members, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
         await select(channel: channel)
         return channel
@@ -482,7 +651,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
         let updated = try await api.updateChannel(spaceID: detail.space.id, channelID: channel.id, name: clean, privateChannel: privateChannel)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels.map { $0.id == updated.id ? updated : $0 }, members: detail.members)
+        detail = SpaceDetail(space: detail.space, channels: detail.channels.map { $0.id == updated.id ? updated : $0 }, members: detail.members, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
         return updated
     }
@@ -495,10 +664,10 @@ public final class AppModel {
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
         if voice.isActive(channelID: channel.id) { voice.leaveImmediately() }
         voicePresence.revoke(channelID: channel.id)
-        detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id }, members: detail.members)
+        detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id }, members: detail.members, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
         if selectedChannelID == channel.id {
-            if let first = detail.channels.first { await select(channel: first) }
+            if let first = detail.channels.first(where: \.joined) { await select(channel: first) }
             else { selectedChannelID = nil; await chat.stop() }
         }
     }
@@ -511,8 +680,17 @@ public final class AppModel {
         return members
     }
 
+    public func channelInvitations(_ channel: Channel) async throws -> [Member] {
+        guard let spaceID = detail?.space.id else { return [] }
+        let attempt = generation
+        let invitations = try await api.channelInvitations(spaceID: spaceID, channelID: channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        return invitations
+    }
+
     public func addChannelMember(_ channel: Channel, username: String) async throws -> Member {
         guard let spaceID = detail?.space.id else { throw APIError(status: 400, message: "No space is selected.") }
+        if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         clearNavigationCache()
         let attempt = generation
         let member = try await api.addChannelMember(spaceID: spaceID, channelID: channel.id, username: username)
@@ -528,28 +706,93 @@ public final class AppModel {
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
     }
 
+    public func joinChannel(_ channel: Channel) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        clearNavigationCache()
+        _ = try await api.joinChannel(spaceID: spaceID, channelID: channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: channel.id)
+    }
+
+    public func leaveChannel(_ channel: Channel) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        let navigation = navigationGeneration
+        clearNavigationCache()
+        try await api.leaveChannel(spaceID: spaceID, channelID: channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        if voice.isActive(channelID: channel.id) { voice.leaveImmediately() }
+        voicePresence.revoke(channelID: channel.id)
+        let selecting = selectedChannelID == channel.id ? nil : selectedChannelID
+        if let current = detail {
+            let channels = current.channels.compactMap { item -> Channel? in
+                guard item.id == channel.id else { return item }
+                if item.private && !isOwner { return nil }
+                return Channel(id: item.id, spaceId: item.spaceId, name: item.name, private: item.private, joined: false)
+            }
+            replace(detail: SpaceDetail(space: current.space, channels: channels, members: current.members, channelInvitations: current.channelInvitations))
+        }
+        if selectedChannelID == channel.id { selectedChannelID = nil; await chat.stop() }
+        guard generation == attempt, navigationGeneration == navigation, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: selecting)
+    }
+
+    public func acceptChannelInvitation(_ invitation: ChannelInvitation) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        clearNavigationCache()
+        _ = try await api.acceptChannelInvitation(spaceID: spaceID, channelID: invitation.channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: invitation.channel.id)
+    }
+
+    public func declineChannelInvitation(_ invitation: ChannelInvitation) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        clearNavigationCache()
+        try await api.declineChannelInvitation(spaceID: spaceID, channelID: invitation.channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: selectedChannelID)
+    }
+
+    private func refreshDetail(spaceID: String, selecting channelID: String?) async throws {
+        let attempt = generation
+        let navigation = navigationGeneration
+        let refreshed = try await api.space(spaceID)
+        guard generation == attempt, navigationGeneration == navigation, detail?.space.id == spaceID else { throw CancellationError() }
+        replace(detail: refreshed)
+        let retained = channelID.flatMap { id in refreshed.channels.first { $0.id == id } }
+        if let retained { await select(channel: retained) }
+        else if let first = refreshed.channels.first(where: \.joined) { await select(channel: first) }
+        else { selectedChannelID = nil; await chat.stop() }
+    }
+
     private func replace(detail: SpaceDetail) {
         self.detail = detail
         spaces = spaces.map { $0.id == detail.space.id ? detail.space : $0 }
         let attempt = generation
         Task { [weak self] in
             guard let self, self.generation == attempt, self.detail?.space.id == detail.space.id else { return }
-            await self.voicePresence.watch(spaceID: detail.space.id, channels: detail.channels, demo: detail.space.demo == true)
+            await self.voicePresence.watch(spaceID: detail.space.id, channels: detail.channels.filter(\.joined), demo: detail.space.demo == true)
         }
     }
 
     private func removeCurrentSpace(id: String) async {
+        let directMessageOpen = selectedDirectMessageID != nil
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
         spaces.removeAll { $0.id == id }
         detail = nil; selectedSpaceID = nil; selectedChannelID = nil
-        await chat.stop()
+        if !directMessageOpen { await chat.stop() }
         await presence.stop()
         await voicePresence.stop()
-        if let first = spaces.first { await select(space: first) }
+        startDirectMessageRefresh()
+        if !directMessageOpen, let first = spaces.first { await select(space: first) }
     }
 
     public func openVoiceContext() async {
@@ -562,22 +805,32 @@ public final class AppModel {
 
     public func leaveVoice() {
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
         voice.leaveImmediately()
     }
 
-    /// Verify the target at click time. Reading another text channel must not
-    /// change the call, and a stale/private channel must not evict a healthy one.
     /// The media root voice uses for the viewed channel, as web keys its availability.
     public var viewedVoiceRoot: String? {
-        guard let detail, let channelID = selectedChannelID else { return nil }
+        guard let detail, let channelID = selectedChannelID, selectedChannel?.joined == true else { return nil }
         return detail.space.demo == true ? "general" : channelID
     }
 
     public var voiceAvailable: Bool? { viewedVoiceRoot.flatMap { voiceAvailability[$0] } }
 
-    public func refreshVoiceAvailability() async {
-        guard let root = viewedVoiceRoot else { return }
+    public func voiceAvailable(in channel: Channel) -> Bool? {
+        guard let detail, detail.channels.contains(where: { $0.id == channel.id }) else { return nil }
+        if voicePresence.unavailableChannels.contains(channel.id) { return false }
+        return voiceAvailability[detail.space.demo == true ? "general" : channel.id]
+    }
+
+    public func refreshVoiceAvailability(channel: Channel? = nil) async {
+        guard let detail,
+              let channel = channel ?? detail.channels.first(where: { $0.id == selectedChannelID }) else { return }
+        let root = detail.space.demo == true ? "general" : channel.id
+        let accountGeneration = generation
         let enabled = (try? await api.mediaStatus(channelID: root == "general" ? nil : root)) ?? false
+        guard !Task.isCancelled, generation == accountGeneration, self.detail?.space.id == detail.space.id,
+              self.detail?.channels.contains(where: { $0.id == channel.id }) == true else { return }
         voiceAvailability[root] = enabled
     }
 
@@ -587,8 +840,8 @@ public final class AppModel {
     /// keeps the session 8 s, so reissue at most every 4 s. The public demo
     /// creates on join; failures only mean an ordinary join.
     public func prepareVoiceJoin(channel: Channel) {
-        guard account != nil, let detail, detail.space.demo != true, voiceAvailable == true,
-              detail.channels.contains(where: { $0.id == channel.id }),
+        guard account != nil, let detail, detail.space.demo != true, channel.joined, voiceAvailable(in: channel) == true,
+              detail.channels.contains(where: { $0.id == channel.id && $0.joined }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         let now = ContinuousClock.now
         if let sent = preparedVoice[channel.id], sent.duration(to: now) < .seconds(4) { return }
@@ -596,11 +849,15 @@ public final class AppModel {
         Task { try? await api.media(channelID: channel.id, operation: "prepare", body: [String: String]()) }
     }
 
+    /// Verify at click time; a denied switch must not evict a healthy call.
     public func joinVoice(channel: Channel) async {
-        guard let detail, detail.channels.contains(where: { $0.id == channel.id }),
+        guard pendingVoiceChannelID == nil, voice.phase != .joining, voice.phase != .reconnecting,
+              voice.phase != .leaving, let detail, channel.joined, detail.channels.contains(where: { $0.id == channel.id && $0.joined }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         voiceJoinGeneration += 1
         let joinAttempt = voiceJoinGeneration
+        pendingVoiceChannelID = channel.id
+        defer { if voiceJoinGeneration == joinAttempt { pendingVoiceChannelID = nil } }
         let accountGeneration = generation
         let space = detail.space
         let ownerID = account?.id
@@ -608,7 +865,7 @@ public final class AppModel {
             if space.demo != true {
                 let verified = try await api.space(space.id)
                 guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
-                guard verified.space.id == space.id, verified.channels.contains(where: { $0.id == channel.id }) else {
+                guard verified.space.id == space.id, verified.channels.contains(where: { $0.id == channel.id && $0.joined }) else {
                     voicePresence.revoke(channelID: channel.id)
                     return
                 }
@@ -621,7 +878,7 @@ public final class AppModel {
             }
             guard voiceJoinGeneration == joinAttempt, generation == accountGeneration,
                   account?.id == ownerID, self.detail?.space.id == space.id,
-                  self.detail?.channels.contains(where: { $0.id == channel.id }) == true else { return }
+                  self.detail?.channels.contains(where: { $0.id == channel.id && $0.joined }) == true else { return }
             if voice.phase != .idle && voice.phase != .failed { voice.leaveImmediately() }
             await voice.join(channelID: space.demo == true ? nil : channel.id,
                              context: VoiceContext(channelID: channel.id, channelName: channel.name,
@@ -677,7 +934,10 @@ public final class ChatModel {
     public var error: String?
     public var hasMore = false
     public var typingNames: [String] = []
+    public var reactionSaving: Set<String> = []
+    public var reactionErrors: [String: String] = [:]
     public var currentAuthor: ChatAuthor? { session?.author }
+    public private(set) var isPreview = false
     /// Web's failed first load: no conversation to show, only the error.
     public private(set) var loadFailed = false
     /// Web's session error: history loaded but sending needs a new chat session.
@@ -685,6 +945,7 @@ public final class ChatModel {
     public var pendingMessage: PendingMessage? { delivery.pending }
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
+    @ObservationIgnored public var onReadCursor: (() -> Void)?
     private let api: APIClient
     private var channelID: String?
     private var spaceID: String?
@@ -692,6 +953,8 @@ public final class ChatModel {
     private var subscriptionID: String?
     private var generation = 0
     private var delivery = ChatDeliveryState()
+    private var reactionSnapshots = ReactionSnapshots()
+    private var failedReactions: [String: (emoji: String, active: Bool)] = [:]
     private var typers: [String: (author: ChatAuthor, typing: Bool, revision: String, expires: Date)] = [:]
     private var typingActive = false
     private var typingSent = false
@@ -709,7 +972,11 @@ public final class ChatModel {
         // Actor callbacks queued before unsubscribe must not revive stopped chat.
         guard channelID != nil else { return }
         liveState = state
-        if let error { self.error = error }
+        // Transport interruptions are represented by liveState and the view's
+        // delayed connection indicator. `error` is reserved for durable
+        // history, session, subscription and send failures. Gateway reports a
+        // rejected subscription with connected state, not reconnecting.
+        if state == .connected, let error { self.error = error }
     }
 
     func updateAuthor(account: Account) {
@@ -740,23 +1007,63 @@ public final class ChatModel {
         await open(channelID: history.channel?.id, displayName: displayName, preservingPending: false, prepared: history)
     }
 
+    public func preview(history: ChatHistory) async {
+        lastOpen = nil
+        generation += 1
+        let requestGeneration = generation
+        let oldSubscription = subscriptionID
+        subscriptionID = nil
+        clearLocal(preservingPending: false)
+        isPreview = true
+        if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
+        guard generation == requestGeneration else { return }
+        channelID = history.channel?.id; spaceID = history.space?.id
+        reactionSnapshots.seed(history.messages)
+        messages = history.messages.map { reactionSnapshots.overlay($0) }
+        delivery.reset(cursor: history.cursor); hasMore = history.hasMore
+        channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
+        session = nil; loading = false; loadFailed = false; sessionError = nil
+        guard let actualChannel = channelID else { return }
+        let subscription = await gateway.subscribeChat(channelID: actualChannel, after: delivery.cursor) { [weak self] event in
+            self?.receive(event, generation: requestGeneration, channelID: actualChannel)
+        }
+        guard generation == requestGeneration, channelID == actualChannel else {
+            await gateway.unsubscribe(subscription)
+            return
+        }
+        subscriptionID = subscription
+    }
+
     private var lastOpen: (channelID: String?, displayName: String)?
 
     /// Web's "Try again" after a failed first load.
     public func retryLoad() async {
         guard let lastOpen else { return }
-        await open(channelID: lastOpen.channelID, displayName: lastOpen.displayName, preservingPending: false, prepared: nil)
+        await open(channelID: lastOpen.channelID, displayName: lastOpen.displayName, preservingPending: channelID == lastOpen.channelID, prepared: nil)
     }
 
     private func open(channelID: String?, displayName: String, preservingPending: Bool, prepared: ChatHistory?) async {
         lastOpen = (channelID, displayName)
+        isPreview = false
+        let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
         let requestGeneration = generation
         let oldSubscription = subscriptionID
         subscriptionID = nil
         let preservedDraft = draft
-        clearLocal(preservingPending: preservingPending)
+        let preservedMessages = messages
+        let preservedCursor = delivery.cursor
+        let preservedHasMore = hasMore
+        if preservingTimeline {
+            typingTask?.cancel(); typingIdleTask?.cancel(); typingExpiryTask?.cancel()
+            typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
+            typers = [:]; typingNames = []; typingActive = false; typingSent = false
+            loadingOlder = false; olderError = nil; liveState = .disconnected
+        } else {
+            clearLocal(preservingPending: preservingPending)
+        }
         if preservingPending { draft = preservedDraft }
+        loading = true
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
         guard generation == requestGeneration else { return }
         self.channelID = channelID
@@ -777,12 +1084,48 @@ public final class ChatModel {
             let resolvedChannelID = history.channel?.id
             spaceID = history.space?.id
             self.channelID = resolvedChannelID
-            messages = history.messages
+            let firstRefreshed = history.messages.first?.seq
+            let canRetain = preservingTimeline && Self.refreshAccountsForMissingEvents(
+                messages: history.messages,
+                after: preservedCursor,
+                through: history.cursor
+            )
+            if canRetain {
+                // Include HTTP confirmations received while refresh was pending.
+                merge(history.messages) // The refreshed representation wins overlapping IDs.
+            } else {
+                // Preserve a newer reaction revision on overlapping rows, but
+                // discard snapshots for rows no longer in the fresh window.
+                reactionSnapshots.seed(history.messages)
+                messages = history.messages.map { reactionSnapshots.overlay($0) }
+                reactionSnapshots.reset()
+                reactionSnapshots.seed(messages)
+            }
             delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
-            hasMore = history.hasMore
+            let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
+                preservedMessages.contains { (try? Sequence.compare($0.seq, first)) == .orderedAscending }
+            } == true
+            hasMore = retainedOlderPrefix ? preservedHasMore : history.hasMore
             channelName = history.channel?.name ?? "general"
             spaceName = history.space?.name ?? "Caper"
             session = chatSession
+            if CaperRuntime.isChatPreview("reaction-chips"), let ownID = chatSession?.author.id, !messages.isEmpty {
+                let fixtureEmoji = ["👍", "❤️", "😂", "🎉", "🚀", "👀", "🔥", "✅", "👏", "🤔", "💯", "🙌", "😄", "🥳", "🤝", "✨", "💚", "😮", "🤯", "👩‍💻"]
+                messages[0].reactions = fixtureEmoji.enumerated().map {
+                    MessageReaction(emoji: $0.element, authorIds: $0.offset == 0 ? [ownID, "fixture-other"] : ["fixture-other"])
+                }
+                messages[0].reactionSeq = history.cursor
+                if messages.count > 1 {
+                    messages[1].reactions = []
+                } else {
+                    let source = messages[0]
+                    messages.append(ChatMessage(id: "reaction-empty-fixture", channelId: source.channelId, seq: source.seq,
+                                                author: source.author, content: ChatContent(version: 1, type: "text", text: "No reactions yet"),
+                                                createdAt: source.createdAt, clientMessageId: "reaction-empty-fixture", reactions: [],
+                                                reactionSeq: history.cursor))
+                }
+                reactionSnapshots.seed(messages)
+            }
             guard let actualChannel = resolvedChannelID else { throw APIError(status: 502, message: "Channel metadata is missing.") }
             let newSubscription = await gateway.subscribeChat(channelID: actualChannel, after: delivery.cursor) { [weak self] event in
                 self?.receive(event, generation: requestGeneration, channelID: actualChannel)
@@ -792,6 +1135,7 @@ public final class ChatModel {
                 return
             }
             subscriptionID = newSubscription
+            onReadCursor?()
             if CaperRuntime.isChatPreview("chat-rejected") {
                 let preview = delivery.begin(text: "Fixture message that was rejected")
                 delivery.reject(id: preview.id)
@@ -800,13 +1144,30 @@ public final class ChatModel {
         } catch {
             guard generation == requestGeneration else { return }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
-                messages = []; delivery.reset(); session = nil
+                clearLocal()
                 onAccessRevoked?(channelID)
             }
             self.error = error.localizedDescription
             loadFailed = messages.isEmpty
         }
         if generation == requestGeneration { loading = false }
+    }
+
+    private static func refreshAccountsForMissingEvents(messages: [ChatMessage], after oldCursor: String, through newCursor: String) -> Bool {
+        guard !messages.isEmpty, let cursorOrder = try? Sequence.compare(newCursor, oldCursor) else { return false }
+        if cursorOrder == .orderedSame { return true }
+        guard cursorOrder == .orderedDescending else { return false }
+
+        let freshSequences = messages.map(\.seq).filter {
+            (try? Sequence.compare($0, oldCursor)) == .orderedDescending &&
+                (try? Sequence.compare($0, newCursor)) != .orderedDescending
+        }.sorted { (try? Sequence.compare($0, $1)) == .orderedAscending }
+        var accountedCursor = oldCursor
+        for sequence in freshSequences {
+            guard Sequence.isSuccessor(sequence, of: accountedCursor) else { return false }
+            accountedCursor = sequence
+        }
+        return accountedCursor == newCursor
     }
 
     /// Web's Retry session.
@@ -824,7 +1185,7 @@ public final class ChatModel {
     }
 
     public func loadOlder() async {
-        guard !loadingOlder, hasMore, let channelID, let before = messages.first?.seq else { return }
+        guard !loading, !loadingOlder, hasMore, let channelID, let before = messages.first?.seq else { return }
         let requestGeneration = generation
         loadingOlder = true; olderError = nil
         defer { if generation == requestGeneration { loadingOlder = false } }
@@ -880,6 +1241,32 @@ public final class ChatModel {
         sending = false
     }
 
+    public func setReaction(messageID: String, emoji: String, active: Bool) async {
+        guard !isPreview, let channelID, let session, !reactionSaving.contains(messageID) else { return }
+        let requestGeneration = generation
+        reactionSaving.insert(messageID)
+        defer { if generation == requestGeneration { reactionSaving.remove(messageID) } }
+        do {
+            let event = try await api.setReaction(channelID: channelID, messageID: messageID, sessionToken: session.token, emoji: emoji, active: active)
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            applyReactions(event, clearsOwnFailure: true)
+        } catch {
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                onAccessRevoked?(channelID)
+                await stop()
+                return
+            }
+            reactionErrors[messageID] = "Couldn’t save reaction. Retry."
+            failedReactions[messageID] = (emoji, active)
+        }
+    }
+
+    public func retryReaction(messageID: String) async {
+        guard let failed = failedReactions[messageID] else { return }
+        await setReaction(messageID: messageID, emoji: failed.emoji, active: failed.active)
+    }
+
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
         guard let text = delivery.discardRejected() else { return false }
@@ -927,6 +1314,27 @@ public final class ChatModel {
             receiveTyping(author: author, typing: typing, revision: revision)
             return
         }
+        if type == "message.reactions" {
+            guard let data = try? JSONSerialization.data(withJSONObject: event),
+                  let reactionEvent = try? JSONDecoder().decode(MessageReactionsEvent.self, from: data),
+                  reactionEvent.isValid,
+                  let seq = ReactionEvent.sequence(event, channelID: eventChannelID),
+                  delivery.receive(seq: seq) else {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            applyReactions(reactionEvent)
+            onReadCursor?()
+            if reactionSnapshots.unseenOverflowed {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            if let subscriptionID {
+                let cursor = delivery.cursor
+                Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
+            }
+            return
+        }
         if type == "message.created", let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw), let message = try? JSONDecoder().decode(ChatMessage.self, from: data) {
             guard message.channelId == eventChannelID,
                   event["seq"] as? String == message.seq,
@@ -937,6 +1345,7 @@ public final class ChatModel {
             let newMessage = (try? Sequence.compare(message.seq, delivery.cursor)) == .orderedDescending
             if delivery.receive(seq: message.seq) {
                 merge([message])
+                onReadCursor?()
                 if newMessage, let author = session?.author, author.id != message.author.id { CaperEffects.shared.play(.message) }
                 if delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     error = nil
@@ -951,11 +1360,23 @@ public final class ChatModel {
     }
 
     private func requestResync(generation expectedGeneration: Int, channelID expectedChannelID: String) {
+        let preview = isPreview
         let name = session?.author.name ?? "Guest"
         error = "Messages changed while reconnecting. Refreshing…"
         Task { [weak self] in
             guard let self, self.generation == expectedGeneration, self.channelID == expectedChannelID else { return }
-            await self.open(channelID: expectedChannelID, displayName: name, preservingPending: true, prepared: nil)
+            if preview {
+                do {
+                    let history = try await self.api.history(channelID: expectedChannelID)
+                    guard self.generation == expectedGeneration, self.channelID == expectedChannelID, self.isPreview else { return }
+                    await self.preview(history: history)
+                } catch {
+                    guard self.generation == expectedGeneration, self.channelID == expectedChannelID, self.isPreview else { return }
+                    self.error = error.localizedDescription
+                }
+            } else {
+                await self.open(channelID: expectedChannelID, displayName: name, preservingPending: true, prepared: nil)
+            }
         }
     }
 
@@ -964,6 +1385,8 @@ public final class ChatModel {
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
+        reactionSnapshots.reset(); reactionSaving = []; reactionErrors = [:]; failedReactions = [:]
+        isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
         loadingOlder = false; olderError = nil
@@ -971,9 +1394,20 @@ public final class ChatModel {
     }
 
     private func merge(_ incoming: [ChatMessage]) {
+        reactionSnapshots.seed(incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        incoming.forEach { byID[$0.id] = $0 }
+        incoming.forEach { byID[$0.id] = reactionSnapshots.overlay($0) }
+        byID = byID.mapValues { reactionSnapshots.overlay($0) }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
+    }
+
+    private func applyReactions(_ event: MessageReactionsEvent, clearsOwnFailure: Bool = false) {
+        if clearsOwnFailure {
+            reactionErrors[event.messageId] = nil
+            failedReactions[event.messageId] = nil
+        }
+        guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
+        messages = messages.map { reactionSnapshots.overlay($0) }
     }
 
     private func flushTyping() {

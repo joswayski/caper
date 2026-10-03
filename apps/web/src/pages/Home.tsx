@@ -9,6 +9,7 @@ import { detectDownloadPlatform, downloads, type DownloadPlatform } from "../dow
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
+const authorUrl = "https://josevalerio.com";
 const contactEmail = "contact@josevalerio.com";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
@@ -76,7 +77,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             Mobile apps are available. If you&apos;d like access or have feedback, reach out on{" "}
             <ContactLinks />
           </p>
-          <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
+          <p className="made-by">Made by <a href={authorUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
         </div>
 
         <LiveWindow />

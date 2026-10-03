@@ -18,14 +18,14 @@ function fixture() {
   const publicDemo = new URL(location.href).searchParams.has('public');
   const guest = new URL(location.href).searchParams.has('guest');
   localStorage.setItem('caper:channel-sidebar-width', saved);
-  const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner', debugEnabled: new URL(location.href).searchParams.has('debug') };
+  const account = { id: 'owner1234567', username: 'fixture_owner', displayName: 'Fixture owner', avatarId: 0, debugEnabled: new URL(location.href).searchParams.has('debug') };
   const space = { id: 'space1234567', name: 'Disposable UI fixture', ownerId: account.id };
   const channel = { id: 'channel12345', spaceId: space.id, name: 'fixture-channel', private: !new URL(location.href).searchParams.has('publicChannel') };
   window.homeFixture = { account, history: { space: { id: 'public123456', name: 'Public demo' }, channel: { id: 'general12345', name: 'general' }, messages: [], cursor: '0', hasMore: false } };
   const members = [{ ...account, owner: true }, ...Array.from({ length: 29 }, (_, index) => ({
-    id: `member${String(index).padStart(6, '0')}`, username: `member_${index}`, displayName: `Fixture member ${index + 1}`, owner: false,
+    id: `member${String(index).padStart(6, '0')}`, username: `member_${index}`, displayName: `Fixture member ${index + 1}`, avatarId: index % 2 ? 31 : 799, owner: false,
   }))];
-  const control = window.spaceControlFixture = { deletes: [], updates: [], fail: false, release: null, frames: [], subscriptions: {} };
+  const control = window.spaceControlFixture = { deletes: [], updates: [], memberAdds: [], fail: false, release: null, frames: [], subscriptions: {} };
   let deletedChannel = false, deletedSpace = false;
   const originalFetch = window.fetch.bind(window);
   const NativeSocket = window.WebSocket;
@@ -64,6 +64,15 @@ function fixture() {
   window.fetch = async (input, options = {}) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
     if (!path.startsWith('/api/')) return originalFetch(input, options);
+    if (path.endsWith('/members') && options.method === 'POST') {
+      const body = JSON.parse(options.body);
+      control.memberAdds.push({ path, body });
+      await new Promise(resolve => { control.memberRelease = resolve; });
+      control.memberRelease = null;
+      const member = { id: 'addedmember12', username: body.username, displayName: 'Added fixture member', avatarId: 32, owner: false };
+      members.push(member);
+      return Response.json(member);
+    }
     if (path === '/api/account/profile' && options.method === 'POST') {
       await new Promise(resolve => { control.profileRelease = resolve; });
       control.profileRelease = null;
@@ -126,11 +135,19 @@ const opens = () => evaluate('document.querySelectorAll(".space-dialog[open]").l
 function openOverview() {
   browser('focus', '[aria-label="Manage fixture-channel"]');
   browser('press', 'Enter');
+  browser('find', 'role', 'button', 'click', '--name', 'Channel settings', '--exact');
   browser('click', '.danger-outline');
   wait('!!document.querySelector(".delete-confirmation")');
 }
 function geometry(selector) {
   return evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; })()`);
+}
+function dismissMemberBackdrop() {
+  const [x, y, width, height] = geometry('.member-list-backdrop');
+  assert.ok(width > 64 && height > 40, 'Member backdrop must cover the conversation body');
+  browser('mouse', 'move', String(x + 8), String(y + 20));
+  browser('mouse', 'down', 'left');
+  browser('mouse', 'up', 'left');
 }
 function dismissBackdrop() {
   browser('mouse', 'move', '1', '1');
@@ -151,8 +168,20 @@ function testModalGeometry() {
     wait('!!document.querySelector(".channel-navigation")');
     evaluate('document.fonts.ready');
     if (width < 760) browser('click', '.navigation-toggle');
+    if (width < 760) {
+      const layout = evaluate(`(() => {
+        const rail = document.querySelector('.space-rail'), sidebar = document.querySelector('.sidebar-channels'), account = document.querySelector('.call-account');
+        return { railBorder: getComputedStyle(rail).borderRightWidth, sidebar: sidebar.getBoundingClientRect().toJSON(), account: account.getBoundingClientRect().toJSON(), room: document.querySelector('.call-room').getBoundingClientRect().toJSON() };
+      })()`);
+      assert.equal(layout.railBorder, '0px', 'The mobile rail must not draw a full-height divider');
+      assert.ok(layout.sidebar.y > layout.room.y && layout.sidebar.right < width, 'Channel surface must be inset at the top and right');
+      assert.ok(layout.account.x < 60 && layout.account.right <= width - 8, 'Account bar must span beneath both navigation columns');
+      assert.ok(layout.account.y >= layout.sidebar.bottom && layout.account.bottom < layout.room.bottom, 'Account controls must align below the channel surface and clear the bottom edge');
+      screenshot(`navigation-inset-${width}-${height}`);
+    }
     browser('focus', '[aria-label="Manage fixture-channel"]');
     browser('press', 'Enter');
+    browser('find', 'role', 'button', 'click', '--name', 'Channel settings', '--exact');
     const selectors = ['.space-dialog[open]', '.space-field input', '.channel-privacy input'];
     const before = selectors.map(geometry);
     assert.ok(evaluate('document.querySelector(".channel-save-bar").inert'));
@@ -196,6 +225,18 @@ function testModalGeometry() {
     browser('click', '.space-actions button');
     screenshot(`modal-manage-space-${width}-${height}`);
     stableShell('.space-dialog[open]');
+    browser('fill', '#member-username', 'fixture_new');
+    assert.equal(evaluate('document.querySelector("#member-username").getAttribute("autocapitalize")'), 'none');
+    if (width < 760) assert.equal(evaluate('getComputedStyle(document.querySelector("#member-username")).fontSize'), '16px', 'iOS forms must not trigger focus zoom');
+    browser('press', 'Enter');
+    wait('!!spaceControlFixture.memberRelease');
+    assert.deepEqual(evaluate('spaceControlFixture.memberAdds'), [{ path: '/api/spaces/space1234567/members', body: { username: 'fixture_new' } }]);
+    assert.ok(evaluate('document.querySelector("#member-username").disabled'), 'Pending add must not accept edits that will be cleared');
+    evaluate('document.querySelector(".member-add").requestSubmit()');
+    assert.equal(evaluate('spaceControlFixture.memberAdds.length'), 1, 'Pending keyboard resubmission must not duplicate membership writes');
+    evaluate('spaceControlFixture.memberRelease()');
+    wait('document.querySelector("#member-username").value === "" && document.querySelector(".member-manager").textContent.includes("@fixture_new")');
+    screenshot(`modal-member-added-${width}-${height}`);
     evaluate('document.querySelector(".space-dialog[open]").scrollTop = 0');
     browser('click', '.space-field input');
     assert.equal(opens(), 1, 'Inside click must leave space settings open');
@@ -229,9 +270,26 @@ function testModalGeometry() {
     screenshot(`modal-audio-${width}-${height}`);
     stableShell('.audio-dialog[open]');
     browser('press', 'Escape');
+    if (width < 760) {
+      browser('click', '.channel-select[aria-current="page"]');
+      browser('click', '.member-list-toggle');
+      wait('!!document.querySelector(".member-list-close")');
+      screenshot(`members-overlay-${width}-${height}`);
+      const closeBounds = geometry('.member-list-close');
+      assert.ok(evaluate('document.querySelector(".space-member-presence").scrollHeight > document.querySelector(".space-member-presence").clientHeight'));
+      evaluate('document.querySelector(".space-member-presence").scrollTop = document.querySelector(".space-member-presence").scrollHeight');
+      assert.deepEqual(geometry('.member-list-close'), closeBounds, 'Close must remain visible while the member list scrolls');
+      screenshot(`members-scrolled-${width}-${height}`);
+      browser('click', '.member-list-close');
+      assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
+      browser('click', '.member-list-toggle');
+      dismissMemberBackdrop();
+      assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false, 'Outside tap must close the member panel');
+      assert.equal(evaluate('!!document.querySelector(".member-list-backdrop")'), false);
+    }
     assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Modal overflowed viewport');
   }
-  console.log('PASS: all browser modal shells retain exact bounds with overflowing async content; privacy/reset and profile clean/saving/error/retry retain exact dialog, field and button bounds at desktop, narrow and short viewports (mock API).');
+  console.log('PASS: desktop/narrow/short modal geometry, editable exact-username add/Enter/pending guard, mobile inset navigation/account alignment, and member Close/outside dismissal (mock API/gateway).');
 }
 try {
   browser('open', 'about:blank');
@@ -290,8 +348,12 @@ try {
   assert.equal(evaluate('document.querySelector(".space-member-presence").textContent.includes("Updating")'), false);
   browser('set', 'viewport', '390', '844', '2');
   screenshot('members-narrow-open');
+  browser('click', '.member-list-close');
+  assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false);
   browser('click', '.member-list-toggle');
-  assert.equal(evaluate('document.querySelector(".space-member-presence")'), null);
+  dismissMemberBackdrop();
+  assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), false, 'Outside tap must close the narrow member panel');
+  assert.equal(evaluate('!!document.querySelector(".member-list-backdrop")'), false);
   screenshot('members-narrow-hidden');
   assert.ok(evaluate('Math.abs(document.querySelector(".chat-messages").getBoundingClientRect().bottom - document.querySelector(".chat-typing").getBoundingClientRect().top) < 2'), 'Mobile messages must fill the available grid row without a fixed-height blank gap');
   browser('click', '.navigation-toggle');
@@ -489,6 +551,7 @@ try {
         assert.ok(evaluate('document.querySelector(".live-stage").hasAttribute("data-active")'), 'Dialog Escape must not exit the demo');
         browser('focus', '.live-app [aria-label="Manage fixture-channel"]');
         browser('press', 'Enter');
+        browser('find', 'role', 'button', 'click', '--name', 'Channel settings', '--exact');
         wait('!!document.querySelector(".space-dialog[open]")');
         browser('press', 'Escape');
         if (width === 390) browser('click', '.live-app .channel-select');

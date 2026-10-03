@@ -369,6 +369,12 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel)
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let account_hash = Sha256::digest(b"owner-account").to_vec();
     sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
         .bind(&account_hash).bind(owner.user.id).execute(&pool).await.unwrap();

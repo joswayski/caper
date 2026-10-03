@@ -4,17 +4,20 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build && tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "dev": "node scripts/prepare-emoji.mjs && vite dev",
+    "build": "node scripts/prepare-emoji.mjs && vite build && tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "preview": "vite preview",
     "start": "node .output/server/index.mjs",
     "typecheck": "tsc --noEmit --pretty false && tsc --noEmit -p tsconfig.node.json --pretty false",
     "test": "node --experimental-strip-types --test src/server/*.test.ts"
   },
   "dependencies": {
+    "@floating-ui/react": "^0.27.20",
     "@radix-ui/react-slider": "^1.4.7",
     "@tanstack/react-router": "^1.170.29",
     "@tanstack/react-start": "^1.168.46",
+    "@twemoji/svg": "^15.0.0",
+    "emoji-picker-react": "^4.22.3",
     "lucide-react": "^0.468.0",
     "nitro": "3.0.260610-beta",
     "onnxruntime-web": "1.23.2",

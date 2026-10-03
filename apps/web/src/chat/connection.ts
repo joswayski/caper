@@ -1,5 +1,5 @@
 import { appGateway, type AppGateway, type GatewaySubscription } from "../gateway/client.ts";
-import { isChatAuthor, isChatMessage, sequence, type ChatEvent, type ChatMessage, type ChatTypingEvent } from "./types.ts";
+import { isChatAuthor, isChatMessage, isChatReactionEvent, sequence, type ChatEvent, type ChatMessage, type ChatReactionEvent, type ChatTypingEvent } from "./types.ts";
 
 export interface ChatConnectionCallbacks {
   message: (message: ChatMessage) => "applied" | "buffered" | "duplicate" | "overflow";
@@ -7,6 +7,7 @@ export interface ChatConnectionCallbacks {
   status: (online: boolean) => void;
   resync: () => void;
   typing?: (event: ChatTypingEvent) => void;
+  reactions?: (event: ChatReactionEvent) => "applied" | "buffered" | "duplicate" | "overflow";
 }
 
 function parseEvent(value: unknown): ChatEvent {
@@ -17,6 +18,7 @@ function parseEvent(value: unknown): ChatEvent {
     sequence(event.cursor);
     return { type: "ready", cursor: event.cursor };
   }
+  if (isChatReactionEvent(event)) return event;
   if (event.type === "typing.updated" && typeof event.channelId === "string" && isChatAuthor(event.author)
     && typeof event.typing === "boolean" && typeof event.revision === "string") {
     sequence(event.revision);
@@ -64,6 +66,10 @@ export class ChatConnection {
         if (event.type === "ready") return;
         if (event.type === "typing.updated") {
           if (event.channelId === this.channelId) this.callbacks.typing?.(event);
+          return;
+        }
+        if (event.type === "message.reactions" && event.channelId === this.channelId && this.callbacks.reactions) {
+          if (this.callbacks.reactions(event) === "overflow") this.callbacks.resync();
           return;
         }
         if (event.type !== "message.created" || event.channelId !== this.channelId) {
