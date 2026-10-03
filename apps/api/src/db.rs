@@ -156,7 +156,10 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
             "GRANT SELECT, INSERT, UPDATE ON public.spaces, public.channels, public.chat_sessions, public.messages, public.channel_events TO {role}"
         ),
         format!(
-            "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members TO {role}"
+            "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members, public.channel_joins TO {role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON public.space_invitations, public.space_invite_limits, public.channel_invitations TO {role}"
         ),
         format!(
             "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq TO {role}"
@@ -202,6 +205,18 @@ mod tests {
             .get_ssl_mode(),
             PgSslMode::VerifyFull
         ));
+    }
+
+    #[test]
+    fn embedded_migration_versions_are_unique_and_increasing() {
+        let versions: Vec<_> = sqlx::migrate!("./migrations")
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+        assert!(
+            versions.windows(2).all(|pair| pair[0] < pair[1]),
+            "migration versions must be unique and increasing: {versions:?}"
+        );
     }
 
     #[test]

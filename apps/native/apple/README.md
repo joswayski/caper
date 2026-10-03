@@ -4,7 +4,7 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 
 ## Current implementation
 
-- Guest access to public General plus passwordless email sign-in, onboarding/profile, logout, and origin-namespaced Keychain sessions.
+- Signed-out first launch opens passwordless email sign-in, then onboarding/profile, with no Guest/General fallback. Logout returns to sign-in; valid saved sessions restore through the origin-namespaced Keychain.
 - The caper.chat shell at desktop and narrow widths: space rail, channel sidebar, toggleable responsive member panel, Browse navigation, conversation stage, Satoshi typography, and the web color/spacing tokens.
 - Space/channel/member owner workflows: create/delete/rename spaces and channels, add/remove existing accounts by username, private-channel toggle and grants.
 - HTTP chat history and pagination, idempotent sends, ordered gateway delivery/replay, reconnect/error state, typing, and paginated member presence.

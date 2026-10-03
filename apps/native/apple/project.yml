@@ -81,6 +81,9 @@ targets:
     platform: macOS
     sources:
       - path: Sources/CaperCore
+        excludes: [InvitationAssets]
+      - path: Sources/CaperCore/InvitationAssets
+        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]
@@ -103,6 +106,9 @@ targets:
     platform: iOS
     sources:
       - path: Sources/CaperCore
+        excludes: [InvitationAssets]
+      - path: Sources/CaperCore/InvitationAssets
+        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]

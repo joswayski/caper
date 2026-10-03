@@ -67,7 +67,7 @@ impl AppState {
             .as_deref()
             .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "sign in required"))?;
         let user = crate::spaces::session_user(pool, session).await?;
-        crate::spaces::channel_access(pool, channel, Some(user)).await?;
+        crate::spaces::channel_participation(pool, channel, Some(user)).await?;
         Ok(())
     }
 

@@ -203,6 +203,8 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel).bind(user).execute(&pool).await.unwrap();
     let redis_url = std::env::var("CHAT_TEST_VALKEY_URL").unwrap();
     assert!(
         redis_url.starts_with("redis://127.0.0.1:") || redis_url.starts_with("redis://localhost:")

@@ -434,15 +434,20 @@ final class CaperParityUITests: XCTestCase {
     #endif
 
     func testLogin() {
-        let app = launch(fixture: "login", signedIn: false)
-        assertStaticText("Come on in.", in: app)
+        // Exercise normal session restoration, not a forced login presentation.
+        let app = launch(signedIn: false)
+        assertStaticText("Welcome to Caper", in: app)
+        XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         let email = app.textFields["Email address"]
+        XCTAssertFalse(app.descendants(matching: .any)["message-composer"].exists)
+        XCTAssertFalse(app.buttons["Create space"].exists)
         XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
         capture("login", app: app)
         email.tap(); email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
         XCTAssertTrue(app.textFields["Sign-in code"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.windows.firstMatch.frame.contains(app.textFields["Sign-in code"].frame))
+        XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)
@@ -556,6 +561,50 @@ final class CaperParityUITests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertEqual(stored, 1, "Send must reach the server exactly once, not merely draw a pending row")
+    }
+
+    func testChatReceivesAfterDisconnectWithoutStaleReconnectWarning() async throws {
+        let app = launch()
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 30)
+        var sessionRequest = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/session")!)
+        sessionRequest.httpMethod = "POST"
+        sessionRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        sessionRequest.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        sessionRequest.httpBody = Data(#"{"name":"Fixture Owner"}"#.utf8)
+        let (data, sessionResponse) = try await URLSession.shared.data(for: sessionRequest)
+        XCTAssertEqual((sessionResponse as? HTTPURLResponse)?.statusCode, 200)
+        let session = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let token = try XCTUnwrap(session["token"] as? String)
+        func postMessage(_ text: String) async throws {
+            var send = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages")!)
+            send.httpMethod = "POST"
+            send.setValue("application/json", forHTTPHeaderField: "content-type")
+            send.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+            send.setValue(token, forHTTPHeaderField: "x-caper-chat-token")
+            send.httpBody = try JSONSerialization.data(withJSONObject: ["clientMessageId": UUID().uuidString, "text": text])
+            let (_, sent) = try await URLSession.shared.data(for: send)
+            XCTAssertEqual((sent as? HTTPURLResponse)?.statusCode, 200)
+        }
+        let initial = "TEST FIXTURE initial live delivery \(UUID().uuidString)"
+        try await postMessage(initial)
+        assertStaticText(initial, in: app, timeout: 15)
+        // Receiving an externally posted message proves the initial socket is
+        // subscribed before forcing a failure, rather than racing startup.
+        var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        control.httpMethod = "POST"
+        control.setValue("application/json", forHTTPHeaderField: "content-type")
+        control.httpBody = Data(#"{"disconnect":true}"#.utf8)
+        let (_, disconnected) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((disconnected as? HTTPURLResponse)?.statusCode, 200)
+        let message = "TEST FIXTURE reconnect delivery \(UUID().uuidString)"
+        try await postMessage(message)
+
+        // No app send or navigation can clear the warning. Only socket recovery
+        // and replay/live delivery can make this externally posted message appear.
+        assertStaticText(message, in: app, timeout: 15)
+        XCTAssertEqual(staticTexts(message, in: app).count, 1)
+        XCTAssertFalse(staticTexts("Live updates disconnected. Reconnecting…", in: app).firstMatch.exists)
+        capture("chat-recovered-test-fixture", app: app)
     }
 
     func testVoiceEntryAndAudioPreferencesWithoutFeatureFlag() {

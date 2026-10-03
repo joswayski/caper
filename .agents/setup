@@ -47,6 +47,7 @@ packages=(
   postgresql
   openbox
   x11-utils
+  xauth
   xvfb
 )
 missing_packages=()
