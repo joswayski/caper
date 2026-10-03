@@ -48,11 +48,14 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -85,6 +88,7 @@ private sealed interface Overlay {
     data object ManageSpace : Overlay
     data object CreateChannel : Overlay
     data class ManageChannel(val channel: Channel) : Overlay
+    data class LeaveChannel(val channel: Channel) : Overlay
     data object LeaveSpace : Overlay
     data object Profile : Overlay
     data object Audio : Overlay
@@ -106,7 +110,7 @@ internal data class VoiceJoinIntent(
         state.screen == SessionScreen.Home &&
             state.selectedSpace?.space?.id == spaceId && state.account?.id == accountId &&
             currentAccountEpoch == accountEpoch && state.selectedSpace.space.demo == demo &&
-            state.selectedSpace.channels.any { it.id == channelId } && channelId !in state.deniedVoiceChannels &&
+            state.selectedSpace.channels.any { it.id == channelId && it.joined } && channelId !in state.deniedVoiceChannels &&
             (freshChannelIds == null || channelId in freshChannelIds)
 }
 
@@ -155,6 +159,13 @@ internal data class VoiceJoinIntent(
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
         } }
         is Overlay.ManageChannel -> ManageChannelDialog(state, state.selectedSpace?.channels?.find { it.id == shown.channel.id } ?: shown.channel, viewModel) { overlay = null }
+        is Overlay.LeaveChannel -> {
+            val owner = state.selectedSpace?.space?.ownerId == state.account?.id
+            val privateLoss = shown.channel.private && !owner
+            ConfirmDialog("Leave #${shown.channel.name}?", if (privateLoss) "You will lose access to this private channel. Another invitation is required to return." else "You can continue to preview this channel and join it again later.", "Leave channel", state.busy, { overlay = null }) {
+                viewModel.leaveChannel(shown.channel); overlay = null
+            }
+        }
         Overlay.LeaveSpace -> ConfirmDialog("Leave ${state.selectedSpace?.space?.name}?", "You will lose access to its channels and conversations. An owner can add you again later.", "Leave space", state.busy, { overlay = null }) { viewModel.leaveCurrentSpace { overlay = null } }
         Overlay.Profile -> state.account?.let { account -> ProfileScreen(account, state.busy, state.error, { overlay = null }) { username, display -> viewModel.updateProfile(username, display) { overlay = null } } }
         Overlay.Audio -> AudioSettingsMenu(state, voice, { overlay = null }, { overlay = Overlay.AudioPanelOverlay(it) }, viewModel::logout, viewModel::showLogin)
@@ -213,7 +224,7 @@ internal data class VoiceJoinIntent(
     val joinVoice: (Channel) -> Unit = { channel ->
         val space = state.selectedSpace?.space
         if (BuildConfig.ENABLE_NATIVE_VOICE && space != null && state.voiceAvailable == true &&
-            state.selectedSpace.channels.any { it.id == channel.id } && channel.id !in state.deniedVoiceChannels) {
+            channel.joined && state.selectedSpace.channels.any { it.id == channel.id } && channel.id !in state.deniedVoiceChannels) {
             voicePermissionError = null
             pendingVoiceJoin = VoiceJoinIntent(channel.id, space.id, channel.name, space.name,
                 state.account?.displayName ?: "Guest", state.account?.id, viewModel.accountEpoch, space.demo,
@@ -249,7 +260,7 @@ internal data class VoiceJoinIntent(
                         }
                         AccountBar(state, voice, viewModel, show)
                     } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
-                    if (membersVisible && !navigationOpen) {
+                    if (membersVisible && !navigationOpen && state.selectedChannel?.joined == true) {
                         Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
                             interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                             indication = null,
@@ -264,10 +275,10 @@ internal data class VoiceJoinIntent(
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError, { voicePermissionError = null })
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.fillMaxSize()) { setNavigationOpen(true) }
-                        if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
+                        if (membersVisible && state.selectedChannel?.joined == true) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).width(220.dp).fillMaxHeight().align(Alignment.CenterEnd))
                     } else {
                         Conversation(state, voice, viewModel, show, false, membersVisible, { membersVisible = !membersVisible }, voicePermissionError, Modifier.weight(1f)) { setNavigationOpen(true) }
-                        if (membersVisible) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
+                        if (membersVisible && state.selectedChannel?.joined == true) MemberPresencePanel(state, viewModel, Modifier.width(220.dp).fillMaxHeight())
                     }
                 }
             }
@@ -332,6 +343,8 @@ internal data class VoiceJoinIntent(
     val channelCount = detail?.channels?.size ?: 0
     val canCreateChannel = detail != null && state.limits?.let { channelCount < it.channelsPerSpace } == true
     var channelMenuOpen by remember(detail?.space?.id) { mutableStateOf(false) }
+    var browsing by remember(detail?.space?.id) { mutableStateOf(false) }
+    var channelQuery by remember(detail?.space?.id) { mutableStateOf("") }
     val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)) {
@@ -357,6 +370,10 @@ internal data class VoiceJoinIntent(
                 if (closeNavigation != null) IconButton(closeNavigation) { Icon(painterResource(R.drawable.lucide_x), "Close navigation", tint = TextMuted) }
             }
             HorizontalDivider(color = Border)
+            OutlinedButton({ browsing = !browsing; channelQuery = "" }, Modifier.fillMaxWidth().padding(top = 10.dp), shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                Icon(painterResource(R.drawable.lucide_hash), null, Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text(if (browsing) "Joined channels" else "Browse channels")
+            }
+            if (browsing) OutlinedTextField(channelQuery, { channelQuery = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true, label = { Text("Search channels") })
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
@@ -393,11 +410,13 @@ internal data class VoiceJoinIntent(
                     }
                 }
             }
-            if (channelsExpanded) detail?.channels?.forEach { channel ->
+            if (channelsExpanded) detail?.channels?.filter { channel ->
+                (browsing || channel.joined) && channel.name.contains(channelQuery, ignoreCase = true)
+            }?.forEach { channel ->
                 val selected = channel.id == state.selectedChannel?.id
                 val people = if (activeChannel == channel.id) voice.participants else state.voiceRosters[if (detail.space.demo) "" else channel.id].orEmpty()
                 var rosterOpen by remember(channel.id) { mutableStateOf(true) }
-                val showVoice = BuildConfig.ENABLE_NATIVE_VOICE && (selected || people.isNotEmpty() || activeChannel == channel.id)
+                val showVoice = channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && (selected || people.isNotEmpty() || activeChannel == channel.id)
                 Column(Modifier.fillMaxWidth()) {
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
@@ -429,6 +448,7 @@ internal data class VoiceJoinIntent(
                             Icon(painterResource(R.drawable.lucide_speech), null, Modifier.size(14.dp)); Spacer(Modifier.width(5.dp)); Text("Join", fontSize = 11.sp)
                         }
                         if (owner) IconButton({ show(Overlay.ManageChannel(channel)) }, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_settings), "Manage ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
+                        if (channel.joined && !detail.space.demo) IconButton({ show(Overlay.LeaveChannel(channel)) }, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_log_out), "Leave ${channel.name}", Modifier.size(14.dp), tint = TextMuted) }
                     }
                     if (showVoice && rosterOpen) {
                         if (activeChannel == channel.id) VoiceRoster(voice)
@@ -444,6 +464,17 @@ internal data class VoiceJoinIntent(
                                 }
                             }
                         }
+                    }
+                }
+            }
+            detail?.channelInvitations?.forEach { invitation ->
+                Surface(Modifier.fillMaxWidth().padding(top = 8.dp), color = SurfaceRaised, border = BorderStroke(1.dp, TerracottaBorder), shape = MaterialTheme.shapes.small) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("Private invitation · #${invitation.channel.name}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("${invitation.inviter.displayName} (@${invitation.inviter.username}) invited you to ${detail.space.name}.", color = TextMuted, fontSize = 11.sp)
+                        Text("Expires seven days after it was sent.", color = TextMuted, fontSize = 10.sp)
+                        Text("Messages stay hidden until acceptance. Accepting joins the channel, not its voice call.", color = TextMuted, fontSize = 10.sp)
+                        Row { TextButton({ viewModel.declineChannelInvitation(invitation) }, enabled = !state.busy) { Text("Decline") }; Button({ viewModel.acceptChannelInvitation(invitation) }, enabled = !state.busy) { Text("Accept") } }
                     }
                 }
             }
@@ -664,6 +695,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val channel = state.selectedChannel
     if (channel == null) return EmptyChannel(state, narrow, show, openNavigation, modifier)
     var draft by remember(channel.id) { mutableStateOf("") }
+    val joined = channel.joined
     Column(modifier.fillMaxHeight().background(SurfaceConversation)) {
         // Web waits a second before announcing a lost connection.
         val live = state.gateway == GatewayStatus.LIVE
@@ -673,10 +705,19 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             // Web: narrow screens show a bordered Menu + "Browse" toggle before the title.
             if (narrow) BrowseButton("Browse", R.drawable.lucide_menu, openNavigation)
             Text("# ${channel.name}", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small) { Text("Join channel") }
             if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
+            if (joined) IconButton(toggleMembers, Modifier.size(36.dp)) { Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list", tint = if (membersVisible) Text else TextMuted) }
         }
         HorizontalDivider(color = Border)
+        if (!joined) Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text(buildAnnotatedString {
+                append("Join ")
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("#${channel.name}") }
+                append(" to interact with people here")
+            }, color = TextMuted, fontSize = 12.sp)
+        }
         state.refreshError?.let { error ->
             Surface(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -709,9 +750,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text("Clear your current draft to edit this message.", color = TextMuted, fontSize = 10.sp)
             }
         }
-        TypingLine(state.typingAuthors)
-        HorizontalDivider(color = Border)
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+        if (joined) TypingLine(state.typingAuthors)
+        if (joined) HorizontalDivider(color = Border)
+        if (joined) Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
             state.sessionError?.let { error ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(error, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
@@ -758,9 +799,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (narrow) BrowseButton("Browse spaces", R.drawable.lucide_hash, openNavigation, Modifier.align(Alignment.TopStart).padding(start = 11.dp, top = 8.dp))
         Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(painterResource(R.drawable.lucide_hash), null, tint = TerracottaBright)
-            Text("No accessible channels", fontWeight = FontWeight.Bold)
-            Text(if (owner) "Create a channel to start a conversation." else "The owner has not shared a channel with you yet.", color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Text("No joined channels", fontWeight = FontWeight.Bold)
+            Text(if (owner) "Create a channel or browse channels to join one." else "Browse public channels to preview and join one.", color = TextMuted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             if (owner) OutlinedButton({ show(Overlay.CreateChannel) }, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Create channel") }
+            OutlinedButton(openNavigation, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Browse channels") }
         }
     }
 }
@@ -1075,6 +1117,7 @@ internal fun counterTone(count: Int): Color = when {
         space.inviter?.let { Text("${it.displayName} (@${it.username}) invited you.", color = TextMuted) }
         Text("Accept this invitation to access ${space.name}'s channels and conversations.", color = TextMuted)
         Text("Invitations expire seven days after they’re sent.", color = TextMuted, fontSize = 12.sp)
+        Text("Acceptance joins a public starter channel if available. Browse and join others when you want; it never starts voice.", color = TextMuted, fontSize = 12.sp)
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             OutlinedButton(decline, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Decline") }
@@ -1122,7 +1165,7 @@ internal fun counterTone(count: Int): Color = when {
         PrivacyToggle(private, state.selectedSpace?.space?.name ?: "this space", stableSwitch = true) { private = it }
         if (channel.private) {
             HorizontalDivider(color = Border)
-            MemberManager(state.channelGrants, state.busy, { viewModel.addChannelGrant(channel, it) }, { viewModel.removeChannelGrant(channel, it) })
+            InviteManager(state.channelGrants, state.pendingChannelInvitations, state.busy, { viewModel.addChannelGrant(channel, it) }, { viewModel.removeChannelGrant(channel, it) }, { viewModel.cancelChannelInvitation(channel, it) })
         }
         HorizontalDivider(color = Border)
         DangerZone("Delete channel", "Delete this channel for everyone in the space.", state.busy) { confirmingDelete = true }

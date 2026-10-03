@@ -93,6 +93,16 @@ class CaperApi(
     suspend fun deleteChannel(token: String, space: String, channel: String) {
         request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}", "DELETE", token)
     }
+    suspend fun joinChannel(token: String, space: String, channel: String): Channel =
+        post("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/membership", token = token)
+    suspend fun leaveChannel(token: String, space: String, channel: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/membership", "DELETE", token)
+    }
+    suspend fun acceptChannelInvitation(token: String, space: String, channel: String): Channel =
+        post("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/invitation", token = token)
+    suspend fun declineChannelInvitation(token: String, space: String, channel: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/invitation", "DELETE", token)
+    }
     suspend fun spaceMembers(token: String, space: String): MemberList = get("/api/spaces/${space.pathId()}/members", token)
     suspend fun addSpaceMember(token: String, space: String, username: String): Member = post(
         "/api/spaces/${space.pathId()}/members", buildJsonObject { put("username", username.trim()) }, token,

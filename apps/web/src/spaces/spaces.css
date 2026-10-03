@@ -216,6 +216,36 @@
 .channel-save-bar { margin-top: auto; }
 .channel-save-bar[aria-hidden="true"] { visibility: hidden; }
 
+.browse-channels, .pending-channel-invite { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 7px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text-muted); font: inherit; font-size: .76rem; text-align: left; cursor: pointer; }
+.browse-channels svg, .pending-channel-invite svg { flex: none; width: 16px; height: 16px; }
+.browse-channels:hover, .pending-channel-invite:hover { background: var(--surface-raised); color: var(--text); }
+.pending-channel-invites { margin-top: 20px; }
+.pending-channel-invites h2 { margin: 0 9px 6px; color: var(--text-muted); font-size: .72rem; }
+.pending-channel-invite span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-channel-invite small { margin-left: auto; font-size: .65rem; }
+.channel-directory { padding: 18px 22px 22px; }
+.channel-directory ul { max-height: min(50dvh, 440px); margin: 18px 0 0; padding: 0; overflow-y: auto; list-style: none; }
+.channel-directory li { display: flex; align-items: center; border-bottom: 1px solid var(--border); }
+.channel-directory li button { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; padding: 14px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.channel-directory li button:hover { background: var(--surface-raised); }
+.channel-directory li svg { flex: none; width: 18px; height: 18px; color: var(--text-muted); }
+.channel-directory li span { min-width: 0; overflow-wrap: anywhere; font-size: .85rem; }
+.channel-directory li small { display: block; margin-top: 4px; color: var(--text-muted); font-size: .7rem; }
+.channel-directory li .directory-manage { flex: none; }
+.channel-directory > p { color: var(--text-muted); font-size: .8rem; }
+.chat-composer.channel-preview { display: block; }
+.channel-preview > .channel-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.channel-preview > div > div { flex: 1; min-width: 160px; }
+.channel-preview strong { display: block; font-size: .82rem; }
+.channel-preview span { display: block; margin-top: 5px; color: var(--text-muted); font-size: .76rem; line-height: 1.5; overflow-wrap: anywhere; }
+.channel-preview span strong { display: inline; font-size: inherit; }
+.channel-preview .primary { min-height: 38px; padding: 0 14px; border: 1px solid var(--terracotta); border-radius: 8px; color: var(--text); background: var(--terracotta); font: inherit; font-size: .76rem; font-weight: 750; cursor: pointer; }
+.channel-preview .primary:hover:not(:disabled) { background: var(--terracotta-bright); }
+.channel-preview .primary:disabled { opacity: .45; cursor: wait; }
+.channel-preview [role="alert"] { flex-basis: 100%; margin: 0; color: #ff9b82; font-size: .76rem; }
+.channel-membership-actions .channel-membership-leave { width: auto; height: auto; padding: 5px 8px; font-size: .7rem; color: var(--text-muted); }
+.channel-membership-actions .channel-membership-leave:hover { color: var(--text); }
+
 :is(.space-dialog, .channel-navigation, .spaces-state, .spaces-empty, .empty-channel) :is(button, summary), .navigation-toggle {
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
 }

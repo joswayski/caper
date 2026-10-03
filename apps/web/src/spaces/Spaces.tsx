@@ -14,6 +14,7 @@ import {
   LogOut,
   MoreHorizontal,
   Plus,
+  Search,
   Settings,
   X,
 } from "lucide-react";
@@ -27,6 +28,7 @@ import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
 import { createSpaceNavigation, type PreparedSpace } from "./navigation";
 import {
+  acceptChannelInvitation,
   acceptSpaceInvitation,
   addChannelMember,
   addSpaceMember,
@@ -36,7 +38,11 @@ import {
   createSpace,
   deleteChannel,
   deleteSpace,
+  declineChannelInvitation,
   declineSpaceInvitation,
+  getSpace,
+  joinChannel,
+  leaveChannel,
   listChannelMembers,
   listSpaceInvitations,
   listSpaces,
@@ -48,6 +54,7 @@ import {
   updateSpace,
   SpacesApiError,
   type Channel,
+  type ChannelInvitation,
   type Member,
   type Space,
   type SpaceDetail,
@@ -59,6 +66,7 @@ function errorMessage(error: unknown) {
   if (error instanceof SpacesApiError) {
     if (error.message === "user not found") return "User not found. Check the username and try again.";
     if (error.message === "user already in space") return "This person is already in the space.";
+    if (error.message === "user already in channel") return "This person already has access to this channel.";
     if (error.message === "user already invited") return "This person already has a pending invitation.";
     if (error.message === "invalid username") return "Use 3–32 lowercase letters, numbers, or underscores.";
   }
@@ -658,6 +666,7 @@ function ManageChannelDialog({
   const [name, setName] = useState(channel.name);
   const [privateChannel, setPrivateChannel] = useState(channel.private);
   const [members, setMembers] = useState<Member[]>([]);
+  const [invitations, setInvitations] = useState<Member[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
@@ -674,7 +683,7 @@ function ManageChannelDialog({
   useEffect(() => {
     if (channel.private)
       void listChannelMembers(detail.space.id, channel.id)
-        .then((value) => setMembers(value.members))
+        .then((value) => { setMembers(value.members); setInvitations(value.invitations ?? []); })
         .catch((reason) => setError(errorMessage(reason)));
   }, [channel.id, channel.private, detail.space.id]);
   return (
@@ -722,6 +731,7 @@ function ManageChannelDialog({
       {channel.private && (
         <MemberManager
           members={members}
+          invitations={invitations}
           pending={pending}
           onAdd={async (username) =>
             run(async () => {
@@ -730,12 +740,16 @@ function ManageChannelDialog({
                 channel.id,
                 username,
               );
-              setMembers((current) => [
+              setInvitations((current) => [
                 ...current.filter((item) => item.id !== member.id),
                 member,
               ]);
             })
           }
+          onCancel={(member) => run(async () => {
+            await removeChannelMember(detail.space.id, channel.id, member.id);
+            setInvitations((items) => items.filter((item) => item.id !== member.id));
+          })}
           onRemove={async (member) =>
             run(async () => {
               await removeChannelMember(detail.space.id, channel.id, member.id);
@@ -817,10 +831,90 @@ function InvitationDialog({ space, onClose, onAccepted, onDeclined }: {
         ? <><strong>{space.inviter.displayName}</strong> (@{space.inviter.username}) invited you to this space.</>
         : "You’ve been invited to this space."} Its channels, conversations, and members stay hidden until you accept.</p>
       <p>Invitations expire seven days after they’re sent.</p>
+      <p>You’ll start with one public channel, if available. Browse and join the others whenever you want.</p>
       {error && <p className="space-form-error" role="alert">{error}</p>}
       <div className="space-dialog-actions">
         <button className="secondary" type="button" data-initial-focus disabled={pending} onClick={() => void respond(false)}>Decline</button>
         <button className="primary" type="button" disabled={pending} onClick={() => void respond(true)}>{pending ? "Saving…" : "Accept invitation"}</button>
+      </div>
+    </div>
+  </Dialog>;
+}
+
+function BrowseChannelsDialog({ detail, onClose, onPreview, onManage }: {
+  detail: SpaceDetail;
+  onClose: () => void;
+  onPreview: (channel: Channel) => void;
+  onManage?: (channel: Channel) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const channels = detail.channels.filter((item) => item.name.includes(query.trim().toLowerCase()));
+  return <Dialog title="Browse channels" description={`Find conversations in ${detail.space.name}. Previewing a channel doesn’t join it.`} onClose={onClose} width="wide">
+    <div className="channel-directory">
+      <label className="space-field">Search channels<input data-initial-focus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by name" /></label>
+      <ul>
+        {channels.map((item) => <li key={item.id}>
+          <button type="button" aria-label={`Preview #${item.name}`} onClick={() => onPreview(item)}>
+            {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+            <span>{item.name}<small>{item.joined !== false ? "Joined" : "Read-only preview"}</small></span>
+          </button>
+          {onManage && <button className="directory-manage" type="button" aria-label={`Manage ${item.name}`} onClick={() => onManage(item)}><Settings aria-hidden="true" /></button>}
+        </li>)}
+      </ul>
+      {!channels.length && <p role="status">No channels match your search.</p>}
+    </div>
+  </Dialog>;
+}
+
+function ChannelInvitationDialog({ invitation, spaceName, onClose, onRespond }: {
+  invitation: ChannelInvitation;
+  spaceName: string;
+  onClose: () => void;
+  onRespond: (accept: boolean) => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  const submitting = useRef(false);
+  const respond = async (accept: boolean) => {
+    if (submitting.current) return;
+    submitting.current = true;
+    setPending(true); setError(undefined);
+    try { await onRespond(accept); }
+    catch (reason) { setError(errorMessage(reason)); }
+    finally { submitting.current = false; setPending(false); }
+  };
+  return <Dialog title="Private channel invitation" onClose={() => { if (!submitting.current) onClose(); }}>
+    <div className="invitation-consent channel-invitation-consent">
+      <LockKeyhole aria-hidden="true" />
+      <h3>Join #{invitation.channel.name}?</h3>
+      <p><strong>{invitation.inviter.displayName}</strong> (@{invitation.inviter.username}) invited you to this private channel in <strong>{spaceName}</strong>.</p>
+      <p>Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice. Invitations expire seven days after they’re sent.</p>
+      {error && <p className="space-form-error" role="alert">{error}</p>}
+      <div className="space-dialog-actions">
+        <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={() => void respond(false)}>Decline</button>
+        <button type="button" className="primary" disabled={pending} onClick={() => void respond(true)}>{pending ? "Saving…" : "Accept invitation"}</button>
+      </div>
+    </div>
+  </Dialog>;
+}
+
+function LeaveChannelDialog({ channel, owner, onClose, onLeave }: {
+  channel: Channel; owner: boolean; onClose: () => void; onLeave: () => Promise<void>;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+  const submitting = useRef(false);
+  return <Dialog title="Leave channel" onClose={() => { if (!submitting.current) onClose(); }}>
+    <div className="delete-confirmation leave-channel-consent">
+      <p>Leave <strong>#{channel.name}</strong>? {channel.private && !owner ? "You’ll lose access and need another invitation to return." : owner && channel.private ? "It will leave your sidebar. You keep owner access and can rejoin from Browse channels." : "It will leave your sidebar. You can still preview it and rejoin from Browse channels."} If you’re in its voice call, you’ll disconnect.</p>
+      {error && <p className="space-form-error" role="alert">{error}</p>}
+      <div className="space-dialog-actions">
+        <button type="button" className="secondary" data-initial-focus disabled={pending} onClick={onClose}>Cancel</button>
+        <button type="button" className="primary" disabled={pending} onClick={() => {
+          if (submitting.current) return;
+          submitting.current = true; setPending(true); setError(undefined);
+          void onLeave().catch((reason) => setError(errorMessage(reason))).finally(() => { submitting.current = false; setPending(false); });
+        }}>{pending ? "Leaving…" : "Leave channel"}</button>
       </div>
     </div>
   </Dialog>;
@@ -841,6 +935,15 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const detail = view?.detail;
   const navigation = useRef(createSpaceNavigation());
   const [selected, setSelected] = useState(() => embedded ? {} : selectedFromUrl());
+  const activeSpace = useRef(selected.spaceId);
+  activeSpace.current = selected.spaceId;
+  const membershipRevision = useRef(0);
+  const membershipSubmitting = useRef(false);
+  const [membershipPending, setMembershipPending] = useState(false);
+  const [membershipError, setMembershipError] = useState<string>();
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [channelInvitation, setChannelInvitation] = useState<ChannelInvitation>();
+  const [leavingChannel, setLeavingChannel] = useState<Channel>();
   const [loading, setLoading] = useState(!initialSpaceList);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -868,6 +971,11 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
   const choose = (spaceId?: string, channelId?: string, replace = false) => {
     if (spaceMenu.current) spaceMenu.current.open = false;
     if (channelMenu.current) channelMenu.current.open = false;
+    activeSpace.current = spaceId;
+    setMembershipError(undefined);
+    setBrowseOpen(false);
+    setChannelInvitation(undefined);
+    setLeavingChannel(undefined);
     const query = new URLSearchParams();
     if (spaceId) query.set("space", spaceId);
     if (channelId) query.set("channel", channelId);
@@ -988,6 +1096,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       if (document.hidden || refreshing) return;
       refreshing = true;
       try {
+        const revision = membershipRevision.current;
         const result = await listSpaces();
         if (!current) return;
         const available = new Set(result.spaces.map((space) => space.id));
@@ -1002,6 +1111,10 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           choose(result.spaces[0]?.id, undefined, true);
         }
         if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id)) choose(result.spaces[0]?.id, undefined, true);
+        if (detail && available.has(detail.space.id) && !membershipSubmitting.current) {
+          const next = await getSpace(detail.space.id);
+          if (current && revision === membershipRevision.current && activeSpace.current === next.space.id) replaceDetail(next);
+        }
       } catch { /* An outage is not revocation; keep known navigation. */ }
       finally { refreshing = false; }
     };
@@ -1013,7 +1126,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
 
   const channel = detail?.channels.find(
     (item) => item.id === view?.channelId,
-  ) ?? detail?.channels[0];
+  );
   const owner = !!account && detail?.space.ownerId === account.id;
   const ownedCount = account
     ? spaces.filter((space) => space.ownerId === account.id).length
@@ -1026,15 +1139,41 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     !!limits && !!detail && detail.channels.length < limits.channelsPerSpace;
   const replaceDetail = (next: SpaceDetail) => {
     navigation.current.forget(next.space.id);
-    if (view) {
-      const retained = next.channels.some((item) => item.id === view.channelId);
-      const updated = retained ? { ...view, detail: next } : { detail: next };
+    setView((current) => {
+      if (!current || current.detail.space.id !== next.space.id) return current;
+      const retained = next.channels.some((item) => item.id === current.channelId);
+      const updated = retained ? { ...current, detail: next } : { detail: next, channelId: next.channels.find((item) => item.joined !== false)?.id };
       navigation.current.remember(updated);
-      setView(updated);
-    }
+      return updated;
+    });
     setSpaces((current) =>
       current.map((space) => (space.id === next.space.id ? next.space : space)),
     );
+  };
+  const changeChannelMembership = async (action: () => Promise<unknown>, openChannel?: string, left?: Channel) => {
+    if (!detail || membershipSubmitting.current) return;
+    const spaceId = detail.space.id;
+    membershipSubmitting.current = true;
+    membershipRevision.current++;
+    setMembershipPending(true);
+    setMembershipError(undefined);
+    try {
+      await action();
+      navigation.current.forget(spaceId);
+      // Stop local participation after the acknowledged leave even if the
+      // subsequent metadata refresh fails. Do not stop another channel's call.
+      if (left && activeSpace.current === spaceId) replaceDetail({ ...detail, channels: left.private && !owner ? detail.channels.filter((item) => item.id !== left.id) : detail.channels.map((item) => item.id === left.id ? { ...item, joined: false } : item) });
+      const next = await getSpace(spaceId);
+      if (activeSpace.current !== spaceId) return;
+      replaceDetail(next);
+      setChannelInvitation(undefined);
+      setLeavingChannel(undefined);
+      if (openChannel) choose(spaceId, openChannel, true);
+    } finally {
+      membershipRevision.current++;
+      membershipSubmitting.current = false;
+      setMembershipPending(false);
+    }
   };
   const forgetSpace = () => {
     const remaining = spaces.filter((space) => space.id !== detail?.space.id);
@@ -1110,6 +1249,13 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         <button type="button" onClick={() => setSelected({ ...selected })}>Try again</button>
       </main>
     );
+
+  const joinedChannels = detail.channels.filter((item) => item.joined !== false);
+  const channelDialogs = <>
+    {browseOpen && <BrowseChannelsDialog detail={detail} onClose={() => setBrowseOpen(false)} onPreview={(item) => choose(detail.space.id, item.id)} onManage={owner ? (item) => { setBrowseOpen(false); setManageChannel(item); } : undefined} />}
+    {channelInvitation && <ChannelInvitationDialog key={channelInvitation.channel.id} invitation={channelInvitation} spaceName={detail.space.name} onClose={() => setChannelInvitation(undefined)} onRespond={(accept) => changeChannelMembership(() => accept ? acceptChannelInvitation(detail.space.id, channelInvitation.channel.id) : declineChannelInvitation(detail.space.id, channelInvitation.channel.id), accept ? channelInvitation.channel.id : undefined)} />}
+    {leavingChannel && <LeaveChannelDialog key={leavingChannel.id} channel={leavingChannel} owner={owner} onClose={() => setLeavingChannel(undefined)} onLeave={() => changeChannelMembership(() => leaveChannel(detail.space.id, leavingChannel.id), undefined, leavingChannel)} />}
+  </>;
 
   const rail = (
     <nav className="space-rail" aria-label="Spaces">
@@ -1218,7 +1364,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
       </header>}
       {!detail.space.demo && <div className="channel-section-heading">
         <button className="channel-section-toggle" type="button" aria-expanded={channelsExpanded} aria-controls="space-channel-list" onClick={() => setChannelsExpanded(!channelsExpanded)}>
-          <ChevronDown aria-hidden="true" />Channels<span className="section-count">{detail.channels.length}</span>
+          <ChevronDown aria-hidden="true" />Channels<span className="section-count">{joinedChannels.length}</span>
         </button>
         {owner && <div className="channel-section-actions">
           <button type="button" aria-label="Create channel" title={canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`} disabled={!canCreateChannel} onClick={() => setDialog("channel")}><Plus aria-hidden="true" /></button>
@@ -1245,7 +1391,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         </div>}
       </div>}
       <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
-        {detail.channels.map((item) => {
+        {joinedChannels.map((item) => {
           const voice = voiceFor(item.id);
           return (
           <li key={item.id} data-voice={voice ? "" : undefined}>
@@ -1283,6 +1429,11 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           );
         })}
       </ul>
+      <button className="browse-channels" type="button" onClick={() => setBrowseOpen(true)}><Search aria-hidden="true" />Browse channels</button>
+      {!!detail.channelInvitations?.length && <div className="pending-channel-invites">
+        <h2>Invitations</h2>
+        {detail.channelInvitations.map((item) => <button className="pending-channel-invite" key={item.channel.id} type="button" onClick={() => setChannelInvitation(item)}><LockKeyhole aria-hidden="true" /><span>{item.channel.name}</span><small>Invited</small></button>)}
+      </div>}
       {error && (
         <p className="space-sidebar-error" role="alert">
           {error}
@@ -1323,12 +1474,11 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
                 Browse spaces
               </button>
               <Hash aria-hidden="true" />
-              <h2>No accessible channels</h2>
+              <h2>No joined channels</h2>
               <p>
-                {owner
-                  ? "Create a channel to start a conversation."
-                  : "The owner has not shared a channel with you yet."}
+                Browse channels to find a conversation, or accept a private channel invitation.
               </p>
+              <button type="button" onClick={() => setBrowseOpen(true)}>Browse channels</button>
               {owner && (
                 <button type="button" onClick={() => setDialog("channel")}>
                   Create channel
@@ -1352,7 +1502,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
             space={detail}
             onClose={() => setDialog(undefined)}
             onCreated={(created) => {
-              replaceDetail({ ...detail, channels: [created] });
+              replaceDetail({ ...detail, channels: [...detail.channels, created] });
               setDialog(undefined);
               choose(detail.space.id, created.id);
             }}
@@ -1374,6 +1524,8 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
             onLeft={forgetSpace}
           />
         )}
+        {channelDialogs}
+        {manageChannel && <ManageChannelDialog detail={detail} channel={manageChannel} onClose={() => setManageChannel(undefined)} onChanged={(updated) => { replaceDetail({ ...detail, channels: detail.channels.map((item) => item.id === updated.id ? updated : item) }); setManageChannel(updated); }} onDeleted={() => { replaceDetail({ ...detail, channels: detail.channels.filter((item) => item.id !== manageChannel.id) }); setManageChannel(undefined); }} />}
       </>
     );
 
@@ -1389,15 +1541,21 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           spaceName: detail.space.name,
           spaceId: detail.space.id,
           demo: detail.space.demo,
+          joined: channel.joined,
         }}
-        voiceChannels={detail.channels.map((item) => ({ id: item.id, name: item.name }))}
+        voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
+        channelActions={channel.joined === false ? <div className="channel-preview">
+          <div><strong>Preview</strong><span>Join <strong>#{channel.name}</strong> to interact with people here</span></div>
+          <button type="button" className="primary" disabled={membershipPending} onClick={() => void changeChannelMembership(() => joinChannel(detail.space.id, channel.id)).catch((reason) => setMembershipError(errorMessage(reason)))}>{membershipPending ? "Joining…" : "Join channel"}</button>
+          {membershipError && <p role="alert">{membershipError}</p>}
+        </div> : <div className="channel-membership-actions"><button className="channel-membership-leave" type="button" disabled={membershipPending} onClick={() => setLeavingChannel(channel)}>Leave channel</button></div>}
         initialAccount={account}
         initialHistory={view?.history?.channel.id === channel.id ? view.history : undefined}
         initialHistoryError={view?.channelId === channel.id ? view.historyError : undefined}
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}
-        membersPanel={(onClose) => <MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} onClose={onClose} />}
+        membersPanel={channel.joined === false ? undefined : (onClose) => <MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} onClose={onClose} />}
         onVoiceChannelOpen={(channelId, spaceId) => choose(spaceId, channelId)}
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}
@@ -1463,10 +1621,11 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
             );
             replaceDetail({ ...detail, channels: remaining });
             setManageChannel(undefined);
-            choose(detail.space.id, remaining[0]?.id, true);
+            choose(detail.space.id, remaining.find((item) => item.joined !== false)?.id, true);
           }}
         />
       )}
+      {channelDialogs}
     </>
   );
 }

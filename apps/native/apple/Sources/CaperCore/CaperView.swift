@@ -175,7 +175,7 @@ private struct CaperIcon: View {
 }
 
 private enum WorkspaceSheet: Identifiable {
-    case login, profile, createSpace, createChannel, manageSpace, manageChannel(Channel), invitation(Space), leaveSpace, audio, connection, diagnostics
+    case login, profile, createSpace, createChannel, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics
     var id: String {
         switch self {
         case .login: "login"
@@ -185,6 +185,7 @@ private enum WorkspaceSheet: Identifiable {
         case .manageSpace: "manage-space"
         case .manageChannel(let channel): "manage-\(channel.id)"
         case .invitation(let space): "invitation-\(space.id)"
+        case .channelInvitation(let invitation): "channel-invitation-\(invitation.id)"
         case .leaveSpace: "leave-space"
         case .audio: "audio"
         case .connection: "connection"
@@ -500,6 +501,8 @@ private struct ChannelSidebar: View {
     let narrow: Bool
     let close: () -> Void
     @State private var channelsExpanded = true
+    @State private var channelSearch = ""
+    @State private var browsing = false
     var body: some View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
@@ -527,7 +530,7 @@ private struct ChannelSidebar: View {
                             HStack(spacing: 6) {
                                 CaperIcon(name: channelsExpanded ? "chevron-down" : "chevron-right")
                                 Text("Channels")
-                                Text("\(model.detail?.channels.count ?? 0)").font(CaperTheme.font(10, weight: .bold))
+                                Text("\(model.detail?.channels.filter(\.joined).count ?? 0)").font(CaperTheme.font(10, weight: .bold))
                             }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         }.buttonStyle(.plain)
                         Spacer()
@@ -547,7 +550,7 @@ private struct ChannelSidebar: View {
 
                     if channelsExpanded {
                         VStack(spacing: 3) {
-                            ForEach(model.detail?.channels ?? []) { channel in
+                            ForEach(model.detail?.channels.filter(\.joined) ?? []) { channel in
                                 HStack(spacing: 2) {
                                     Button { Task { await model.select(channel: channel) } } label: {
                                         HStack(spacing: 9) {
@@ -586,6 +589,25 @@ private struct ChannelSidebar: View {
                                 }
                                 ChannelVoiceSlot(model: model, channel: channel)
                             }
+                        }
+                    }
+
+                    Divider().overlay(CaperTheme.border).padding(.vertical, 10)
+                    Button(browsing ? "Close Browse" : "Browse channels") { browsing.toggle(); channelSearch = "" }
+                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                    if browsing {
+                    TextField("Search channels", text: $channelSearch).textFieldStyle(CaperTextFieldStyle()).padding(.vertical, 6)
+                    ForEach((model.detail?.channels ?? []).filter { channelSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(channelSearch) }) { channel in
+                        Button { Task { await model.select(channel: channel) } } label: {
+                            HStack { CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name); Spacer(); Text(channel.joined ? "Joined" : "Preview").font(CaperTheme.font(10)) }
+                        }.buttonStyle(.plain).padding(.vertical, 6)
+                    }
+                    }
+                    if let invitations = model.detail?.channelInvitations, !invitations.isEmpty {
+                        Text("Private invitations").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.top, 12)
+                        ForEach(invitations) { invitation in
+                            Button("#\(invitation.channel.name) · from @\(invitation.inviter.username)") { sheet = .channelInvitation(invitation) }
+                                .buttonStyle(.plain).padding(.vertical, 6)
                         }
                     }
 
@@ -1156,8 +1178,8 @@ private struct ConversationStage: View {
             VStack(spacing: 8) {
                 Button(action: browse) { Label("Browse spaces", systemImage: "number") }.buttonStyle(CaperSecondaryButton())
                 CaperIcon(name: "hash", size: 30).foregroundStyle(CaperTheme.terracottaBright)
-                Text("No accessible channels").font(CaperTheme.font(20, weight: .bold))
-                Text(model.isOwner ? "Create a channel to start a conversation." : "The owner has not shared a channel with you yet.")
+                Text("No joined channels").font(CaperTheme.font(20, weight: .bold))
+                Text("Browse public channels or accept a private invitation from the channel list.")
                     .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                 if model.isOwner { Button("Create channel", action: createChannel).buttonStyle(VoiceJoinButton()).padding(.top, 6) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CaperTheme.conversation)
@@ -1175,6 +1197,9 @@ private struct ChatView: View {
     let toggleMembers: () -> Void
     /// Web shows Connecting…/Offline only after a second without the gateway.
     @State private var showConnectionStatus = false
+    @State private var joining = false
+    @State private var joinError: String?
+    @State private var confirmLeave = false
 
     /// Scroll the unsent message into view after the current layout pass, so a
     /// row that just grew (its error and actions appeared) is fully visible.
@@ -1207,6 +1232,9 @@ private struct ChatView: View {
                     .accessibilityLabel("# \(chat.channelName.lowercased())")
                     .accessibilityIdentifier("selected-channel-name")
                 Spacer()
+                if let channel = model.selectedChannel, channel.joined, model.detail?.space.demo != true {
+                    Button("Leave channel") { confirmLeave = true }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
                 if chat.liveState != .connected && showConnectionStatus {
                     Text(chat.liveState == .disconnected ? "Offline" : "Connecting…").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("chat-connection-status")
@@ -1305,7 +1333,25 @@ private struct ChatView: View {
             if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed {
                 Text(error).font(CaperTheme.font(11)).foregroundStyle(Color(red: 1, green: 0.61, blue: 0.51)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
             }
-            HStack(alignment: .bottom, spacing: 8) {
+            Group {
+            if model.previewingChannel {
+                VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Preview").font(CaperTheme.font(12, weight: .bold))
+                        (Text("Join ") + Text("#\(chat.channelName)").font(CaperTheme.font(12, weight: .bold)) + Text(" to interact with people here"))
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    }
+                    Spacer()
+                    Button(joining ? "Joining…" : "Join channel") {
+                        guard !joining, let channel = model.selectedChannel else { return }
+                        joining = true; joinError = nil
+                        Task { do { try await model.joinChannel(channel) } catch { joinError = error.localizedDescription }; joining = false }
+                    }.buttonStyle(CaperPrimaryButton()).disabled(joining)
+                }
+                if let joinError { Text(joinError).font(CaperTheme.font(11)).foregroundStyle(.red) }
+                }.padding(12)
+            } else { HStack(alignment: .bottom, spacing: 8) {
                 TextField("Message #\(chat.channelName.lowercased())", text: $chat.draft, axis: .vertical)
                     .font(CaperTheme.font(14)).lineLimit(1...8).textFieldStyle(.plain).padding(11)
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 6))
@@ -1328,7 +1374,14 @@ private struct ChatView: View {
                 .accessibilityLabel("Send message")
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
+            }
+            }
             }.padding(.horizontal, 18).padding(.vertical, 12)
+            .sheet(isPresented: $confirmLeave) {
+                if let channel = model.selectedChannel {
+                    ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
+                }
+            }
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).foregroundStyle(counterTone).padding(.bottom, 6)
             }
@@ -1537,6 +1590,7 @@ private struct WorkspaceSheetView: View {
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .invitation(let space): InvitationSheet(model: model, invitation: space, close: close)
+            case .channelInvitation(let invitation): ChannelInvitationSheet(model: model, invitation: invitation, close: close)
             case .leaveSpace: ConfirmationSheet(title: "Leave \(model.detail?.space.name ?? "space")?", detail: "You will lose access to its channels and conversations. An owner can add you again later.", action: "Leave space", close: close) { try await model.leaveCurrentSpace() }
             case .audio: AudioPreferencesView(voice: model.voice, debugEnabled: model.account?.debugEnabled == true, close: close)
             case .connection: ScrollView { ConnectionDetailsView(voice: model.voice, close: close) }
@@ -1549,6 +1603,30 @@ private struct WorkspaceSheetView: View {
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct ChannelInvitationSheet: View {
+    @Bindable var model: AppModel
+    let invitation: ChannelInvitation
+    let close: () -> Void
+    @State private var pending = false
+    @State private var error: String?
+    var body: some View {
+        VStack(spacing: 0) {
+            SheetHeader(title: "Private channel invitation", detail: "#\(invitation.channel.name) in \(model.detail?.space.name ?? "this space")", close: { if !pending { close() } })
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Invited by \(invitation.inviter.displayName) (@\(invitation.inviter.username)). This invitation expires after 7 days.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("Messages stay hidden until you accept. Acceptance joins the channel; it does not enter voice.").font(CaperTheme.font(12))
+                if let error { Text(error).foregroundStyle(.red) }
+                HStack { Spacer(); Button("Decline") { run { try await model.declineChannelInvitation(invitation) } }.buttonStyle(CaperSecondaryButton()); Button("Accept") { run { try await model.acceptChannelInvitation(invitation) } }.buttonStyle(CaperPrimaryButton()) }.disabled(pending)
+            }.padding(22)
+        }.background(CaperTheme.surface).interactiveDismissDisabled(pending)
+    }
+    private func run(_ action: @escaping () async throws -> Void) {
+        guard !pending else { return }; pending = true; error = nil
+        Task { do { try await action(); close() } catch { self.error = error.localizedDescription }; pending = false }
     }
 }
 
@@ -1712,6 +1790,7 @@ private struct InvitationSheet: View {
                 Text("\(inviter.displayName) (@\(inviter.username)) invited you.").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
             }
             Text("Invitations expire seven days after they’re sent.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
+            Text("Acceptance joins one public starter channel. Browse and join other channels when you want; it never starts voice.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 22)
             if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(.red).padding(.horizontal, 22) }
             HStack {
                 Spacer()
@@ -1793,6 +1872,7 @@ private struct ChannelEditor: View {
     @State private var name = ""; @State private var privateChannel = false; @State private var members: [Member] = []; @State private var username = ""; @State private var error: String?; @State private var pending = false
     @State private var confirmDelete = false
     @State private var membersError: String?
+    @State private var invitations: [Member] = []
     @State private var memberError: String?
     @State private var loadingMembers = false
     @FocusState private var nameFocused: Bool
@@ -1840,7 +1920,7 @@ private struct ChannelEditor: View {
                                 #endif
                                 .submitLabel(.done).onSubmit { addMember(channel) }
                                 .accessibilityLabel("Exact username")
-                            Button("Add") { addMember(channel) }.buttonStyle(CaperSecondaryButton())
+                            Button("Invite") { addMember(channel) }.buttonStyle(CaperSecondaryButton())
                                 .disabled(WorkspaceValidation.usernameError(username) != nil)
                         }
                             .disabled(pending || loadingMembers || membersError != nil)
@@ -1855,6 +1935,11 @@ private struct ChannelEditor: View {
                                 Spacer()
                                 if !member.owner { Button("Remove") { run { try await model.removeChannelMember(channel, member: member); members.removeAll { $0.id == member.id } } } }
                             }.font(CaperTheme.font(12))
+                        }.disabled(pending || loadingMembers || membersError != nil)
+                        Text("Pending invitations  \(invitations.count)").font(CaperTheme.font(14, weight: .bold))
+                        ForEach(invitations) { member in
+                            HStack { Text("\(member.displayName) (@\(member.username))"); Spacer(); Button("Cancel") { run { try await model.removeChannelMember(channel, member: member); invitations.removeAll { $0.id == member.id } } } }
+                                .font(CaperTheme.font(12))
                         }.disabled(pending || loadingMembers || membersError != nil)
                     }
                     if channel != nil {
@@ -1908,13 +1993,13 @@ private struct ChannelEditor: View {
         guard !pending, !loadingMembers, membersError == nil else { return }
         guard !username.isEmpty else { memberError = "Enter an exact username."; return }
         memberError = nil
-        run { let member = try await model.addChannelMember(channel, username: username); members.removeAll { $0.id == member.id }; members.append(member); username = "" }
+        run { let member = try await model.addChannelMember(channel, username: username); invitations.removeAll { $0.id == member.id }; invitations.append(member); username = "" }
     }
     private func loadMembers(_ channel: Channel) async {
         guard !loadingMembers else { return }
         loadingMembers = true; membersError = nil
         defer { loadingMembers = false }
-        do { members = try await model.channelMembers(channel) }
+        do { members = try await model.channelMembers(channel); invitations = try await model.channelInvitations(channel) }
         catch { membersError = error.localizedDescription }
     }
     private func run(_ action: @escaping () async throws -> Void) { pending = true; error = nil; Task { do { try await action() } catch { self.error = error.localizedDescription }; pending = false } }

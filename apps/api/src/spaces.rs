@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 
+mod joining;
+pub(crate) use joining::channel_participation;
+use joining::{add_channel_member, remove_channel_member};
+#[cfg(test)]
+mod joining_tests;
+
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Limits {
@@ -107,6 +113,15 @@ pub(crate) async fn channel_access(
     channel: &str,
     user: Option<i64>,
 ) -> Result<ChannelAccess, ApiError> {
+    check_channel_access(pool, channel, user, false).await
+}
+
+async fn check_channel_access(
+    pool: &PgPool,
+    channel: &str,
+    user: Option<i64>,
+    require_join: bool,
+) -> Result<ChannelAccess, ApiError> {
     sqlx::query_as::<_, (i64, i64, i64)>(
         "SELECT c.id, c.last_seq, s.id
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
@@ -114,10 +129,12 @@ pub(crate) async fn channel_access(
            AND NOT s.demo AND $2::bigint IS NOT NULL
                  AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)
                  AND (s.owner_id = $2 OR NOT c.private OR
-                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))",
+                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))
+                 AND (NOT $3 OR EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))",
     )
     .bind(channel)
     .bind(user)
+    .bind(require_join)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
@@ -144,6 +161,7 @@ struct Channel {
     space_id: String,
     name: String,
     private: bool,
+    joined: bool,
 }
 
 #[derive(Serialize)]
@@ -186,6 +204,14 @@ pub(crate) fn routes() -> Router<AppState> {
         .route(
             "/api/spaces/{space}/channels/{channel}",
             patch(update_channel).delete(delete_channel),
+        )
+        .route(
+            "/api/spaces/{space}/channels/{channel}/membership",
+            post(joining::join_channel).delete(joining::leave_channel),
+        )
+        .route(
+            "/api/spaces/{space}/channels/{channel}/invitation",
+            post(joining::accept_channel_invitation).delete(joining::decline_channel_invitation),
         )
         .route(
             "/api/spaces/{space}/members",
@@ -318,9 +344,15 @@ async fn create_space(
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
-    sqlx::query("INSERT INTO public.channels (external_id,space_id,name) VALUES ($1,$2,'general')")
+    let general: i64 = sqlx::query_scalar("INSERT INTO public.channels (external_id,space_id,name) VALUES ($1,$2,'general') RETURNING id")
         .bind(random_id(12))
         .bind(internal)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database_error)?;
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(general)
+        .bind(principal.user.id)
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
@@ -353,8 +385,10 @@ async fn get_space(
     .await
     .map_err(database_error)?
     .ok_or_else(not_found)?;
-    let channels: Vec<Channel> = sqlx::query_as::<_, (String, String, String, bool)>(
-        "SELECT c.external_id,s.external_id,c.name,c.private FROM public.channels c
+    let channels: Vec<Channel> = sqlx::query_as::<_, (String, String, String, bool, bool)>(
+        "SELECT c.external_id,s.external_id,c.name,c.private,
+         EXISTS(SELECT 1 FROM public.channel_joins WHERE channel_id=c.id AND user_id=$2)
+         FROM public.channels c
          JOIN public.spaces s ON s.id=c.space_id
          WHERE c.space_id=$1 AND c.deleted_at IS NULL
            AND (s.owner_id=$2 OR NOT c.private OR EXISTS (SELECT 1 FROM public.channel_members WHERE channel_id=c.id AND user_id=$2))
@@ -366,11 +400,20 @@ async fn get_space(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, space_id, name, private)| Channel { id, space_id, name, private })
+    .map(|(id, space_id, name, private, joined)| Channel { id, space_id, name, private, joined })
     .collect();
+    let invitations: Vec<Value> = sqlx::query_as::<_,(String,String,String,String)>(
+        "SELECT c.external_id,c.name,u.username,u.display_name FROM public.channel_invitations i
+         JOIN public.channels c ON c.id=i.channel_id JOIN public.spaces s ON s.id=c.space_id
+         JOIN public.users u ON u.id=s.owner_id
+         WHERE c.space_id=$1 AND i.user_id=$2 AND c.private AND c.deleted_at IS NULL
+           AND i.status='pending' AND i.updated_at > now()-interval '7 days'
+         ORDER BY i.updated_at,c.id"
+    ).bind(row.0).bind(principal.user.id).fetch_all(pool).await.map_err(database_error)?
+        .into_iter().map(|(id,name,username,display_name)|json!({"channel":Channel{id,space_id:space.clone(),name,private:true,joined:false},"inviter":{"username":username,"displayName":display_name}})).collect();
     let members = members(pool, row.0).await?;
     Ok(Json(
-        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members}),
+        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members,"channelInvitations":invitations}),
     ))
 }
 
@@ -437,16 +480,22 @@ async fn create_channel(
         return Err(conflict("channel limit reached"));
     }
     let id = random_id(12);
-    sqlx::query(
-        "INSERT INTO public.channels (external_id,space_id,name,private) VALUES ($1,$2,$3,$4)",
+    let internal: i64 = sqlx::query_scalar(
+        "INSERT INTO public.channels (external_id,space_id,name,private) VALUES ($1,$2,$3,$4) RETURNING id",
     )
     .bind(&id)
     .bind(space_id)
     .bind(name)
     .bind(input.private)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|error| constraint_or_database(error, "channel name already exists"))?;
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(internal)
+        .bind(principal.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok((
         StatusCode::CREATED,
@@ -455,6 +504,7 @@ async fn create_channel(
             space_id: space,
             name: name.to_owned(),
             private: input.private,
+            joined: true,
         }),
     ))
 }
@@ -473,12 +523,19 @@ async fn update_channel(
     if changed.rows_affected() != 1 {
         return Err(not_found());
     }
+    let joined: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.channel_joins cj JOIN public.channels c ON c.id=cj.channel_id WHERE c.external_id=$1 AND cj.user_id=$2)")
+        .bind(&channel).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if !input.private {
+        sqlx::query("UPDATE public.channel_invitations SET status='revoked',updated_at=now() WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND status='pending'")
+            .bind(&channel).execute(&mut *tx).await.map_err(database_error)?;
+    }
     tx.commit().await.map_err(database_error)?;
     Ok(Json(Channel {
         id: channel,
         space_id: space,
         name: name.to_owned(),
         private: input.private,
+        joined,
     }))
 }
 
@@ -660,6 +717,8 @@ async fn accept_invitation(
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE space_id=$1 AND NOT private AND deleted_at IS NULL ORDER BY (name='general') DESC,id LIMIT 1")
+        .bind(id).bind(principal.user.id).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("UPDATE public.space_invitations SET status='accepted',updated_at=now() WHERE space_id=$1 AND user_id=$2")
         .bind(id).bind(principal.user.id).execute(&mut *tx).await.map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
@@ -742,6 +801,10 @@ async fn remove_space_member(
     }
     sqlx::query("DELETE FROM public.channel_members cm USING public.channels c WHERE cm.channel_id=c.id AND c.space_id=$1 AND cm.user_id=$2")
         .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
+    sqlx::query("DELETE FROM public.channel_joins cj USING public.channels c WHERE cj.channel_id=c.id AND c.space_id=$1 AND cj.user_id=$2")
+        .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
+    sqlx::query("UPDATE public.channel_invitations i SET status='revoked',updated_at=now() FROM public.channels c WHERE i.channel_id=c.id AND c.space_id=$1 AND i.user_id=$2 AND i.status IN ('pending','accepted')")
+        .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
     let changed = sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
         .bind(space_id)
         .bind(target)
@@ -793,79 +856,13 @@ async fn list_channel_members(
         owner,
     })
     .collect();
-    Ok(Json(json!({"members":rows})))
-}
-
-async fn add_channel_member(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    Path((space, channel)): Path<(String, String)>,
-    Json(input): Json<MemberInput>,
-) -> Result<(StatusCode, Json<Member>), ApiError> {
-    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
-    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
-    let channel_id = channel_for_update(&mut tx, space_id, &channel).await?;
-    let member = find_user_for_update(&mut tx, &input.username).await?;
-    let belongs: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2)",
-    )
-    .bind(space_id)
-    .bind(member.0)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(database_error)?;
-    if !belongs {
-        return Err(not_found());
-    }
-    let changed=sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING").bind(channel_id).bind(member.0).execute(&mut *tx).await.map_err(database_error)?;
-    tx.commit().await.map_err(database_error)?;
-    Ok((
-        if changed.rows_affected() == 1 {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(Member {
-            id: member.1,
-            avatar_id: member.2,
-            username: member.3,
-            display_name: member.4,
-            owner: member.0 == principal.user.id,
-        }),
-    ))
-}
-
-async fn remove_channel_member(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    Path((space, channel, user)): Path<(String, String, String)>,
-) -> Result<StatusCode, ApiError> {
-    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
-    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
-    let channel_id = channel_for_update(&mut tx, space_id, &channel).await?;
-    let target: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM public.users WHERE external_id=$1 AND deleted_at IS NULL",
-    )
-    .bind(user)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(database_error)?;
-    let target = target.ok_or_else(not_found)?;
-    if target == principal.user.id {
-        return Err(conflict("owner cannot be removed"));
-    }
-    let changed =
-        sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
-            .bind(channel_id)
-            .bind(target)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
-    if changed.rows_affected() != 1 {
-        return Err(not_found());
-    }
-    tx.commit().await.map_err(database_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    let invitations: Vec<Value> = sqlx::query_as::<_,(String,i16,String,String)>(
+        "SELECT u.external_id,u.avatar_id,u.username,u.display_name FROM public.channel_invitations i
+         JOIN public.users u ON u.id=i.user_id JOIN public.space_members sm ON sm.user_id=u.id AND sm.space_id=$2
+         WHERE i.channel_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days' AND u.deleted_at IS NULL ORDER BY i.updated_at,u.id"
+    ).bind(channel_id).bind(space_id).fetch_all(pool).await.map_err(database_error)?
+        .into_iter().map(|(id,avatar_id,username,display_name)|json!(Member{id,avatar_id,username,display_name,owner:false})).collect();
+    Ok(Json(json!({"members":rows,"invitations":invitations})))
 }
 
 async fn lock_onboarded_user(

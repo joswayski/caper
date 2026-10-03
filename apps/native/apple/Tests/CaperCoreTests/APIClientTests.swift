@@ -48,6 +48,36 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(response.invitations, [])
     }
 
+    func testChannelAndDetailDecodeLegacyAndMembershipFields() throws {
+        let legacy = try JSONDecoder().decode(Channel.self, from: Data(#"{"id":"Chan12345678","spaceId":"Space1234567","name":"general","private":false}"#.utf8))
+        XCTAssertTrue(legacy.joined)
+        let detail = try JSONDecoder().decode(SpaceDetail.self, from: Data(#"{"space":{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"},"channels":[{"id":"Chan12345678","spaceId":"Space1234567","name":"lobby","private":false,"joined":false}],"members":[],"channelInvitations":[{"channel":{"id":"Priv12345678","spaceId":"Space1234567","name":"private","private":true,"joined":false},"inviter":{"username":"host","displayName":"Host"}}]}"#.utf8))
+        XCTAssertFalse(detail.channels[0].joined)
+        XCTAssertEqual(detail.channelInvitations.first?.inviter.username, "host")
+        let oldDetail = try JSONDecoder().decode(SpaceDetail.self, from: Data(#"{"space":{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"},"channels":[],"members":[]}"#.utf8))
+        XCTAssertTrue(oldDetail.channelInvitations.isEmpty)
+    }
+
+    func testChannelMembershipAndInvitationRoutes() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            routes.append("\(request.httpMethod!) \(request.url!.path)")
+            if request.httpMethod == "POST" { return (200, Data(#"{"id":"Chan12345678","spaceId":"Space1234567","name":"general","private":false,"joined":true}"#.utf8)) }
+            return (204, Data())
+        }
+        let api = client()
+        _ = try await api.joinChannel(spaceID: "Space1234567", channelID: "Chan12345678")
+        try await api.leaveChannel(spaceID: "Space1234567", channelID: "Chan12345678")
+        _ = try await api.acceptChannelInvitation(spaceID: "Space1234567", channelID: "Chan12345678")
+        try await api.declineChannelInvitation(spaceID: "Space1234567", channelID: "Chan12345678")
+        XCTAssertEqual(routes, [
+            "POST /api/spaces/Space1234567/channels/Chan12345678/membership",
+            "DELETE /api/spaces/Space1234567/channels/Chan12345678/membership",
+            "POST /api/spaces/Space1234567/channels/Chan12345678/invitation",
+            "DELETE /api/spaces/Space1234567/channels/Chan12345678/invitation",
+        ])
+    }
+
     func testInvitationDecodesInviterAndLegacyMetadata() throws {
         let legacy = try JSONDecoder().decode(Space.self, from: Data(#"{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"}"#.utf8))
         XCTAssertNil(legacy.inviter)
@@ -768,6 +798,71 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(model.voice.context?.channelID, text.id)
         XCTAssertEqual(model.voice.phase, .connected)
         XCTAssertTrue(model.voicePresence.roster(for: target.id).isEmpty)
+    }
+
+    @MainActor
+    func testFreshUnjoinedVoiceTargetPreservesExistingCall() async {
+        let model = AppModel(api: client())
+        let current = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let target = Channel(id: "chan00000002", spaceId: current.spaceId, name: "design", private: false)
+        let space = Space(id: current.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [current, target], members: [])
+        model.selectedSpaceID = space.id
+        model.selectedChannelID = current.id
+        model.voice.phase = .connected
+        model.voice.context = VoiceContext(channelID: current.id, channelName: current.name, spaceID: space.id, spaceName: space.name)
+        var requests: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            requests.append(path)
+            if path == "/api/spaces/\(space.id)" {
+                return (200, Data("""
+                {"space":{"id":"\(space.id)","name":"Fixture","ownerId":"owner0000001"},"channels":[
+                {"id":"\(current.id)","spaceId":"\(space.id)","name":"general","private":false,"joined":true},
+                {"id":"\(target.id)","spaceId":"\(space.id)","name":"design","private":false,"joined":false}],"members":[]}
+                """.utf8))
+            }
+            if path == "/api/chat/channels/\(target.id)/messages" {
+                return (200, Data("""
+                {"space":{"id":"\(space.id)","name":"Fixture"},"channel":{"id":"\(target.id)","name":"design"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            }
+            throw URLError(.badURL)
+        }
+        await model.joinVoice(channel: target)
+        XCTAssertEqual(model.voice.context?.channelID, current.id)
+        XCTAssertEqual(model.voice.phase, .connected)
+        XCTAssertEqual(model.selectedChannelID, current.id)
+        XCTAssertEqual(requests, ["/api/spaces/\(space.id)"], "Readable history must not authorize an unjoined voice target")
+    }
+
+    @MainActor
+    func testAcknowledgedChannelLeaveSurvivesFailedDetailRefresh() async {
+        for privateChannel in [false, true] {
+            let model = AppModel(api: client())
+            let channel = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: privateChannel)
+            let space = Space(id: channel.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+            model.account = Account(id: "member000001", username: "member", displayName: "Member")
+            model.detail = SpaceDetail(space: space, channels: [channel], members: [])
+            model.selectedSpaceID = space.id
+            model.selectedChannelID = channel.id
+            model.chat.draft = "old conversation draft"
+            MockURLProtocol.handler = { request in
+                if request.httpMethod == "DELETE", request.url?.path == "/api/spaces/\(space.id)/channels/\(channel.id)/membership" { return (204, Data()) }
+                return (503, Data(#"{"error":"TEST FIXTURE unavailable"}"#.utf8))
+            }
+            do {
+                try await model.leaveChannel(channel)
+                XCTFail("Detail refresh should fail")
+            } catch {
+                XCTAssertEqual((error as? APIError)?.status, 503)
+            }
+            XCTAssertFalse(model.detail?.channels.contains { $0.id == channel.id && $0.joined } == true)
+            XCTAssertEqual(model.detail?.channels.contains { $0.id == channel.id }, !privateChannel)
+            XCTAssertNil(model.selectedChannelID)
+            XCTAssertTrue(model.chat.draft.isEmpty)
+            XCTAssertTrue(model.chat.messages.isEmpty)
+        }
     }
 
     @MainActor

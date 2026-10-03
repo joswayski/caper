@@ -96,6 +96,35 @@ test('space invitation consent and channel grants enforce distinct access contra
   assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
 });
 
+test('public preview stays readable without participation; private consent grants and joins together', async (t) => {
+  const { request } = await setup(t);
+  const publicRoot = `/api/spaces/${ids.space}/channels/${ids.design}`;
+  const privateRoot = `/api/spaces/${ids.space}/channels/${ids.private}`;
+  const member = { auth: 'fixture-member-token' };
+  assert.equal((await request(`${publicRoot}/membership`, { ...member, method: 'DELETE' })).response.status, 204);
+  assert.equal((await request(`/api/chat/channels/${ids.design}/messages`, member)).response.status, 200);
+  assert.equal((await request(`/api/channels/${ids.design}/media/status`, member)).response.status, 404);
+  assert.equal((await request(`/api/chat/channels/${ids.design}/messages`, { ...member, method: 'POST', body: { text: 'not joined' } })).response.status, 404);
+  assert.equal((await request(`/api/spaces/${ids.space}`, member)).value.channels.find(channel => channel.id === ids.design).joined, false);
+  assert.equal((await request(`${publicRoot}/membership`, { ...member, method: 'POST' })).value.joined, true);
+
+  assert.equal((await request(`${privateRoot}/members/${ids.member}`, { auth: true, method: 'DELETE' })).response.status, 204);
+  // Reset only the disposable fixture's invitation tombstone to exercise a new invitation.
+  await request('/__fixture/control', { method: 'POST', body: { reset: true } });
+  const created = await request(`/api/spaces/${ids.space}/channels`, { auth: true, method: 'POST', body: { name: 'private-consent', private: true } });
+  const root = `/api/spaces/${ids.space}/channels/${created.value.id}`;
+  assert.equal((await request(`${root}/members`, { auth: true, method: 'POST', body: { username: 'maya' } })).response.status, 201);
+  const before = (await request(`/api/spaces/${ids.space}`, member)).value;
+  assert.ok(!before.channels.some(channel => channel.id === created.value.id));
+  assert.equal(before.channelInvitations[0].inviter.username, 'fixture_owner');
+  assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 404);
+  assert.equal((await request(`${root}/membership`, { ...member, method: 'POST' })).response.status, 404);
+  assert.equal((await request(`${root}/invitation`, { ...member, method: 'POST' })).value.joined, true);
+  assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 200);
+  assert.equal((await request(`${root}/membership`, { ...member, method: 'DELETE' })).response.status, 204);
+  assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 404);
+});
+
 test('send is idempotent, conflicts on changed payload, and history uses stable head cursor pagination', async (t) => {
   const { request } = await setup(t);
   const session = await request('/api/chat/session', { method: 'POST', body: { name: 'Guest' } });
