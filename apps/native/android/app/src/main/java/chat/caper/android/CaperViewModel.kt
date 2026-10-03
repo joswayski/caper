@@ -69,7 +69,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 list.spaces.firstOrNull()?.let { selectSpace(it.id) }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
-                    mutable.value = AppUiState(screen = SessionScreen.Home, error = message(error))
+                    mutable.value = AppUiState(screen = SessionScreen.SignedOut, error = message(error))
                 }
             }
         }

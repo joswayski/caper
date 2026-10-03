@@ -72,7 +72,7 @@ function Login() {
   return <main className="grid min-h-dvh place-items-start justify-items-center px-6 pt-[clamp(48px,10vh,96px)] pb-12 max-[480px]:px-5 max-[480px]:pt-8">
     <section className="w-full max-w-[440px]">
       <Wordmark />
-      <h1 className="mt-14 mb-5 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] max-[480px]:mt-[42px]">{challengeId ? "Check your email." : "Come on in."}</h1>
+      <h1 className="mt-14 mb-2 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] max-[480px]:mt-[42px]">{challengeId ? "Check your email." : "Welcome to Caper"}</h1>
       {challengeId ? <>
         <p className="leading-[1.65] text-content-muted">Enter the six-character code sent to <strong className="wrap-anywhere text-content">{email.trim()}</strong>. It expires in 10 minutes.</p>
         <form onSubmit={(event) => void verifyCode(event)}>

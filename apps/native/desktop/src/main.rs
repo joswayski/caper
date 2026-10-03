@@ -1787,6 +1787,10 @@ impl CaperApp {
         self.selected_space = None;
         self.selected_channel = None;
         self.clear_channel_state();
+        self.challenge = None;
+        self.code.clear();
+        self.attempts_remaining = None;
+        self.loading = false;
         self.error = None;
         self.dialog = None;
     }
@@ -2167,16 +2171,7 @@ impl eframe::App for CaperApp {
         self.refresh_media_status();
         self.periodic(context);
         self.update_banner(context);
-        if matches!(self.dialog, Some(Dialog::SignIn)) {
-            self.login_page(context);
-        } else if self.onboarding() {
-            self.onboarding_page(context);
-        } else if self.needs_first_space() {
-            self.first_space_page(context);
-        } else {
-            self.shell(context);
-            self.dialogs(context);
-        }
+        self.page(context);
         if !matches!(self.dialog, Some(Dialog::Audio)) {
             if !matches!(self.voice.microphone, MicrophoneState::Idle) {
                 self.voice.stop_mic_test();
@@ -2189,6 +2184,19 @@ impl eframe::App for CaperApp {
 }
 
 impl CaperApp {
+    fn page(&mut self, context: &egui::Context) {
+        if self.account.is_none() || matches!(self.dialog, Some(Dialog::SignIn)) {
+            self.login_page(context);
+        } else if self.onboarding() {
+            self.onboarding_page(context);
+        } else if self.needs_first_space() {
+            self.first_space_page(context);
+        } else {
+            self.shell(context);
+            self.dialogs(context);
+        }
+    }
+
     /// A full-width strip above everything when a newer release is ready.
     fn update_banner(&mut self, context: &egui::Context) {
         let Some(update) = self.updates.available() else {
@@ -2456,19 +2464,12 @@ impl CaperApp {
                             "../../../web/public/caper-wordmark.svg"
                         )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
                         ui.add_space(58.0);
-                        ui.label(
-                            bold("WELCOME TO CAPER")
-                                .size(11.0)
-                                .extra_letter_spacing(1.5)
-                                .color(MUTED),
-                        );
-                        ui.add_space(24.0);
                         ui.label(black(if self.challenge.is_some() {
                             "Check your email."
                         } else {
-                            "Come on in."
+                            "Welcome to Caper"
                         }).size(40.0));
-                        ui.add_space(28.0);
+                        ui.add_space(8.0);
                         ui.label(
                             RichText::new(if self.challenge.is_some() {
                                 format!(
@@ -2476,7 +2477,7 @@ impl CaperApp {
                                     self.email.trim()
                                 )
                             } else {
-                                "Use your email to create an account or return to one. No password needed."
+                                "Use your email to create an account or return to one. We’ll send a code to your email."
                                     .into()
                             })
                             .size(16.0)
@@ -2499,7 +2500,7 @@ impl CaperApp {
                             self.code.retain(|character| {
                                 "ABCDEFGHJKMNPQRSTWXYZ23456789".contains(character)
                             });
-                            if let Some(error) = &self.error {
+                            if let Some(error) = self.error.as_ref().or(self.warning.as_ref()) {
                                 ui.add_space(12.0);
                                 login_error_frame(ui, error);
                             }
@@ -2570,7 +2571,7 @@ impl CaperApp {
                                     .vertical_align(egui::Align::Center)
                                     .hint_text("you@example.com"),
                             );
-                            if let Some(error) = &self.error {
+                            if let Some(error) = self.error.as_ref().or(self.warning.as_ref()) {
                                 ui.add_space(12.0);
                                 login_error_frame(ui, error);
                             }
@@ -7001,10 +7002,7 @@ mod tests {
                 events,
                 ..Default::default()
             },
-            |context| {
-                app.shell(context);
-                app.dialogs(context);
-            },
+            |context| app.page(context),
         )
     }
 
@@ -8832,6 +8830,75 @@ mod tests {
     }
 
     #[test]
+    fn signed_out_startup_and_restore_failure_show_login_without_workspace() {
+        for result in [Ok(None), Err("Session restoration unavailable.".into())] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("signed-out"),
+            );
+            let (sender, events) = std::sync::mpsc::channel();
+            app.worker.events = events;
+            app.loading = true;
+            render(&mut app, &context, vec![]);
+            let loading = render(&mut app, &context, vec![]);
+            text_position(&loading, "Welcome to Caper");
+            text_position(&loading, "Email address");
+
+            let error = result.as_ref().err().cloned();
+            sender
+                .send(crate::worker::Event::Restored {
+                    generation: app.generation,
+                    result,
+                })
+                .unwrap();
+            app.receive();
+            assert!(!app.loading);
+            let output = render(&mut app, &context, vec![]);
+            text_position(&output, "Welcome to Caper");
+            text_position(&output, "Email me a code");
+            text_position(
+                &output,
+                "Use your email to create an account or return to one. We’ll send a code to your email.",
+            );
+            if let Some(error) = error {
+                text_position(&output, &error);
+            }
+            assert!(!output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text)
+                    if ["Guest", "Channels", "Message #general", "WELCOME TO CAPER", "Come on in."].contains(&text.galley.job.text.as_str())
+                        || text.galley.job.text.contains("No password needed"))
+            }));
+        }
+    }
+
+    #[test]
+    fn logout_returns_to_email_entry_instead_of_an_old_challenge_or_guest_shell() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.challenge = Some("previous-challenge".into());
+        app.code = "ABC234".into();
+        app.attempts_remaining = Some(0);
+        app.loading = true;
+        app.logout();
+        assert!(app.challenge.is_none());
+        assert!(app.code.is_empty());
+        assert!(app.attempts_remaining.is_none());
+        assert!(!app.loading);
+        assert!(app.account.is_none());
+        assert!(app.selected_channel.is_none());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        text_position(&output, "Welcome to Caper");
+        text_position(&output, "Email me a code");
+    }
+
+    #[test]
     fn verification_requires_profile_and_empty_account_stays_without_chat() {
         let context = eframe::egui::Context::default();
         let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
@@ -8847,8 +8914,24 @@ mod tests {
             app.selected_channel, None,
             "onboarding must not open guest chat"
         );
+        render(&mut app, &context, vec![]);
+        text_position(
+            &render(&mut app, &context, vec![]),
+            "Choose how you show up.",
+        );
 
-        app.profiled(account(true), spaces());
+        app.profiled(
+            account(true),
+            Spaces {
+                spaces: vec![],
+                invitations: Vec::new(),
+                limits: Some(crate::model::SpaceLimits {
+                    owned_spaces: 5,
+                    total_spaces: 20,
+                    channels_per_space: 20,
+                }),
+            },
+        );
         assert!(app.dialog.is_none());
         assert!(app.selected_space.is_none());
         assert!(app.selected_channel.is_none());
@@ -8857,6 +8940,8 @@ mod tests {
             app.draft.is_empty(),
             "guest draft must not cross auth transition"
         );
+        render(&mut app, &context, vec![]);
+        text_position(&render(&mut app, &context, vec![]), "Name your space");
     }
 
     #[test]

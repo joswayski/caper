@@ -41,10 +41,11 @@ public enum CaperTheme {
         Group {
             switch model.phase {
             case .loading: LoadingView()
+            case .signedOut: LoginPage(model: model) {}
             case .onboarding: ProfileView(model: model)
-            case .signedOut, .ready:
-                if model.phase == .ready && model.spaces.isEmpty && model.invitations.isEmpty && model.spacesLoaded { FirstSpaceView(model: model) }
-                else if model.phase == .ready && model.spaces.isEmpty, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
+            case .ready:
+                if model.spaces.isEmpty && model.invitations.isEmpty && model.spacesLoaded { FirstSpaceView(model: model) }
+                else if model.spaces.isEmpty, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
                 else { WorkspaceView(model: model) }
             }
         }
@@ -1655,10 +1656,9 @@ private struct LoginPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 Wordmark().padding(.bottom, 58)
-                Text("WELCOME TO CAPER").font(CaperTheme.font(12, weight: .bold)).tracking(2).foregroundStyle(CaperTheme.muted).padding(.bottom, 24)
-                Text(model.challengeID == nil ? "Come on in." : "Check your email.")
-                    .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 18)
-                Text(model.challengeID == nil ? "Use your email to create an account or return to one. No password needed." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
+                Text(model.challengeID == nil ? "Welcome to Caper" : "Check your email.")
+                    .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 8)
+                Text(model.challengeID == nil ? "Use your email to create an account or return to one. We’ll send a code to your email." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
                     .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 30)
                 if model.challengeID == nil {
                     CaperField(title: "Email address", text: $email, placeholder: "you@example.com")
