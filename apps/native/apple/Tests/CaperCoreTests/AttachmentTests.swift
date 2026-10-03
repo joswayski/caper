@@ -290,11 +290,12 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNil(AttachmentPolicy.displaySize(width: nil, height: 10))
     }
 
-    func testVideoPresetKeepsDisplayHeightWithinLimit() {
+    func testVideoPresetKeepsShortEdgeWithinLimit() {
         XCTAssertEqual(AttachmentPolicy.videoPreset(width: 3840, height: 2160, maxHeight: 1080), "AVAssetExportPreset1920x1080")
         XCTAssertEqual(AttachmentPolicy.videoPreset(width: 1920, height: 1080, maxHeight: 720), "AVAssetExportPreset1280x720")
-        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 1080, height: 1920, maxHeight: 1080), "AVAssetExportPreset960x540",
-                       "portrait height is the long edge")
+        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 1080, height: 1920, maxHeight: 1080), "AVAssetExportPreset1920x1080",
+                       "the limit bounds the short edge, so portrait 1080p stays 1080p")
+        XCTAssertEqual(AttachmentPolicy.videoPreset(width: 2160, height: 3840, maxHeight: 1080), "AVAssetExportPreset1920x1080")
         XCTAssertEqual(AttachmentPolicy.videoPreset(width: 640, height: 360, maxHeight: 1080), "AVAssetExportPreset3840x2160",
                        "small videos are never enlarged, only re-encoded")
         XCTAssertNil(AttachmentPolicy.videoPreset(width: 1920, height: 1080, maxHeight: 0), "0 disables transcoding")

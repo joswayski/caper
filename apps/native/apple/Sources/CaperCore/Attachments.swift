@@ -263,7 +263,8 @@ public enum AttachmentPolicy {
         guard maxHeight > 0, width > 0, height > 0 else { return nil }
         let candidates = videoPresets.filter { preset in
             let scale = min(1, Double(preset.long) / Double(max(width, height)), Double(preset.short) / Double(min(width, height)))
-            return Int((Double(height) * scale).rounded()) <= maxHeight
+            // "1080p" bounds the short edge, so portrait phone video keeps full detail.
+            return Int((Double(min(width, height)) * scale).rounded()) <= maxHeight
         }
         return candidates.last?.name
     }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { attachmentsOf, isChatMessage, type ChatMessage } from "../chat/types.ts";
-import { attachmentKind, compressible, uploadSettings, compressionSettings, stillPlan, videoTargetHeight, DEFAULT_COMPRESSION, fitWithin, formatBytes, keepCompressed, refreshAttachmentUrls, renamed, uploadPrepared, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
+import { attachmentKind, compressible, uploadSettings, compressionSettings, stillPlan, videoTargetSize, DEFAULT_COMPRESSION, fitWithin, formatBytes, keepCompressed, refreshAttachmentUrls, renamed, uploadPrepared, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
 
 const message = (content: unknown) => ({
   id: "m1", channelId: "c1", seq: "1", createdAt: "2026-10-01T00:00:00Z", clientMessageId: "x",
@@ -120,10 +120,11 @@ test("flat images go lossless indexed; others lossy unless quality is 100", () =
   assert.equal(stillPlan({ ...DEFAULT_COMPRESSION, imageQuality: 100 }, "too-many"), "lossless-png");
 });
 
-test("videos only shrink to the configured height, keeping even dimensions", () => {
-  assert.equal(videoTargetHeight(2160, 1080), 1080);
-  assert.equal(videoTargetHeight(1080, 1080), undefined);
-  assert.equal(videoTargetHeight(720, 1080), undefined);
-  assert.equal(videoTargetHeight(2160, 0), undefined);
-  assert.equal(videoTargetHeight(2160, 721), 720);
+test("videos only shrink so the short edge fits, keeping even dimensions", () => {
+  assert.deepEqual(videoTargetSize(3840, 2160, 1080), { height: 1080 });
+  assert.deepEqual(videoTargetSize(2160, 3840, 1080), { width: 1080 }, "portrait phone video stays 1080p");
+  assert.equal(videoTargetSize(1080, 1920, 1080), undefined);
+  assert.equal(videoTargetSize(1280, 720, 1080), undefined);
+  assert.equal(videoTargetSize(3840, 2160, 0), undefined);
+  assert.deepEqual(videoTargetSize(3840, 2160, 721), { height: 720 });
 });

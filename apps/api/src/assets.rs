@@ -417,7 +417,8 @@ pub(crate) struct Compression {
     /// stored losslessly as an indexed PNG instead. 0 disables, max 256.
     pub palette_colors: u16,
     pub preview_edge: u32,
-    /// Videos taller than this are scaled down; 0 disables transcoding.
+    /// Videos whose short edge exceeds this ("1080p") are scaled down; 0
+    /// disables transcoding.
     pub video_max_height: u32,
     pub video_bitrate_kbps: u32,
     pub audio_bitrate_kbps: u32,

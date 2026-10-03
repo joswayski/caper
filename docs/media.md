@@ -817,7 +817,7 @@ configuration and an API restart, not a client release:
 | `ASSET_IMAGE_QUALITY` | 92 | Other stills: lossy WebP (JPEG where WebP encoding is unavailable). 100 disables lossy encoding. |
 | `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. |
 | `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
-| `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Videos are transcoded to H.264 MP4 no taller than this; 0 uploads videos unchanged. |
+| `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Videos are transcoded to H.264 MP4 whose short edge is at most this ("1080p", so portrait phone video keeps its detail); 0 uploads videos unchanged. |
 | `ASSET_VIDEO_BITRATE_KBPS` | 4000 | Video bitrate for transcodes. |
 | `ASSET_AUDIO_BITRATE_KBPS` | 128 | Audio bitrate for transcodes (AAC, or Opus where AAC encoding is unavailable). |
 

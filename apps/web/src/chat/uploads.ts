@@ -190,10 +190,12 @@ async function prepareImage(file: File, settings: CompressionSettings): Promise<
   }
 }
 
-/** Target height for a transcode, or undefined to keep the original size. */
-export function videoTargetHeight(sourceHeight: number, maxHeight: number) {
-  if (maxHeight <= 0 || sourceHeight <= maxHeight) return undefined;
-  return Math.max(2, Math.floor(maxHeight / 2) * 2);
+/** Output size for a transcode, or undefined to keep the original size. The
+ * limit bounds the short edge ("1080p"), so portrait phone video keeps detail. */
+export function videoTargetSize(width: number, height: number, maxShortEdge: number): { width: number } | { height: number } | undefined {
+  if (maxShortEdge <= 0 || Math.min(width, height) <= maxShortEdge) return undefined;
+  const even = Math.max(2, Math.floor(maxShortEdge / 2) * 2);
+  return width < height ? { width: even } : { height: even };
 }
 
 /** Re-encode to H.264/AAC MP4 with WebCodecs. Returns undefined to keep the
@@ -205,7 +207,7 @@ async function transcodeVideo(file: File, settings: CompressionSettings, progres
   try {
     const track = await input.getPrimaryVideoTrack();
     if (!track) return;
-    const height = videoTargetHeight(track.displayHeight, settings.videoMaxHeight);
+    const size = videoTargetSize(track.displayWidth, track.displayHeight, settings.videoMaxHeight);
     const bitrate = settings.videoBitrateKbps * 1000;
     if (!await media.canEncodeVideo("avc", { bitrate })) return;
     const audioCodec = await media.canEncodeAudio("aac") ? "aac" as const : await media.canEncodeAudio("opus") ? "opus" as const : undefined;
@@ -214,7 +216,7 @@ async function transcodeVideo(file: File, settings: CompressionSettings, progres
     const output = new media.Output({ format: new media.Mp4OutputFormat({ fastStart: "in-memory" }), target: new media.BufferTarget() });
     const conversion = await media.Conversion.init({
       input, output,
-      video: { ...(height ? { height } : {}), codec: "avc", bitrate, forceTranscode: true },
+      video: { ...size, codec: "avc", bitrate, forceTranscode: true },
       ...(hasAudio && audioCodec ? { audio: { codec: audioCodec, bitrate: settings.audioBitrateKbps * 1000 } } : {}),
     });
     // Never trade a smaller file for silently losing the soundtrack.
