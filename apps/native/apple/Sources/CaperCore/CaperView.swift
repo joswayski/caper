@@ -1657,15 +1657,15 @@ private struct LoginPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 Wordmark().padding(.bottom, 58)
                 Text(model.challengeID == nil ? "Welcome to Caper" : "Check your email.")
-                    .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 8)
+                    .font(CaperTheme.font(52, weight: .black)).tracking(-2.5).padding(.bottom, 4)
                 Text(model.challengeID == nil ? "Use your email to create an account or return to one. We’ll send a code to your email." : "Enter the six-character code sent to \(email.trimmingCharacters(in: .whitespacesAndNewlines)). It expires in 10 minutes.")
-                    .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 30)
+                    .font(CaperTheme.font(16)).foregroundStyle(CaperTheme.muted).lineSpacing(7).padding(.bottom, 20)
                 if model.challengeID == nil {
                     CaperField(title: "Email address", text: $email, placeholder: "you@example.com")
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     Button { Task { await model.requestCode(email: email) } } label: {
                         HStack { Text(model.busy ? "Sending…" : "Email me a code"); Spacer(); Image(systemName: "arrow.right") }
-                    }.buttonStyle(LoginActionButton()).disabled(model.busy || email.isEmpty).padding(.top, model.error == nil ? 28 : 28)
+                    }.buttonStyle(LoginActionButton()).disabled(model.busy || email.isEmpty).padding(.top, 12)
                 } else {
                     CaperField(title: "Sign-in code", text: $code)
                         .disabled(model.loginAttemptsRemaining == 0)
@@ -1688,11 +1688,11 @@ private struct LoginPage: View {
                     if model.loginAttemptsRemaining == 0 {
                         Button { code = ""; Task { await model.requestCode(email: email) } } label: {
                             HStack { Text(model.busy ? "Sending…" : "Email me a new code"); Spacer(); Image(systemName: "arrow.right") }
-                        }.buttonStyle(LoginActionButton()).disabled(model.busy).padding(.top, 28)
+                        }.buttonStyle(LoginActionButton()).disabled(model.busy).padding(.top, 12)
                     } else {
                         Button { Task { await model.verify(code: code); if model.account != nil && model.phase != .onboarding { close() } } } label: {
                             HStack { Text(model.busy ? "Checking…" : "Continue"); Spacer(); Image(systemName: "arrow.right") }
-                        }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 28)
+                        }.buttonStyle(LoginActionButton()).disabled(model.busy || code.count != 6).padding(.top, 12)
                     }
                     Button("Use a different email") { model.challengeID = nil; model.error = nil }.buttonStyle(.plain).foregroundStyle(CaperTheme.muted).padding(.top, 18)
                 }
