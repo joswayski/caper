@@ -1127,11 +1127,31 @@ impl CaperApp {
         self.older_armed = false;
         self.older_anchor = None;
         self.load_error = None;
-        if let Err(error) = self.timeline.reset(history.messages, &history.cursor) {
+        // A refresh may retain paginated history, but never bridge a missing
+        // range using the highest HTTP-confirmed send instead of replay cursor.
+        let contiguous = history.messages.first().is_some_and(|first| {
+            model::sequence(&first.seq).is_ok_and(|first| {
+                first <= model::sequence(&self.timeline.cursor()).unwrap_or(0) + 1
+            })
+        });
+        let retained_older = contiguous
+            && self.timeline.messages().next().is_some_and(|oldest| {
+                history.messages.first().is_some_and(|first| {
+                    model::sequence(&oldest.seq).ok() < model::sequence(&first.seq).ok()
+                })
+            });
+        let mut messages = history.messages;
+        if contiguous {
+            // First occurrence wins in Timeline::reset; prefer fresh metadata.
+            messages.extend(self.timeline.messages().cloned());
+        }
+        if let Err(error) = self.timeline.reset(messages, &history.cursor) {
             self.clear_channel(&error);
             return;
         }
-        self.has_more = history.has_more;
+        if !retained_older {
+            self.has_more = history.has_more;
+        }
         self.selected_channel = Some(history.channel.id.clone());
         if general {
             let demo = model::Space {
@@ -1791,12 +1811,16 @@ impl CaperApp {
             let general = self.detail.as_ref().is_some_and(|detail| detail.space.demo);
             let mut pending = self.pending.take();
             let draft = std::mem::take(&mut self.draft);
+            let timeline = std::mem::take(&mut self.timeline);
+            let has_more = self.has_more;
             if let Some(pending) = &mut pending {
                 pending.sending = false;
             }
             self.reload_selected_channel(channel, general);
             self.pending = pending;
             self.draft = draft;
+            self.timeline = timeline;
+            self.has_more = has_more;
         }
     }
 
@@ -1978,7 +2002,7 @@ impl CaperApp {
     }
 
     fn load_older(&mut self) {
-        if self.loading_older || !self.has_more {
+        if self.loading || self.loading_older || !self.has_more {
             return;
         }
         let Some(channel) = self.selected_channel.clone() else {
@@ -9714,6 +9738,88 @@ mod tests {
         assert!(app.detail.is_none());
         assert!(app.draft.is_empty());
         assert_eq!(app.timeline.messages().count(), 0);
+    }
+
+    #[test]
+    fn refresh_preserves_history_only_when_it_reaches_the_replay_cursor() {
+        let context = egui::Context::default();
+        // Above JavaScript's safe integer range, but inside the API's i64 contract.
+        let base = 9_007_199_254_740_992_u64;
+        for (first, old_more, fresh_more, expected, expected_more) in [
+            (Some(4), false, true, vec![2, 4, 9], false),
+            (Some(5), true, false, vec![2, 4, 5, 9], true),
+            (Some(6), false, true, vec![6], true),
+            (Some(2), true, false, vec![2, 4, 9], false),
+            (None, true, false, vec![], false),
+        ] {
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            let template = app.timeline.messages().next().unwrap().clone();
+            let channel = app.selected_channel.clone().unwrap();
+            let message = |offset: u64| {
+                let mut message = template.clone();
+                message.id = format!("message-{offset}");
+                message.seq = (base + offset).to_string();
+                message
+            };
+            app.timeline
+                .reset(vec![message(2), message(4)], &(base + 4).to_string())
+                .unwrap();
+            // An HTTP confirmation must not bridge the missing replay range.
+            app.timeline.merge_sent(message(9)).unwrap();
+            app.has_more = old_more;
+            app.draft = "unsent draft".into();
+            app.reload_channel();
+            assert_eq!(
+                app.timeline.messages().count(),
+                3,
+                "refresh must not blank the conversation"
+            );
+            assert_eq!(app.draft, "unsent draft");
+            app.load_older();
+            assert!(
+                !app.loading_older,
+                "pagination waits for the refresh to finish"
+            );
+
+            let mut refreshed = history(&channel);
+            refreshed.cursor = (base + first.unwrap_or(0)).to_string();
+            refreshed.has_more = fresh_more;
+            if let Some(offset) = first {
+                let mut fresh = message(offset);
+                fresh.author.name = "Refreshed author".into();
+                refreshed.messages.push(fresh);
+            }
+            app.accept_channel(refreshed, Ok(session()), false, &channel);
+            assert_eq!(
+                app.timeline
+                    .messages()
+                    .map(|message| message.seq.clone())
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|offset| (base + offset).to_string())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(app.has_more, expected_more);
+            if let Some(offset) = first {
+                assert_eq!(
+                    app.timeline
+                        .messages()
+                        .find(|item| item.id == format!("message-{offset}"))
+                        .unwrap()
+                        .author
+                        .name,
+                    "Refreshed author"
+                );
+            }
+            app.clear_channel("Access revoked");
+            assert_eq!(app.timeline.messages().count(), 0);
+            assert!(app.draft.is_empty());
+        }
     }
 
     #[test]

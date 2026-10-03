@@ -752,3 +752,68 @@ test("resync retains visible messages through transient failures but clears them
   assert.deepEqual(f.state.messages, []);
   assert.equal(f.client.snapshotHistory(), undefined);
 });
+
+test("resync keeps paginated history while refreshing overlapping author metadata", async (t) => {
+  const f = await paginationFixture(t);
+  const older = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({ messages: [f.message(2), f.message(3)], cursor: f.message(5).seq, hasMore: false }));
+  await older;
+  let finish!: (response: Response) => void;
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", () => {
+    requests++;
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const snapshot = f.client.snapshotHistory()!;
+  f.client.retryLoad();
+  await f.client.loadOlder();
+  assert.equal(requests, 1);
+  assert.deepEqual(f.state.messages.map((message) => message.seq), [2, 3, 4, 5].map((offset) => f.message(offset).seq));
+  const fresh = { ...f.message(5), author: { ...f.message(5).author, name: "Updated name", avatarId: 42 } };
+  finish(Response.json({ ...snapshot, messages: [fresh, f.message(6)], cursor: f.message(6).seq, hasMore: true }));
+  await tick();
+  assert.deepEqual(f.state.messages, [f.message(2), f.message(3), f.message(4), fresh, f.message(6)]);
+  assert.equal(f.state.hasMore, false, "the retained prefix has already reached the beginning");
+});
+
+test("pagination cannot start during a refresh even when older pages remain", async (t) => {
+  const f = await paginationFixture(t);
+  const snapshot = f.client.snapshotHistory()!;
+  const requests: ((response: Response) => void)[] = [];
+  t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { requests.push(resolve); }));
+  f.client.retryLoad();
+  const blockedPage = f.client.loadOlder();
+  assert.equal(requests.length, 1, "a page started after the resync generation would otherwise be lost or corrupt hasMore");
+  await blockedPage;
+  requests[0](Response.json({ ...snapshot, messages: [f.message(6)], cursor: f.message(6).seq }));
+  await tick();
+  const older = f.client.loadOlder();
+  assert.equal(requests.length, 2, "pagination resumes when refresh finishes");
+  requests[1](Response.json({ messages: [f.message(3)], cursor: f.message(6).seq, hasMore: false }));
+  await older;
+  assert.deepEqual(f.state.messages, [3, 4, 5, 6].map(f.message));
+});
+
+test("resync replaces a disconnected range so pagination can fill its gap", async (t) => {
+  const f = await paginationFixture(t);
+  const snapshot = f.client.snapshotHistory()!;
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    ...snapshot, messages: [f.message(7)], cursor: f.message(7).seq, hasMore: true,
+  }));
+  f.client.retryLoad();
+  await tick();
+  assert.deepEqual(f.state.messages, [f.message(7)]);
+  assert.equal(f.state.hasMore, true);
+});
+
+test("older history from another channel is rejected without polluting the timeline", async (t) => {
+  const f = await paginationFixture(t);
+  const loading = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({
+    messages: [f.message(2), { ...f.message(3), channelId: "other" }], cursor: f.message(5).seq, hasMore: false,
+  }));
+  await loading;
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message));
+  assert.equal(f.state.hasMore, true);
+  assert.equal(f.state.olderError, "The chat service returned messages from another channel.");
+});
