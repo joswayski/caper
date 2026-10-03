@@ -4,6 +4,7 @@ import { ChatClient, initialChatView } from "./client.ts";
 import { dateDivider } from "./dates.ts";
 import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
+import Avatar from "../components/Avatar";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -183,7 +184,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     return <div key={message.clientMessageId}>
       {divider && <div className="chat-date-divider"><time dateTime={message.createdAt}>{divider}</time></div>}
       <article className={`chat-message${pending ? " chat-message-pending" : ""}`} data-message-key={message.clientMessageId}>
-      <div className="chat-avatar" aria-hidden="true">{(author?.name ?? name).slice(0, 1).toUpperCase()}</div>
+      <div className="chat-avatar"><Avatar avatarId={author?.avatarId} name={author?.name ?? name} /></div>
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>

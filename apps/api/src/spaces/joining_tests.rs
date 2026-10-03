@@ -15,6 +15,7 @@ fn principal(id: i64, name: &str) -> Principal {
         user: User {
             id,
             external_id: format!("{name:0<12}"),
+            avatar_id: 0,
             email: None,
             username: Some(name.into()),
             display_name: Some(name.into()),
@@ -153,7 +154,12 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
 
     // A private invitation shares metadata only, never a grant or participation.
     let private_target = ("space1234567".into(), "other1234567".into());
-    let _ = add_channel_member(
+    sqlx::query("UPDATE public.users SET avatar_id=37 WHERE id=$1")
+        .bind(other.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, Json(invited)) = add_channel_member(
         State(state.clone()),
         Extension(owner.clone()),
         Path(private_target.clone()),
@@ -163,6 +169,18 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
     )
     .await
     .unwrap();
+    assert_eq!(invited.avatar_id, 37);
+    assert_eq!(invited.username, "other");
+    assert_eq!(invited.display_name, "other");
+    let Json(managed) = channel_members(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path(private_target.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(managed["invitations"][0]["avatarId"], 37);
+    assert_eq!(managed["invitations"][0]["username"], "other");
     assert_eq!(
         add_channel_member(
             State(state.clone()),

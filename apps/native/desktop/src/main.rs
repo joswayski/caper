@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
+mod avatar_images;
 mod credentials;
 mod effects;
 mod gateway;
@@ -10,7 +11,6 @@ mod media;
 mod media_gateway;
 mod model;
 mod navigation;
-mod regions;
 #[path = "../voice-spike/src/state.rs"]
 mod state;
 mod updates;
@@ -388,6 +388,7 @@ impl CaperApp {
                     if name == "parity-admin-invitations" {
                         app.managed_invitations.push(Member {
                             id: "invited00001".into(),
+                            avatar_id: None,
                             username: "fixture_invitee".into(),
                             display_name: "TEST FIXTURE invitee".into(),
                             owner: false,
@@ -430,15 +431,15 @@ impl CaperApp {
                         vec![
                             model::VoiceOccupant {
                                 id: "fixture-maya".into(),
+                                avatar_id: Some(15),
                                 name: "Maya".into(),
-                                country_code: Some("CA".into()),
                                 muted: false,
                                 deafened: false,
                             },
                             model::VoiceOccupant {
                                 id: "fixture-alex".into(),
+                                avatar_id: Some(16),
                                 name: "Alex".into(),
-                                country_code: None,
                                 muted: true,
                                 deafened: false,
                             },
@@ -451,6 +452,7 @@ impl CaperApp {
                         Typer {
                             author: Author {
                                 id: "fixture-maya".into(),
+                                avatar_id: Some(15),
                                 name: "Maya".into(),
                                 is_guest: false,
                             },
@@ -529,8 +531,8 @@ impl CaperApp {
                             .iter()
                             .map(|member| media::Participant {
                                 id: member.id.clone(),
+                                avatar_id: member.avatar_id,
                                 name: member.display_name.clone(),
-                                country_code: None,
                                 muted: false,
                                 deafened: false,
                                 tracks: vec![media::Track {
@@ -613,6 +615,7 @@ impl CaperApp {
         };
         self.account = Some(Account {
             id: "fixture-owner".into(),
+            avatar_id: Some(0),
             username: Some("fixture_owner".into()),
             display_name: Some("Fixture Owner".into()),
             debug_enabled: false,
@@ -648,18 +651,21 @@ impl CaperApp {
             members: vec![
                 Member {
                     id: "fixture-owner".into(),
+                    avatar_id: Some(0),
                     username: "fixture_owner".into(),
                     display_name: "Fixture Owner".into(),
                     owner: true,
                 },
                 Member {
                     id: "fixture-maya".into(),
+                    avatar_id: Some(15),
                     username: "maya".into(),
                     display_name: "Maya".into(),
                     owner: false,
                 },
                 Member {
                     id: "fixture-alex".into(),
+                    avatar_id: Some(16),
                     username: "alex".into(),
                     display_name: "Alex".into(),
                     owner: false,
@@ -708,6 +714,7 @@ impl CaperApp {
                 client_message_id: format!("fixture-client-{index}"),
                 author: Author {
                     id: id.into(),
+                    avatar_id: Some(index as i32),
                     name: name.into(),
                     is_guest: false,
                 },
@@ -1924,8 +1931,8 @@ impl CaperApp {
             }
             AdminResult::SpaceDeleted(id) | AdminResult::SpaceLeft(id) => {
                 self.voice.revoke_space(&id);
-                self.invalidate_navigation_cache();
                 self.generation += 1;
+                self.invalidate_navigation_cache();
                 self.navigation += 1;
                 self.navigation_target = None;
                 self.spaces.retain(|space| space.id != id);
@@ -1936,7 +1943,8 @@ impl CaperApp {
                 self.managed_members.clear();
                 self.managed_invitations.clear();
                 self.presence.clear();
-                if let Some(space) = self.spaces.first() {
+                // General is retired, so only an account space can follow.
+                if let Some(space) = self.spaces.iter().find(|space| !space.demo) {
                     self.select_space(space.id.clone());
                 }
             }
@@ -2163,6 +2171,8 @@ impl eframe::App for CaperApp {
             self.login_page(context);
         } else if self.onboarding() {
             self.onboarding_page(context);
+        } else if self.needs_first_space() {
+            self.first_space_page(context);
         } else {
             self.shell(context);
             self.dialogs(context);
@@ -2231,6 +2241,102 @@ impl CaperApp {
                 .account
                 .as_ref()
                 .is_some_and(|account| account.username.is_none() || account.display_name.is_none())
+    }
+
+    /// Web's first-space page: a signed-in account whose loaded space list is
+    /// empty names its first space instead of seeing an empty workspace.
+    fn needs_first_space(&self) -> bool {
+        self.account.is_some()
+            && self.limits.is_some()
+            && self.dialog.is_none()
+            && self.invitations.is_empty()
+            && !self.spaces.iter().any(|space| !space.demo)
+    }
+
+    fn first_space_page(&mut self, context: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BLACKOUT))
+            .show(context, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(440.0);
+                        ui.add_space(100.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            ui.add(egui::Image::new(egui::include_image!(
+                                "../../../web/public/caper-wordmark.svg"
+                            )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
+                            ui.add_space(58.0);
+                            ui.label(black("Name your space").size(40.0));
+                            ui.add_space(20.0);
+                            ui.label(
+                                RichText::new(
+                                    "Choose something you will recognize easily. You can always change it later!",
+                                )
+                                .size(16.0)
+                                .color(MUTED),
+                            );
+                            ui.add_space(24.0);
+                            ui.label(bold("Space name").size(14.0));
+                            ui.add_space(4.0);
+                            let field = ui.add(
+                                egui::TextEdit::singleline(&mut self.form_name)
+                                    .vertical_align(egui::Align::Center)
+                                    .char_limit(64)
+                                    .min_size(egui::vec2(0.0, 52.0))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            let allowed = self.can_create_space();
+                            if !allowed {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("You have reached your space limit.")
+                                        .size(12.8)
+                                        .color(MUTED),
+                                );
+                            }
+                            if let Some(error) = &self.error {
+                                ui.add_space(16.0);
+                                login_error_frame(ui, error);
+                            }
+                            ui.add_space(24.0);
+                            let blocked =
+                                self.loading || !allowed || self.form_name.trim().is_empty();
+                            let entered = field.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                            let clicked = login_action(
+                                ui,
+                                if self.loading { "Creating…" } else { "Create space" },
+                                blocked,
+                            )
+                            .clicked();
+                            if (clicked || entered) && !blocked {
+                                // Web validates on submit and keeps the name on failure.
+                                if let Some(error) = space_name_error(&self.form_name) {
+                                    self.error = Some(error.into());
+                                } else {
+                                    self.admin(AdminOperation::CreateSpace {
+                                        name: self.form_name.clone(),
+                                    });
+                                }
+                            }
+                            ui.add_space(16.0);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Log out").size(13.6).color(MUTED),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.logout();
+                                }
+                            });
+                        });
+                    });
+                });
+            });
     }
 
     fn onboarding_page(&mut self, context: &egui::Context) {
@@ -3186,8 +3292,8 @@ impl CaperApp {
             .iter()
             .map(|participant| model::VoiceOccupant {
                 id: participant.id.clone(),
+                avatar_id: participant.avatar_id,
                 name: participant.name.clone(),
-                country_code: participant.country_code.clone(),
                 muted: participant.muted,
                 deafened: participant.deafened,
             })
@@ -3261,6 +3367,12 @@ impl CaperApp {
                     };
                     let speaking = own && self.voice.speaking(&person.id, muted, now);
                     ui.painter().circle_filled(center, 11.0, SURFACE);
+                    paint_avatar(
+                        ui,
+                        egui::Rect::from_center_size(center, egui::vec2(20.0, 20.0)),
+                        &person.name,
+                        person.avatar_id,
+                    );
                     if speaking {
                         // Web: caper border plus a 1px caper ring.
                         ui.painter()
@@ -3269,19 +3381,6 @@ impl CaperApp {
                         ui.painter()
                             .circle_stroke(center, 11.0, Stroke::new(1.0, BORDER));
                     }
-                    ui.painter().text(
-                        center,
-                        egui::Align2::CENTER_CENTER,
-                        person
-                            .name
-                            .chars()
-                            .next()
-                            .unwrap_or('?')
-                            .to_uppercase()
-                            .to_string(),
-                        egui::FontId::proportional(11.0),
-                        TEXT,
-                    );
                 }
                 if people.len() > 3 {
                     ui.painter().text(
@@ -3391,6 +3490,7 @@ impl CaperApp {
                         avatar(
                             ui,
                             &participant.name,
+                            participant.avatar_id,
                             28.0,
                             own && self.voice.speaking(&participant.id, muted, now),
                         );
@@ -3411,34 +3511,17 @@ impl CaperApp {
                                 ui.vertical(|ui| {
                                     ui.set_min_width(ui.available_width());
                                     ui.spacing_mut().item_spacing.y = 0.0;
-                                    let region =
-                                        participant.country_code.as_deref().and_then(|code| {
-                                            regions::name(code).map(|name| (code, name))
-                                        });
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 6.0;
-                                        ui.scope(|ui| {
-                                            ui.set_max_width(
-                                                (ui.available_width()
-                                                    - if region.is_some() { 28.0 } else { 0.0 })
-                                                .max(0.0),
-                                            );
-                                            ui.add(
-                                                egui::Label::new(
-                                                    bold(if is_self {
-                                                        format!("{} (you)", participant.name)
-                                                    } else {
-                                                        participant.name.clone()
-                                                    })
-                                                    .size(12.0),
-                                                )
-                                                .truncate(),
-                                            );
-                                        });
-                                        if let Some((code, name)) = region {
-                                            region_badge(ui, code, name);
-                                        }
-                                    });
+                                    ui.add(
+                                        egui::Label::new(
+                                            bold(if is_self {
+                                                format!("{} (you)", participant.name)
+                                            } else {
+                                                participant.name.clone()
+                                            })
+                                            .size(12.0),
+                                        )
+                                        .truncate(),
+                                    );
                                     if local_muted {
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 4.0;
@@ -3666,6 +3749,7 @@ impl CaperApp {
                 presence_avatar(
                     ui,
                     &self.identity_name(),
+                    self.account.as_ref().and_then(|account| account.avatar_id),
                     30.0,
                     if self.live == "Live" {
                         "online"
@@ -4404,7 +4488,7 @@ impl CaperApp {
                     .presence
                     .get(&member.id)
                     .map_or("unknown", String::as_str);
-                presence_avatar(ui, &member.display_name, 30.0, status);
+                presence_avatar(ui, &member.display_name, member.avatar_id, 30.0, status);
                 ui.label(bold(&member.display_name).size(12.0));
             });
         }
@@ -4774,7 +4858,8 @@ impl CaperApp {
                             || self.identity_name(),
                             |session| session.author.name.clone(),
                         );
-                        message_row(ui, &author, "Now", &pending.text, false, true);
+                        let avatar_id = self.session.as_ref().and_then(|session| session.author.avatar_id);
+                        message_row(ui, &author, avatar_id, "Now", &pending.text, false, true);
                         if let Some(rejection) = &pending.rejection {
                             egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                 ui.colored_label(ERROR, format!("Not sent. {rejection}"));
@@ -4934,6 +5019,7 @@ impl CaperApp {
         message_row(
             ui,
             &message.author.name,
+            message.author.avatar_id,
             &time,
             &message.content.text,
             message.author.is_guest,
@@ -5070,12 +5156,23 @@ impl CaperApp {
         } else {
             440.0
         };
-        let minimum: f32 = if matches!(dialog, Dialog::ManageSpace) {
+        let dialog_height: f32 = if matches!(dialog, Dialog::ManageSpace) {
             658.0
         } else if matches!(dialog, Dialog::ManageChannel(_)) {
             618.0
+        } else if matches!(dialog, Dialog::Audio) {
+            700.0
+        } else if matches!(dialog, Dialog::Connection | Dialog::Diagnostics) {
+            520.0
+        } else if matches!(dialog, Dialog::Profile) {
+            460.0
+        } else if matches!(
+            dialog,
+            Dialog::ConfirmDelete { .. } | Dialog::LeaveSpace { .. }
+        ) {
+            300.0
         } else {
-            0.0
+            420.0
         };
         let available = context.viewport_rect().size() - egui::vec2(32.0, 32.0);
         let return_to = match &dialog {
@@ -5088,21 +5185,21 @@ impl CaperApp {
         };
         let mut close = context.input(|input| input.key_pressed(egui::Key::Escape))
             && !egui::Popup::is_any_open(context);
-        egui::Area::new(egui::Id::new("caper-dialog"))
+        let dismiss_on_backdrop = matches!(dialog, Dialog::ManageSpace | Dialog::ManageChannel(_));
+        let modal = egui::Area::new(egui::Id::new("caper-dialog"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(context, |ui| {
-                // An Area remembers its previous size. Let settings grow when
-                // recording/replay controls appear instead of pinning the old
-                // short scroll viewport; the screen remains the upper bound.
-                ui.set_max_height(available.y);
+                // Every modal keeps a viewport-bounded shell so asynchronous
+                // content changes scroll rather than resize or recenter it.
+                ui.set_height(dialog_height.min(available.y));
                 egui::Frame::new()
                     .fill(SURFACE)
                     .stroke(Stroke::new(1.0, BORDER))
                     .corner_radius(8)
                     .show(ui, |ui| {
                         ui.set_width(width.min(available.x));
-                        ui.set_min_height(minimum.min(available.y));
+                        ui.set_height(dialog_height.min(available.y));
                         let dialog_top = ui.min_rect().top();
                         egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(22, 18))
@@ -5137,11 +5234,14 @@ impl CaperApp {
                             });
                         ui.separator();
                         let save_bar = match &dialog {
-                            Dialog::ManageChannel(id) if self.channel_dirty(id) => Some(id.clone()),
+                            Dialog::ManageChannel(id) => {
+                                Some((id.clone(), self.channel_dirty(id)))
+                            }
                             _ => None,
                         };
                         egui::ScrollArea::vertical()
-                            .max_height((available.y - if save_bar.is_some() { 160.0 } else { 92.0 }).max(120.0))
+                            .id_salt(("modal-content", title))
+                            .max_height((dialog_height.min(available.y) - if save_bar.is_some() { 160.0 } else { 92.0 }).max(1.0))
                             .show(ui, |ui| {
                                 egui::Frame::new()
                                     .inner_margin(egui::Margin::symmetric(22, 20))
@@ -5213,16 +5313,32 @@ impl CaperApp {
                                         notices(ui, &self.error, &self.warning);
                                     });
                             });
-                        if let Some(id) = save_bar {
+                        if let Some((id, dirty)) = save_bar {
                             // Web's bar is sticky at the dialog's bottom edge.
-                            let filler = dialog_top + minimum.min(available.y) - 66.0 - ui.cursor().top();
+                            let filler = dialog_top + dialog_height.min(available.y) - 66.0 - ui.cursor().top();
                             if filler > 0.0 {
                                 ui.add_space(filler);
                             }
-                            self.channel_save_bar(ui, &id);
+                            if dirty {
+                                self.channel_save_bar(ui, &id);
+                            } else {
+                                // Match channel_save_bar's 36px row and 14px vertical margins
+                                // without creating visible or accessible widgets.
+                                ui.allocate_space(egui::vec2(ui.available_width(), 64.0));
+                            }
                         }
                     });
             });
+        if dismiss_on_backdrop && !egui::Popup::is_any_open(context) {
+            // Use the press, not the release that may have just opened the modal.
+            close |= context.input(|input| {
+                input.pointer.any_pressed()
+                    && input
+                        .pointer
+                        .interact_pos()
+                        .is_some_and(|position| !modal.response.rect.contains(position))
+            });
+        }
         if close && !(self.loading && return_to.is_some()) {
             self.dialog = return_to;
             self.error = None;
@@ -5663,7 +5779,7 @@ impl CaperApp {
             .show(ui, |ui| {
                 for member in members {
                     ui.horizontal(|ui| {
-                        avatar(ui, &member.display_name, 30.0, false);
+                        avatar(ui, &member.display_name, member.avatar_id, 30.0, false);
                         ui.vertical(|ui| {
                             ui.label(RichText::new(&member.display_name).strong());
                             ui.label(
@@ -6145,6 +6261,7 @@ fn users_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
 fn message_row(
     ui: &mut egui::Ui,
     author: &str,
+    avatar_id: Option<i32>,
     time: &str,
     text: &str,
     guest: bool,
@@ -6155,7 +6272,7 @@ fn message_row(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
             ui.horizontal_top(|ui| {
-                avatar(ui, author, 34.0, false);
+                avatar(ui, author, avatar_id, 34.0, false);
                 ui.vertical(|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(bold(author).size(13.0));
@@ -6202,10 +6319,43 @@ fn date_divider(ui: &mut egui::Ui, label: &str) {
     });
 }
 
-fn avatar(ui: &mut egui::Ui, name: &str, size: f32, speaking: bool) {
+fn caper_avatar_index(avatar_id: Option<i32>) -> Option<u16> {
+    avatar_id.and_then(|index| u16::try_from(index).ok().filter(|index| *index < 800))
+}
+
+fn paint_avatar(ui: &egui::Ui, rect: egui::Rect, name: &str, avatar_id: Option<i32>) {
+    if let Some(index) = caper_avatar_index(avatar_id).map(usize::from) {
+        egui::Image::from_bytes(
+            format!("bytes://caper-avatars-v3/{index}.svg"),
+            avatar_images::SVG[index],
+        )
+        .paint_at(ui, rect);
+    } else {
+        ui.painter()
+            .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            name.chars()
+                .next()
+                .unwrap_or('C')
+                .to_uppercase()
+                .to_string(),
+            egui::FontId::proportional(rect.width() * 0.38),
+            TEXT,
+        );
+    }
+}
+
+fn avatar(
+    ui: &mut egui::Ui,
+    name: &str,
+    avatar_id: Option<i32>,
+    size: f32,
+    speaking: bool,
+) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), size / 2.0, RAISED);
+    paint_avatar(ui, rect, name, avatar_id);
     if speaking {
         // Web: caper border with a soft 3px caper halo.
         ui.painter().circle_stroke(
@@ -6216,34 +6366,11 @@ fn avatar(ui: &mut egui::Ui, name: &str, size: f32, speaking: bool) {
         ui.painter()
             .circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(2.0, CAPER));
     }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        name.chars()
-            .next()
-            .unwrap_or('C')
-            .to_uppercase()
-            .to_string(),
-        egui::FontId::proportional(size * 0.38),
-        TEXT,
-    );
+    rect
 }
 
-fn presence_avatar(ui: &mut egui::Ui, name: &str, size: f32, status: &str) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), size / 2.0, RAISED);
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        name.chars()
-            .next()
-            .unwrap_or('C')
-            .to_uppercase()
-            .to_string(),
-        egui::FontId::proportional(size * 0.38),
-        TEXT,
-    );
+fn presence_avatar(ui: &mut egui::Ui, name: &str, avatar_id: Option<i32>, size: f32, status: &str) {
+    let rect = avatar(ui, name, avatar_id, size, false);
     let dot = egui::pos2(rect.right() - 2.0, rect.bottom() - 3.0);
     ui.painter().circle_filled(dot, 5.0, SIDEBAR);
     ui.painter().circle_filled(
@@ -6255,6 +6382,20 @@ fn presence_avatar(ui: &mut egui::Ui, name: &str, size: f32, status: &str) {
             _ => BORDER,
         },
     );
+}
+
+#[cfg(test)]
+mod avatar_tests {
+    use super::caper_avatar_index;
+    #[test]
+    fn persisted_indices_and_fallback() {
+        for index in [0, 31, 32, 255, 256, 799] {
+            assert_eq!(caper_avatar_index(Some(index)), Some(index as u16));
+        }
+        assert_eq!(caper_avatar_index(None), None);
+        assert_eq!(caper_avatar_index(Some(-1)), None);
+        assert_eq!(caper_avatar_index(Some(800)), None);
+    }
 }
 
 fn normalize_username(value: &str) -> String {
@@ -6616,33 +6757,6 @@ fn dialog_actions(ui: &mut egui::Ui, label: &str, enabled: bool) -> (bool, bool)
     .inner
 }
 
-/// Web shows the participant's flag (alt "From {region}", title the region).
-/// egui's bundled fonts cannot draw emoji flags, so desktop shows the region
-/// code in a small flag-sized badge with the same name and label.
-fn region_badge(ui: &mut egui::Ui, code: &str, name: &str) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(
-        code.into(),
-        egui::FontId::new(8.0, egui::FontFamily::Name("Satoshi Bold".into())),
-        MUTED,
-    );
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(galley.size().x.max(14.0) + 6.0, 12.0),
-        egui::Sense::hover(),
-    );
-    ui.painter().rect_stroke(
-        rect,
-        2.0,
-        Stroke::new(1.0, BORDER),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, MUTED);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("From {name}"))
-    });
-    response.on_hover_text(name)
-}
-
 /// Web's `.chat-state`: a 120 px block at the top of the list, content centered.
 fn chat_state(ui: &mut egui::Ui, lines: u8, content: impl FnOnce(&mut egui::Ui)) {
     let height = if lines > 1 { 58.0 } else { 18.0 };
@@ -6933,6 +7047,110 @@ mod tests {
         }
     }
 
+    fn scroll_modal_to_bottom(app: &mut CaperApp, context: &egui::Context) -> egui::FullOutput {
+        let bounds =
+            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+        render(
+            app,
+            context,
+            vec![
+                egui::Event::PointerMoved(bounds.center()),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -2000.0),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        for _ in 0..30 {
+            render(app, context, vec![]);
+        }
+        render(app, context, vec![])
+    }
+
+    #[test]
+    fn modal_shells_do_not_recenter_for_errors_or_pending_content() {
+        for dialog in [
+            Dialog::Profile,
+            Dialog::Audio,
+            Dialog::Connection,
+            Dialog::Diagnostics,
+            Dialog::CreateSpace,
+            Dialog::ManageSpace,
+            Dialog::CreateChannel,
+            Dialog::ManageChannel("chan00000003".into()),
+            Dialog::ConfirmDelete {
+                space: "space0000001".into(),
+                channel: Some("chan00000003".into()),
+                name: "planning".into(),
+            },
+            Dialog::LeaveSpace {
+                id: "space0000001".into(),
+                name: "Fixture Studio".into(),
+            },
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-channel"),
+            );
+            app.dialog = Some(dialog);
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let bounds = || {
+                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap())
+            };
+            let before = bounds();
+            app.error = Some("Test-only asynchronous error content. ".repeat(100));
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            assert_eq!(bounds(), before, "error resized or recentered modal");
+            app.error = None;
+            app.loading = true;
+            app.form_private = !app.form_private;
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            assert_eq!(
+                bounds(),
+                before,
+                "pending content resized or recentered modal"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_backdrops_dismiss_without_inside_clicks_dismissing() {
+        for fixture in ["parity-admin", "parity-channel"] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some(fixture),
+            );
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let bounds =
+                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            click(
+                &mut app,
+                &context,
+                bounds.left_top() + egui::vec2(10.0, 10.0),
+            );
+            assert!(app.dialog.is_some(), "inside click dismissed settings");
+            click(&mut app, &context, egui::pos2(5.0, 5.0));
+            assert!(
+                app.dialog.is_none(),
+                "outside click did not dismiss settings"
+            );
+            assert!(!app.loading);
+        }
+    }
+
     #[test]
     fn spectator_rosters_collapse_without_navigating_or_exposing_playback_controls() {
         let context = egui::Context::default();
@@ -6950,6 +7168,14 @@ mod tests {
         assert_eq!(app.selected_channel, selected);
         assert!(app.voice_target("not-in-space").is_none());
         render(&mut app, &context, vec![]);
+        // SVG decoding is asynchronous on native; wait for the real avatar rather
+        // than inspecting its loading spinner in the first two frames.
+        let started = std::time::Instant::now();
+        while context.has_pending_images() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            render(&mut app, &context, vec![]);
+        }
         let output = render(&mut app, &context, vec![]);
         let sidebar_text = |output: &egui::FullOutput, label: &str| {
             output.shapes.iter().find_map(|shape| match &shape.shape {
@@ -6960,7 +7186,22 @@ mod tests {
             })
         };
         assert!(sidebar_text(&output, "Maya").is_some());
-        let stack = sidebar_text(&output, "M").unwrap() + egui::vec2(3.0, 3.0);
+        // The saved avatar is an image now, not the old clickable "M" initial.
+        let stack = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.brush.as_ref().is_some_and(|brush| {
+                        brush.uv == egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
+                    }) && rect.rect.width() == 20.0
+                        && rect.rect.center().x < 340.0 =>
+                {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .expect("Maya's saved avatar is rendered in the voice stack");
         click(&mut app, &context, stack);
         assert!(app.collapsed_rosters.contains("chan00000002"));
         assert!(sidebar_text(&render(&mut app, &context, vec![]), "Maya").is_none());
@@ -7279,18 +7520,70 @@ mod tests {
         assert!(!app.owner());
         assert!(app.can_leave_space());
         let space = app.selected_space.clone().unwrap();
+        // There is no public General fallback after leaving the last space.
+        app.spaces.retain(|entry| !entry.demo);
+        assert!(!app.needs_first_space());
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
         assert!(app.timeline.messages().next().is_some());
+        app.select_channel("next".into(), false);
+        let stale_generation = app.generation;
+        let stale_navigation = app.navigation;
         app.admin_result(crate::worker::AdminResult::SpaceLeft(space.clone()));
         assert!(!app.spaces.iter().any(|entry| entry.id == space));
         assert!(app.detail.is_none());
         assert!(app.selected_space.is_none());
         assert!(app.selected_channel.is_none());
+        assert!(app.session.is_none());
         assert!(app.timeline.messages().next().is_none());
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
         assert!(!app.can_leave_space());
+        app.accept_navigation(
+            stale_generation,
+            stale_navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("next"), Ok(session()))),
+            }),
+        );
+        assert!(app.selected_channel.is_none());
+        assert!(app.timeline.messages().next().is_none());
+        // Like web, an account with no spaces is asked to name its first one.
+        assert!(app.needs_first_space());
+    }
+
+    #[test]
+    fn leaving_space_clears_private_state_before_opening_remaining_space() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.token = Some("fixture-token".into());
+        app.spaces.retain(|entry| !entry.demo);
+        let mut remaining = app.spaces[0].clone();
+        remaining.id = "remaining-space".into();
+        app.spaces.push(remaining);
+        let space = app.selected_space.clone().unwrap();
+        let generation = app.generation;
+        app.session = Some(session());
+        app.draft = "private draft".into();
+        app.admin_result(crate::worker::AdminResult::SpaceLeft(space));
+
+        assert!(app.generation > generation);
+        assert!(app.selected_space.is_none());
+        assert!(app.selected_channel.is_none());
+        assert!(app.session.is_none());
+        assert!(app.timeline.messages().next().is_none());
+        assert!(app.draft.is_empty());
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.space.as_deref()),
+            Some("remaining-space")
+        );
     }
 
     #[test]
@@ -7302,6 +7595,12 @@ mod tests {
             Some("parity-invitation"),
         );
         let invitation = app.invitations[0].clone();
+        let consent = app.dialog.take();
+        assert!(
+            !app.needs_first_space(),
+            "pending invitations must remain reachable before creating a space"
+        );
+        app.dialog = consent;
         assert!(app.spaces.is_empty());
         assert!(app.detail.is_none());
         assert!(app.timeline.messages().next().is_none());
@@ -7333,6 +7632,10 @@ mod tests {
         assert!(app.invitations.is_empty());
         assert!(app.spaces.is_empty());
         assert!(app.detail.is_none());
+        assert!(
+            app.needs_first_space(),
+            "declining the last invitation restores first-space setup"
+        );
 
         let mut owner = CaperApp::new(
             &context,
@@ -7342,6 +7645,7 @@ mod tests {
         let count = owner.detail.as_ref().unwrap().members.len();
         owner.admin_result(crate::worker::AdminResult::InvitationCreated(Member {
             id: "invited00001".into(),
+            avatar_id: None,
             username: "fixture_invitee".into(),
             display_name: "TEST FIXTURE invitee".into(),
             owner: false,
@@ -7479,7 +7783,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing {label}"))
             };
             render(&mut app, &context, vec![]);
-            let output = render(&mut app, &context, vec![]);
+            render(&mut app, &context, vec![]);
+            let output = scroll_modal_to_bottom(&mut app, &context);
             click(&mut app, &context, button(&output, label));
             assert!(matches!(app.dialog, Some(Dialog::ConfirmDelete { .. })));
             assert!(!app.loading, "opening confirmation must not send DELETE");
@@ -7601,6 +7906,7 @@ mod tests {
         app.dialog = Some(Dialog::Audio);
         render(&mut app, &context, vec![]);
         let audio = render(&mut app, &context, vec![]);
+        let scrolled_audio = scroll_modal_to_bottom(&mut app, &context);
         for copy in [
             "Only you can hear these tests.",
             "Microphone volume",
@@ -7614,7 +7920,10 @@ mod tests {
             "Test microphone",
             "Input level",
         ] {
-            assert!(contains(&audio, copy), "Missing web copy: {copy}");
+            assert!(
+                contains(&audio, copy) || contains(&scrolled_audio, copy),
+                "Missing web copy: {copy}"
+            );
         }
         for removed in [
             "contour",
@@ -7624,7 +7933,7 @@ mod tests {
             "preferences are saved",
         ] {
             assert!(
-                !contains(&audio, removed),
+                !contains(&audio, removed) && !contains(&scrolled_audio, removed),
                 "Unexpected explanatory copy: {removed}"
             );
         }
@@ -8204,6 +8513,7 @@ mod tests {
     fn account(profile: bool) -> Account {
         Account {
             id: "account".into(),
+            avatar_id: None,
             username: profile.then(|| "member".into()),
             display_name: profile.then(|| "Member".into()),
             debug_enabled: false,
@@ -8239,6 +8549,7 @@ mod tests {
             token: "chat-token".into(),
             author: Author {
                 id: "account".into(),
+                avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
             },
@@ -8650,6 +8961,7 @@ mod tests {
         let members = (0..26)
             .map(|index| Member {
                 id: format!("member-{index}"),
+                avatar_id: Some(index),
                 username: format!("member_{index}"),
                 display_name: format!("Member {index}"),
                 owner: index == 0,
@@ -8682,6 +8994,7 @@ mod tests {
             client_message_id: pending.id.clone(),
             author: Author {
                 id: "author".into(),
+                avatar_id: None,
                 name: "Member".into(),
                 is_guest: false,
             },

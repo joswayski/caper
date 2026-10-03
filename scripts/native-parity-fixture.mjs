@@ -10,13 +10,13 @@ export const fixtureIDs = {
 };
 const ids = fixtureIDs;
 const limits = { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 };
-const initialAccount = { id: ids.owner, username: 'fixture_owner', displayName: 'Fixture Owner' };
+const initialAccount = { id: ids.owner, username: 'fixture_owner', displayName: 'Fixture Owner', avatarId: 0 };
 const members = [
   { ...initialAccount, owner: true },
-  { id: ids.member, username: 'maya', displayName: 'Maya', owner: false },
-  { id: ids.other, username: 'alex', displayName: 'Alex', owner: false },
+  { id: ids.member, username: 'maya', displayName: 'Maya', owner: false, avatarId: 31 },
+  { id: ids.other, username: 'alex', displayName: 'Alex', owner: false, avatarId: 799 },
 ];
-const author = (member) => ({ id: member.id, name: member.displayName, isGuest: false });
+const author = (member) => ({ id: member.id, name: member.displayName, isGuest: false, avatarId: member.avatarId });
 const demoSpace = { id: ids.demoSpace, name: 'Caper', ownerId: ids.owner, demo: true };
 const demoChannel = { id: ids.demo, spaceId: ids.demoSpace, name: 'general', private: false };
 const clone = (value) => structuredClone(value);
@@ -46,8 +46,8 @@ function initialState() {
     grants: new Map([[ids.private, [ids.owner, ids.member]]]), failures: [], challenges: new Map(),
     account, chatSessions: new Map(), sendKeys: new Map(), typingRevision: 0,
     media: new Map([[ids.design, { type: 'snapshot', revision: 1, participants: [
-      { id: 'fixture-voice-maya', name: 'TEST FIXTURE Maya', muted: false, deafened: false },
-      { id: 'fixture-voice-alex', name: 'TEST FIXTURE Alex', muted: true, deafened: false },
+      { id: 'fixture-voice-maya', name: 'TEST FIXTURE Maya', muted: false, deafened: false, avatarId: 31 },
+      { id: 'fixture-voice-alex', name: 'TEST FIXTURE Alex', muted: true, deafened: false, avatarId: 799 },
     ] }]]),
     mediaDenied: new Set(),
   };
@@ -114,7 +114,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const channelId = body.media.channelId ?? ids.demo;
           if (!channelFor(channelId) || !Array.isArray(body.media.participants)) return reject(response, 400, 'invalid media fixture');
           const snapshot = { type: 'snapshot', revision: (state.media.get(channelId)?.revision ?? 0) + 1,
-            participants: body.media.participants.map(({ id, name, muted, deafened, countryCode }) => ({ id, name, muted, deafened, ...(countryCode ? { countryCode } : {}) })) };
+            participants: body.media.participants.map(({ id, name, muted, deafened }) => ({ id, name, muted, deafened })) };
           state.media.set(channelId, snapshot);
           broadcast('media', channelId, snapshot);
         }
