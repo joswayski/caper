@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { attachmentsOf, isChatMessage, type ChatMessage } from "../chat/types.ts";
-import { attachmentKind, compressible, uploadsAvailable, fitWithin, formatBytes, keepCompressed, refreshAttachmentUrls, renamed, uploadPrepared, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
+import { attachmentKind, compressible, uploadSettings, compressionSettings, stillPlan, videoTargetHeight, DEFAULT_COMPRESSION, fitWithin, formatBytes, keepCompressed, refreshAttachmentUrls, renamed, uploadPrepared, urlExpiry, UploadError, type UploadTransport } from "../chat/uploads.ts";
 
 const message = (content: unknown) => ({
   id: "m1", channelId: "c1", seq: "1", createdAt: "2026-10-01T00:00:00Z", clientMessageId: "x",
@@ -98,8 +98,32 @@ test("expired URLs can be refreshed and their expiry read", async () => {
   assert.deepEqual(await refreshAttachmentUrls(["f1"], (async () => new Response(null, { status: 503 })) as typeof fetch), {});
 });
 
-test("the attach control appears only when the API has uploads configured", async () => {
-  assert.equal(await uploadsAvailable((async () => Response.json({ used: 0, limit: 1 })) as typeof fetch), true);
-  assert.equal(await uploadsAvailable((async () => Response.json({ error: "uploads unavailable" }, { status: 503 })) as typeof fetch), false);
-  assert.equal(await uploadsAvailable((async () => { throw new TypeError("offline"); }) as typeof fetch), false);
+test("the attach control appears only when the API has uploads configured, with its settings", async () => {
+  const tuned = await uploadSettings((async () => Response.json({ used: 0, limit: 1, compression: { ...DEFAULT_COMPRESSION, imageQuality: 80, videoMaxHeight: 0 } })) as typeof fetch);
+  assert.equal(tuned?.imageQuality, 80);
+  assert.equal(tuned?.videoMaxHeight, 0);
+  assert.deepEqual(await uploadSettings((async () => Response.json({ used: 0, limit: 1 })) as typeof fetch), DEFAULT_COMPRESSION, "older servers get defaults");
+  assert.equal(await uploadSettings((async () => Response.json({ error: "uploads unavailable" }, { status: 503 })) as typeof fetch), undefined);
+  assert.equal(await uploadSettings((async () => { throw new TypeError("offline"); }) as typeof fetch), undefined);
+});
+
+test("server compression settings are validated field by field", () => {
+  assert.deepEqual(compressionSettings({ imageQuality: 0, paletteColors: 999, previewEdge: 320, videoBitrateKbps: "fast" }),
+    { ...DEFAULT_COMPRESSION, previewEdge: 320 });
+  assert.deepEqual(compressionSettings(null), DEFAULT_COMPRESSION);
+});
+
+test("flat images go lossless indexed; others lossy unless quality is 100", () => {
+  assert.equal(stillPlan(DEFAULT_COMPRESSION, "within-palette"), "indexed-png");
+  assert.equal(stillPlan(DEFAULT_COMPRESSION, "too-many"), "lossy");
+  assert.equal(stillPlan({ ...DEFAULT_COMPRESSION, paletteColors: 0 }, "within-palette"), "lossy");
+  assert.equal(stillPlan({ ...DEFAULT_COMPRESSION, imageQuality: 100 }, "too-many"), "lossless-png");
+});
+
+test("videos only shrink to the configured height, keeping even dimensions", () => {
+  assert.equal(videoTargetHeight(2160, 1080), 1080);
+  assert.equal(videoTargetHeight(1080, 1080), undefined);
+  assert.equal(videoTargetHeight(720, 1080), undefined);
+  assert.equal(videoTargetHeight(2160, 0), undefined);
+  assert.equal(videoTargetHeight(2160, 721), 720);
 });

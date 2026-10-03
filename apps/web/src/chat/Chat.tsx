@@ -6,7 +6,7 @@ import MessageReactions from "./MessageReactions.tsx";
 import { dateDivider } from "./dates.ts";
 import { attachmentsOf, type ChatAttachment, type ChatAuthor, type GeneralChatHistory } from "./types.ts";
 import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
-import { MAX_ATTACHMENTS, browserTransport, prepareFile, refreshAttachmentUrls, uploadPrepared, uploadsAvailable } from "./uploads.ts";
+import { MAX_ATTACHMENTS, browserTransport, prepareFile, refreshAttachmentUrls, uploadPrepared, uploadSettings, type CompressionSettings } from "./uploads.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar from "../components/Avatar";
 import "./chat.css";
@@ -65,7 +65,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const [drafts, setDrafts] = useState<DraftAttachment[]>([]);
   const uploads = useRef(new Map<string, AbortController>());
   const objectUrls = useRef(new Set<string>());
-  const [uploadsEnabled, setUploadsEnabled] = useState(false);
+  // Present only when the API has uploads configured; carries its compression settings.
+  const [compression, setCompression] = useState<CompressionSettings>();
+  const uploadsEnabled = !!compression;
   const [freshUrls, setFreshUrls] = useState<Record<string, { url: string; previewUrl?: string }>>({});
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
@@ -153,9 +155,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => { clientRef.current?.setSounds(messageSounds); }, [messageSounds]);
 
   useEffect(() => {
-    if (!signedIn) { setUploadsEnabled(false); return; }
+    if (!signedIn) { setCompression(undefined); return; }
     let active = true;
-    void uploadsAvailable().then((available) => { if (active) setUploadsEnabled(available); });
+    void uploadSettings().then((settings) => { if (active) setCompression(settings); });
     return () => { active = false; };
   }, [signedIn]);
 
@@ -186,7 +188,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       setDrafts((current) => [...current, { key, name: file.name, kind: file.type.startsWith("image/") ? "image" : "file", localUrl, sourceSize: file.size, progress: 0 }]);
       void (async () => {
         try {
-          const prepared = await prepareFile(file);
+          const prepared = await prepareFile(file, compression, (fraction) => updateDraft(key, { compressing: fraction }));
           updateDraft(key, { name: prepared.name, kind: prepared.kind, storedSize: prepared.blob.size });
           const attachment = await uploadPrepared(channel, prepared, browserTransport, (progress) => updateDraft(key, { progress }), controller.signal);
           updateDraft(key, { attachment, progress: 1 });

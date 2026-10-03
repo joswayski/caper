@@ -61,6 +61,8 @@ export interface DraftAttachment {
   sourceSize: number;
   storedSize?: number;
   progress: number;
+  /** Set while a video is being re-encoded before upload. */
+  compressing?: number;
   error?: string;
   attachment?: ChatAttachment;
 }
@@ -74,6 +76,7 @@ export function DraftAttachments({ drafts, onRemove }: { drafts: DraftAttachment
         <strong title={draft.name}>{draft.name}</strong>
         <small>{draft.error ?? (draft.attachment
           ? draft.storedSize && draft.storedSize < draft.sourceSize ? `${formatBytes(draft.sourceSize)} → ${formatBytes(draft.storedSize)}` : formatBytes(draft.storedSize ?? draft.sourceSize)
+          : draft.storedSize === undefined ? draft.compressing !== undefined ? `Compressing… ${Math.round(draft.compressing * 100)}%` : "Preparing…"
           : `Uploading… ${Math.round(draft.progress * 100)}%`)}</small>
       </span>
       {!draft.attachment && !draft.error && <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />}
