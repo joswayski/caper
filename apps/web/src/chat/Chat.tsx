@@ -44,7 +44,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -131,8 +131,8 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   useEffect(() => { onOnlineChange?.(state.online); }, [state.online, onOnlineChange]);
 
   useEffect(() => {
-    if (identityReady) clientRef.current?.identify(name, signedIn);
-  }, [identityReady, name, signedIn]);
+    if (identityReady && !readOnly) clientRef.current?.identify(name, signedIn);
+  }, [identityReady, name, signedIn, readOnly]);
 
   useEffect(() => {
     if (state.author) onAuthorChange?.(state.author);
@@ -167,7 +167,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     return () => clearTimeout(timer);
   }, [typingLabel]);
   const submit = async () => {
-    if (!identityReady || sending || state.sendRejected) return;
+    if (readOnly || !identityReady || sending || state.sendRejected) return;
     setValidationError(undefined);
     followLatest.current = true;
     const submitted = state.pendingSend?.text ?? draft;
@@ -189,8 +189,9 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
-        {"content" in message && <MessageReactions message={message} authorId={state.author?.id}
+        {"content" in message && <MessageReactions message={message} authorId={state.author?.id} readOnly={readOnly}
           onReact={async (messageId, emoji, active) => {
+            if (readOnly) throw new Error("Join this channel to react.");
             if (!clientRef.current) throw new Error("Chat is not ready yet.");
             await clientRef.current.setReaction(messageId, emoji, active);
           }} />}
@@ -262,7 +263,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       </span>
     </p>
 
-    <div className="chat-composer">
+    {readOnly ? <div className="chat-composer channel-preview">{composerNotice}</div> : <div className="chat-composer">
       {state.sessionError && <p className="chat-inline-error" role="alert">{state.sessionError} <button type="button" onClick={() => clientRef.current?.retrySession()}>Retry session</button></p>}
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
@@ -273,6 +274,6 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
         <span id="chat-composer-hint" className="sr-only">Enter to send. Shift+Enter for a new line.</span>
         {characterCount >= 3000 && <small className="chat-counter" data-tone={counterTone}>{characterCount.toLocaleString()} / 4,000</small>}
       </form>
-    </div>
+    </div>}
   </section>;
 }

@@ -8,4 +8,7 @@
 <group android:translateX="105" android:translateY="125.4375"><path android:pathData="M0 0 C3.84 0.72 5.46 1.57 8 4.56 C8.94 8.56 8.61 11.54 6.5 15.06 C2.98 17.17 -0 17.5 -4 16.56 C-6.99 14.02 -7.84 12.41 -8.56 8.56 C-7.62 3.54 -5.02 0.94 0 0 Z" android:fillColor="#151322"/></group>
 <group android:translateX="171" android:translateY="106.375"><path android:pathData="M0 0 C4.07 0.85 5.54 2.3 8 5.62 C8.62 8.62 8.62 8.62 8 11.62 C5.37 15.29 3.91 16.47 -0.56 17.25 C-4 16.62 -4 16.62 -6.44 14.5 C-8.29 11.09 -8.72 9.44 -8 5.62 C-5.54 2.3 -4.07 0.85 0 0 Z" android:fillColor="#151222"/></group>
 <group android:translateX="147" android:translateY="133"><path android:pathData="M0 0 C2.62 0.31 2.62 0.31 5 1 C4.44 4.47 3.39 5.91 0.69 8.12 C0.09 8.62 -0.5 9.12 -1.11 9.63 C-5 12.45 -7.73 13.28 -12.56 13.25 C-13.04 13.25 -13.04 13.25 -15.44 13.27 C-18 13 -18 13 -21 11 C-21.01 8.88 -21.01 8.88 -20 7 C-17.74 6.75 -17.74 6.75 -14.88 7 C-9.21 7.21 -6.53 6.37 -2 3 C-1.34 2.01 -0.68 1.02 0 0 Z" android:fillColor="#141027"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M46 75Q55 65 85 53Q119 41 129 47Q135 52 124 62Q111 75 82 83Q54 91 47 84Q42 80 46 75Z" android:fillColor="#2A2D26"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M50 43Q64 25 99 21Q104 20 105 26L114 53Q93 69 64 73Z" android:fillColor="#333730"/></group>
+<group android:translateX="0" android:translateY="0"><path android:pathData="M59 60Q87 55 108 42L113 53Q89 70 63 73Z" android:fillColor="#6269D8"/></group>
 </group></vector>

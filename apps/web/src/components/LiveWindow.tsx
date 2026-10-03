@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, Hash } from "lucide-react";
+import { ChevronDown, Hash, Headphones, Mic, Settings } from "lucide-react";
 import { avatarUrl } from "../account/avatar";
 import { attachLiveMotion } from "./liveMotion";
 import { createDemoTiming } from "./demoTiming";
@@ -192,6 +192,15 @@ export default function LiveWindow() {
                   </ul>
                 </nav>
               </div>
+              <div className="call-account sim-account" role="img" aria-label="Demo profile: Maya, online, with microphone, headphones and user settings">
+                <span className="account-profile">
+                  <span className="account-avatar"><Avatar person={people[0]} /><span className="sim-presence" /></span>
+                  <strong className="account-name">Maya</strong>
+                </span>
+                <span className="sim-audio-icon"><Mic aria-hidden="true" /></span>
+                <span className="sim-audio-icon"><Headphones aria-hidden="true" /></span>
+                <span className="sim-audio-icon"><Settings aria-hidden="true" /></span>
+              </div>
             </aside>
             <section className="sim-chat">
               <header><div><Hash aria-hidden="true" /><strong>general</strong></div></header>
@@ -227,7 +236,6 @@ export default function LiveWindow() {
           <span className="live-invite"><i aria-hidden="true" /><span className="live-invite-fine">Click to join</span><span className="live-invite-coarse">Tap to join</span></span>
         </a>
       </div>
-      <p className="live-caption">Fictional conversation</p>
     </div>
   );
 }

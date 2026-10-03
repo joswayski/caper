@@ -101,6 +101,8 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT c.id,u.id FROM public.channels c CROSS JOIN public.users u WHERE c.external_id=$1")
+        .bind(&channel).execute(&pool).await.unwrap();
     let original = persist(
         &pool,
         &channel,
@@ -111,6 +113,175 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
     .await
     .unwrap();
     let id = original["id"].as_str().unwrap();
+
+    // A capability for one joined channel does not confer participation in
+    // another readable channel. Reads remain available as a preview.
+    let preview_channel = "reaction-preview-channel";
+    let preview_channel_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'preview') RETURNING id",
+    )
+    .bind(preview_channel)
+    .bind(shared_space)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let guest_two: i64 =
+        sqlx::query_scalar("SELECT id FROM public.users WHERE external_id='guest-two'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(preview_channel_id)
+        .bind(guest_two)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let preview_message = persist(
+        &pool,
+        preview_channel,
+        "guest-two",
+        Uuid::new_v4(),
+        "readable preview",
+    )
+    .await
+    .unwrap();
+    let preview_message_id = preview_message["id"].as_str().unwrap();
+    assert!(
+        history_page(&pool, preview_channel, None, Some(reader))
+            .await
+            .is_ok()
+    );
+    for active in [true, false] {
+        assert_eq!(
+            persist_reaction(
+                &pool,
+                preview_channel,
+                preview_message_id,
+                "guest-one",
+                "👍",
+                active,
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&pool)
+        .await
+        .unwrap();
+    persist_reaction(
+        &pool,
+        preview_channel,
+        preview_message_id,
+        "guest-one",
+        "👍",
+        true,
+    )
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for active in [false, true] {
+        assert_eq!(
+            persist_reaction(
+                &pool,
+                preview_channel,
+                preview_message_id,
+                "guest-one",
+                "👍",
+                active,
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    // A reaction queued behind leave must use a fresh READ COMMITTED snapshot
+    // after the space lock and leave every reaction-related row unchanged.
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before: (Value, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT m.payload,c.last_seq,
+                (SELECT count(*) FROM public.message_reactions WHERE message_id=m.id),
+                (SELECT count(*) FROM public.message_reaction_activity WHERE message_id=m.id),
+                (SELECT count(*) FROM public.channel_events WHERE channel_id=c.id)
+         FROM public.messages m JOIN public.channels c ON c.id=m.channel_id
+         WHERE m.external_id=$1",
+    )
+    .bind(preview_message_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let mut leaving = pool.begin().await.unwrap();
+    let blocker: i32 =
+        sqlx::query_scalar("SELECT pg_backend_pid() FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(shared_space)
+            .fetch_one(&mut *leaving)
+            .await
+            .unwrap();
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&mut *leaving)
+        .await
+        .unwrap();
+    let reaction_pool = pool.clone();
+    let queued_message = preview_message_id.to_owned();
+    let queued = tokio::spawn(async move {
+        persist_reaction(
+            &reaction_pool,
+            preview_channel,
+            &queued_message,
+            "guest-one",
+            "👍",
+            false,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))")
+                .bind(blocker).fetch_one(&pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("reaction should wait behind leave");
+    leaving.commit().await.unwrap();
+    assert_eq!(
+        queued.await.unwrap().unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    let after: (Value, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT m.payload,c.last_seq,
+                (SELECT count(*) FROM public.message_reactions WHERE message_id=m.id),
+                (SELECT count(*) FROM public.message_reaction_activity WHERE message_id=m.id),
+                (SELECT count(*) FROM public.channel_events WHERE channel_id=c.id)
+         FROM public.messages m JOIN public.channels c ON c.id=m.channel_id
+         WHERE m.external_id=$1",
+    )
+    .bind(preview_message_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        after, before,
+        "denial must not mutate snapshot, sequence, reactions, activity, or outbox"
+    );
+
     assert_eq!(
         persist_reaction(&pool, &channel, id, "wrong", "👍", true)
             .await
@@ -217,11 +388,13 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
     assert_eq!(page["messages"][0]["reactions"], removed["reactions"]);
     assert_eq!(page["messages"][0]["author"]["avatarId"], 719);
     assert_eq!(page["messages"][0]["author"]["id"], "guest-one");
-    let events: Vec<Value> =
-        sqlx::query_scalar("SELECT payload FROM public.channel_events ORDER BY seq")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    let events: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM public.channel_events WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) ORDER BY seq",
+    )
+    .bind(&channel)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert_eq!(events.len(), 4);
     assert_eq!(events[1], first);
     assert_eq!(events[3], removed);
@@ -244,6 +417,8 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel).bind(user).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
         .bind(b"parent".as_slice()).bind(user).execute(&pool).await.unwrap();
     for token in ["account-one", "account-two"] {
@@ -274,6 +449,12 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .await
         .unwrap();
     let private_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,private) VALUES('private-channel',$1,'private',true) RETURNING id").bind(space).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(private_id)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
     let private_message = persist(
         &pool,
         "private-channel",
@@ -581,6 +762,8 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel).bind(user).execute(&pool).await.unwrap();
     assert_eq!(channel.len(), 12);
     let seeded_name: String =
         sqlx::query_scalar("SELECT name FROM public.channels WHERE external_id=$1")
@@ -961,6 +1144,12 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel)
+        .bind(logout_user)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name, user_id, account_session_hash) VALUES ($1,$2,'Not authoritative',$3,$4)")
         .bind(random_id(12)).bind(Sha256::digest(b"account-chat").as_slice()).bind(logout_user).bind(b"parent-session".as_slice()).execute(&pool).await.unwrap();
     let account_message = persist(&pool, &channel, "account-chat", Uuid::new_v4(), "signed in")
@@ -1206,6 +1395,12 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(member)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     let cookie = "member-account-cookie";
@@ -1240,6 +1435,60 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         .unwrap();
     assert_eq!(first_message["seq"], "1");
     assert_eq!(second_message["seq"], "1");
+    assert!(
+        history_page(&pool, &public, None, Some(member))
+            .await
+            .is_ok(),
+        "public preview can read without joining"
+    );
+    assert_eq!(
+        persist(
+            &pool,
+            &public,
+            chat_token,
+            Uuid::new_v4(),
+            "preview cannot send"
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&public).bind(member).execute(&pool).await.unwrap();
+    assert_eq!(
+        persist(
+            &pool,
+            &public,
+            chat_token,
+            Uuid::new_v4(),
+            "explicitly joined"
+        )
+        .await
+        .unwrap()["seq"],
+        "1"
+    );
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND user_id=$2")
+        .bind(&public).bind(member).execute(&pool).await.unwrap();
+    assert!(
+        history_page(&pool, &public, None, Some(member))
+            .await
+            .is_ok(),
+        "leaving public retains preview access"
+    );
+    assert_eq!(
+        persist(
+            &pool,
+            &public,
+            chat_token,
+            Uuid::new_v4(),
+            "left cannot send"
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         persist(&pool, &first, outsider_chat, Uuid::new_v4(), "denied")
             .await
@@ -1366,7 +1615,8 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
     let (mut public_socket, _) = tokio_tungstenite::connect_async(public_request)
         .await
         .unwrap();
-    assert_eq!(event(&mut public_socket).await["cursor"], "0");
+    assert_eq!(event(&mut public_socket).await["type"], "message.created");
+    assert_eq!(event(&mut public_socket).await["cursor"], "1");
     sqlx::query("UPDATE public.channels SET private=true WHERE external_id=$1")
         .bind(&public)
         .execute(&pool)

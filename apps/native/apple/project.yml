@@ -81,8 +81,10 @@ targets:
     platform: macOS
     sources:
       - path: Sources/CaperCore
-        excludes: [EmojiAssets]
+        excludes: [EmojiAssets, InvitationAssets]
       - path: Sources/CaperCore/EmojiAssets
+        buildPhase: resources
+      - path: Sources/CaperCore/InvitationAssets
         buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
@@ -106,8 +108,10 @@ targets:
     platform: iOS
     sources:
       - path: Sources/CaperCore
-        excludes: [EmojiAssets]
+        excludes: [EmojiAssets, InvitationAssets]
       - path: Sources/CaperCore/EmojiAssets
+        buildPhase: resources
+      - path: Sources/CaperCore/InvitationAssets
         buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
@@ -273,7 +277,10 @@ targets:
   CaperIOSCoreTests:
     type: bundle.unit-test
     platform: iOS
-    sources: Tests/CaperIOSCoreTests
+    sources:
+      - Tests/CaperIOSCoreTests
+      - Tests/CaperCoreTests/AvatarTests.swift
+      - Tests/CaperCoreTests/GatewayLifecycleTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

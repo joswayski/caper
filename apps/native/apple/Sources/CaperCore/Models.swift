@@ -12,11 +12,17 @@ public struct Account: Codable, Equatable, Sendable {
     public var avatarId: Int? = nil
 }
 
+public struct Inviter: Codable, Equatable, Sendable {
+    public let username: String
+    public let displayName: String
+}
+
 public struct Space: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let ownerId: String
     public var demo: Bool?
+    public var inviter: Inviter?
 }
 
 public struct Channel: Codable, Equatable, Identifiable, Sendable {
@@ -24,6 +30,26 @@ public struct Channel: Codable, Equatable, Identifiable, Sendable {
     public let spaceId: String
     public let name: String
     public let `private`: Bool
+    public let joined: Bool
+
+    private enum CodingKeys: String, CodingKey { case id, spaceId, name, `private`, joined }
+    public init(id: String, spaceId: String, name: String, private: Bool, joined: Bool = true) {
+        self.id = id; self.spaceId = spaceId; self.name = name; self.private = `private`; self.joined = joined
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        spaceId = try values.decode(String.self, forKey: .spaceId)
+        name = try values.decode(String.self, forKey: .name)
+        `private` = try values.decode(Bool.self, forKey: .private)
+        joined = try values.decodeIfPresent(Bool.self, forKey: .joined) ?? true
+    }
+}
+
+public struct ChannelInvitation: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { channel.id }
+    public let channel: Channel
+    public let inviter: Inviter
 }
 
 public struct Member: Codable, Equatable, Identifiable, Sendable {
@@ -42,13 +68,38 @@ public struct SpaceLimits: Codable, Equatable, Sendable {
 
 public struct SpacesResponse: Codable, Sendable {
     public let spaces: [Space]
+    public let invitations: [Space]
     public let limits: SpaceLimits
+
+    private enum CodingKeys: String, CodingKey { case spaces, invitations, limits }
+    public init(spaces: [Space], invitations: [Space] = [], limits: SpaceLimits) {
+        self.spaces = spaces; self.invitations = invitations; self.limits = limits
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        spaces = try values.decode([Space].self, forKey: .spaces)
+        invitations = try values.decodeIfPresent([Space].self, forKey: .invitations) ?? []
+        limits = try values.decode(SpaceLimits.self, forKey: .limits)
+    }
 }
 
 public struct SpaceDetail: Codable, Sendable {
     public let space: Space
     public let channels: [Channel]
     public let members: [Member]
+    public let channelInvitations: [ChannelInvitation]
+
+    private enum CodingKeys: String, CodingKey { case space, channels, members, channelInvitations }
+    public init(space: Space, channels: [Channel], members: [Member], channelInvitations: [ChannelInvitation] = []) {
+        self.space = space; self.channels = channels; self.members = members; self.channelInvitations = channelInvitations
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        space = try values.decode(Space.self, forKey: .space)
+        channels = try values.decode([Channel].self, forKey: .channels)
+        members = try values.decode([Member].self, forKey: .members)
+        channelInvitations = try values.decodeIfPresent([ChannelInvitation].self, forKey: .channelInvitations) ?? []
+    }
 }
 
 public enum PresenceStatus: String, Codable, Sendable { case online, idle, offline, unknown }
@@ -59,6 +110,16 @@ public struct PresenceMember: Codable, Equatable, Sendable {
 }
 
 public enum WorkspaceValidation {
+    public static func normalizeUsername(_ value: String) -> String {
+        String(value.lowercased().filter { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "_") }.prefix(32))
+    }
+
+    public static func usernameError(_ value: String) -> String? {
+        (3...32).contains(value.utf8.count) && value.utf8.allSatisfy({
+            (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+        }) ? nil : "Username must be 3–32 lowercase letters, numbers, or underscores."
+    }
+
     public static func spaceNameError(_ value: String) -> String? {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Enter a space name." }
@@ -239,7 +300,8 @@ public struct ChatDeliveryState: Sendable {
 
     public mutating func begin(text: String, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
-        let command = PendingMessage(id: makeID(), text: text)
+        // Rust's UUID serialization returns lowercase in both HTTP and replay.
+        let command = PendingMessage(id: makeID().lowercased(), text: text)
         pending = command
         return command
     }

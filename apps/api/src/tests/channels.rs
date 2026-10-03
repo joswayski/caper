@@ -91,6 +91,8 @@ async fn isolation_and_revocation(shared: bool) {
             .await
             .unwrap();
     }
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT c.id,sm.user_id FROM public.channels c JOIN public.space_members sm ON sm.space_id=c.space_id WHERE c.space_id=$1")
+        .bind(space).execute(&pool).await.unwrap();
     let mock = Arc::new(Mock::new());
     let mut state = AppState::with_database(Config::test(true), mock.clone(), Some(pool.clone()));
     let key = format!("caper:{{channel-test-{}}}:state", Uuid::new_v4());
@@ -228,6 +230,25 @@ async fn isolation_and_revocation(shared: bool) {
         StatusCode::NOT_FOUND,
         "cross-channel track must never reach provider"
     );
+
+    // Leaving an otherwise public channel gates the existing voice capability.
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=(SELECT id FROM public.channels WHERE external_id='ChannelBravo') AND user_id=$1")
+        .bind(users[1]).execute(&pool).await.unwrap();
+    assert_eq!(
+        request(
+            &state,
+            "ChannelBravo",
+            "snapshot",
+            Some("member-session"),
+            Some(bravo_token),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$1 FROM public.channels WHERE external_id='ChannelBravo'")
+        .bind(users[1]).execute(&pool).await.unwrap();
 
     // Privacy changes immediately gate reads and the existing participant token.
     sqlx::query("UPDATE public.channels SET private=true WHERE external_id='ChannelBravo'")

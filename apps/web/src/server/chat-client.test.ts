@@ -270,6 +270,21 @@ test("reaction HTTP snapshots and sequenced delivery agree without skipping mess
   assert.equal(f.client.snapshotHistory()?.cursor, "4", "HTTP acknowledgement alone does not advance replay");
 });
 
+test("a late reaction rejection after stopping cannot recreate a chat session", async (t) => {
+  const f = await sendingFixture(t);
+  let finish!: (response: Response) => void;
+  const fetch = t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+  const request = f.client.setReaction("message-1", "👍", true);
+  const before = f.state;
+  f.client.stop();
+  finish(Response.json({ error: "expired" }, { status: 401 }));
+  await request;
+  assert.equal(fetch.mock.callCount(), 1, "do not mint a session for an abandoned conversation");
+  assert.equal(f.state, before);
+  await assert.rejects(f.client.setReaction("message-1", "👍", true), /unavailable/);
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
 test("message sounds exclude history, own messages, and duplicate replay", async (t) => {
   const sounds: string[] = [];
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Audio");

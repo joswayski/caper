@@ -26,7 +26,8 @@ class ReactionUiTest {
     @get:Rule val compose = createComposeRule()
 
     @Test fun ownershipPickerSearchAndSavingStates() {
-        val state = mutableStateOf(AppUiState(chatAuthorId = "self"))
+        val joined = Channel("channel00001", "space0000001", "general", private = false, joined = true)
+        val state = mutableStateOf(AppUiState(chatAuthorId = "self", selectedChannel = joined))
         val message = ChatMessage(
             "message00000001", "channel00001", "1", ChatAuthor("other", "Fixture Author", false, avatarId = 719),
             ChatContent(1, "text", "TEST FIXTURE — reaction chips, not a live conversation."),
@@ -71,6 +72,18 @@ class ReactionUiTest {
         compose.onNodeWithText("Retry").assertIsEnabled()
         compose.onNodeWithText("Dismiss").assertIsEnabled()
         capture("reaction-error-test-fixture.png", compose.onRoot())
+
+        // Public previews retain chat identity so incoming reaction ownership and
+        // counts remain readable, but no reaction mutation may be initiated.
+        compose.onNodeWithContentDescription("Add reaction").performClick()
+        compose.onNode(isDialog()).assertExists()
+        compose.runOnIdle { state.value = state.value.copy(selectedChannel = joined.copy(joined = false)) }
+        compose.onNode(isDialog()).assertDoesNotExist()
+        compose.onNodeWithContentDescription("👍 reaction, 2").assertIsSelected().assertIsNotEnabled()
+        compose.onNodeWithText("2").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Add reaction").assertIsNotEnabled()
+        compose.onNodeWithText("Retry").assertIsNotEnabled()
+        compose.onNodeWithText("Dismiss").assertIsEnabled()
     }
 
     private fun capture(name: String, node: SemanticsNodeInteraction) {

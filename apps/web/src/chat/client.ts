@@ -294,14 +294,16 @@ export class ChatClient {
   }
 
   async setReaction(messageId: string, emoji: string, active: boolean): Promise<void> {
+    const generation = this.generation;
     const channelId = this.state.channelId;
     const session = this.session;
-    if (!channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then react again.");
+    if (this.controller.signal.aborted || !channelId || !session) throw new Error("Your chat session is unavailable. Retry the session, then react again.");
     const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, {
       method: "PUT", headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
       body: JSON.stringify({ emoji, active }),
       signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
     });
+    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
         this.session = undefined;
@@ -311,7 +313,7 @@ export class ChatClient {
     }
     const event: unknown = await response.json();
     if (!isChatReactionEvent(event) || event.channelId !== channelId || event.messageId !== messageId) throw new Error("The chat service returned an invalid reaction.");
-    if (this.controller.signal.aborted) return;
+    if (this.controller.signal.aborted || generation !== this.generation || session !== this.session) return;
     this.timeline.mergeReactions(event);
     this.update({ messages: this.timeline.messages });
   }

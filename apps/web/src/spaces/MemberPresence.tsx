@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
 import { watchPresence } from "../gateway/client";
@@ -8,7 +9,7 @@ const PAGE_SIZE = 25;
 type Status = "online" | "idle" | "offline";
 
 /** Only the current member page has live presence subscriptions. */
-export default function MemberPresence({ spaceId, members, demo }: { spaceId: string; members: Member[]; demo?: boolean }) {
+export default function MemberPresence({ spaceId, members, demo, onClose }: { spaceId: string; members: Member[]; demo?: boolean; onClose: () => void }) {
   const [page, setPage] = useState(0);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
   const [live, setLive] = useState(false);
@@ -30,6 +31,7 @@ export default function MemberPresence({ spaceId, members, demo }: { spaceId: st
   return <aside id="space-member-list" className="space-member-presence" aria-label="Space members">
     <h2 className="member-presence-heading">
       <span>Members</span>{!demo && <span className="section-count">{members.length}</span>}
+      <button className="member-list-close" type="button" aria-label="Close member list" onClick={onClose}><X aria-hidden="true" /></button>
     </h2>
     <div>
       {demo ? <p className="member-presence-connecting">General is open to everyone. People in voice appear in the channel sidebar.</p> : !members.length && <p className="member-presence-connecting">No members to show.</p>}

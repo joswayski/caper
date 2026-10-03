@@ -4,9 +4,10 @@ import { SmilePlus, X } from "lucide-react";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 
-export default function MessageReactions({ message, authorId, onReact }: {
+export default function MessageReactions({ message, authorId, readOnly = false, onReact }: {
   message: ChatMessage;
   authorId?: string;
+  readOnly?: boolean;
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -15,6 +16,8 @@ export default function MessageReactions({ message, authorId, onReact }: {
   const [saving, setSaving] = useState(false);
   const busy = useRef(false);
   const [failure, setFailure] = useState<{ emoji: string; active: boolean; error: string }>();
+  const canReact = !!authorId && !readOnly;
+  useEffect(() => { if (!canReact) setOpen(false); }, [canReact]);
   const { refs, floatingStyles, context } = useFloating({
     open, onOpenChange: setOpen, placement: "bottom-end", strategy: "fixed",
     middleware: [offset(6), flip(), shift({ padding: 12 })], whileElementsMounted: autoUpdate,
@@ -29,7 +32,7 @@ export default function MessageReactions({ message, authorId, onReact }: {
   }, [open, Picker]);
 
   const react = async (emoji: string, active: boolean) => {
-    if (busy.current) return;
+    if (!canReact || busy.current) return;
     busy.current = true;
     setSaving(true);
     setFailure(undefined);
@@ -41,14 +44,14 @@ export default function MessageReactions({ message, authorId, onReact }: {
 
   return <>
     <button type="button" className="chat-add-reaction" ref={refs.setReference}
-      disabled={!authorId || saving} aria-label="Add reaction" title="Add reaction" {...getReferenceProps()}>
+      disabled={!canReact || saving} aria-label="Add reaction" title="Add reaction" {...getReferenceProps()}>
       <SmilePlus size={18} aria-hidden="true" />
     </button>
     {!!message.reactions?.length && <div className="chat-reactions" aria-label="Reactions">
       {message.reactions.map(({ emoji, authorIds }) => {
         const mine = !!authorId && authorIds.includes(authorId);
         return <button type="button" key={emoji} className="chat-reaction" aria-pressed={mine}
-          disabled={!authorId || saving} aria-label={`${emoji}, ${authorIds.length} ${authorIds.length === 1 ? "reaction" : "reactions"}${mine ? ", including you" : ""}`}
+          disabled={!canReact || saving} aria-label={`${emoji}, ${authorIds.length} ${authorIds.length === 1 ? "reaction" : "reactions"}${mine ? ", including you" : ""}`}
           title={mine ? "Remove your reaction" : "Add your reaction"} onClick={() => void react(emoji, !mine)}>
           <img src={emojiAsset(emojiCode(emoji))} width={18} height={18} alt={emoji} loading="lazy" />
           <span>{authorIds.length}</span>
@@ -57,10 +60,10 @@ export default function MessageReactions({ message, authorId, onReact }: {
     </div>}
     {saving && <div className="chat-send-status" role="status">Saving reaction…</div>}
     {failure && <div className="chat-send-status chat-send-error" role="alert">
-      <span>{failure.error}</span><button type="button" onClick={() => void react(failure.emoji, failure.active)}>Retry reaction</button>
+      <span>{failure.error}</span><button type="button" disabled={!canReact} onClick={() => void react(failure.emoji, failure.active)}>Retry reaction</button>
       <button type="button" onClick={() => setFailure(undefined)}>Dismiss</button>
     </div>}
-    {open && <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>(".live-scene") ?? undefined}><FloatingFocusManager context={context}>
+    {open && canReact && <FloatingPortal root={refs.domReference.current?.closest<HTMLElement>(".live-scene") ?? undefined}><FloatingFocusManager context={context}>
       <div className="chat-reaction-picker" ref={refs.setFloating} style={floatingStyles} aria-label="Choose a reaction" {...getFloatingProps()}>
         <div className="chat-reaction-picker-heading"><strong>Add a reaction</strong><button type="button" aria-label="Close emoji picker" onClick={() => setOpen(false)}><X size={18} /></button></div>
         <div className="chat-reaction-picker-body">

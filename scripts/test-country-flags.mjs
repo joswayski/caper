@@ -50,19 +50,19 @@ try {
     }));
     window.cleanupFlags = () => root.unmount();
   `);
-  browser('wait', '--fn', 'Boolean(document.querySelector("#flag-fixture .participant-country")?.complete)');
+  browser('wait', '--fn', 'document.querySelectorAll("#flag-fixture .participant").length === 3');
   assert.deepEqual(evaluate(`return [...document.querySelectorAll('#flag-fixture .participant')].map(row => ({name: row.querySelector('strong').textContent, flag: !!row.querySelector('.participant-country')}));`), [
     { name: 'Signed-in participant', flag: false },
-    { name: 'Located guest', flag: true },
+    { name: 'Located guest', flag: false },
     { name: 'Unknown-location guest', flag: false },
   ]);
   if (artifacts) browser('screenshot', '--full', `${artifacts}/roster-desktop.png`);
   browser('set', 'viewport', '390', '844', '2');
   evaluate('await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
-  assert.equal(evaluate('return document.querySelectorAll("#flag-fixture .participant-country").length;'), 1);
+  assert.equal(evaluate('return document.querySelectorAll("#flag-fixture .participant-country").length;'), 0);
   if (artifacts) browser('screenshot', '--full', `${artifacts}/roster-narrow.png`);
   evaluate('cleanupFlags();');
-  console.log('PASS: desktop/narrow roster omits account and unknown-location flags, retains located guest flag (mocked API projection)');
+  console.log('PASS: desktop/narrow roster has no flags, including legacy countryCode payloads (mocked API projection)');
 } finally {
   browser('close');
 }

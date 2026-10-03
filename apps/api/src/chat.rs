@@ -1,9 +1,11 @@
 //! Public demo commands. Persist before publishing; all future content rules
 //! belong on this path, never in a gateway or a delete/recreate bot.
+#[cfg(test)]
+use crate::spaces::channel_access;
 use crate::{
     ApiError, AppState, RuntimeEnvironment, account_token,
     auth::random_id,
-    spaces::{channel_access, session_user},
+    spaces::{channel_participation, session_user},
 };
 use axum::{
     Json, Router,
@@ -367,7 +369,7 @@ async fn publish_typing(
         let mut connection = chat.pool.acquire().await.map_err(database_error)?;
         authorize_sender(&mut connection, token).await?
     };
-    channel_access(&chat.pool, channel, user_id).await?;
+    channel_participation(&chat.pool, channel, user_id).await?;
     let event = json!({"type":"typing.updated","channelId":channel,"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"typing":typing});
     // Atomic shared limits and publication. No draft text, DB write, outbox, or
     // sequence allocation. Broker time orders duplicate/overlapping streams;
@@ -437,6 +439,7 @@ async fn persist(
            AND NOT s.demo AND $2::bigint IS NOT NULL
                  AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
                  AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2)
          FOR UPDATE OF c",
     )
     .bind(channel)
@@ -507,6 +510,7 @@ async fn persist_reaction(
            AND NOT s.demo AND $2::bigint IS NOT NULL
              AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
              AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
+             AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2)
          FOR UPDATE OF c")
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =

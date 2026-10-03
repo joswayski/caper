@@ -45,6 +45,7 @@ packages=(
   lld-21
   pkg-config
   postgresql
+  x11-utils
   xauth
   xdotool
   xvfb

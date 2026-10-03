@@ -869,7 +869,6 @@ struct Participant {
     #[serde(default)]
     avatar_id: Option<i16>,
     name: String,
-    country_code: Option<String>,
     session: String,
     /// A second, receive-only provider session holding every subscription once
     /// created. Cloudflare answers a pull into a session with no negotiated
@@ -1321,10 +1320,7 @@ async fn account_profile(
 ) -> Result<Json<Value>, ApiError> {
     let username = input.username.trim().to_ascii_lowercase();
     let display_name = input.display_name.trim();
-    if !(3..=32).contains(&username.len())
-        || !username
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    if !accounts::valid_username(&username)
         || !(1..=64).contains(&display_name.chars().count())
         || display_name.chars().any(char::is_control)
     {
@@ -1700,12 +1696,6 @@ struct InitialPublish {
     session_description: Sdp,
 }
 
-fn country_code(headers: &HeaderMap) -> Option<String> {
-    let code = headers.get("cf-ipcountry")?.to_str().ok()?;
-    (code.len() == 2 && code != "XX" && code.bytes().all(|byte| byte.is_ascii_uppercase()))
-        .then(|| code.to_owned())
-}
-
 async fn join(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1768,13 +1758,6 @@ async fn join(
                     })?,
             )
         }
-    };
-    // Account-channel joins authenticate before dispatch and carry media_session.
-    // Only guests expose an approximate country in any roster projection.
-    let country_code = if account.is_none() && s.media_session.is_none() {
-        country_code(&headers)
-    } else {
-        None
     };
     let reservation = Uuid::new_v4();
     let (monitor, pulls) = s
@@ -1960,7 +1943,6 @@ async fn join(
         account_session: s.media_session.clone(),
         avatar_id,
         name: name.into(),
-        country_code,
         session,
         // Later pulls go to a warm receive session from the start.
         receive_session: warm.as_ref().map(|warm| warm.receive.clone()),
@@ -2818,8 +2800,6 @@ struct View<'a> {
     #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
     avatar_id: Option<i16>,
     name: &'a str,
-    #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
-    country_code: Option<&'a str>,
     muted: bool,
     deafened: bool,
     tracks: Vec<TrackView>,
@@ -2852,7 +2832,6 @@ fn public_snapshot(r: &Registry) -> Value {
                 id: p.id,
                 avatar_id: p.avatar_id,
                 name: &p.name,
-                country_code: p.country_code.as_deref(),
                 muted: p.muted,
                 deafened: p.deafened,
                 tracks,
@@ -2867,8 +2846,6 @@ struct PresenceView<'a> {
     #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
     avatar_id: Option<i16>,
     name: &'a str,
-    #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
-    country_code: Option<&'a str>,
     muted: bool,
     deafened: bool,
 }
@@ -2885,7 +2862,6 @@ fn presence_snapshot(r: &Registry) -> Value {
             id: p.id,
             avatar_id: p.avatar_id,
             name: &p.name,
-            country_code: p.country_code.as_deref(),
             muted: p.muted,
             deafened: p.deafened,
         })

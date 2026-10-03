@@ -163,6 +163,19 @@ pub enum AdminOperation {
         space: String,
         channel: Option<String>,
     },
+    LoadInvitations {
+        space: String,
+    },
+    CancelInvitation {
+        space: String,
+        user: String,
+    },
+    AcceptInvitation {
+        space: String,
+    },
+    DeclineInvitation {
+        space: String,
+    },
     AddMember {
         space: String,
         channel: Option<String>,
@@ -172,6 +185,22 @@ pub enum AdminOperation {
         space: String,
         channel: Option<String>,
         member: String,
+    },
+    JoinChannel {
+        space: String,
+        channel: String,
+    },
+    LeaveChannel {
+        space: String,
+        channel: String,
+    },
+    AcceptChannelInvitation {
+        space: String,
+        channel: String,
+    },
+    DeclineChannelInvitation {
+        space: String,
+        channel: String,
     },
 }
 
@@ -186,15 +215,28 @@ pub enum AdminResult {
     Members {
         channel: Option<String>,
         members: Vec<Member>,
+        invitations: Vec<Member>,
     },
     MemberAdded {
         channel: Option<String>,
         member: Member,
     },
+    InvitationCreated(Member),
     MemberRemoved {
         channel: Option<String>,
         member: String,
     },
+    Invitations(Vec<Member>),
+    InvitationCancelled(String),
+    InvitationAccepted(Space),
+    InvitationDeclined(String),
+    ChannelMembership {
+        detail: SpaceDetail,
+        channel: String,
+        joined: bool,
+    },
+    ChannelLeft(String),
+    ChannelInvitationDeclined(String),
 }
 
 pub enum Event {
@@ -343,8 +385,12 @@ fn prepare_navigation(
         .map(|space| api.space(token.unwrap_or_default(), space))
         .transpose()
         .map_err(|error| {
+            let missing = error.status == Some(reqwest::StatusCode::NOT_FOUND);
             let mut error = LoadError::from(error);
             error.space_access_denied = error.access_denied;
+            if missing {
+                error.message = "This space is no longer available.".into();
+            }
             error
         })?;
     if let Some(detail) = &detail
@@ -371,7 +417,7 @@ fn prepare_navigation(
                     })?,
             )
         } else {
-            detail.channels.first()
+            detail.channels.iter().find(|entry| entry.joined)
         }
     } else {
         None
@@ -419,9 +465,14 @@ fn prepare_navigation(
                 attempts_remaining: None,
             })?;
     }
+    let joined = selected.is_some_and(|channel| channel.joined);
     let conversation = history
         .map(|history| {
-            session_result(api.chat_session(token, name)).map(|session| (history, session))
+            if joined {
+                session_result(api.chat_session(token, name)).map(|session| (history, session))
+            } else {
+                Ok((history, Err("Join this channel to chat.".into())))
+            }
         })
         .transpose()?;
     Ok(PreparedNavigation {
@@ -453,13 +504,17 @@ fn prepare_navigation_read(
         .map(|space| api.space(token.unwrap_or_default(), space))
         .transpose()
         .map_err(|error| {
+            let missing = error.status == Some(reqwest::StatusCode::NOT_FOUND);
             let mut error = LoadError::from(error);
             error.space_access_denied = error.access_denied;
+            if missing {
+                error.message = "This space is no longer available.".into();
+            }
             error
         })?;
     let selected = detail.as_ref().and_then(|detail| match channel {
         Some(id) => detail.channels.iter().find(|entry| entry.id == id),
-        None => detail.channels.first(),
+        None => detail.channels.iter().find(|entry| entry.joined),
     });
     if channel.is_some() && detail.is_some() && selected.is_none() {
         return Err(LoadError {
@@ -598,13 +653,15 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         } => {
             let result = prepare_navigation_read(api, Some(&token), Some(&space), Some(&channel))
                 .and_then(|(detail, history)| {
-                    if detail
-                        .as_ref()
-                        .is_some_and(|detail| detail.space.id == space)
-                        && history.as_ref().is_some_and(|history| {
-                            history.space.id == space && history.channel.id == channel
-                        })
-                    {
+                    if detail.as_ref().is_some_and(|detail| {
+                        detail.space.id == space
+                            && detail
+                                .channels
+                                .iter()
+                                .any(|item| item.id == channel && item.joined)
+                    }) && history.as_ref().is_some_and(|history| {
+                        history.space.id == space && history.channel.id == channel
+                    }) {
                         Ok(())
                     } else {
                         Err(LoadError {
@@ -875,18 +932,42 @@ fn execute_admin(
             api.delete_channel(token, &space, &channel)?;
             AdminResult::ChannelDeleted(channel)
         }
-        AdminOperation::LoadMembers { space, channel } => AdminResult::Members {
-            channel: channel.clone(),
-            members: api.members(token, &space, channel.as_deref())?.members,
-        },
+        AdminOperation::LoadMembers { space, channel } => {
+            let response = api.members(token, &space, channel.as_deref())?;
+            AdminResult::Members {
+                channel,
+                members: response.members,
+                invitations: response.invitations,
+            }
+        }
+        AdminOperation::LoadInvitations { space } => {
+            AdminResult::Invitations(api.invitations(token, &space)?.members)
+        }
+        AdminOperation::CancelInvitation { space, user } => {
+            api.cancel_invitation(token, &space, &user)?;
+            AdminResult::InvitationCancelled(user)
+        }
+        AdminOperation::AcceptInvitation { space } => {
+            AdminResult::InvitationAccepted(api.accept_invitation(token, &space)?)
+        }
+        AdminOperation::DeclineInvitation { space } => {
+            api.decline_invitation(token, &space)?;
+            AdminResult::InvitationDeclined(space)
+        }
         AdminOperation::AddMember {
             space,
             channel,
             username,
-        } => AdminResult::MemberAdded {
-            channel: channel.clone(),
-            member: api.add_member(token, &space, channel.as_deref(), &username)?,
-        },
+        } => {
+            let member = api.add_member(token, &space, channel.as_deref(), &username)?;
+            match channel {
+                Some(channel) => AdminResult::MemberAdded {
+                    channel: Some(channel),
+                    member,
+                },
+                None => AdminResult::InvitationCreated(member),
+            }
+        }
         AdminOperation::RemoveMember {
             space,
             channel,
@@ -894,6 +975,32 @@ fn execute_admin(
         } => {
             api.remove_member(token, &space, channel.as_deref(), &member)?;
             AdminResult::MemberRemoved { channel, member }
+        }
+        AdminOperation::JoinChannel { space, channel } => AdminResult::ChannelMembership {
+            detail: {
+                api.join_channel(token, &space, &channel)?;
+                api.space(token, &space)?
+            },
+            channel,
+            joined: true,
+        },
+        AdminOperation::LeaveChannel { space, channel } => {
+            api.leave_channel(token, &space, &channel)?;
+            AdminResult::ChannelLeft(channel)
+        }
+        AdminOperation::AcceptChannelInvitation { space, channel } => {
+            AdminResult::ChannelMembership {
+                detail: {
+                    api.accept_channel_invitation(token, &space, &channel)?;
+                    api.space(token, &space)?
+                },
+                channel,
+                joined: true,
+            }
+        }
+        AdminOperation::DeclineChannelInvitation { space, channel } => {
+            api.decline_channel_invitation(token, &space, &channel)?;
+            AdminResult::ChannelInvitationDeclined(channel)
         }
     })
 }
@@ -1033,23 +1140,29 @@ mod tests {
         let api =
             crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
         let worker = std::thread::spawn(move || {
-            for (status, history) in [
+            for (joined, status, history) in [
                 (
+                    true,
                     200,
                     r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"c","name":"channel"},"messages":[],"cursor":"7","hasMore":false}"#,
                 ),
                 (
+                    true,
                     200,
                     r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"other","name":"channel"},"messages":[],"cursor":"7","hasMore":false}"#,
                 ),
-                (403, r#"{"error":"Grant revoked"}"#),
+                (true, 403, r#"{"error":"Grant revoked"}"#),
+                (
+                    false,
+                    200,
+                    r#"{"space":{"id":"s","name":"Space"},"channel":{"id":"c","name":"channel"},"messages":[],"cursor":"7","hasMore":false}"#,
+                ),
             ] {
+                let detail = format!(
+                    r#"{{"space":{{"id":"s","name":"Space","ownerId":"owner"}},"channels":[{{"id":"c","spaceId":"s","name":"channel","private":false,"joined":{joined}}}],"members":[]}}"#
+                );
                 for (path, status, body) in [
-                    (
-                        "/api/spaces/s",
-                        200,
-                        r#"{"space":{"id":"s","name":"Space","ownerId":"owner"},"channels":[{"id":"c","spaceId":"s","name":"channel","private":true}],"members":[]}"#,
-                    ),
+                    ("/api/spaces/s", 200, detail.as_str()),
                     ("/api/chat/channels/c/messages", status, history),
                 ] {
                     let (stream, _) = server.accept().unwrap();
@@ -1076,7 +1189,7 @@ mod tests {
             }
         });
         let (sender, receiver) = std::sync::mpsc::channel();
-        for allowed in [true, false, false] {
+        for allowed in [true, false, false, false] {
             super::execute(
                 &api,
                 super::Command::CheckVoice {
@@ -1161,6 +1274,69 @@ mod tests {
         };
         assert!(matches!(leave(), Ok(super::AdminResult::SpaceLeft(id)) if id == "space-a"));
         assert!(leave().is_err());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn channel_join_routes_to_membership_then_refreshes_detail() {
+        use std::io::{BufRead, BufReader, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (request_line, status, body) in [
+                (
+                    "POST /api/spaces/s/channels/c/membership",
+                    200,
+                    r#"{"id":"c","spaceId":"s","name":"lobby","private":false,"joined":true}"#,
+                ),
+                (
+                    "GET /api/spaces/s",
+                    200,
+                    r#"{"space":{"id":"s","name":"Studio","ownerId":"owner"},"channels":[{"id":"c","spaceId":"s","name":"lobby","private":false,"joined":true}],"members":[],"channelInvitations":[]}"#,
+                ),
+                ("DELETE /api/spaces/s/channels/c/membership", 204, ""),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(line, format!("{request_line} HTTP/1.1\r\n"));
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(reader.get_mut(), "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let result = super::execute_admin(
+            &api,
+            "token",
+            super::AdminOperation::JoinChannel {
+                space: "s".into(),
+                channel: "c".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(result, super::AdminResult::ChannelMembership { detail, channel, joined: true } if channel == "c" && detail.channels[0].joined)
+        );
+        let result = super::execute_admin(
+            &api,
+            "token",
+            super::AdminOperation::LeaveChannel {
+                space: "s".into(),
+                channel: "c".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(result, super::AdminResult::ChannelLeft(channel) if channel == "c"),
+            "Acknowledged leave must not depend on a second HTTP request"
+        );
         worker.join().unwrap();
     }
 

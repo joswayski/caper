@@ -63,12 +63,28 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-activator")).placeItems'), 'center');
   assert.equal(evaluate('return document.querySelector(".live-activator").getAttribute("href")'), '/spaces');
 
+  assert.equal(evaluate('return document.querySelector(".experimental-warning").textContent'), 'Caper is a work in progress and may contain bugs or incomplete features.');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".experimental-note")).color'), 'rgb(185, 188, 190)', 'Contact copy stays neutral');
+  assert.notEqual(evaluate('return getComputedStyle(document.querySelector(".experimental-warning")).color'), 'rgb(185, 188, 190)', 'Only the work-in-progress sentence gets a warm tint');
+
   // Production surfaces from shared/design.css; don't derive expectations from the demo.
   assert.deepEqual(evaluate('return [".sim-sidebar", ".sim-chat", ".sim-composer"].map(s => getComputedStyle(document.querySelector(s)).backgroundColor)'), ['rgb(21, 28, 30)', 'rgb(25, 33, 35)', 'rgb(40, 49, 51)']);
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-avatar")).borderRadius'), '30%');
   assert.deepEqual(evaluate('return [...document.fonts].filter(font => font.family === "Satoshi").map(font => [font.weight, font.display]).sort()'), [['400', 'swap'], ['500', 'swap'], ['700', 'swap'], ['900', 'swap']], 'All font weights must paint fallback text while Satoshi downloads');
   assert.equal(evaluate('return document.querySelector(".sim-chat > header").textContent'), 'general', 'No simulated-demo badge inside the room');
-  assert.equal(evaluate('return document.querySelector(".live-caption").textContent'), 'Fictional conversation', 'Label the illustration outside the room');
+  assert.equal(evaluate('return document.querySelector(".live-caption")'), null, 'No visible fictional-conversation caption');
+  assert.equal(evaluate('return document.querySelector(".sim-account .account-name").textContent'), 'Maya');
+  assert.equal(evaluate('return document.querySelectorAll(".sim-account .sim-audio-icon svg").length'), 3);
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-sidebar .channel-select")).cursor'), 'grab');
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".live-invite")).cursor'), 'pointer');
+  const dragPoint = evaluate('const box = document.querySelector(".sim-brand").getBoundingClientRect(); return [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];');
+  browser('mouse', 'move', ...dragPoint.map(String));
+  browser('mouse', 'down', 'left');
+  browser('mouse', 'move', String(dragPoint[0] + 40), String(dragPoint[1] + 20));
+  assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), true);
+  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-account .account-profile")).cursor'), 'grabbing');
+  browser('mouse', 'up', 'left');
+  assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), false);
   assert.equal(evaluate('return document.querySelector(".sim-composer").tagName'), 'DIV');
   assert.equal(evaluate('return document.querySelectorAll(".sim-demo :is(button, a, input, textarea, [role=button])").length'), 0, 'Join is the only action; the room is read-only');
   assert.equal(evaluate('return document.querySelectorAll(".live-stage a").length'), 1);
@@ -164,9 +180,13 @@ try {
   wait('document.querySelector("#email")');
   assert.equal(evaluate('return location.pathname'), '/login');
   const login = evaluate('return document.querySelector("main").textContent');
+  assert.equal(evaluate('return document.querySelector("h1").textContent'), 'Welcome to Caper');
   assert.ok(login.includes('We’ll send a code to your email.'));
   assert.ok(!/WELCOME TO CAPER|We only send a code when you ask|No password needed/.test(login));
   browser('set', 'viewport', '390', '844', '2');
+  // Navigation clicks must not race the card's arrival/idle animation. Motion
+  // and dragging were exercised above; use the stable view for account fixtures.
+  browser('set', 'media', 'dark', 'reduced-motion');
   browser('open', origin.href);
   wait('document.querySelector(".live-stage[data-ready]")');
   evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
@@ -192,6 +212,9 @@ try {
   console.log('PASS: non-blocking font loading and no in-room simulation badge');
   console.log('PASS: simplified login copy and mobile demo clearance');
   console.log('PASS: signed-in join bypasses login; incomplete accounts reach profile setup (mocked accounts)');
+} catch (error) {
+  console.error('Homepage regression failed at', evaluate('return location.pathname'), browser('snapshot'));
+  throw error;
 } finally {
   browser('close');
   rmSync(fixture, { recursive: true, force: true });
