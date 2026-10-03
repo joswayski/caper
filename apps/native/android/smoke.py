@@ -337,9 +337,11 @@ def main() -> None:
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     general = find(desktop, text="general")
-    join = find(desktop, text="Join")
+    # Since the stable voice-row layout, Join voice sits on its own row beneath
+    # the channel name rather than sharing the name row.
+    join = find(desktop, description="Join voice in #general")
     assert general is not None and join is not None
-    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
+    assert 0 < center(join)[1] - center(general)[1] <= 400, "Join voice must sit directly beneath its channel name"
 
     # Hide the list while reading a non-default channel: collapsing must not
     # silently select General, disconnect chat, or expose hidden row actions.
