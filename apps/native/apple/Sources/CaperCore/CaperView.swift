@@ -41,10 +41,11 @@ public enum CaperTheme {
         Group {
             switch model.phase {
             case .loading: LoadingView()
+            case .signedOut: LoginPage(model: model) {}
             case .onboarding: ProfileView(model: model)
-            case .signedOut, .ready:
-                if model.phase == .ready && model.spaces.isEmpty && model.spacesLoaded { FirstSpaceView(model: model) }
-                else if model.phase == .ready && model.spaces.isEmpty, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
+            case .ready:
+                if model.spaces.isEmpty && model.spacesLoaded { FirstSpaceView(model: model) }
+                else if model.spaces.isEmpty, let error = model.spacesError { SpacesUnavailableView(model: model, error: error) }
                 else { WorkspaceView(model: model) }
             }
         }

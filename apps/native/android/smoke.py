@@ -310,6 +310,23 @@ def main() -> None:
     enter_first_field("ABC234")
     tap(text="Continue")
     wait_for(description="Fixture Studio")
+
+    # A failed saved-session restore must stay on authentication, not reveal
+    # the retired Guest/General workspace. A transient failure keeps the vault
+    # credential, so the next successful launch still restores the account.
+    adb("shell", "am", "force-stop", PACKAGE)
+    fixture({"failure": {"path": "/api/account/me", "method": "GET", "status": 503,
+                         "error": "Session restoration temporarily unavailable."}})
+    launch()
+    restore_error = capture("caper-android-restore-error", "Session restoration temporarily unavailable.")
+    assert find(restore_error, text="Come on in.") is not None
+    assert find(restore_error, text="Email address") is not None
+    for retired in ("Guest", "Message #general", "TEST FIXTURE"):
+        assert find(restore_error, contains=retired) is None, f"Restore failure exposes workspace: {retired!r}"
+    adb("shell", "am", "force-stop", PACKAGE)
+    launch()
+    wait_for(description="Fixture Studio")
+
     tap(description="Fixture Studio")
     wait_for(text="design")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")

@@ -434,9 +434,12 @@ final class CaperParityUITests: XCTestCase {
     #endif
 
     func testLogin() {
-        let app = launch(fixture: "login", signedIn: false)
+        // Exercise normal session restoration, not a forced login presentation.
+        let app = launch(signedIn: false)
         assertStaticText("Come on in.", in: app)
         let email = app.textFields["Email address"]
+        XCTAssertFalse(app.descendants(matching: .any)["message-composer"].exists)
+        XCTAssertFalse(app.buttons["Create space"].exists)
         XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
         capture("login", app: app)
         email.tap(); email.typeText("owner@example.test")

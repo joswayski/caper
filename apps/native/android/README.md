@@ -40,7 +40,7 @@ Release tasks fail when signing is absent instead of producing an unsigned or de
 
 ## Implemented
 
-- Guest access to the public General conversation before sign-in, followed by the web-equivalent account entry, verification, profile onboarding, session restore, and logout flows.
+- Signed-out first launch opens the web-equivalent account entry, verification, and profile onboarding, with no Guest/General fallback. Session restoration failures stay on sign-in with an error; valid saved sessions open account spaces, and logout returns to sign-in.
 - Account bearer token encrypted with AES-GCM; the non-exportable AES-256 key lives in Android Keystore. Chat and media capabilities stay in process memory.
 - Adaptive space rail, channel navigation, toggleable member panel, owner space/channel/member/private-grant management, paginated presence, typing, grouped messages, history pagination, and narrow-layout Browse navigation. Colors, dimensions, and bundled Satoshi typography follow the working web client.
 - Idempotent HTTP sends and multiplexed gateway chat with heartbeat watchdog, durable cursor replay, reconnect backoff, fresh-history resync, and visible connection/error state.
@@ -68,7 +68,7 @@ adb reverse tcp:3001 tcp:3001
 python3 apps/native/android/smoke.py
 ```
 
-Only port 3001 is needed by Android; it serves both API requests and `/api/chat/events` WebSockets. The smoke run resets the labeled local test fixture, installs `dist/Caper-android-fixture-debug.apk`, exercises guest conversation, login, one-shot actionable 503, verification, signed-in space selection, private-channel management, desktop and narrow Browse states, and writes screenshots plus UI hierarchies under `dist/ui/`. The fixture credentials are `fixture@example.test` / `ABC234`. This emulator workflow is structural visual and interaction evidence, not physical-device or live-media validation.
+Only port 3001 is needed by Android; it serves both API requests and `/api/chat/events` WebSockets. The smoke run resets the labeled local test fixture, installs `dist/Caper-android-fixture-debug.apk`, exercises fresh-install login, one-shot actionable 503, verification, failed/successful session restoration, signed-in space selection, private-channel management, desktop and narrow Browse states, and writes screenshots plus UI hierarchies under `dist/ui/`. The fixture credentials are `fixture@example.test` / `ABC234`. This emulator workflow is structural visual and interaction evidence, not physical-device or live-media validation.
 
 ## Security notes
 
