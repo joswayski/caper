@@ -33,6 +33,7 @@ packages=(
   libegl1-mesa-dev
   libglib2.0-dev
   libpulse0
+  librsvg2-bin
   libssl-dev
   libwayland-dev
   libx11-dev

@@ -22,7 +22,29 @@ export const Route = createRootRoute({
       { title: "Caper - A place for your people" },
     ],
     links: [
-      { rel: "icon", type: "image/svg+xml", href: "/caper-face.svg?v=3" },
+      {
+        rel: "icon",
+        type: "image/png",
+        sizes: "32x32",
+        href: "/icons/headphones-v3-32.png",
+      },
+      {
+        rel: "icon",
+        type: "image/png",
+        sizes: "192x192",
+        href: "/icons/headphones-v3-192.png",
+      },
+      {
+        rel: "icon",
+        type: "image/svg+xml",
+        sizes: "any",
+        href: "/images/avatars/v3/1.svg",
+      },
+      {
+        rel: "apple-touch-icon",
+        sizes: "180x180",
+        href: "/icons/headphones-v3-180.png",
+      },
       {
         rel: "preload",
         href: "/fonts/satoshi-400.woff2",
