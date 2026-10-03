@@ -30,7 +30,13 @@ private struct SessionInput: Encodable { let name: String }
 private struct EmailInput: Encodable { let email: String }
 private struct VerifyInput: Encodable { let challengeId: String; let code: String; let tokenTransport = "bearer" }
 private struct ProfileInput: Encodable { let username: String; let displayName: String }
-private struct SendInput: Encodable { let clientMessageId: String; let text: String }
+private struct SendInput: Encodable {
+    let clientMessageId: String
+    let text: String
+    /// Omitted (nil) unless files are attached.
+    let attachmentIds: [String]?
+}
+private struct AttachmentURLsInput: Encodable { let ids: [String] }
 private struct ReactionInput: Encodable { let emoji: String; let active: Bool }
 private struct SpaceInput: Encodable { let name: String }
 private struct ChannelInput: Encodable {
@@ -244,8 +250,63 @@ public actor APIClient {
         try await request("api/chat/session", method: "POST", body: SessionInput(name: name))
     }
 
-    public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String) async throws -> ChatMessage {
-        try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: SendInput(clientMessageId: clientMessageID, text: text), extraHeaders: ["x-caper-chat-token": sessionToken])
+    public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = []) async throws -> ChatMessage {
+        let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs)
+        return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
+    }
+
+    // MARK: Attachments
+
+    /// Uploads are optional server configuration: any failure means "hide the
+    /// attach control" (503 when storage is not configured).
+    public func assetUsage() async throws -> AssetUsage { try await request("api/assets/usage") }
+
+    public func createAsset(_ input: AssetCreateInput) async throws -> AssetReservation {
+        let reservation: AssetReservation = try await request("api/assets", method: "POST", body: input)
+        guard Self.validAssetID(reservation.id) else { throw APIError(status: 502, message: "The upload service returned an invalid response.") }
+        return reservation
+    }
+
+    public func completeAsset(id: String) async throws -> ChatAttachment {
+        guard Self.validAssetID(id) else { throw APIError(status: 400, message: "Invalid file ID.") }
+        return try await request("api/assets/\(id)/complete", method: "POST")
+    }
+
+    /// Fresh signed URLs for up to 100 attachments; ids the account can no
+    /// longer see are omitted.
+    public func refreshAttachmentURLs(ids: [String]) async throws -> [String: AttachmentURLs] {
+        let ids = Array(ids.filter(Self.validAssetID).prefix(100))
+        guard !ids.isEmpty else { return [:] }
+        let response: AttachmentURLsResponse = try await request("api/assets/urls", method: "POST", body: AttachmentURLsInput(ids: ids))
+        return response.urls.filter { ids.contains($0.key) && ChatAttachment.isWebURL($0.value.url) }
+    }
+
+    public enum UploadBody: Sendable { case file(URL), data(Data) }
+
+    /// PUTs bytes straight to storage with exactly the presigned headers. No
+    /// account credential is attached; URLSession sets Content-Length, which
+    /// the URL signs.
+    public func putToStorage(_ upload: PresignedUpload, body: UploadBody, progress: (@Sendable (Double) -> Void)? = nil) async throws {
+        guard upload.method.uppercased() == "PUT", ChatAttachment.isWebURL(upload.url), let url = URL(string: upload.url) else {
+            throw APIError(status: 502, message: "The upload service returned an invalid response.")
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "PUT"
+        for (name, value) in upload.headers where name.lowercased() != "authorization" {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        let delegate = UploadProgressDelegate(progress: progress)
+        let result: (Data, URLResponse)
+        switch body {
+        case .file(let file): result = try await session.upload(for: request, fromFile: file, delegate: delegate)
+        case .data(let data): result = try await session.upload(for: request, from: data, delegate: delegate)
+        }
+        guard let http = result.1 as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else { throw StorageUploadError(status: http.statusCode) }
+    }
+
+    nonisolated static func validAssetID(_ id: String) -> Bool {
+        (1...64).contains(id.count) && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
     }
 
     public func setReaction(channelID: String, messageID: String, sessionToken: String, emoji: String, active: Bool) async throws -> MessageReactionsEvent {
@@ -319,3 +380,14 @@ public actor APIClient {
 }
 
 public struct Empty: Codable, Sendable { public init() {} }
+
+/// Reports a storage upload's sent-byte fraction.
+final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let progress: (@Sendable (Double) -> Void)?
+    init(progress: (@Sendable (Double) -> Void)?) { self.progress = progress }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        progress?(min(1, Double(totalBytesSent) / Double(totalBytesExpectedToSend)))
+    }
+}
