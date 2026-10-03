@@ -1,9 +1,16 @@
 package chat.caper.android.model
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
@@ -36,7 +43,72 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val channelInvitations: List<ChannelInvitation> = emptyList(),
 )
 @Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
-@Serializable data class ChatContent(val version: Int, val type: String, val text: String)
+@Serializable data class ChatContent(
+    val version: Int,
+    val type: String,
+    val text: String,
+    /** Additive file list. Malformed entries are dropped, never the message. */
+    @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
+)
+
+/** A file on a message. URLs are signed per response and expire in 24–48 hours. */
+@Serializable data class ChatAttachment(
+    val id: String,
+    val kind: String,
+    val contentType: String,
+    val name: String,
+    val size: Long,
+    val width: Int? = null,
+    val height: Int? = null,
+    val durationMs: Long? = null,
+    /** Present (as `{}`) when a preview image exists. */
+    val preview: JsonObject? = null,
+    val url: String? = null,
+    val previewUrl: String? = null,
+    /** The file was deleted: show a placeholder. */
+    val unavailable: Boolean = false,
+) {
+    internal fun isValid(): Boolean {
+        val web = { value: String? -> value == null || value.startsWith("https://") || value.startsWith("http://") }
+        return id.isNotEmpty() && name.isNotEmpty() && contentType.isNotEmpty() && size >= 0 &&
+            kind in ATTACHMENT_KINDS && (width ?: 0) >= 0 && (height ?: 0) >= 0 && (durationMs ?: 0) >= 0 &&
+            web(url) && web(previewUrl)
+    }
+}
+
+val ATTACHMENT_KINDS = setOf("image", "video", "audio", "file")
+
+/** Mirrors the web's `attachmentsOf`: one bad file never breaks a history page or frame. */
+object TolerantAttachmentsSerializer : KSerializer<List<ChatAttachment>> {
+    private val delegate = ListSerializer(ChatAttachment.serializer())
+    private val lenient = Json { ignoreUnknownKeys = true }
+    override val descriptor: SerialDescriptor = delegate.descriptor
+    override fun serialize(encoder: Encoder, value: List<ChatAttachment>) = delegate.serialize(encoder, value)
+    override fun deserialize(decoder: Decoder): List<ChatAttachment> {
+        val input = decoder as? JsonDecoder ?: return delegate.deserialize(decoder)
+        val array = input.decodeJsonElement() as? JsonArray ?: return emptyList()
+        return array.mapNotNull { element ->
+            runCatching { lenient.decodeFromJsonElement(ChatAttachment.serializer(), element) }.getOrNull()?.takeIf { it.isValid() }
+        }
+    }
+}
+
+@Serializable data class AttachmentUrls(val url: String, val previewUrl: String? = null)
+@Serializable data class AttachmentUrlsResponse(val urls: Map<String, AttachmentUrls> = emptyMap())
+
+/** Server-tunable client compression (`GET /api/assets/usage`). */
+@Serializable data class CompressionSettings(
+    val imageQuality: Int = 92,
+    val imageMaxEdge: Int = 4096,
+    val paletteColors: Int = 256,
+    val previewEdge: Int = 640,
+    val videoMaxHeight: Int = 1080,
+    val videoBitrateKbps: Int = 4000,
+    val audioBitrateKbps: Int = 128,
+)
+@Serializable data class AssetUsage(val used: Long, val limit: Long, val compression: CompressionSettings = CompressionSettings())
+@Serializable data class PresignedUpload(val method: String = "PUT", val url: String, val headers: Map<String, String> = emptyMap())
+@Serializable data class AssetReservation(val id: String, val kind: String = "file", val upload: PresignedUpload, val previewUpload: PresignedUpload? = null)
 @Serializable data class MessageReaction(val emoji: String, val authorIds: List<String>)
 @Serializable data class ReactionUpdate(
     val type: String,
@@ -173,6 +245,12 @@ data class AppUiState(
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
     val chatAuthorId: String? = null,
+    /** `GET /api/assets/usage` succeeded: show the attach control. */
+    val uploadsEnabled: Boolean = false,
+    val drafts: List<DraftAttachmentUi> = emptyList(),
+    val attachmentError: String? = null,
+    /** Re-signed URLs for long-open conversations, keyed by attachment ID. */
+    val freshAttachmentUrls: Map<String, AttachmentUrls> = emptyMap(),
     val busy: Boolean = false,
     val error: String? = null,
 ) {
@@ -190,6 +268,25 @@ data class PendingMessageUi(
     val createdAt: String,
     val error: String? = null,
     val rejected: Boolean = false,
+    /** Uploaded files with local `file://` copies until the server confirms. */
+    val attachments: List<ChatAttachment> = emptyList(),
+)
+
+/** A file in the composer: preparing, uploading, ready to send, or failed. */
+data class DraftAttachmentUi(
+    val key: String,
+    val name: String,
+    val kind: String,
+    val sourceSize: Long = 0,
+    val storedSize: Long? = null,
+    /** Local `file://` thumbnail (the file itself for images, a poster for video). */
+    val thumbnail: String? = null,
+    /** Local `file://` copy of the bytes being uploaded, shown by the pending message. */
+    val localUrl: String? = null,
+    val compressing: Boolean = true,
+    val progress: Float = 0f,
+    val error: String? = null,
+    val attachment: ChatAttachment? = null,
 )
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

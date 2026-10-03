@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.animateFloat
@@ -68,6 +69,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import chat.caper.android.data.AttachmentPolicy
+import chat.caper.android.data.withFreshUrls
 import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
@@ -867,7 +870,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Text(if (state.pendingMessage.rejected) "Not sent. $pending" else "Not confirmed yet. $pending", Modifier.weight(1f), color = ErrorText, fontSize = 11.sp)
                     TextButton({
                         if (state.pendingMessage.rejected) {
-                            if (editable) viewModel.discardPending()?.let { draft = it }
+                            if (editable) viewModel.discardPending(restoreFiles = true)?.let { draft = it }
                         } else viewModel.send(state.pendingMessage.text)
                     }, Modifier.semantics { if (state.pendingMessage.rejected && !editable) stateDescription = "Clear your current draft to edit this message." },
                         enabled = !state.pendingMessage.rejected || editable) {
@@ -888,7 +891,19 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     TextButton(viewModel::retrySession) { Text("Retry session", fontSize = 12.sp) }
                 }
             }
+            state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+            DraftAttachmentStrip(state.drafts, viewModel::removeDraft)
+            val hasContent = draft.isNotBlank() || state.drafts.isNotEmpty()
+            val submit = {
+                if (hasContent && state.pendingMessage == null) {
+                    val sent = draft
+                    viewModel.setTyping(false)
+                    if (viewModel.send(sent)) draft = ""
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                // Shown only when the server accepts uploads; read-only previews have no composer.
+                if (state.uploadsEnabled) AttachButton(state.drafts.size < AttachmentPolicy.MAX_ATTACHMENTS && !state.messagesLoading && state.messagesError == null, viewModel::addAttachments)
                 OutlinedTextField(
                     draft, { value -> draft = value.codePointTake(4000); viewModel.reportActivity(); viewModel.setTyping(value.isNotBlank()) },
                     modifier = Modifier.weight(1f), placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}") }, maxLines = 6,
@@ -899,14 +914,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
                         if (state.chatAuthorId != null) {
                             if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                            else if (draft.isNotBlank()) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" }
+                            else submit()
                         }
                     }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                 )
                 FilledIconButton(
-                    { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } },
-                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
+                    { submit() },
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
                     shape = MaterialTheme.shapes.small,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = Terracotta, contentColor = Color.White,
@@ -982,14 +997,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError)
+            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError, viewModel::reportAttachmentFailure)
         }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
                 if (state.messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
                 }
-                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId)
+                MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments)
                 Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
             }
         } }
@@ -1022,6 +1037,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     setReaction: (String, String, Boolean) -> Unit,
     retryReaction: (String, String) -> Unit,
     dismissReactionError: (String, String) -> Unit,
+    onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
 ) {
     var picker by remember { mutableStateOf(false) }
     val own = state.chatAuthorId ?: state.account?.id
@@ -1030,7 +1046,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     val saving = saves.firstOrNull { it.saving }
     Column {
-        MessageRow(message)
+        MessageRow(
+            message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
+            message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
+        )
         FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -1089,8 +1108,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     }
 }
-@Composable private fun MessageRow(message: ChatMessage) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId)
-@Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null) {
+@Composable private fun MessageRow(
+    author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
+    attachments: List<ChatAttachment> = emptyList(), onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
         Avatar(author, 34.dp, avatarId = avatarId)
         Spacer(Modifier.width(10.dp))
@@ -1100,7 +1121,31 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 if (guest) { Spacer(Modifier.width(7.dp)); Surface(color = Color.Transparent, border = BorderStroke(1.dp, Border), shape = MaterialTheme.shapes.extraSmall) { Text("GUEST", Modifier.padding(horizontal = 5.dp, vertical = 2.dp), color = TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold) } }
                 Spacer(Modifier.width(7.dp)); Text(timeLabel(createdAt), color = TextMuted, fontSize = 10.sp)
             }
-            Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+            // A file-only message has empty text: show just its files.
+            if (text.isNotEmpty()) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+            MessageAttachments(attachments, pending, onAttachmentFailed)
+        }
+    }
+}
+
+/** Photo picker for photos/videos plus the system document picker for any file. */
+@Composable private fun AttachButton(enabled: Boolean, add: (List<android.net.Uri>) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) { add(it) }
+    val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { add(it) }
+    Box {
+        IconButton({ open = true }, Modifier.size(48.dp).semantics { contentDescription = "Attach files" }, enabled = enabled) {
+            Icon(painterResource(R.drawable.lucide_paperclip), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+        }
+        DropdownMenu(open, { open = false }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
+            DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
+                open = false
+                runCatching { media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
+            })
+            DropdownMenuItem(text = { Text("Files", fontSize = 13.sp) }, onClick = {
+                open = false
+                runCatching { documents.launch(arrayOf("*/*")) }
+            })
         }
     }
 }
