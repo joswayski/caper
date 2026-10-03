@@ -403,11 +403,103 @@ fn sign_one(attachment: &mut Map<String, Value>, signer: &CdnSigner, now: i64) {
     }
 }
 
+/// Client compression settings, served with usage so operators can tune them
+/// with configuration alone. Clients apply them before upload; the server only
+/// verifies what was stored, and quota makes skipping them the uploader's cost.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Compression {
+    /// Lossy still quality, 1–100. 100 disables lossy re-encoding.
+    pub image_quality: u8,
+    /// Longest still edge in pixels; 0 keeps the original size.
+    pub image_max_edge: u32,
+    /// Stills with at most this many distinct colours (screenshots, UI) are
+    /// stored losslessly as an indexed PNG instead. 0 disables, max 256.
+    pub palette_colors: u16,
+    pub preview_edge: u32,
+    /// Videos taller than this are scaled down; 0 disables transcoding.
+    pub video_max_height: u32,
+    pub video_bitrate_kbps: u32,
+    pub audio_bitrate_kbps: u32,
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Self {
+            image_quality: 92,
+            image_max_edge: 4096,
+            palette_colors: 256,
+            preview_edge: 640,
+            video_max_height: 1080,
+            video_bitrate_kbps: 4000,
+            audio_bitrate_kbps: 128,
+        }
+    }
+}
+
+fn setting<T: std::str::FromStr + PartialOrd>(
+    environment: &RuntimeEnvironment,
+    name: &str,
+    default: T,
+    range: std::ops::RangeInclusive<T>,
+) -> Result<T, String> {
+    match environment.get(name).filter(|v| !v.trim().is_empty()) {
+        None => Ok(default),
+        Some(value) => value
+            .trim()
+            .parse::<T>()
+            .ok()
+            .filter(|v| range.contains(v))
+            .ok_or_else(|| format!("{name} is out of range")),
+    }
+}
+
+impl Compression {
+    pub(crate) fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
+        let d = Self::default();
+        Ok(Self {
+            image_quality: setting(environment, "ASSET_IMAGE_QUALITY", d.image_quality, 1..=100)?,
+            image_max_edge: setting(
+                environment,
+                "ASSET_IMAGE_MAX_EDGE",
+                d.image_max_edge,
+                0..=32_768,
+            )?,
+            palette_colors: setting(
+                environment,
+                "ASSET_PALETTE_COLORS",
+                d.palette_colors,
+                0..=256,
+            )?,
+            preview_edge: setting(environment, "ASSET_PREVIEW_EDGE", d.preview_edge, 64..=2048)?,
+            video_max_height: setting(
+                environment,
+                "ASSET_VIDEO_MAX_HEIGHT",
+                d.video_max_height,
+                0..=4320,
+            )?,
+            video_bitrate_kbps: setting(
+                environment,
+                "ASSET_VIDEO_BITRATE_KBPS",
+                d.video_bitrate_kbps,
+                250..=50_000,
+            )?,
+            audio_bitrate_kbps: setting(
+                environment,
+                "ASSET_AUDIO_BITRATE_KBPS",
+                d.audio_bitrate_kbps,
+                32..=320,
+            )?,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Assets {
     pool: PgPool,
     r2: R2,
     quota_bytes: i64,
+    compression: Compression,
 }
 
 impl Assets {
@@ -428,7 +520,9 @@ impl Assets {
                 .filter(|v| *v > 0)
                 .ok_or("ASSET_QUOTA_BYTES must be a positive integer")?,
         };
-        Ok(Some(Self::new(pool, r2, quota_bytes)))
+        let mut assets = Self::new(pool, r2, quota_bytes);
+        assets.compression = Compression::from_env(environment)?;
+        Ok(Some(assets))
     }
 
     pub(crate) fn new(pool: PgPool, r2: R2, quota_bytes: i64) -> Self {
@@ -436,6 +530,7 @@ impl Assets {
             pool,
             r2,
             quota_bytes,
+            compression: Compression::default(),
         }
     }
 }
@@ -778,7 +873,9 @@ async fn usage(
     let assets = enabled(&state)?;
     let mut connection = assets.pool.acquire().await.map_err(database_error)?;
     let (used, _, _) = stored_bytes(&mut connection, principal.user.id).await?;
-    Ok(Json(json!({"used": used, "limit": assets.quota_bytes})))
+    Ok(Json(
+        json!({"used": used, "limit": assets.quota_bytes, "compression": assets.compression}),
+    ))
 }
 
 #[derive(Deserialize)]

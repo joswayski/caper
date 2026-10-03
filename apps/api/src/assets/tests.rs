@@ -222,6 +222,43 @@ fn configuration_requires_complete_r2_and_cdn_settings() {
 }
 
 #[test]
+fn compression_settings_default_and_validate_from_configuration() {
+    use RuntimeEnvironment as E;
+    let defaults = Compression::from_env(&E::from_values_for_test([])).unwrap();
+    assert_eq!(defaults, Compression::default());
+    assert_eq!(
+        serde_json::to_value(&defaults).unwrap(),
+        json!({"imageQuality":92,"imageMaxEdge":4096,"paletteColors":256,"previewEdge":640,
+               "videoMaxHeight":1080,"videoBitrateKbps":4000,"audioBitrateKbps":128})
+    );
+    let tuned = Compression::from_env(&E::from_values_for_test([
+        ("ASSET_IMAGE_QUALITY", "80"),
+        ("ASSET_VIDEO_MAX_HEIGHT", "0"),
+        ("ASSET_PALETTE_COLORS", "0"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        (
+            tuned.image_quality,
+            tuned.video_max_height,
+            tuned.palette_colors
+        ),
+        (80, 0, 0)
+    );
+    for (name, value) in [
+        ("ASSET_IMAGE_QUALITY", "0"),
+        ("ASSET_IMAGE_QUALITY", "high"),
+        ("ASSET_PALETTE_COLORS", "257"),
+        ("ASSET_VIDEO_BITRATE_KBPS", "10"),
+    ] {
+        assert!(
+            Compression::from_env(&E::from_values_for_test([(name, value)])).is_err(),
+            "{name}={value}"
+        );
+    }
+}
+
+#[test]
 fn names_and_types_are_normalized() {
     assert_eq!(filename("C:\\Users\\me\\shot.png").unwrap(), "shot.png");
     assert_eq!(filename("../../etc/passwd").unwrap(), "passwd");
@@ -619,6 +656,26 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .await
         .unwrap();
     assert_eq!(rows, 4);
+
+    // Scripted floods hit the pending and per-minute reservation limits.
+    sqlx::query("UPDATE public.assets SET created_at = now() - interval '2 minutes'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut accepted = 0;
+    let limited = loop {
+        match create_as(&owner, input("tiny.txt", "text/plain", 1, None)).await {
+            Ok(_) => accepted += 1,
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(accepted, MAX_PENDING);
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    let usage = usage(State(state.clone()), Extension(owner.clone()))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(usage["compression"]["imageQuality"], 92);
 
     pool.close().await;
     admin
