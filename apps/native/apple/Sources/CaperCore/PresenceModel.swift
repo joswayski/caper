@@ -11,8 +11,9 @@ public final class PresenceModel {
     public let pageSize = 25
     private let api: APIClient
     @ObservationIgnored private lazy var gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, message in
-        self?.online = state == .connected
-        if let message { self?.error = message }
+        guard let self, self.spaceID != nil else { return }
+        self.online = state == .connected
+        if state == .connected, let message { self.error = message }
     }
     private var subscriptionID: String?
     private var generation = 0

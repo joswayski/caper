@@ -211,7 +211,7 @@ export interface VoiceSlot { summary: ReactNode; list: ReactNode }
 
 interface CallProps {
   channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean };
-  membersPanel?: ReactNode;
+  membersPanel?: (onClose: () => void) => ReactNode;
   onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
   /** Channels in the current space, whose voice rosters appear under them. */
@@ -798,7 +798,10 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
             {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />
         </div>
-        {membersVisible && membersPanel}
+        {membersVisible && membersPanel && <>
+          <button type="button" className="member-list-backdrop" aria-label="Close member list" onClick={() => setMembersVisible(false)} />
+          {membersPanel(() => setMembersVisible(false))}
+        </>}
       </section>
       <dialog ref={profileDialog} className="audio-dialog profile-dialog" aria-labelledby="profile-dialog-title" onCancel={(event) => { event.preventDefault(); setProfileOpen(false); }}>
         <div className="audio-dialog-heading">

@@ -2748,6 +2748,44 @@ uploads are included. This controls UI visibility, not access to privileged serv
 data. OpenFeature is an evaluation API/provider standard, not a required database
 or service; this single allowlist intentionally has no flag SDK or table.
 
+### Mobile workspace behavior and validation
+
+At narrow widths, web, Apple and Android navigation uses an inset, rounded channel
+surface and one account bar below both the space rail and channel column. The rail
+has no full-height divider. Member panels have an explicit Close action and an
+outside-tap backdrop; Android Back closes the visible panel before navigation.
+Long member lists scroll without losing the Close action. Desktop/tablet layouts
+keep their existing columns; Rust desktop is unchanged by this mobile pass.
+
+Apple custom dialogs are siblings of the disabled/accessibility-hidden workspace,
+and only their background consumes empty-space taps. Exact-username entry disables
+autocorrection/capitalization and supports keyboard submission on web, Apple and
+Android. Web and Apple guard pending submissions; Android's IME action respects its
+existing busy state. Android workspace content also applies IME padding so the
+composer can move above the software keyboard.
+
+Apple's gateway now keeps one owner for authorization/socket setup and reconnect
+backoff. Adding another subscription while authorization is pending cannot replace
+the connection task. Failed sockets are cancelled before retry. Transient transport
+errors use the existing connection status instead of becoming persistent chat or
+member error banners; genuine subscription/history/send errors remain visible.
+This does not establish the cause of every production disconnect or validate
+cellular/Wi-Fi transitions.
+
+| Platform/check | Coverage for this mobile pass |
+| --- | --- |
+| Web, Chromium desktop/narrow/short viewport | Executed mocked API/gateway checks for exact-username add/Enter/pending protection, dialog geometry, navigation/account alignment, member Close/outside dismissal and scrolling; inspected rendered states. Not iPhone Safari or touch evidence. |
+| Apple iOS simulator/macOS ARM | CI run `36819347315` passed: all-800 bundled-avatar lookup, representative SwiftUI colored-pixel rendering and pending-connection regression. iPhone 16 simulator parity passed 17 tests, including editable exact-username add, Close/outside dismissal and navigation bounds; inspected native captures. This is fixture/simulator evidence, not a physical iPhone or production-network check. |
+| Apple macOS Intel | Bundled-avatar lookup passed, but the SwiftUI pixel test crashed hosted Metal initialization. Follow-up uses CPU rasterization of the same resolved NSImage on Intel, retaining SwiftUI rendering on iOS/ARM; the follow-up requires native CI. No native toolchain is available in this Linux orb. |
+| Android | CI run `36819347315` built the APK and passed six instrumented tests, including all-800 resource lookup and representative VectorDrawable pixels. Smoke reached real Compose send/HTTP/gateway delivery, then failed an old exact-author expectation missing `avatarId`; the expectation now includes the saved ID without weakening assertions. Full follow-up smoke and physical keyboard/Back/navigation checks remain required before release. |
+| Rust desktop | No UI changes. Root Rust tests/format/Clippy ran; these do not validate native mobile clients. |
+| Production networks/voice | Not exercised. Sustained voice, background/resume and Wi-Fi/cellular/TURN checks remain separate acceptance gates. |
+
+Run the focused browser regression against local Vite with
+`MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:31740/spaces node scripts/test-space-controls.mjs`.
+The native parity fixture now supplies saved avatar IDs in account, member, chat
+and voice responses rather than testing only initials.
+
 ### Saved default avatars
 
 An avatar is the user's profile picture, not a separate cosmetic identity. The
@@ -2791,6 +2829,10 @@ account's saved avatar, not a client-supplied ID. Existing shared voice state is
 backward-compatible: absent IDs render initials until the participant rejoins.
 Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved design. Missing or
 invalid IDs render initials; presence dots and speaking rings remain separate.
+Apple also resolves the platform image from the framework/package resource bundle
+explicitly, preserves original colors and shows initials if asset lookup fails.
+The reported blank iPhone avatars have not been reproduced on a device; the new
+native resource/pixel tests must run before treating that report as resolved.
 
 Custom photo/GIF uploads, avatar selection and a public collection page are future
 work. A future validated uploaded-media reference should replace the displayed

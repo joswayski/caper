@@ -527,7 +527,7 @@ def main() -> None:
         history = json.load(response)
     matching = [message for message in history["messages"] if message["content"]["text"] == sent_text]
     assert len(matching) == 1, "Fixture history did not contain exactly one sent message"
-    assert matching[0]["author"] == {"id": "owner0000001", "name": "Fixture Owner", "isGuest": False}
+    assert matching[0]["author"] == {"id": "owner0000001", "name": "Fixture Owner", "isGuest": False, "avatarId": 0}
     assert matching[0]["channelId"] == "chan00000001" and matching[0]["content"]["version"] == 1
 
     # Exercise the actual default voice entry and Android permission controller.

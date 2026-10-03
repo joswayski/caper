@@ -3,6 +3,7 @@ package chat.caper.android
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -13,6 +14,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.background
@@ -25,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +50,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -121,7 +125,7 @@ internal data class VoiceJoinIntent(
             }
         } }
     }) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding).imePadding()) {
             when (val screen = state.screen) {
                 SessionScreen.Loading -> BrandLoading()
                 SessionScreen.SignedOut -> LoginScreen(state.busy, state.error, viewModel::clearError, viewModel::requestCode)
@@ -223,16 +227,34 @@ internal data class VoiceJoinIntent(
             val medium = maxWidth < 880.dp
             var membersVisible by remember { mutableStateOf(!narrow) }
             LaunchedEffect(narrow) { if (narrow) membersVisible = false }
+            BackHandler(enabled = narrow && (membersVisible || navigationOpen)) {
+                if (membersVisible && !navigationOpen) membersVisible = false else setNavigationOpen(false)
+            }
             Surface(
                 Modifier.fillMaxSize(),
                 color = Surface,
             ) {
                 if (narrow) Box {
-                    if (navigationOpen) Row {
-                        SpaceRail(state, viewModel, show, Modifier.width(60.dp))
-                        ChannelSidebar(state, voice, viewModel, show, Modifier.weight(1f), channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError, { voicePermissionError = null }) { setNavigationOpen(false) }
+                    if (navigationOpen) Column(Modifier.fillMaxSize().background(Blackout)) {
+                        Row(Modifier.weight(1f)) {
+                            SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                            ChannelSidebar(state, voice, viewModel, show,
+                                Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
+                                channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError,
+                                { voicePermissionError = null }, showAccountBar = false) { setNavigationOpen(false) }
+                        }
+                        AccountBar(state, voice, viewModel, show)
                     } else Conversation(state, voice, viewModel, show, true, membersVisible, { membersVisible = !membersVisible }, voicePermissionError) { setNavigationOpen(true) }
-                    if (membersVisible && !navigationOpen) MemberPresencePanel(state, viewModel, Modifier.padding(top = 54.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd))
+                    if (membersVisible && !navigationOpen) {
+                        Box(Modifier.fillMaxSize().padding(top = 54.dp).clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                        ) { membersVisible = false })
+                        MemberPresencePanel(state, viewModel,
+                            Modifier.padding(top = 62.dp, end = 8.dp, bottom = 8.dp).widthIn(max = 280.dp).fillMaxHeight().align(Alignment.CenterEnd)
+                                .clip(RoundedCornerShape(16.dp)).pointerInput(Unit) { detectTapGestures {} },
+                            close = { membersVisible = false })
+                    }
                 } else Row {
                     SpaceRail(state, viewModel, show, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, joinVoice, voicePermissionError, { voicePermissionError = null })
@@ -250,14 +272,14 @@ internal data class VoiceJoinIntent(
 }
 
 @Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier.fillMaxHeight().background(Blackout).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(3.dp))
                 Surface(
-                    Modifier.size(40.dp).clickable { viewModel.selectSpace(space.id) }.semantics { contentDescription = space.name },
+                    Modifier.size(48.dp).clickable { viewModel.selectSpace(space.id) }.semantics { contentDescription = space.name },
                     color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                     border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
                 ) { Box(contentAlignment = Alignment.Center) { Text(space.name.take(1).uppercase(), fontWeight = FontWeight.Black, color = if (selected) Color.White else TextMuted) } }
@@ -268,7 +290,7 @@ internal data class VoiceJoinIntent(
             state.spaces.count { !it.demo } < limits.totalSpaces
         val spaceEnabled = state.account == null || canCreateSpace
         Surface(
-            Modifier.size(40.dp).clickable(enabled = spaceEnabled) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
+            Modifier.size(48.dp).clickable(enabled = spaceEnabled) { if (state.account == null) viewModel.showLogin() else show(Overlay.CreateSpace) }.semantics {
                 contentDescription = "Create space"
                 // Web's tooltip; Android has no hover, so it is the state description.
                 if (!spaceEnabled) stateDescription = "Space limit reached (${limits?.ownedSpaces ?: 20} owned, ${limits?.totalSpaces ?: 100} total)"
@@ -289,6 +311,7 @@ internal data class VoiceJoinIntent(
     joinVoice: (Channel) -> Unit,
     voicePermissionError: String?,
     dismissVoicePermissionError: () -> Unit,
+    showAccountBar: Boolean = true,
     closeNavigation: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -434,7 +457,7 @@ internal data class VoiceJoinIntent(
                 }
             }
         }
-        AccountBar(state, voice, viewModel, show)
+        if (showAccountBar) AccountBar(state, voice, viewModel, show)
     }
 }
 
@@ -529,7 +552,7 @@ internal data class VoiceJoinIntent(
     }
 }
 
-@Composable private fun MemberPresencePanel(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, compact: Boolean = false) {
+@Composable private fun MemberPresencePanel(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, compact: Boolean = false, close: (() -> Unit)? = null) {
     val members = state.selectedSpace?.members ?: return
     val detail = state.selectedSpace ?: return
     val pages = ((members.size + 24) / 25).coerceAtLeast(1)
@@ -538,6 +561,9 @@ internal data class VoiceJoinIntent(
         Row(Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Members", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             if (!detail.space.demo) Text(members.size.toString(), color = TextMuted, fontSize = 10.sp)
+            if (close != null) IconButton(close, Modifier.size(48.dp)) {
+                Icon(painterResource(R.drawable.lucide_x), "Close member list", tint = TextMuted)
+            }
         }
         HorizontalDivider(color = Border)
         if (detail.space.demo) Text("General is open to everyone. People in voice appear in the channel sidebar.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
@@ -591,7 +617,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit) {
     val context = LocalContext.current
     Surface(Modifier.fillMaxWidth().padding(12.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-        Row(Modifier.height(42.dp).padding(5.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.height(52.dp).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).fillMaxHeight().clickable { if (state.account == null) viewModel.showLogin() else show(Overlay.Profile) }
                 .semantics { contentDescription = if (state.account == null) "Sign in to edit your profile" else "Edit profile for ${state.account.displayName ?: "Guest"}" }, verticalAlignment = Alignment.CenterVertically) {
                 AccountAvatar(state, viewModel); Spacer(Modifier.width(7.dp))
@@ -601,12 +627,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (BuildConfig.ENABLE_NATIVE_VOICE) {
                 // Web: mute and deafen wait while the Audio test holds the microphone.
                 val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
-                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(30.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
+                IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(40.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = true, voice = voice)
-                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(30.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
+                IconButton({ CaperEffects.toggle(voice.deafened); VoiceCallService.toggleDeafen(context) }, Modifier.size(40.dp).semantics { if (voice.monitoring) stateDescription = "Stop mic test to change deafen" }, enabled = !voice.monitoring) { Icon(if (voice.deafened) painterResource(R.drawable.lucide_volume_x) else painterResource(R.drawable.lucide_headphones), if (voice.deafened) "Undeafen audio" else "Deafen audio", Modifier.size(18.dp), tint = if (voice.deafened) TerracottaBright else TextMuted) }
                 AudioOptionsMenu(input = false, voice = voice)
             }
-            IconButton({ show(Overlay.Audio) }, Modifier.size(30.dp)) { Icon(painterResource(R.drawable.lucide_settings), "User Settings", Modifier.size(18.dp), tint = TextMuted) }
+            IconButton({ show(Overlay.Audio) }, Modifier.size(40.dp)) { Icon(painterResource(R.drawable.lucide_settings), "User Settings", Modifier.size(18.dp), tint = TextMuted) }
         }
     }
 }
@@ -957,6 +983,7 @@ internal fun counterTone(count: Int): Color = when {
         Text("Your username is unique. Your display name is what people see in conversations.", color = TextMuted, fontSize = 12.sp)
         // Web's field hints (account/ProfileForm.tsx).
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Next),
             supportingText = { Text("3-32 lowercase letters, numbers, or underscores.", color = TextMuted) })
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             supportingText = { Text("Shown to other people. It does not need to be unique.", color = TextMuted) })
@@ -1064,9 +1091,12 @@ internal fun counterTone(count: Int): Color = when {
         Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true)
+        val submitMember = { if (username.isEmpty()) error = "Enter an exact username." else { error = null; add(username); username = "" } }
+        OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Exact username") }, modifier = Modifier.weight(1f), singleLine = true,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { if (!busy) submitMember() }))
         Spacer(Modifier.width(8.dp))
-        Button({ if (username.isEmpty()) error = "Enter an exact username." else { error = null; add(username); username = "" } }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Add") }
+        Button(submitMember, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Add") }
     }
     error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
     members.forEach { member ->

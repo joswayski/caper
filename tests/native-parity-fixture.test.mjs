@@ -46,10 +46,13 @@ test('email code auth and validated profile persist across account and member re
   assert.equal(verified.value.account.id, ids.owner);
   assert.equal((await request('/api/account/profile', { method: 'POST', auth: true, body: { username: 'no-dashes', displayName: 'Owner' } })).response.status, 400);
   const saved = await request('/api/account/profile', { method: 'POST', auth: true, body: { username: ' New_Owner ', displayName: ' New Name ' } });
-  assert.deepEqual(saved.value, { id: ids.owner, username: 'new_owner', displayName: 'New Name' });
+  assert.deepEqual(saved.value, { id: ids.owner, username: 'new_owner', displayName: 'New Name', avatarId: 0 });
   assert.deepEqual((await request('/api/account/me', { auth: true })).value, saved.value);
   const detail = await request(`/api/spaces/${ids.space}`, { auth: true });
   assert.equal(detail.value.members.find(({ id }) => id === ids.owner).displayName, 'New Name');
+  assert.deepEqual(detail.value.members.map(member => member.avatarId), [0, 31, 799]);
+  const history = await request(`/api/chat/channels/${ids.general}/messages`, { auth: true });
+  assert.deepEqual(history.value.messages.map(message => message.author.avatarId), [0, 31, 31, 799]);
 });
 
 test('persistent navigation failure survives prefetch until explicitly cleared', async (t) => {

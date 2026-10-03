@@ -433,6 +433,7 @@ function MemberManager({
         className="member-add"
         onSubmit={(event) => {
           event.preventDefault();
+          if (pending) return;
           if (!username) return setError("Enter an exact username.");
           setError(undefined);
           void onAdd(username)
@@ -447,6 +448,10 @@ function MemberManager({
           id="member-username"
           value={username}
           autoComplete="off"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          disabled={pending}
           placeholder="Exact username"
           onChange={(event) => setUsername(event.target.value)}
         />
@@ -1226,7 +1231,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         onHistoryChange={navigation.current.rememberHistory}
         spaceRail={rail}
         channelNavigation={channelNavigation}
-        membersPanel={<MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} />}
+        membersPanel={(onClose) => <MemberPresence spaceId={detail.space.id} members={detail.members} demo={detail.space.demo} onClose={onClose} />}
         onVoiceChannelOpen={(channelId, spaceId) => choose(spaceId, channelId)}
         navigationOpen={navigationOpen}
         onNavigationToggle={() => setNavigationOpen((open) => !open)}

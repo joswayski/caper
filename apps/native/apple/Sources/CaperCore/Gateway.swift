@@ -132,7 +132,10 @@ public actor Gateway {
     }
 
     private func connect() {
-        guard socket == nil, !subscriptions.isEmpty else { return }
+        // `socket` is not assigned until token lookup completes. Keep the task as
+        // the owner of that pending connection so another subscription cannot
+        // cancel it and start a second token lookup/socket.
+        guard socket == nil, runTask == nil, !subscriptions.isEmpty else { return }
         stopped = false
         epoch &+= 1
         let connectionEpoch = epoch
@@ -200,6 +203,10 @@ public actor Gateway {
             }
         } catch {
             guard isCurrent(connectionEpoch, socket: current) else { return }
+            // receive failures do not reliably transition URLSession's task to
+            // a terminal state. Do not abandon a task that can retain network
+            // resources while the replacement is in backoff.
+            current.cancel(with: .goingAway, reason: nil)
             socket = nil
             readyEpoch = nil
             heartbeatTask?.cancel()
@@ -211,6 +218,7 @@ public actor Gateway {
             let delay = min(pow(2, Double(min(attempts, 5))) * 0.25, 5)
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, isCurrent(connectionEpoch), socket == nil else { return }
+            runTask = nil
             connect()
         }
     }
@@ -269,6 +277,7 @@ public actor Gateway {
     private func stopSocket() {
         epoch &+= 1
         let stoppedEpoch = epoch
+        attempts = 0
         readyEpoch = nil
         runTask?.cancel(); heartbeatTask?.cancel()
         runTask = nil; heartbeatTask = nil
