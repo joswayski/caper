@@ -93,6 +93,7 @@ export class ChatClient {
   private connection?: ChatConnection;
   private readonly controller = new AbortController();
   private generation = 0;
+  private loadingHistory = false;
   private name = "Guest";
   private session?: ChatSession;
   private sending = false;
@@ -211,7 +212,7 @@ export class ChatClient {
   }
 
   async loadOlder() {
-    if (this.state.phase !== "ready" || !this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length || this.controller.signal.aborted) return;
+    if (this.loadingHistory || this.state.phase !== "ready" || !this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length || this.controller.signal.aborted) return;
     const generation = this.generation;
     this.update({ loadingOlder: true, olderError: undefined });
     try {
@@ -223,6 +224,7 @@ export class ChatClient {
       const history: unknown = await response.json();
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
       if (generation !== this.generation) return;
+      if (history.messages.some((message) => message.channelId !== this.state.channelId)) throw new Error("The chat service returned messages from another channel.");
       this.timeline.prepend(history.messages);
       this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
     } catch (error) {
@@ -295,6 +297,7 @@ export class ChatClient {
 
   private async loadInitial(prepared?: GeneralChatHistory) {
     const generation = ++this.generation;
+    this.loadingHistory = true;
     const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
     this.connection?.stop();
     this.connection = undefined;
@@ -316,7 +319,8 @@ export class ChatClient {
       const retainedOlder = previous?.messages[0] && history.messages[0]
         && contiguous
         && sequence(previous.messages[0].seq) < sequence(history.messages[0].seq);
-      this.timeline.reset([...(contiguous ? previous.messages : []), ...history.messages], history.cursor);
+      // reset deduplicates by first occurrence: fresh author metadata wins.
+      this.timeline.reset([...history.messages, ...(contiguous ? this.timeline.messages : [])], history.cursor);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
         channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
@@ -354,6 +358,8 @@ export class ChatClient {
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }
+    } finally {
+      if (generation === this.generation) this.loadingHistory = false;
     }
   }
 
