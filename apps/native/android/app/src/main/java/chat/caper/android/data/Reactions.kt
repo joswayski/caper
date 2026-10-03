@@ -4,6 +4,10 @@ import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.ReactionUpdate
 import java.math.BigInteger
 
+/** HTTP acknowledgements are snapshots, not proof that preceding stream events were applied. */
+internal fun replayCursorAfterReaction(current: String?, update: ReactionUpdate, sequenced: Boolean): String? =
+    if (sequenced) update.seq else current
+
 internal fun ReactionUpdate.validated(expectedChannel: String, expectedMessage: String? = null): ReactionUpdate {
     require(type == "message.reactions" && schemaVersion == 1) { "Invalid reaction update type or schema." }
     require(channelId == expectedChannel && channelId.isNotEmpty()) { "Reaction channel mismatch." }

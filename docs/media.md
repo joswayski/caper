@@ -766,8 +766,11 @@ snapshot; original message `seq`, timestamp, and content do not change. A no-op
 returns the current snapshot revision (or `"0"`) without allocating an event.
 HTTP snapshots never advance a client's replay cursor. Per-message revisions
 prevent stale replies or older pages from overwriting newer reactions. A full
-history resync drops older cached pages so missed reactions cannot remain stale;
-those pages can be loaded again. Normal reconnects replay missing events, including
+history resync retains older cached pages only when the refreshed messages account
+for every sequence since the applied replay cursor (or the head is unchanged).
+Otherwise, a missed event may be a reaction on an older row, so cached pages are
+discarded and can be loaded again. Empty refreshed history also clears cached
+pages. Normal reconnects replay missing events, including
 during native gateway handoffs. A visible direct conversation marks sequenced
 reaction events read; HTTP snapshots do not advance that read cursor. Reactions
 do not generate push notifications.

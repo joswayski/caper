@@ -139,6 +139,7 @@ enum Dialog {
 #[derive(Clone)]
 struct Typer {
     author: Author,
+    typing: bool,
     revision: u64,
     expires: Instant,
 }
@@ -547,6 +548,7 @@ impl CaperApp {
                                 name: "Maya".into(),
                                 is_guest: false,
                             },
+                            typing: true,
                             revision: 1,
                             expires: Instant::now() + Duration::from_secs(3_600),
                         },
@@ -1222,11 +1224,47 @@ impl CaperApp {
         self.older_armed = false;
         self.older_anchor = None;
         self.load_error = None;
-        if let Err(error) = self.timeline.reset(history.messages, &history.cursor) {
+        // Every missing event must be a refreshed message. An unaccounted
+        // sequence may be a reaction on an older cached row.
+        let applied = model::sequence(&self.timeline.cursor()).unwrap_or(0);
+        let mut accounted = applied;
+        let contiguous = !history.messages.is_empty()
+            && history.messages.iter().all(|message| {
+                model::sequence(&message.seq).is_ok_and(|next| {
+                    if next <= applied {
+                        return true;
+                    }
+                    if next != accounted + 1 {
+                        return false;
+                    }
+                    accounted = next;
+                    true
+                })
+            })
+            && model::sequence(&history.cursor) == Ok(accounted);
+        let retained_older = contiguous
+            && self.timeline.messages().next().is_some_and(|oldest| {
+                history.messages.first().is_some_and(|first| {
+                    model::sequence(&oldest.seq).ok() < model::sequence(&first.seq).ok()
+                })
+            });
+        // Timeline::merge takes incoming metadata and the higher reaction revision.
+        // Keep newer snapshots on overlapping rows even when older pages must reload.
+        let fresh_ids: BTreeSet<_> = history.messages.iter().map(|message| &message.id).collect();
+        let mut messages: Vec<_> = self
+            .timeline
+            .messages()
+            .filter(|message| contiguous || fresh_ids.contains(&message.id))
+            .cloned()
+            .collect();
+        messages.extend(history.messages);
+        if let Err(error) = self.timeline.reset(messages, &history.cursor) {
             self.clear_channel(&error);
             return;
         }
-        self.has_more = history.has_more;
+        if !retained_older {
+            self.has_more = history.has_more;
+        }
         self.selected_channel = Some(history.channel.id.clone());
         if general {
             let demo = model::Space {
@@ -1728,7 +1766,10 @@ impl CaperApp {
                 self.selected_channel.as_deref(),
             ) =>
             {
-                self.live = if online { "Live".into() } else { detail }
+                self.live = if online { "Live".into() } else { detail };
+                if !online {
+                    self.typers.clear();
+                }
             }
             GatewayEvent::Message {
                 generation,
@@ -1753,10 +1794,19 @@ impl CaperApp {
                     .session
                     .as_ref()
                     .is_some_and(|session| session.author.id != message.author.id);
+                let author_id = message.author.id.clone();
                 match self.timeline.apply(*message) {
                     Ok(model::Apply::Applied) if remote => {
+                        if let Some(typer) = self.typers.get_mut(&author_id) {
+                            typer.typing = false;
+                        }
                         self.effects.play(Effect::Message);
                         self.mark_selected_direct_read();
+                    }
+                    Ok(model::Apply::Applied | model::Apply::Buffered) => {
+                        if let Some(typer) = self.typers.get_mut(&author_id) {
+                            typer.typing = false;
+                        }
                     }
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
@@ -1793,33 +1843,27 @@ impl CaperApp {
             ) =>
             {
                 let revision = model::sequence(&revision).unwrap_or(0);
-                if typing
-                    && author.id
-                        != self
-                            .session
-                            .as_ref()
-                            .map_or("", |session| session.author.id.as_str())
+                if author.id
+                    != self
+                        .session
+                        .as_ref()
+                        .map_or("", |session| session.author.id.as_str())
                 {
                     let replace = self
                         .typers
                         .get(&author.id)
                         .is_none_or(|entry| revision > entry.revision);
-                    if replace {
+                    if replace && (self.typers.contains_key(&author.id) || self.typers.len() < 64) {
                         self.typers.insert(
                             author.id.clone(),
                             Typer {
                                 author,
+                                typing,
                                 revision,
                                 expires: Instant::now() + Duration::from_secs(6),
                             },
                         );
                     }
-                } else if self
-                    .typers
-                    .get(&author.id)
-                    .is_some_and(|entry| revision > entry.revision)
-                {
-                    self.typers.remove(&author.id);
                 }
             }
             GatewayEvent::Presence {
@@ -1906,12 +1950,16 @@ impl CaperApp {
             let general = self.detail.as_ref().is_some_and(|detail| detail.space.demo);
             let mut pending = self.pending.take();
             let draft = std::mem::take(&mut self.draft);
+            let timeline = std::mem::take(&mut self.timeline);
+            let has_more = self.has_more;
             if let Some(pending) = &mut pending {
                 pending.sending = false;
             }
             self.reload_selected_channel(channel, general);
             self.pending = pending;
             self.draft = draft;
+            self.timeline = timeline;
+            self.has_more = has_more;
         }
     }
 
@@ -2096,7 +2144,7 @@ impl CaperApp {
     }
 
     fn load_older(&mut self) {
-        if self.loading_older || !self.has_more {
+        if self.loading || self.loading_older || !self.has_more {
             return;
         }
         let Some(channel) = self.selected_channel.clone() else {
@@ -5113,6 +5161,7 @@ impl CaperApp {
                     let names: Vec<_> = self
                         .typers
                         .values()
+                        .filter(|typer| typer.typing)
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
@@ -9973,6 +10022,119 @@ mod tests {
     }
 
     #[test]
+    fn typing_tombstones_reject_stale_events_and_clear_on_message_or_disconnect() {
+        use std::time::{Duration, Instant};
+
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("signed-out"),
+        );
+        app.selected_channel = Some("channel".into());
+        app.session = Some(ChatSession {
+            token: "token".into(),
+            author: Author {
+                id: "self".into(),
+                avatar_id: None,
+                name: "Self".into(),
+                is_guest: false,
+            },
+        });
+        let author = Author {
+            id: "other".into(),
+            avatar_id: None,
+            name: "Other".into(),
+            is_guest: false,
+        };
+        let typing = |author: Author, typing, revision: &str| GatewayEvent::Typing {
+            generation: 1,
+            channel: "channel".into(),
+            author,
+            typing,
+            revision: revision.into(),
+        };
+
+        app.gateway(typing(author.clone(), true, "4"));
+        app.gateway(typing(author.clone(), false, "6"));
+        app.gateway(typing(author.clone(), true, "5"));
+        app.gateway(typing(author.clone(), false, "6"));
+        let tombstone = app.typers.get("other").unwrap();
+        assert!(!tombstone.typing);
+        assert_eq!(tombstone.revision, 6);
+        assert!(app.typers.values().filter(|entry| entry.typing).count() == 0);
+
+        app.gateway(typing(
+            app.session.as_ref().unwrap().author.clone(),
+            true,
+            "7",
+        ));
+        assert!(!app.typers.contains_key("self"), "own typing stays hidden");
+
+        app.typers.get_mut("other").unwrap().expires = Instant::now() - Duration::from_millis(1);
+        app.periodic(&context);
+        assert!(!app.typers.contains_key("other"), "stop tombstones expire");
+
+        app.gateway(typing(author.clone(), true, "8"));
+        app.gateway(GatewayEvent::Message {
+            generation: 1,
+            channel: "channel".into(),
+            message: Box::new(Message {
+                id: "message".into(),
+                channel_id: "channel".into(),
+                seq: "1".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                client_message_id: "client-message".into(),
+                author: author.clone(),
+                content: Content {
+                    version: 1,
+                    kind: "text".into(),
+                    text: "sent".into(),
+                },
+            }),
+        });
+        assert!(!app.typers.get("other").unwrap().typing);
+
+        app.gateway(typing(author, true, "9"));
+        app.gateway(GatewayEvent::Status {
+            generation: 1,
+            channel: "channel".into(),
+            online: false,
+            detail: "Offline".into(),
+        });
+        assert!(app.typers.is_empty());
+    }
+
+    #[test]
+    fn typing_stop_tombstones_are_not_rendered() {
+        for stopped in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-typing"),
+            );
+            if stopped {
+                let author = app.typers.values().next().unwrap().author.clone();
+                app.gateway(GatewayEvent::Typing {
+                    generation: app.generation,
+                    channel: app.selected_channel.clone().unwrap(),
+                    author,
+                    typing: false,
+                    revision: "2".into(),
+                });
+                assert_eq!(app.typers.len(), 1, "the stop revision stays retained");
+            }
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let visible = output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Maya is typing…")
+            });
+            assert_eq!(visible, !stopped);
+        }
+    }
+
+    #[test]
     fn navigation_keeps_visible_conversation_and_rejects_stale_completions() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -10152,6 +10314,107 @@ mod tests {
         assert!(app.detail.is_none());
         assert!(app.draft.is_empty());
         assert_eq!(app.timeline.messages().count(), 0);
+    }
+
+    #[test]
+    fn refresh_preserves_history_only_when_it_reaches_the_replay_cursor() {
+        let context = egui::Context::default();
+        // Above JavaScript's safe integer range, but inside the API's i64 contract.
+        let base = 9_007_199_254_740_992_u64;
+        for (fresh, cursor, old_more, fresh_more, expected, expected_more) in [
+            (vec![4], 4, false, true, vec![2, 4, 9], false),
+            (vec![5], 5, true, false, vec![2, 4, 5, 9], true),
+            (vec![5, 6], 6, true, false, vec![2, 4, 5, 6, 9], true),
+            (vec![6], 6, false, true, vec![6], true),
+            (vec![2], 2, true, false, vec![2], false),
+            (vec![], 0, true, false, vec![], false),
+            // The missing sequence may update a reaction on message 2.
+            (vec![5], 6, true, false, vec![5], false),
+            (vec![4, 5, 7], 7, true, false, vec![4, 5, 7], false),
+        ] {
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            let template = app.timeline.messages().next().unwrap().clone();
+            let channel = app.selected_channel.clone().unwrap();
+            let message = |offset: u64| {
+                let mut message = template.clone();
+                message.id = format!("message-{offset}");
+                message.seq = (base + offset).to_string();
+                message
+            };
+            let mut cached = message(4);
+            cached.reaction_seq = Some((base + 10).to_string());
+            cached.reactions = vec![model::Reaction {
+                emoji: "👍".into(),
+                author_ids: vec!["newer-actor".into()],
+            }];
+            app.timeline
+                .reset(vec![message(2), cached], &(base + 4).to_string())
+                .unwrap();
+            // An HTTP confirmation must not bridge the missing replay range.
+            app.timeline.merge_sent(message(9)).unwrap();
+            app.has_more = old_more;
+            app.draft = "unsent draft".into();
+            app.reload_channel();
+            assert_eq!(
+                app.timeline.messages().count(),
+                3,
+                "refresh must not blank the conversation"
+            );
+            assert_eq!(app.draft, "unsent draft");
+            app.load_older();
+            assert!(
+                !app.loading_older,
+                "pagination waits for the refresh to finish"
+            );
+
+            let mut refreshed = history(&channel);
+            refreshed.cursor = (base + cursor).to_string();
+            refreshed.has_more = fresh_more;
+            for offset in &fresh {
+                let mut fresh_message = message(*offset);
+                fresh_message.author.name = "Refreshed author".into();
+                refreshed.messages.push(fresh_message);
+            }
+            app.accept_channel(refreshed, Ok(session()), false, &channel);
+            assert_eq!(
+                app.timeline
+                    .messages()
+                    .map(|message| message.seq.clone())
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|offset| (base + offset).to_string())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(app.has_more, expected_more);
+            for offset in &fresh {
+                assert_eq!(
+                    app.timeline
+                        .messages()
+                        .find(|item| item.id == format!("message-{offset}"))
+                        .unwrap()
+                        .author
+                        .name,
+                    "Refreshed author"
+                );
+            }
+            if fresh.contains(&4) {
+                let retained = app
+                    .timeline
+                    .messages()
+                    .find(|item| item.id == "message-4")
+                    .unwrap();
+                assert_eq!(retained.reaction_seq, Some((base + 10).to_string()));
+                assert_eq!(retained.reactions[0].author_ids, ["newer-actor"]);
+            }
+            app.clear_channel("Access revoked");
+            assert_eq!(app.timeline.messages().count(), 0);
+            assert!(app.draft.is_empty());
+        }
     }
 
     #[test]

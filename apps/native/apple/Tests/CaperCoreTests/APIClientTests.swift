@@ -46,6 +46,17 @@ private func requestBodyData(_ request: URLRequest) throws -> Data? {
     return body
 }
 
+private func chatHistory(_ channel: String, sequences: [Int], cursor: Int, hasMore: Bool, label: String = "message") -> Data {
+    let messages = sequences.map { sequence in
+        """
+        {"id":"m\(sequence)","channelId":"\(channel)","seq":"\(sequence)","author":{"id":"u","name":"User","isGuest":false},"content":{"version":1,"type":"text","text":"\(label) \(sequence)"},"createdAt":"now","clientMessageId":"c\(sequence)"}
+        """
+    }.joined(separator: ",")
+    return Data("""
+    {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[\(messages)],"cursor":"\(cursor)","hasMore":\(hasMore)}
+    """.utf8)
+}
+
 final class APIClientTests: XCTestCase {
     override func tearDown() {
         MockURLProtocol.handler = nil
@@ -93,6 +104,12 @@ final class APIClientTests: XCTestCase {
             _ = try await client().setReaction(channelID: channel, messageID: "only-twelve1", sessionToken: "chat-secret", emoji: "👍", active: true)
             XCTFail("Expected local message ID rejection")
         } catch let error as APIError { XCTAssertEqual(error.status, 400) }
+    }
+
+    @MainActor
+    private func waitUntil(_ predicate: @escaping @MainActor () -> Bool) async {
+        for _ in 0..<100 where !predicate() { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(predicate(), "timed out waiting for chat recovery")
     }
 
     func testSpacesResponseDefaultsMissingInvitationsToEmpty() throws {
@@ -559,6 +576,144 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(store.token)
         delayedRevoke?.respond(status: 204)
         await logout.value
+    }
+
+    @MainActor
+    func testDelayedReconnectRefreshKeepsVisibleHistoryAndDraft() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var historyRequests = 0
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            historyRequests += 1
+            return (200, chatHistory(channel, sequences: [1, 2, 3, 4], cursor: 4, hasMore: true))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+        chat.draft = "unfinished reply"
+
+        let refreshStarted = expectation(description: "refresh started")
+        var delayedRefresh: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path.hasSuffix("/messages") == true else { return false }
+            delayedRefresh = request; refreshStarted.fulfill(); return true
+        }
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await fulfillment(of: [refreshStarted], timeout: 2)
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4"])
+        XCTAssertEqual(chat.draft, "unfinished reply")
+        XCTAssertTrue(chat.loading)
+        await chat.loadOlder()
+        XCTAssertEqual(historyRequests, 1, "pagination must not start while refresh is resetting history")
+
+        delayedRefresh?.respond(status: 200, data: chatHistory(channel, sequences: [3, 4, 5], cursor: 5, hasMore: false, label: "fresh"))
+        await waitUntil { !chat.loading }
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(chat.messages.first(where: { $0.seq == "3" })?.content.text, "fresh 3")
+        XCTAssertTrue(chat.hasMore, "the retained older prefix keeps its pagination state")
+        XCTAssertEqual(chat.draft, "unfinished reply")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testReconnectRefreshRetainsOverlapButReplacesAcrossGap() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var response = chatHistory(channel, sequences: [1, 2, 3, 4], cursor: 4, hasMore: true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            return (200, response)
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+
+        response = chatHistory(channel, sequences: [4, 5], cursor: 5, hasMore: false, label: "overlap")
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await waitUntil { !chat.loading && chat.messages.last?.seq == "5" }
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(chat.messages.first(where: { $0.seq == "4" })?.content.text, "overlap 4")
+
+        response = chatHistory(channel, sequences: [7, 8], cursor: 8, hasMore: false, label: "gap")
+        chat.receive(["type": "resync_required"], generation: 2, channelID: channel)
+        await waitUntil { !chat.loading && chat.messages.last?.seq == "8" }
+        XCTAssertEqual(chat.messages.map(\.seq), ["7", "8"], "a gap after durable cursor 5 must replace unpageable retained history")
+        XCTAssertFalse(chat.hasMore)
+        await chat.stop()
+    }
+
+    @MainActor
+    func testReconnectRefreshDropsOlderPagesWhenMissingSequenceMayBeReaction() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var response = chatHistory(channel, sequences: [1, 2, 3, 4, 5], cursor: 5, hasMore: true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            return (200, response)
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+
+        response = chatHistory(channel, sequences: [6], cursor: 7, hasMore: false, label: "fresh")
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await waitUntil { !chat.loading && chat.currentSnapshot()?.cursor == "7" }
+
+        XCTAssertEqual(chat.messages.map(\.seq), ["6"], "missing sequence 7 may be a reaction on an older row, so cached pages are unsafe")
+        XCTAssertFalse(chat.hasMore)
+        response = chatHistory(channel, sequences: [], cursor: 7, hasMore: false)
+        chat.receive(["type": "resync_required"], generation: 2, channelID: channel)
+        await waitUntil { !chat.loading && chat.messages.isEmpty }
+        XCTAssertFalse(chat.hasMore, "an empty authoritative page must clear cached history even at the same cursor")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testTransientReconnectFailureAndRetryPreserveTimeline() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var historyStatus = 200
+        var history = chatHistory(channel, sequences: [1, 2, 3], cursor: 3, hasMore: true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            return (historyStatus, historyStatus == 200 ? history : Data(#"{"error":"temporarily unavailable"}"#.utf8))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+        chat.draft = "keep this"
+        historyStatus = 503
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await waitUntil { !chat.loading && chat.error?.contains("temporarily unavailable") == true }
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3"])
+        XCTAssertEqual(chat.draft, "keep this")
+
+        historyStatus = 200
+        history = chatHistory(channel, sequences: [3, 4], cursor: 4, hasMore: false, label: "retried")
+        await chat.retryLoad()
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4"])
+        XCTAssertEqual(chat.draft, "keep this")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testDeniedReconnectRefreshClearsRetainedPrivateData() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var denied = false
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            if denied { return (403, Data(#"{"error":"Access ended"}"#.utf8)) }
+            return (200, chatHistory(channel, sequences: [1, 2], cursor: 2, hasMore: true))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+        chat.draft = "private draft"
+        let revoked = expectation(description: "access revoked")
+        chat.onAccessRevoked = { revokedChannel in
+            XCTAssertEqual(revokedChannel, channel)
+            revoked.fulfill()
+        }
+        denied = true
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await fulfillment(of: [revoked], timeout: 2)
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertTrue(chat.draft.isEmpty)
+        XCTAssertNil(chat.currentAuthor)
+        XCTAssertFalse(chat.hasMore)
+        XCTAssertNotNil(chat.error)
     }
 
     @MainActor

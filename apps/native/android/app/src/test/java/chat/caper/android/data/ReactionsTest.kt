@@ -15,6 +15,11 @@ class ReactionsTest {
         assertSame(newest, mergeReaction(newest, update("8", listOf("b"))))
     }
 
+    @Test fun `only sequenced reactions advance durable recovery cursor`() {
+        assertEquals("7", replayCursorAfterReaction("5", update("7", listOf("a")), sequenced = true))
+        assertEquals("5", replayCursorAfterReaction("5", update("9", listOf("a")), sequenced = false))
+    }
+
     @Test fun `strict validator rejects repeated actors`() {
         assertThrows(IllegalArgumentException::class.java) { update("4", listOf("a", "a", "b")).validated("channel00001") }
     }

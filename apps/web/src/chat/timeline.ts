@@ -7,11 +7,12 @@ export class ChatTimeline {
   private readonly byId = new Map<string, ChatMessage>();
   private readonly eventBuffer = new Map<bigint, ChatMessage | ChatReactionEvent>();
   private readonly unseenReactions = new Map<string, ChatReactionEvent>();
+  private sortedMessages?: ChatMessage[];
 
   get cursor() { return this.cursorValue.toString(); }
 
   get messages() {
-    return [...this.byId.values()].sort((left, right) => {
+    return this.sortedMessages ??= [...this.byId.values()].sort((left, right) => {
       const order = sequence(left.seq) - sequence(right.seq);
       return order < 0n ? -1 : order > 0n ? 1 : left.id.localeCompare(right.id);
     });
@@ -22,6 +23,7 @@ export class ChatTimeline {
     this.byId.clear();
     this.eventBuffer.clear();
     this.unseenReactions.clear();
+    this.sortedMessages = undefined;
     for (const message of messages) this.merge(message);
   }
 
@@ -68,6 +70,7 @@ export class ChatTimeline {
     if (existing) {
       if (sequence(event.seq) > sequence(existing.reactionSeq ?? "0")) {
         this.byId.set(existing.id, { ...existing, reactions: event.reactions, reactionSeq: event.seq });
+        this.sortedMessages = undefined;
       }
     } else {
       const previous = this.unseenReactions.get(event.messageId);
@@ -78,7 +81,15 @@ export class ChatTimeline {
   private merge(message: ChatMessage | ChatReactionEvent) {
     if ("type" in message) { this.mergeReactions(message); return; }
     const existing = this.byId.get(message.id);
-    if (!existing || sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0")) this.byId.set(message.id, message);
+    if (!existing) {
+      this.byId.set(message.id, message);
+      this.sortedMessages = undefined;
+    } else if (sequence(message.reactionSeq ?? "0") > sequence(existing.reactionSeq ?? "0")) {
+      // reset puts fresh rows first; retain their author metadata even when a
+      // cached row carries a more recent HTTP reaction snapshot.
+      this.byId.set(message.id, { ...existing, reactions: message.reactions, reactionSeq: message.reactionSeq });
+      this.sortedMessages = undefined;
+    }
     const unseen = this.unseenReactions.get(message.id);
     if (unseen) { this.mergeReactions(unseen); this.unseenReactions.delete(message.id); }
   }
