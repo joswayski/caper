@@ -1,13 +1,28 @@
 use crate::api::Api;
 use crate::gateway::{self, GatewayEvent};
 use crate::model::{
-    Account, Channel, ChatSession, History, Member, Message, Space, SpaceDetail, Spaces,
+    Account, Channel, ChatSession, DirectConversation, History, Member, Message, Space,
+    SpaceDetail, Spaces,
 };
 use eframe::egui;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 pub enum Command {
+    LoadDirects {
+        generation: u64,
+        token: String,
+    },
+    CreateDirect {
+        generation: u64,
+        token: String,
+        username: String,
+    },
+    ReadDirect {
+        token: String,
+        id: String,
+        seq: String,
+    },
     Restore {
         generation: u64,
     },
@@ -231,6 +246,14 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    DirectsLoaded {
+        generation: u64,
+        result: Result<Vec<DirectConversation>, String>,
+    },
+    DirectCreated {
+        generation: u64,
+        result: Result<DirectConversation, String>,
+    },
     Restored {
         generation: u64,
         result: Result<Option<(String, Account, Spaces)>, String>,
@@ -615,6 +638,27 @@ fn advance_generation(current: &mut u64, candidate: u64) -> bool {
 
 fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::Context) {
     let event = match command {
+        Command::LoadDirects { generation, token } => Event::DirectsLoaded {
+            generation,
+            result: api
+                .direct_conversations(&token)
+                .map(|value| value.conversations)
+                .map_err(|error| error.to_string()),
+        },
+        Command::CreateDirect {
+            generation,
+            token,
+            username,
+        } => Event::DirectCreated {
+            generation,
+            result: api
+                .create_direct(&token, &username)
+                .map_err(|error| error.to_string()),
+        },
+        Command::ReadDirect { token, id, seq } => {
+            let _ = api.read_direct(&token, &id, &seq);
+            return;
+        }
         Command::PrepareVoice { token, channel } => {
             api.prepare_voice(&token, &channel);
             return;

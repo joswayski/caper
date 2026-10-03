@@ -7,6 +7,7 @@ export const fixtureIDs = {
   owner: 'owner0000001', member: 'member000001', other: 'member000002',
   space: 'space0000001', general: 'chan00000001', design: 'chan00000002', private: 'chan00000003',
   demoSpace: 'demo00000001', demo: 'demo00000002',
+  direct: 'dm0000000001',
 };
 const ids = fixtureIDs;
 const limits = { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 };
@@ -39,7 +40,7 @@ function initialState() {
     createdAt: `2026-09-23T09:${40 + index}:00.000Z`,
   }))]));
   return {
-    spaces: [{ space, channels, members: clone(members) }], messages,
+    spaces: [{ space, channels, members: clone(members) }], messages, directs: [],
     invitations: new Map(),
     channelInvitations: new Map(),
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
@@ -69,13 +70,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     || /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? '') ? state.account
     : request.headers.authorization === 'Bearer fixture-member-token' ? members[1] : undefined;
   const channelFor = (id) => id === ids.demo ? demoChannel
+    : state.directs.some((conversation) => conversation.id === id) ? { id, spaceId: '', name: 'TEST FIXTURE Alex', private: true, direct: true }
     : state.spaces.flatMap((detail) => detail.channels).find((channel) => channel.id === id);
-  const spaceFor = (id) => id === ids.demoSpace ? demoSpace : state.spaces.find((detail) => detail.space.id === id)?.space;
-  const canRead = (channel, user) => channel?.id === ids.demo || !!user && state.spaces.some(detail =>
-    detail.space.id === channel?.spaceId && detail.members.some(member => member.id === user.id)
-      && (!channel.private || detail.space.ownerId === user.id || (state.grants.get(channel.id) ?? []).includes(user.id)));
-  const canParticipate = (channel, user) => canRead(channel, user) && (channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user.id));
-  const channelDTO = (channel, user) => ({ ...channel, joined: channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user?.id) });
+  const spaceFor = (id) => id === '' ? { id: '', name: 'Direct messages' } : id === ids.demoSpace ? demoSpace : state.spaces.find((detail) => detail.space.id === id)?.space;
+  const canRead = (channel, user) => channel?.id === ids.demo || !!user && (channel?.direct
+    ? user.id === state.account.id && state.directs.some(conversation => conversation.id === channel.id)
+    : state.spaces.some(detail => detail.space.id === channel?.spaceId && detail.members.some(member => member.id === user.id)
+      && (!channel.private || detail.space.ownerId === user.id || (state.grants.get(channel.id) ?? []).includes(user.id))));
+  const canParticipate = (channel, user) => canRead(channel, user)
+    && (channel.direct || channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user.id));
+  const channelDTO = (channel, user) => ({ ...channel, joined: !!channel.direct || channel.id === ids.demo || (state.joins.get(channel.id) ?? []).includes(user?.id) });
   const broadcast = (kind, channelId, event) => {
     for (const client of sockets) for (const [id, sub] of client.subscriptions) {
       if (sub.kind === kind && (sub.channelId ?? ids.demo) === channelId) client.send({ type: 'event', id, event });
@@ -103,6 +107,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (path === '/health') return json(response, 200, { fixture: true });
       if (path === '/__fixture/control' && method === 'POST') {
         if (body.reset) state = initialState();
+        if (body.noSpaces) state.spaces = [];
         if (body.clearFailures) state.failures = [];
         if (body.failure) state.failures.push(body.failure);
         if (body.disconnect) for (const client of sockets) client.socket.destroy();
@@ -110,6 +115,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           type: 'typing.updated', channelId: body.typing.channelId ?? ids.general,
           author: author(members[1]), typing: body.typing.active !== false, revision: String(++state.typingRevision),
         });
+        if (body.incomingMessage) {
+          const channelId = body.incomingMessage.channelId;
+          if (!channelFor(channelId)) return reject(response, 404, 'Fixture channel not found.');
+          const messages = state.messages.get(channelId) ?? [];
+          const message = {
+            id: `fixture${String(messages.length + 1).padStart(8, '0')}`, channelId, seq: String(messages.length + 1),
+            author: author(members[2]), content: { version: 1, type: 'text', text: `TEST FIXTURE — ${body.incomingMessage.text}` },
+            clientMessageId: randomUUID(), createdAt: new Date().toISOString(),
+          };
+          messages.push(message); state.messages.set(channelId, messages);
+          broadcast('chat', channelId, { type: 'message.created', channelId, seq: message.seq, message });
+        }
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
           if (!channelFor(channelId) || !Array.isArray(body.media.participants)) return reject(response, 400, 'invalid media fixture');
@@ -140,6 +157,30 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         return reject(response, failure.status, failure.error ?? 'TEST FIXTURE: requested failure.');
       }
       const user = identity(request);
+      if (path === '/api/push/config') return user ? json(response, 200, { platforms: [] }) : reject(response, 401, 'Sign in required.');
+      if (path === '/api/dms') {
+        if (!user) return reject(response, 401, 'Sign in required.');
+        if (method === 'POST') {
+          if (!['fixture_alex', 'alex'].includes(String(body.username).trim().replace(/^@/, '').toLowerCase())) return reject(response, 404, 'Account not found.');
+          if (!state.directs.length) {
+            state.directs.push({ id: ids.direct, peer: { id: ids.other, username: 'fixture_alex', displayName: 'TEST FIXTURE Alex' }, lastSeq: '0', readSeq: '0' });
+            state.messages.set(ids.direct, []);
+          }
+          return json(response, 200, state.directs[0]);
+        }
+        return json(response, 200, { conversations: state.directs.map((conversation) => ({ ...conversation, lastSeq: state.messages.get(conversation.id)?.at(-1)?.seq ?? '0' })) });
+      }
+      const directRead = /^\/api\/dms\/([^/]+)\/read$/.exec(path);
+      if (directRead && method === 'POST') {
+        if (!user) return reject(response, 401, 'Sign in required.');
+        const conversation = state.directs.find((item) => item.id === directRead[1]);
+        if (!conversation) return reject(response, 404, 'Conversation not found.');
+        if (!/^(0|[1-9]\d*)$/.test(body.seq)) return reject(response, 400, 'Invalid cursor.');
+        const head = BigInt(state.messages.get(conversation.id)?.at(-1)?.seq ?? '0');
+        const bounded = BigInt(body.seq) > head ? head : BigInt(body.seq);
+        if (bounded > BigInt(conversation.readSeq)) conversation.readSeq = String(bounded);
+        return json(response, 204);
+      }
       if (path === '/api/account/me') return user ? json(response, 200, user) : reject(response, 401, 'Sign in required.');
       if (path === '/api/auth/email/request' && method === 'POST') {
         if (!String(body.email ?? '').includes('@')) return reject(response, 400, 'Enter a valid email address.');

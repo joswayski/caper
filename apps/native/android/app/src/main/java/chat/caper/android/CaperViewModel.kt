@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import chat.caper.android.data.*
 import chat.caper.android.model.*
+import chat.caper.android.push.PushRegistration
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
 import java.io.IOException
@@ -35,6 +36,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal val accountEpoch: Long get() = accountGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
+    private var directRefresh: Job? = null
+    private var pendingDirectIntent: String? = null
+    private var foreground = false
 
     init { loadHome() }
 
@@ -58,15 +62,25 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = AppUiState(screen = SessionScreen.SignedOut)
                     return@launch
                 }
-                val list = api.spaces(requireNotNull(accountToken))
+                val token = requireNotNull(accountToken)
+                val list = api.spaces(token)
+                val directs = runCatching { api.directConversations(token) }
                 if (requestAccountGeneration != accountGeneration) return@launch
                 mutable.value = AppUiState(
                     screen = SessionScreen.Home, account = account,
                     spaces = list.spaces, invitations = list.invitations, limits = list.limits,
+                    directConversations = directs.getOrNull()?.conversations.orEmpty(),
+                    error = directs.exceptionOrNull()?.let(::message),
                 )
                 createChatSession(requestAccountGeneration)
                 if (requestAccountGeneration != accountGeneration) return@launch
-                list.spaces.firstOrNull()?.let { selectSpace(it.id) }
+                startDirectRefresh()
+                if (PushRegistration.enabled(getApplication())) viewModelScope.launch {
+                    runCatching { PushRegistration.enable(getApplication()) }
+                }
+                val pending = pendingDirectIntent?.let { id -> mutable.value.directConversations.firstOrNull { it.id == id } }
+                if (pending != null) { pendingDirectIntent = null; selectDirect(pending) }
+                else list.spaces.firstOrNull()?.let { selectSpace(it.id) }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
                     mutable.value = AppUiState(screen = SessionScreen.SignedOut, error = message(error))
@@ -123,10 +137,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         accountToken = null
         chatToken = null
         chatAuthor = null
+        directRefresh?.cancel(); directRefresh = null
         tokens.clear()
-        if (token != null) viewModelScope.launch { runCatching { api.logout(token) } }
+        if (token != null) {
+            viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
+            viewModelScope.launch { runCatching { api.logout(token) } }
+        }
         loadHome()
     }
+
+    fun openDirectFromNotification(id: String?) {
+        if (id == null || !Regex("^[A-Za-z0-9]{12}$").matches(id)) return
+        mutable.value.directConversations.firstOrNull { it.id == id }?.let(::selectDirect) ?: run { pendingDirectIntent = id; refreshDirectConversations() }
+    }
+
+    suspend fun canEnablePush(): Boolean {
+        val token = accountToken ?: return false
+        val epoch = accountGeneration
+        return runCatching { "fcm" in api.pushConfig(token).platforms }.getOrDefault(false) && epoch == accountGeneration
+    }
+
+    suspend fun disablePush() { PushRegistration.disable(getApplication(), accountToken) }
 
     fun selectSpace(id: String) {
         if (mutable.value.spaces.none { it.id == id }) return
@@ -168,7 +199,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(channel: Channel) {
         val request = ++generation
         closeChannel(clearPending = true)
-        mutable.value = mutable.value.copy(selectedChannel = channel, messages = emptyList(), busy = true, error = null, messagesLoading = true)
+        mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, messages = emptyList(), busy = true, error = null, messagesLoading = true)
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
@@ -180,6 +211,79 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
                 // Web shows a failed first load in the conversation with Try again.
                 else mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
+            }
+        }
+    }
+
+    fun selectDirect(conversation: DirectConversation) {
+        val request = ++generation
+        closeChannel(clearPending = true)
+        val channel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true)
+        mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = conversation.id, messages = emptyList(), busy = true, error = null, messagesLoading = true)
+        viewModelScope.launch {
+            try {
+                val history = api.history(requireAccountToken(), conversation.id)
+                if (request != generation) return@launch
+                require(history.channel?.direct == true) { "Direct-message history was not marked direct." }
+                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false, messagesLoading = false)
+                openGateway(conversation.id, history.cursor, request)
+                markDirectRead(conversation.id, history.cursor)
+            } catch (error: Throwable) {
+                if (request == generation) mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
+            }
+        }
+    }
+
+    fun startDirect(username: String, done: () -> Unit = {}) = launchAction { request ->
+        val conversation = api.startDirectConversation(requireAccountToken(), username)
+        if (request != accountGeneration) return@launchAction
+        mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
+        done(); selectDirect(conversation)
+    }
+
+    fun refreshDirectConversations() {
+        val token = accountToken ?: return
+        val request = accountGeneration
+        viewModelScope.launch {
+            runCatching { api.directConversations(token) }.onSuccess { result ->
+                if (request == accountGeneration) {
+                    mutable.value = mutable.value.copy(directConversations = result.conversations)
+                    pendingDirectIntent?.let { id -> result.conversations.firstOrNull { it.id == id } }?.let {
+                        pendingDirectIntent = null
+                        selectDirect(it)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startDirectRefresh() {
+        directRefresh?.cancel()
+        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations() } }
+    }
+
+    fun setForeground(active: Boolean) {
+        foreground = active
+        if (!active) return
+        refreshDirectConversations()
+        val current = mutable.value
+        if (!current.messagesLoading) current.selectedDirectId?.let { id ->
+            current.messages.lastOrNull()?.let { markDirectRead(id, it.seq) }
+        }
+    }
+
+    private fun markDirectRead(id: String, seq: String) {
+        if (!foreground) return
+        val token = accountToken ?: return
+        val request = accountGeneration
+        viewModelScope.launch {
+            runCatching { api.markDirectConversationRead(token, id, seq) }.onSuccess {
+                if (request == accountGeneration) mutable.value = mutable.value.copy(directConversations = mutable.value.directConversations.map {
+                    if (it.id == id) it.copy(
+                        readSeq = maxOf(it.readSeq.toBigInteger(), seq.toBigInteger()).toString(),
+                        lastSeq = maxOf(it.lastSeq.toBigInteger(), seq.toBigInteger()).toString(),
+                    ) else it
+                })
             }
         }
     }
@@ -224,7 +328,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun retryMessages() {
         val current = mutable.value
         val channel = current.selectedChannel ?: return
-        if (current.messagesError != null) selectChannel(channel)
+        if (current.messagesError != null) {
+            if (channel.direct) current.directConversations.firstOrNull { it.id == channel.id }?.let(::selectDirect)
+            else selectChannel(channel)
+        }
         else if (current.refreshError != null) resyncChannel(channel.id)
     }
 
@@ -487,6 +594,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
         confirmPending(message)
+        if (mutable.value.selectedDirectId == message.channelId) markDirectRead(message.channelId, message.seq)
     }
 
     private fun confirmPending(message: ChatMessage) {
@@ -503,7 +611,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         closeChannel(clearPending = false)
         // Keep the conversation readable while it reloads, as the web does.
         mutable.value = mutable.value.copy(
-            selectedChannel = channel, messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
+            selectedChannel = channel, selectedDirectId = previous.selectedDirectId,
+            messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
             gateway = GatewayStatus.CONNECTING, busy = true, error = null,
         )
         viewModelScope.launch {
@@ -513,6 +622,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 history.messages.forEach(::confirmPending)
                 mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false)
                 openGateway(channel.id, history.cursor, request, channel.joined)
+                if (channel.direct) markDirectRead(channel.id, history.cursor)
             } catch (error: Throwable) {
                 if (generation == request) {
                     if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
@@ -726,7 +836,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
         if (clearPending) pendingSends.clear()
         mutable.value = mutable.value.copy(
-            selectedChannel = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
@@ -775,6 +885,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object { const val PRESENCE_PAGE_SIZE = 25 }
 }
+
+internal fun mergeDirects(current: List<DirectConversation>, incoming: List<DirectConversation>): List<DirectConversation> =
+    (incoming + current).distinctBy { it.id }
 
 internal class ProfileSaveException(override val message: String) : Exception(message)
 

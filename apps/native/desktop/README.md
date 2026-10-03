@@ -28,6 +28,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
+- Global two-person direct messages, including exact-username conversation
+  creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
+  replay. Desktop does not provide OS push notifications in this stage.
 - Experimental native voice: raw Google libwebrtc with platform audio devices,
   Caper SFU offer/answer publication and subscription, voice roster, lease
   snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
@@ -149,7 +152,7 @@ Linux packages carry the checked native runtime and licenses. Windows also
 stages the four Microsoft-signed app-local VC++ DLLs imported by ORT; these come
 from the active Visual Studio toolchain and are not immutable hash-pinned. Windows
 package execution remains an exact-head CI/platform acceptance requirement.
-No camera, screen sharing, native notifications, installers, signing or updates.
+No camera, screen sharing, native push notifications, installers, signing or updates.
 IME/accessibility and sustained multi-network voice need separate acceptance.
 The `.deb` and archives are unsigned release artifacts, not installers.
 
@@ -214,6 +217,10 @@ does not provide live SFU media. Use normal `--api-url` for networked chat tests
 `parity-voice-joining` and `parity-voice-connected` preview Cancel/Leave and the
 audio bar without starting a media transport; `parity-voice-speaking` adds fixed
 speaking rings for you and Maya.
+`parity-direct` and `parity-direct-new` preview a two-person DM and its
+exact-username dialog without a live account or notification provider.
+`parity-direct-no-spaces` previews the first-space page's Direct messages entry
+and the global list without any space membership.
 
 After `npm ci`, run `node scripts/native-icons.mjs --check` to verify the bundled
 vectors match the web client's pinned Lucide package. Omit `--check` to regenerate.

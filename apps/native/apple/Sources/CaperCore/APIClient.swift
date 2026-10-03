@@ -38,6 +38,8 @@ private struct ChannelInput: Encodable {
     enum CodingKeys: String, CodingKey { case name; case privateChannel = "private" }
 }
 private struct UsernameInput: Encodable { let username: String }
+private struct ReadInput: Encodable { let seq: String }
+private struct PushDeviceInput: Encodable { let platform: String; let token: String }
 public struct MembersResponse: Decodable, Sendable {
     public let members: [Member]
     public let invitations: [Member]
@@ -110,6 +112,27 @@ public actor APIClient {
     }
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
+    public func directMessages() async throws -> [DirectMessageConversation] {
+        let response: DirectMessagesResponse = try await request("api/dms")
+        guard response.conversations.allSatisfy({
+            (try? Sequence.compare($0.lastSeq, "0")) != nil && (try? Sequence.compare($0.readSeq, "0")) != nil
+                && (try? Sequence.compare($0.readSeq, $0.lastSeq)) != .orderedDescending
+        }) else { throw APIError(status: 502, message: "Caper returned invalid direct messages.") }
+        return response.conversations
+    }
+    public func createDirectMessage(username: String) async throws -> DirectMessageConversation {
+        try await request("api/dms", method: "POST", body: UsernameInput(username: username))
+    }
+    public func markDirectMessageRead(id: String, seq: String) async throws {
+        let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
+    }
+    public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
+    public func registerPushDevice(platform: String, token: String) async throws {
+        let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token))
+    }
+    public func unregisterPushDevice(platform: String, token: String) async throws {
+        let _: Empty = try await request("api/push/devices", method: "DELETE", body: PushDeviceInput(platform: platform, token: token))
+    }
     public func space(_ id: String) async throws -> SpaceDetail { try await request("api/spaces/\(try pathID(id))") }
 
     public func createSpace(name: String) async throws -> Space {

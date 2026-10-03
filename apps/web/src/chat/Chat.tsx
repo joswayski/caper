@@ -43,7 +43,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
 const listComponents = { Header: HistoryHeader, List: MessageList };
 const measureItem = (element: HTMLElement, field: "offsetHeight" | "offsetWidth") => element[field];
 
-export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, initialHistory, initialHistoryError, showTitle = false, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
+export default function Chat({ name, signedIn, identityReady, channelId, channelName: expectedChannelName, direct = false, onReadCursor, initialHistory, initialHistoryError, showTitle = false, headerActions, readOnly = false, composerNotice, messageSounds = true, onAuthorChange, onHistoryChange, onLocalPresenceChange, onOnlineChange }: { name: string; signedIn: boolean; identityReady: boolean; channelId?: string; channelName?: string; direct?: boolean; onReadCursor?: (seq: string) => void; initialHistory?: GeneralChatHistory; initialHistoryError?: string; showTitle?: boolean; headerActions?: ReactNode; readOnly?: boolean; composerNotice?: ReactNode; messageSounds?: boolean; onAuthorChange?: (author: ChatAuthor) => void; onHistoryChange?: (history: GeneralChatHistory) => void; onLocalPresenceChange?: (status: PresenceStatus) => void; onOnlineChange?: (online: boolean) => void }) {
   const [state, setState] = useState(() => initialChatView(initialHistory, initialHistoryError));
   const [showConnectionStatus, setShowConnectionStatus] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_ITEM_INDEX);
@@ -59,6 +59,16 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
+  const readCallback = useRef(onReadCursor);
+  readCallback.current = onReadCursor;
+  useEffect(() => {
+    const read = () => {
+      if (state.phase === "ready" && document.visibilityState === "visible") readCallback.current?.(latestMessage?.seq ?? "0");
+    };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => document.removeEventListener("visibilitychange", read);
+  }, [state.phase, latestMessage?.seq, channelId]);
 
   useLayoutEffect(() => {
     const composer = composerRef.current;
@@ -144,7 +154,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const loadOlder = () => { void clientRef.current?.loadOlder(); };
 
   const sending = !!state.pendingSend && !state.sendError;
-  const channelName = (expectedChannelName ?? state.channelName).toLowerCase();
+  const channelName = direct ? expectedChannelName ?? state.channelName : (expectedChannelName ?? state.channelName).toLowerCase();
   const characterCount = Array.from(draft).length;
   const counterTone = characterCount >= 3900 ? "red" : characterCount >= 3750 ? "orange" : characterCount >= 3500 ? "yellow" : "gray";
   const messages = state.pendingSend ? [...state.messages, state.pendingSend] : state.messages;
@@ -204,7 +214,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
 
   return <section className="chat-panel" aria-labelledby="chat-heading">
     <header className="chat-heading">
-      <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}># {channelName}</h2>
+      <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>{direct ? "" : "# "}{channelName}</h2>
       {headerActions}
       {!state.online && showConnectionStatus && <span className="chat-offline" role="status">{state.phase === "error" ? "Offline" : "Connecting…"}</span>}
       {state.phase === "ready" && state.error && <div className="chat-refresh-error" role="alert">{state.error} <button type="button" onClick={() => clientRef.current?.retryLoad()}>Retry</button></div>}
@@ -213,7 +223,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
     <div className="chat-messages" aria-busy={state.phase === "loading"}>
       {state.phase === "loading" && <p className="chat-state" role="status">Loading messages…</p>}
       {state.phase === "error" && <div className="chat-state" role="alert"><p>{state.error}</p><button type="button" onClick={() => clientRef.current?.retryLoad()}>Try again</button></div>}
-      {state.phase === "ready" && !messages.length && <div className="chat-state"><p>No messages yet.</p><small>Start the conversation in #{channelName}.</small></div>}
+      {state.phase === "ready" && !messages.length && <div className="chat-state"><p>No messages yet.</p><small>{direct ? `Only you and ${channelName} can read this conversation.` : `Start the conversation in #${channelName}.`}</small></div>}
       {state.phase === "ready" && messages.length > 0 && hydrated && <Virtuoso
         ref={listRef}
         data={messages}
@@ -261,7 +271,7 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       {validationError && <p className="chat-inline-error" role="alert">{validationError}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <label className="sr-only" htmlFor="chat-message">Message {channelName}</label>
-        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} enterKeyHint="send" aria-describedby="chat-composer-hint" placeholder={`Message #${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
+        <textarea ref={composerRef} id="chat-message" rows={1} value={draft} disabled={state.phase !== "ready"} enterKeyHint="send" aria-describedby="chat-composer-hint" placeholder={`Message ${direct ? "" : "#"}${channelName}`} onChange={(event) => { setDraft(event.target.value); setValidationError(undefined); clientRef.current?.setTyping(!!event.target.value.trim()); }} onBlur={() => clientRef.current?.setTyping(false)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!sending) void submit(); }
         }} />
         <span id="chat-composer-hint" className="sr-only">Enter to send. Shift+Enter for a new line.</span>

@@ -15,7 +15,18 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false, val inviter: Inviter? = null)
 @Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
-@Serializable data class Channel(val id: String, val spaceId: String, val name: String, val private: Boolean, val joined: Boolean = true)
+@Serializable data class Channel(
+    val id: String,
+    val spaceId: String,
+    val name: String,
+    val private: Boolean,
+    val direct: Boolean = false,
+    val joined: Boolean = true,
+)
+@Serializable data class DirectPeer(val id: String, val username: String, val displayName: String)
+@Serializable data class DirectConversation(val id: String, val peer: DirectPeer, val lastSeq: String, val readSeq: String)
+@Serializable data class DirectConversationList(val conversations: List<DirectConversation>)
+@Serializable data class PushConfig(val platforms: List<String>)
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(
@@ -42,7 +53,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val space: ChatRoom? = null,
     val channel: ChatRoom? = null,
 )
-@Serializable data class ChatRoom(val id: String, val name: String)
+@Serializable data class ChatRoom(val id: String, val name: String, val direct: Boolean = false)
 @Serializable data class ChatSession(val token: String, val author: ChatAuthor)
 @Serializable data class ErrorBody(val error: String? = null, val code: String? = null, val attemptsRemaining: Int? = null)
 @Serializable data class MemberList(val members: List<Member>, val invitations: List<Member> = emptyList())
@@ -122,6 +133,8 @@ data class AppUiState(
     val limits: SpaceLimits? = null,
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
+    val directConversations: List<DirectConversation> = emptyList(),
+    val selectedDirectId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val hasMoreMessages: Boolean = false,
     val loadingOlder: Boolean = false,

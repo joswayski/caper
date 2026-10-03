@@ -52,6 +52,29 @@ public struct ChannelInvitation: Codable, Equatable, Identifiable, Sendable {
     public let inviter: Inviter
 }
 
+public struct DirectMessagePeer: Codable, Equatable, Sendable {
+    public let id: String
+    public let username: String
+    public let displayName: String
+}
+
+public struct DirectMessageConversation: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let peer: DirectMessagePeer
+    public let lastSeq: String
+    public let readSeq: String
+
+    public var unread: Bool { (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending }
+}
+
+public struct DirectMessagesResponse: Codable, Sendable {
+    public let conversations: [DirectMessageConversation]
+}
+
+public struct PushConfiguration: Codable, Equatable, Sendable {
+    public let platforms: [String]
+}
+
 public struct Member: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let username: String
@@ -183,6 +206,11 @@ public struct ChatHistory: Codable, Sendable {
 public struct HistoryIdentity: Codable, Equatable, Sendable {
     public let id: String
     public let name: String
+    public let direct: Bool?
+
+    public init(id: String, name: String, direct: Bool? = nil) {
+        self.id = id; self.name = name; self.direct = direct
+    }
 }
 
 public struct ChatSession: Codable, Sendable {
