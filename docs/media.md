@@ -1436,10 +1436,15 @@ live ingestion into the user's dataset has not been verified.
   draining exceeds its deadline, the process exits without provider cleanup
   rather than racing cleanup against unfinished mutations. Do not mix local-mode
   and shared-mode pods; use the staged Valkey cutover before adding replicas.
-- Android, Apple, and Rust desktop chat clients currently reconnect on `migrating`
-  rather than overlapping sockets. They retain the channel and resume from their
-  applied cursor, but can show a brief reconnecting state. Browser handoff tests
-  do not establish native-device or gapless-audio acceptance.
+- Updated Android, Apple, and Rust desktop clients also overlap sockets on
+  `migrating`. Chat replay resumes from the applied cursor; promotion requires
+  subscription acknowledgments, the chat replay checkpoint, current media
+  revisions, and any watched presence snapshot. Messages and media snapshots
+  delivered by both sockets are deduplicated. Failed or stalled candidates retry
+  without clearing the old stream's chat/voice state. In-call roster streams keep
+  the existing media capability and do not rejoin the call during handoff.
+  Older installed native versions still briefly reconnect; release the updated
+  clients independently against the existing compatible API/gateway protocol.
 - Deploy the matching API image successfully before the gateway image; the
   infrastructure gateway workflow verifies that API rollout before changing its
   pin. Keep infrastructure lifecycle settings in place and migrations compatible
@@ -1450,8 +1455,12 @@ live ingestion into the user's dataset has not been verified.
   provider session mappings and zero shutdown track closes/TURN revocations.
   Browser tests cover repeated mixed chat/media handoffs, failed candidates, stale
   snapshots, deduplication, and unchanged mocked voice peers after gateway loss.
-  Cloudflare is mocked; these checks do **not** prove live-cluster routing or
-  continuous audio. Run the live two-client replacement checks in
+  Android JVM tests and Rust desktop tests exercise native handoffs with real
+  local WebSockets. Swift actor tests use an injected transport, compiled and
+  run in a Linux harness; Xcode/macOS/iOS and Windows builds remain separate CI
+  validation. No physical-device handoff acceptance is claimed. Cloudflare is
+  mocked; these checks do **not** prove live-cluster routing or continuous audio.
+  Run the live two-client replacement checks in
   [Activation and verification](#activation-and-verification) before claiming that.
   A crash, replacement outage beyond the handoff window, or expired lease can
   still interrupt updates or force voice recovery.

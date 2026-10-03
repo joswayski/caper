@@ -19,6 +19,64 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MediaEventClientTest {
+    @Test fun `migration gates stale snapshots preserves capability and recovers when both streams fail`() {
+        val server = MockWebServer()
+        val sockets = ArrayBlockingQueue<WebSocket>(8)
+        val subscriptions = ArrayBlockingQueue<String>(8)
+        repeat(5) {
+            server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    sockets.add(webSocket)
+                    webSocket.send("""{"type":"hello","idleTimeoutSeconds":600,"serverTime":1}""")
+                }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (text.contains("\"subscribe\"")) subscriptions.add(text)
+                }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+            }))
+        }
+        val snapshots = ArrayBlockingQueue<MediaSnapshot>(8)
+        val events = MediaEventClient(
+            server.url("/").toString().trimEnd('/'), "account-secret", "voice000001",
+            "stable-capability", snapshots::add, {}, catchupTimeoutMs = 5_000,
+        )
+        fun next(): Pair<WebSocket, String> {
+            val socket = sockets.poll(3, TimeUnit.SECONDS) ?: throw AssertionError("socket did not open")
+            val frame = Json.parseToJsonElement(subscriptions.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("subscription missing")).jsonObject
+            assertEquals("stable-capability", frame["token"]?.jsonPrimitive?.content)
+            return socket to frame.getValue("id").jsonPrimitive.content
+        }
+        fun WebSocket.subscribed(id: String) = send("""{"type":"subscribed","id":"$id"}""")
+        fun WebSocket.snapshot(id: String, revision: Long) = send("""{"type":"event","id":"$id","event":{"type":"snapshot","revision":$revision,"participants":[]}}""")
+        try {
+            events.start()
+            val (old, id) = next(); old.subscribed(id); old.snapshot(id, 5)
+            assertEquals(5L, snapshots.poll(2, TimeUnit.SECONDS)?.revision)
+            old.send("""{"type":"migrating"}""")
+            val (candidate, candidateId) = next(); assertEquals(id, candidateId); candidate.subscribed(id)
+            candidate.snapshot(id, 4)
+            assertNull("stale candidate snapshot is deduplicated", snapshots.poll(250, TimeUnit.MILLISECONDS))
+            old.snapshot(id, 6)
+            assertEquals("old stream remains live during overlap", 6L, snapshots.poll(2, TimeUnit.SECONDS)?.revision)
+            candidate.snapshot(id, 6)
+            assertNull("candidate replay is deduplicated", snapshots.poll(250, TimeUnit.MILLISECONDS))
+
+            candidate.send("""{"type":"migrating"}""")
+            val (third, thirdId) = next(); third.subscribed(thirdId); third.snapshot(thirdId, 7)
+            assertEquals(7L, snapshots.poll(2, TimeUnit.SECONDS)?.revision)
+
+            third.send("""{"type":"migrating"}""")
+            val (doomed, doomedId) = next(); doomed.subscribed(doomedId)
+            third.close(1012, "old failed")
+            doomed.close(1012, "candidate failed")
+            val (recovered, recoveredId) = next(); recovered.subscribed(recoveredId); recovered.snapshot(recoveredId, 8)
+            assertEquals("an active reconnect follows loss of both sockets", 8L, snapshots.poll(3, TimeUnit.SECONDS)?.revision)
+        } finally {
+            events.close()
+            server.close()
+        }
+    }
+
     @Test fun `account bearer stays in header and media capability stays in subscription body`() {
         val server = MockWebServer()
         val incoming = ArrayBlockingQueue<String>(2)
@@ -32,6 +90,7 @@ class MediaEventClientTest {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 incoming.add(text)
             }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         }))
         val snapshots = ArrayBlockingQueue<MediaSnapshot>(1)
         val terminal = ArrayBlockingQueue<Throwable>(1)
