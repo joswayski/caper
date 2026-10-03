@@ -84,7 +84,8 @@ public actor Gateway {
         guard readyEpoch == epoch, socket != nil else {
             throw GatewayFailure(status: 503, message: "Live commands are unavailable while reconnecting.", code: nil)
         }
-        let id = UUID().uuidString
+        // Command results serialize this UUID through Rust, unlike opaque subscription IDs.
+        let id = UUID().uuidString.lowercased()
         var frame: [String: Any] = [
             "type": "command", "id": id, "method": method,
             "issuedAt": Int(Date().timeIntervalSince1970 * 1_000), "body": body,

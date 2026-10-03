@@ -145,6 +145,29 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(delivery.cursor, "42")
     }
 
+    func testSwiftUUIDMatchesCanonicalServerHTTPAndGatewayConfirmation() {
+        let uppercaseID = "AB12CD34-EF56-4789-8ABC-DEF012345678"
+        let canonicalID = "ab12cd34-ef56-4789-8abc-def012345678"
+        var delivery = ChatDeliveryState(cursor: "41")
+        let command = delivery.begin(text: "Swag", makeID: { uppercaseID })
+        XCTAssertEqual(command.id, canonicalID, "Rust parses UUIDs and returns lowercase, not Swift's original casing")
+        XCTAssertEqual(delivery.begin(text: "next draft", makeID: { "other" }), command, "retries keep the same canonical identity")
+        let author = ChatAuthor(id: "SelfAbC12345", name: "Self", isGuest: false)
+        let message = ChatMessage(id: "m", channelId: "ChannelAbC12", seq: "42", author: author,
+                                  content: ChatContent(version: 1, type: "text", text: "Swag"),
+                                  createdAt: "2026-10-01T12:47:00Z", clientMessageId: canonicalID)
+        XCTAssertTrue(MessageValidation.acceptsResponse(message, channelID: "ChannelAbC12", command: command, authorID: author.id))
+        XCTAssertFalse(MessageValidation.acceptsResponse(message, channelID: "channelabc12", command: command, authorID: author.id),
+                       "Only UUIDs are normalized; channel and author IDs are case sensitive")
+        XCTAssertFalse(MessageValidation.acceptsResponse(message, channelID: "ChannelAbC12", command: command, authorID: "selfabc12345"))
+        XCTAssertFalse(delivery.confirmGateway(clientMessageID: canonicalID, authorID: "other", ownAuthorID: author.id))
+        XCTAssertFalse(delivery.confirmGateway(clientMessageID: "ab12cd34-ef56-4789-8abc-def012345679", authorID: author.id, ownAuthorID: author.id))
+        XCTAssertTrue(delivery.receive(seq: "42"))
+        XCTAssertTrue(delivery.confirmGateway(clientMessageID: canonicalID, authorID: author.id, ownAuthorID: author.id))
+        XCTAssertNil(delivery.pending, "a successful send must not leave a duplicate Retry send row")
+        XCTAssertEqual(delivery.cursor, "42")
+    }
+
     func testUnknownOutcomeRetriesExactCommandAndResetPreventsResurrection() {
         var delivery = ChatDeliveryState(cursor: "8")
         let first = delivery.begin(text: "original", makeID: { "id-one" })

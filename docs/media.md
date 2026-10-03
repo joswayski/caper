@@ -2588,6 +2588,27 @@ feature parity and platform acceptance remain incomplete. No backend migration,
 provider secret, production restart, or infrastructure change is required by the
 native development build workflow.
 
+**Apple chat confirmation/recovery correction, October 3, 2026:** Swift sends
+lowercase message and gateway-command UUIDs to match Rust's canonical result IDs.
+Opaque channel, author, and subscription IDs remain case-sensitive. The native
+fixture now canonicalizes UUIDs too, including retry keys; echoing uppercase
+request IDs previously hid invalid-message/duplicate-pending-row failures. This
+complements the mobile workspace correction's pending-socket/retry protections:
+transient disconnections use connection status, while genuine send/subscription
+errors remain visible. Recovery cannot confirm or erase uncertain sends.
+
+Local validation: ten compiled Swift delivery checks and five HTTP/model checks
+against the disposable fixture passed; the latter stubbed Keychain/audio and drove
+gateway-state callbacks manually. All six fixture tests and 295 web tests passed,
+as did `npm run check`. Full Apple XCTest/UI execution and physical iPhone checks
+remain pending: this Linux Swift runtime's libcurl does not support WebSockets,
+and the orb has no Xcode. Native tests cover canonical HTTP/gateway confirmation
+and real socket disconnect → replay → warning removal. Android, web, and Rust
+desktop already generate lowercase UUIDs and require no client changes for this
+correction; their native/device behavior is not established by these Swift checks.
+Release updated iOS/macOS clients after platform checks; no API/gateway/web
+deployment, migration, new secret, or infrastructure apply is required.
+
 **Download a build after merge:** relevant `main` pushes run **Native development
 builds** automatically. To request a new build and retrieve its artifacts:
 
