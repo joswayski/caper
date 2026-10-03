@@ -2561,7 +2561,7 @@ impl CaperApp {
                                 context.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                         } else if primary_button(ui, "Download", true).clicked() {
-                            context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_PAGE));
+                            context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_URL));
                         }
                         if secondary_button(ui, "Later", true).clicked() {
                             self.updates.dismissed = true;
@@ -7746,6 +7746,56 @@ mod tests {
             },
             |context| app.page(context),
         )
+    }
+
+    #[test]
+    fn update_download_button_opens_the_platform_installer() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-update-download"),
+        );
+        let mut frame = |events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.update_banner(context),
+            )
+        };
+        frame(vec![]);
+        let output = frame(vec![]);
+        let pos = text_position(&output, "Download");
+        for pressed in [true, false] {
+            let output = frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            let opened = output.platform_output.commands.iter().find_map(|command| {
+                if let egui::OutputCommand::OpenUrl(url) = command {
+                    Some(url.url.as_str())
+                } else {
+                    None
+                }
+            });
+            let expected = if cfg!(windows) {
+                "https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe"
+            } else {
+                "https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb"
+            };
+            assert_eq!(opened, (!pressed).then_some(expected));
+        }
     }
 
     #[test]
