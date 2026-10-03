@@ -1351,10 +1351,11 @@ private struct ChatView: View {
     /// Scroll the unsent message into view after the current layout pass, so a
     /// row that just grew (its error and actions appeared) is fully visible.
     private func revealPending(_ proxy: ScrollViewProxy) {
-        guard chat.pendingMessage != nil else { return }
+        guard let pendingID = chat.pendingMessage?.id else { return }
         Task { @MainActor in
             await Task.yield()
-            proxy.scrollTo("chat-timeline-bottom", anchor: .bottom)
+            guard chat.pendingMessage?.id == pendingID else { return }
+            proxy.scrollTo("pending-\(pendingID)", anchor: .bottom)
         }
     }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
@@ -1429,6 +1430,9 @@ private struct ChatView: View {
                                               edit: { _ = chat.discardRejected(edit: true) },
                                               dismiss: { _ = chat.discardRejected() })
                                 .id("pending-\(pending.id)")
+                                // Lazy layout can measure this row after the
+                                // model-change scroll; repeat at its actual size.
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                         }
                         if chat.loadFailed, let error = chat.error {
                             // Web's failed first load: the error with Try again, in place of the conversation.
@@ -1443,7 +1447,6 @@ private struct ChatView: View {
                                 Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                             }.padding(.top, 80)
                         }
-                        Color.clear.frame(height: 1).id("chat-timeline-bottom")
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")
