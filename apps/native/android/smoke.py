@@ -292,9 +292,10 @@ def main() -> None:
     # Signed-out users now land at authentication. The retired public General
     # demo must not be reconstructed by the fixture; authenticate before
     # exercising the populated account-space coverage below.
-    login = capture("caper-android-login", "Come on in.", seconds=60)
-    for required in ("WELCOME TO CAPER", "Email address", "Email me a code"):
+    login = capture("caper-android-login", "Welcome to Caper", seconds=60)
+    for required in ("Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
+    assert find(login, text="WELCOME TO CAPER") is None, "Login must not repeat the welcome heading"
     for retired in ("general", "Join", "TEST FIXTURE"):
         assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
     assert find(login, description="Channel options") is None
@@ -306,7 +307,8 @@ def main() -> None:
     error = capture("caper-android-login-error", "temporarily unavailable")
     assert find(error, text="fixture@example.test") is not None
     tap(text="Email me a code")
-    wait_for(text="Check your email.")
+    verification = wait_for(text="Check your email.")
+    assert find(verification, text="WELCOME TO CAPER") is None, "Verification must not repeat the welcome heading"
     enter_first_field("ABC234")
     tap(text="Continue")
     wait_for(description="Fixture Studio")
@@ -319,7 +321,7 @@ def main() -> None:
                          "error": "Session restoration temporarily unavailable."}})
     launch()
     restore_error = capture("caper-android-restore-error", "Session restoration temporarily unavailable.")
-    assert find(restore_error, text="Come on in.") is not None
+    assert find(restore_error, text="Welcome to Caper") is not None
     assert find(restore_error, text="Email address") is not None
     for retired in ("Guest", "Message #general", "TEST FIXTURE"):
         assert find(restore_error, contains=retired) is None, f"Restore failure exposes workspace: {retired!r}"

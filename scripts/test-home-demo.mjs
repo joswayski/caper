@@ -180,6 +180,7 @@ try {
   wait('document.querySelector("#email")');
   assert.equal(evaluate('return location.pathname'), '/login');
   const login = evaluate('return document.querySelector("main").textContent');
+  assert.equal(evaluate('return document.querySelector("h1").textContent'), 'Welcome to Caper');
   assert.ok(login.includes('We’ll send a code to your email.'));
   assert.ok(!/WELCOME TO CAPER|We only send a code when you ask|No password needed/.test(login));
   browser('set', 'viewport', '390', '844', '2');

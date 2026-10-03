@@ -2286,17 +2286,10 @@ impl CaperApp {
                             "../../../web/public/caper-wordmark.svg"
                         )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
                         ui.add_space(58.0);
-                        ui.label(
-                            bold("WELCOME TO CAPER")
-                                .size(11.0)
-                                .extra_letter_spacing(1.5)
-                                .color(MUTED),
-                        );
-                        ui.add_space(24.0);
                         ui.label(black(if self.challenge.is_some() {
                             "Check your email."
                         } else {
-                            "Come on in."
+                            "Welcome to Caper"
                         }).size(40.0));
                         ui.add_space(28.0);
                         ui.label(
@@ -8315,7 +8308,7 @@ mod tests {
             app.loading = true;
             render(&mut app, &context, vec![]);
             let loading = render(&mut app, &context, vec![]);
-            text_position(&loading, "Come on in.");
+            text_position(&loading, "Welcome to Caper");
             text_position(&loading, "Email address");
 
             let error = result.as_ref().err().cloned();
@@ -8328,14 +8321,14 @@ mod tests {
             app.receive();
             assert!(!app.loading);
             let output = render(&mut app, &context, vec![]);
-            text_position(&output, "Come on in.");
+            text_position(&output, "Welcome to Caper");
             text_position(&output, "Email me a code");
             if let Some(error) = error {
                 text_position(&output, &error);
             }
             assert!(!output.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Text(text)
-                    if ["Guest", "Channels", "Message #general"].contains(&text.galley.job.text.as_str()))
+                    if ["Guest", "Channels", "Message #general", "WELCOME TO CAPER", "Come on in."].contains(&text.galley.job.text.as_str()))
             }));
         }
     }
@@ -8361,7 +8354,7 @@ mod tests {
         assert!(app.selected_channel.is_none());
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        text_position(&output, "Come on in.");
+        text_position(&output, "Welcome to Caper");
         text_position(&output, "Email me a code");
     }
 
