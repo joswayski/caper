@@ -243,7 +243,8 @@
 .voice-stack-faces { flex: none; display: flex; align-items: center; }
 .voice-stack-count, .voice-empty { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-empty { flex: 1; color: var(--text-muted); font-size: .68rem; }
-.channel-join.voice-button { width: 96px; min-height: 32px; justify-content: center; padding: 0 6px; font-size: .72rem; }
+.channel-join.voice-button { width: 96px; min-height: 32px; justify-content: center; gap: 4px; padding: 0 6px; font-size: .72rem; }
+.channel-join.voice-button > svg { width: 14px; height: 14px; flex: none; }
 .channel-join.voice-button[aria-busy="true"] { cursor: progress; }
 .voice-stack:hover { color: var(--text); background: var(--surface-raised); }
 .voice-stack > svg { flex: none; width: 10px; height: 10px; transition: transform .2s ease; }

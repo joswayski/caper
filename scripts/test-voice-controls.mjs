@@ -244,6 +244,7 @@ try {
     evaluate(`await document.fonts.ready;`);
     const geometry = () => evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => [...line.querySelectorAll('.channel-select, .channel-manage, .channel-join')].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }));`);
     const countPosition = () => evaluate(`const r = document.querySelector('.channel-section-toggle .section-count').getBoundingClientRect(); return [r.x, r.y];`);
+    const actionContentsFit = () => evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => { const bounds = button.getBoundingClientRect(), icon = button.querySelector('svg').getBoundingClientRect(), label = button.querySelector('.channel-join-label').getBoundingClientRect(); return icon.width === 14 && icon.height === 14 && icon.left > bounds.left && icon.right < label.left && label.right < bounds.right && label.top >= bounds.top && label.bottom <= bounds.bottom; });`);
     for (const width of [1280, 390]) {
       browser('set', 'viewport', String(width), '900', '2');
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
@@ -252,6 +253,8 @@ try {
       const before = geometry();
       assert.equal(before.length, 3, 'Every channel, including empty/unselected/private channels, has voice actions');
       assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top >= name.bottom && getComputedStyle(line.querySelector('.channel-manage')).opacity === '1'; });`), 'Voice actions must sit below the name; channel actions never depend on hover');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => button.querySelector('.lucide-speech')?.getAttribute('aria-hidden') === 'true');`), 'Join actions have a decorative speaking icon without changing their accessible names');
+      assert.ok(actionContentsFit(), 'Speaking icons and Join labels must fit inside the fixed-width actions');
       screenshot(`channel-${width}-empty`);
       evaluate(`voiceFixture.publishPresence([{ id: 'peer', name: 'Mock peer', muted: false, deafened: false, tracks: [] }, { id: 'other', name: 'Other mock peer', muted: true, deafened: false, tracks: [] }]);`);
       wait(`document.querySelector('.voice-stack-count')?.textContent === '2 in voice'`);
@@ -292,6 +295,8 @@ try {
       assert.deepEqual(geometry(), before, 'Join → Leave must keep all action targets stationary');
       assert.equal(evaluate(`return new Set(voiceFixture.joinPositions.map(r => JSON.stringify(r))).size;`), 1, 'No intermediate animation may shift the Join target');
       assert.ok(evaluate(`return voiceFixture.actionNode === document.querySelector('[aria-label="Leave voice in #alpha"]');`), 'Join/Leave must reuse the same focusable button');
+      assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice in #alpha"] .lucide-phone-off') && !!document.querySelector('[aria-label="Switch voice to #beta"] .lucide-speech');`), 'Leave uses the disconnect icon; switching retains the speaking icon');
+      assert.ok(actionContentsFit(), 'Leave and Switch labels must also fit with their icons');
       screenshot(`channel-${width}-joined`);
       if (width === 390) {
         click('Close navigation');
@@ -306,7 +311,7 @@ try {
       assert.equal(evaluate(`return document.querySelector('#voice-occupants-alpha0000000 .voice-occupants-inner').inert;`), false);
       screenshot(`channel-${width}-expanded`);
       browser('click', '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
-      wait(`document.querySelector('#voice-occupants-alpha0000000').getBoundingClientRect().height < 1`);
+      wait(`document.querySelector('#voice-occupants-alpha0000000').getBoundingClientRect().height === 0`);
       assert.deepEqual(geometry(), before, 'Collapsing the roster returns to the same row layout');
       evaluate(`voiceFixture.joinedTrack = voiceFixture.captures.at(-1); voiceFixture.leaveCount = voiceFixture.commands.filter(c => c.method === 'media.leave').length;`);
       browser('find', 'role', 'button', 'click', '--name', 'beta', '--exact');
@@ -329,6 +334,8 @@ try {
       wait(`document.querySelector('[aria-label="Joining voice in #alpha"]') && voiceFixture.releaseCapture`);
       assert.deepEqual(geometry(), before, 'Pending microphone permission/capture must not shift controls');
       assert.equal(evaluate(`return document.querySelector('[aria-label="Joining voice in #alpha"]').getAttribute('aria-disabled');`), 'true');
+      assert.ok(evaluate(`return !!document.querySelector('[aria-label="Joining voice in #alpha"] .lucide-speech');`), 'Joining retains the speaking icon');
+      assert.ok(actionContentsFit(), 'Pending labels must fit with their icons');
       const joins = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`);
       evaluate(`document.querySelector('[aria-label="Joining voice in #alpha"]').click();`);
       assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`), joins, 'Busy action must not issue a second Join');
@@ -358,6 +365,7 @@ try {
         assert.equal(evaluate(`return document.querySelector('.people-panel').getBoundingClientRect().width;`), 220);
         assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => line.querySelector('.channel-join').getBoundingClientRect().right <= line.getBoundingClientRect().right);`), 'Actions must fit at the 220px sidebar minimum');
         assert.ok(evaluate(`return [...document.querySelectorAll('.voice-empty')].every(node => node.scrollWidth <= node.clientWidth);`), 'Empty voice status must fit at the minimum width');
+        assert.ok(actionContentsFit(), 'Icons and labels must fit at the 220px sidebar minimum');
         screenshot('channel-minimum-sidebar');
         browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight'); browser('press', 'ArrowRight');
       } else {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { animals, colors, uniqueNamesGenerator } from "unique-names-generator";
-import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Settings, Users, VolumeX, X } from "lucide-react";
+import { AudioLines, ChevronDown, Hash, HeadphoneOff, Headphones, Menu, Mic, MicOff, PhoneOff, Settings, Speech, Users, VolumeX, X } from "lucide-react";
 import ProfileForm from "../account/ProfileForm";
 import { getAccount, logout, type Account } from "../account/client";
 import { routeOutput } from "../audio/output";
@@ -687,7 +687,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     </button>;
     const viewed = channelId === channel?.id;
     const join = <Tooltip content={activeHere ? joiningHere ? `Connecting to #${label}…` : `Leave voice in #${label}` : joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Leave your current voice channel and join #${label}` : `Join voice in #${label}`}>
-      <button ref={viewed && !activeHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={activeHere ? "" : undefined} aria-label={actionName} aria-disabled={blocked} aria-busy={joiningHere || leavingHere} onPointerEnter={() => { if (!activeHere) prepareChannel(channelId); }} onPointerDown={() => { if (!activeHere) prepareChannel(channelId); }} onFocus={() => { if (!activeHere) prepareChannel(channelId); }} onClick={() => { if (blocked) return; if (activeHere) leave(); else joinChannel(channelId); }}><span className="channel-join-label">{actionLabel}</span></button>
+      <button ref={viewed && !activeHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={activeHere ? "" : undefined} aria-label={actionName} aria-disabled={blocked} aria-busy={joiningHere || leavingHere} onPointerEnter={() => { if (!activeHere) prepareChannel(channelId); }} onPointerDown={() => { if (!activeHere) prepareChannel(channelId); }} onFocus={() => { if (!activeHere) prepareChannel(channelId); }} onClick={() => { if (blocked) return; if (activeHere) leave(); else joinChannel(channelId); }}>{activeHere && !joiningHere ? <PhoneOff aria-hidden="true" /> : <Speech aria-hidden="true" />}<span className="channel-join-label">{actionLabel}</span></button>
     </Tooltip>;
     return {
       summary: <span className="channel-voice">{stack || <span className="voice-empty">No one in voice</span>}{join}</span>,
