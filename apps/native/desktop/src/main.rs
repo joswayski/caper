@@ -5127,7 +5127,7 @@ impl CaperApp {
             Dialog::Diagnostics => "Audio diagnostics",
             Dialog::CreateSpace => "Create a space",
             Dialog::ManageSpace => "Manage space",
-            Dialog::Invitation(_) => "Space invitation",
+            Dialog::Invitation(_) => "You’re invited!",
             Dialog::LeaveSpace { name, .. } => leave_title.get_or_insert(format!("Leave {name}?")),
             Dialog::LeaveChannel { name, .. } => {
                 leave_title.get_or_insert(format!("Leave #{name}?"))
@@ -5206,7 +5206,14 @@ impl CaperApp {
                             .show(ui, |ui| {
                                 ui.horizontal_top(|ui| {
                                     ui.vertical(|ui| {
-                                        ui.label(bold(title).size(19.0));
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 12.0;
+                                            if matches!(dialog, Dialog::Invitation(_)) {
+                                                ui.add(egui::Image::from_bytes("bytes://invitation-envelope.png", include_bytes!("../../../web/public/images/invitation/1f4e8.png"))
+                                                    .fit_to_exact_size(egui::vec2(32.0, 32.0)));
+                                            }
+                                            ui.label(bold(title).size(19.0));
+                                        });
                                         if matches!(dialog, Dialog::ManageSpace) {
                                             ui.add_space(5.0);
                                             ui.label(
@@ -5256,12 +5263,10 @@ impl CaperApp {
                                             Dialog::CreateSpace => self.space_dialog(ui, false),
                                             Dialog::ManageSpace => self.space_dialog(ui, true),
                                             Dialog::Invitation(invitation) => {
+                                                ui.heading(format!("Join {}?", invitation.name));
                                                 if let Some(inviter) = &invitation.inviter {
                                                     ui.label(format!("{} (@{}) invited you.", inviter.display_name, inviter.username));
                                                 }
-                                                ui.label(format!("You have been invited to join {}. Accept to load its channels and conversations.", invitation.name));
-                                                ui.label("Invitations expire seven days after they’re sent.");
-                                                ui.label("You’ll start in one public channel if available. Browse to choose others. Accepting never joins a voice call.");
                                                 ui.add_space(16.0);
                                                 ui.horizontal(|ui| {
                                                     if ui.add_enabled(!self.loading, egui::Button::new("Decline")).clicked() {
@@ -7618,12 +7623,19 @@ mod tests {
             .collect();
         assert!(labels.contains(&"Decline"), "{labels:?}");
         assert!(labels.contains(&"Accept invitation"), "{labels:?}");
+        assert!(labels.contains(&"You’re invited!"), "{labels:?}");
+        assert!(
+            labels.contains(&"Join TEST FIXTURE · Invited Studio?"),
+            "{labels:?}"
+        );
         assert!(
             labels.contains(&"TEST FIXTURE host (@fixture_host) invited you."),
             "{labels:?}"
         );
         assert!(
-            labels.contains(&"Invitations expire seven days after they’re sent."),
+            !labels.iter().any(|label| label.contains("expire")
+                || label.contains("starter")
+                || label.contains("Accept to load")),
             "{labels:?}"
         );
         app.admin_result(crate::worker::AdminResult::InvitationDeclined(

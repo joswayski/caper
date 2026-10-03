@@ -1,0 +1,14 @@
+Twemoji graphics © Twitter, Inc. and other contributors.
+Graphics license: Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+Sources: https://github.com/twitter/twemoji and https://github.com/jdecked/twemoji
+
+1f4e8.png is Twemoji 15.0.0 incoming envelope (📨), from @twemoji/svg 15.0.0.
+Source sprite: shared/emoji/sheet-6.png in joswayski/caper at
+https://github.com/joswayski/caper/commit/54910cbf71cb84b8e1419972b837ec6723f68757
+The sprite was rasterized from the original SVG by that revision's
+scripts/native-emoji.mjs. This file is its unmodified 64×64 RGBA tile at
+x=832, y=832, cropped with ImageMagick:
+  magick sheet-6.png -crop 64x64+832+832 +repage PNG32:1f4e8.png
+Web and native clients display the same artwork at 32 logical pixels.
+Android/Apple resource copies must remain byte-identical to this web PNG.

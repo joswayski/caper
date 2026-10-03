@@ -1113,11 +1113,9 @@ internal fun counterTone(count: Int): Color = when {
 }
 
 @Composable private fun InvitationDialog(space: Space, busy: Boolean, error: String?, close: () -> Unit, accept: () -> Unit, decline: () -> Unit) {
-    CaperDialog("Invitation to ${space.name}", close) {
+    CaperDialog("You’re invited!", close, titleIcon = R.drawable.incoming_envelope) {
+        Text("Join ${space.name}?", fontSize = 20.sp, fontWeight = FontWeight.Bold)
         space.inviter?.let { Text("${it.displayName} (@${it.username}) invited you.", color = TextMuted) }
-        Text("Accept this invitation to access ${space.name}'s channels and conversations.", color = TextMuted)
-        Text("Invitations expire seven days after they’re sent.", color = TextMuted, fontSize = 12.sp)
-        Text("Acceptance joins a public starter channel if available. Browse and join others when you want; it never starts voice.", color = TextMuted, fontSize = 12.sp)
         error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             OutlinedButton(decline, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Decline") }
@@ -1233,6 +1231,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     wide: Boolean = false,
     description: String? = null,
     footer: (@Composable () -> Unit)? = null,
+    titleIcon: Int? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Dialog(close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -1242,7 +1241,10 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
                             Column(Modifier.weight(1f)) {
-                                Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    titleIcon?.let { Image(painterResource(it), contentDescription = null, modifier = Modifier.size(32.dp)) }
+                                    Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                                }
                                 description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
                             }
                             IconButton(close) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = TextMuted) }
