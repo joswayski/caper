@@ -14,6 +14,7 @@ on:
       - tests/native-parity-fixture.test.mjs
       - scripts/native_artifacts.py
       - tests/test_native_artifacts.py
+      - tests/test_apple_release_signing.py
       - .github/workflows/native.yml
   push:
     branches: [main]
@@ -29,6 +30,7 @@ on:
       - tests/native-parity-fixture.test.mjs
       - scripts/native_artifacts.py
       - tests/test_native_artifacts.py
+      - tests/test_apple_release_signing.py
       - .github/workflows/native.yml
   workflow_dispatch:
 
@@ -53,6 +55,7 @@ jobs:
         with:
           node-version: '24'
       - run: python -m unittest discover -s tests -p test_native_artifacts.py -v
+      - run: python -m unittest discover -s tests -p test_apple_release_signing.py -v
       - run: python shared/fonts/test_native_fonts.py -v
       - run: node --test tests/native-parity-fixture.test.mjs
       - name: Verify bundled Apple emoji match the shared artwork and licenses
