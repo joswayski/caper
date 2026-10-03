@@ -3468,9 +3468,14 @@ and [IAM action support](https://docs.aws.amazon.com/service-authorization/lates
    applies `202610030001_direct_messages.sql` and `202610030002_push.sql` through
    the migration role and grants runtime table/sequence access. No separate SQL
    job or manual migration is required. Back up the database first; never reset it.
-   These unreleased versions follow the already-published channel-joining
+   These versions follow the already-published channel-joining
    migration; never rename or edit migrations already recorded in a shared ledger.
+   Inspect the ledger before rollout. If a non-disposable database ran the earlier
+   feature branch's conflicting DM versions, stop for a migration-history
+   compatibility plan rather than renaming or deleting applied records.
    ```sh
+   psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+     -c 'SELECT version, description, success FROM public._sqlx_migrations ORDER BY version;'
    MERGED_SHA=<reviewed-merge-sha>
    gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
    kubectl -n default rollout status deployment/caper-api --timeout=15m

@@ -85,6 +85,8 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-account .account-profile")).cursor'), 'grabbing');
   browser('mouse', 'up', 'left');
   assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), false);
+  // The drag can leave the pointer over a roster row with its normal hover fill.
+  browser('mouse', 'move', '0', '0');
   assert.equal(evaluate('return document.querySelector(".sim-composer").tagName'), 'DIV');
   assert.equal(evaluate('return document.querySelectorAll(".sim-demo :is(button, a, input, textarea, [role=button])").length'), 0, 'Join is the only action; the room is read-only');
   assert.equal(evaluate('return document.querySelectorAll(".live-stage a").length'), 1);
@@ -196,6 +198,13 @@ try {
     browser('set', 'viewport', String(width), '844', '2');
     evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
     assert.deepEqual(loginGaps(), [4, 12], `Email entry gaps at ${width}px`);
+    const action = evaluate(`
+      const input = document.querySelector('#email').getBoundingClientRect();
+      const button = document.querySelector('button[type=submit]').getBoundingClientRect();
+      return { right: button.right - input.right, width: button.width, inputWidth: input.width };
+    `);
+    assert.equal(action.right, 0, `Email action aligns with input's right edge at ${width}px`);
+    assert.ok(action.width < action.inputWidth, `Email action is compact at ${width}px`);
     browser('fill', '#email', 'layout@example.test');
     browser('click', 'button[type=submit]');
     wait('document.querySelector("#code")');

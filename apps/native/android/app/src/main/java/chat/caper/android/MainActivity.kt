@@ -1092,9 +1092,12 @@ internal fun counterTone(count: Int): Color = when {
         if (error != null) Surface(Modifier.fillMaxWidth().padding(top = 20.dp), color = Color.Transparent, border = BorderStroke(1.dp, Terracotta), shape = MaterialTheme.shapes.small) {
             Text(error, Modifier.padding(horizontal = 14.dp, vertical = 12.dp), lineHeight = 24.sp)
         }
-        Button({ submit(email) }, enabled = email.contains('@') && !busy, modifier = Modifier.fillMaxWidth().padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
-            Text(if (busy) "Sending…" else "Email me a code", Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
-            if (!busy) Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
+        Button({ submit(email) }, enabled = email.contains('@') && !busy, modifier = Modifier.align(Alignment.End).padding(top = 12.dp), shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp)) {
+            Text(if (busy) "Sending…" else "Email me a code")
+            if (!busy) {
+                Spacer(Modifier.width(12.dp))
+                Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(20.dp))
+            }
         }
     }
 }
