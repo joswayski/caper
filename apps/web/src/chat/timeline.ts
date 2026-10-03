@@ -6,20 +6,24 @@ export class ChatTimeline {
   private cursorValue = 0n;
   private readonly byId = new Map<string, ChatMessage>();
   private readonly eventBuffer = new Map<bigint, ChatMessage>();
+  private messagesValue: ChatMessage[] | undefined;
 
   get cursor() { return this.cursorValue.toString(); }
 
   get messages() {
-    return [...this.byId.values()].sort((left, right) => {
+    if (this.messagesValue) return this.messagesValue;
+    this.messagesValue = [...this.byId.values()].sort((left, right) => {
       const order = sequence(left.seq) - sequence(right.seq);
       return order < 0n ? -1 : order > 0n ? 1 : left.id.localeCompare(right.id);
     });
+    return this.messagesValue;
   }
 
   reset(messages: ChatMessage[], cursor: string) {
     this.cursorValue = sequence(cursor);
     this.byId.clear();
     this.eventBuffer.clear();
+    this.messagesValue = undefined;
     for (const message of messages) this.merge(message);
   }
 
@@ -61,6 +65,9 @@ export class ChatTimeline {
 
   private merge(message: ChatMessage) {
     const existing = this.byId.get(message.id);
-    if (!existing) this.byId.set(message.id, message);
+    if (!existing) {
+      this.byId.set(message.id, message);
+      this.messagesValue = undefined;
+    }
   }
 }

@@ -59,7 +59,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class MemberList(val members: List<Member>, val invitations: List<Member> = emptyList())
 @Serializable data class PresenceMember(val userId: String, val status: String)
 @Serializable data class PresenceSnapshot(val members: List<PresenceMember>)
-data class TypingAuthor(val author: ChatAuthor, val revision: Long, val expiresAt: Long)
+data class TypingAuthor(val author: ChatAuthor, val revision: Long, val expiresAt: Long, val typing: Boolean)
 
 object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializer(String.serializer())) {
     override fun transformDeserialize(element: kotlinx.serialization.json.JsonElement) =
