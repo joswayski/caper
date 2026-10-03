@@ -730,7 +730,7 @@ node scripts/test-space-invitations.mjs
    replica. Do not serve invitation mutations from a mix of old and new APIs:
    old replicas still auto-add members without consent.
 2. Deploy the API first. API startup applies
-   `202609300001_space_invitations.sql` using `MIGRATION_DATABASE_URL` and grants
+   `202609300002_space_invitations.sql` using `MIGRATION_DATABASE_URL` and grants
    the existing runtime role access to both new tables. No separate manual SQL
    or data conversion is required. Wait for workflow success, then readiness and
    all API pods using the new image before releasing clients.
