@@ -1408,25 +1408,62 @@ live ingestion into the user's dataset has not been verified.
 ## Deployment behavior
 
 - Web-only deployments do not reload already-open tabs; production media control
-  requests route straight to Rust. Keep API changes compatible with old tabs and
-  future native clients, which will not all update at deployment time.
-- API rolling updates start a replacement and wait for its readiness probe before
-  terminating the old pod. This removes the deliberate stop-before-start gap,
-  **not** today's call interruptions from separate in-memory registries.
-- On SIGTERM, Rust ends SSE streams, stops accepting connections and gives in-flight HTTP requests
-  up to 30 seconds to finish, then spends up to 20 seconds on existing provider
-  cleanup. If HTTP draining exceeds its deadline, the process exits without
-  provider cleanup rather than racing cleanup against unfinished mutations.
-  As with a crash, provider cleanup is not guaranteed and TURN expiry still applies.
-- A database connection alone does not make calls survive deployments. Future
-  work must persist capabilities, SFU sessions/tracks/subscriptions and leases;
-  coordinate participant mutations and cleanup across pods; and replace
-  process-exit call teardown with session handoff and expiry-based cleanup.
-  Database migrations must remain compatible with both overlapping versions.
-- Deploy the infrastructure grace-period change before the new API image. The
-  infrastructure repository's `docs/operations.md` describes Flux reconciliation;
-  image deployment commands are below. No live rolling-call validation has been
-  performed for these changes; client recovery tests use mocked media/API responses.
+  requests route straight to Rust. Keep API/gateway changes compatible with old
+  tabs and native clients, which will not all update at deployment time.
+- The production infrastructure manifests configure **both API and gateway** with
+  two replicas, `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `/readyz`, a
+  five-second `preStop`, and 65-second termination grace. This is the desired
+  configuration, not proof of the live cluster's state. All overlapping API and
+  gateway pods must use the same `VALKEY_URL` and compatible state schema.
+- Gateway SIGTERM makes `/readyz` fail and rejects new sockets/commands. Existing
+  sockets receive `migrating` and keep delivering chat/media updates for 20 seconds.
+  The browser opens a replacement without closing the old socket, resumes chat
+  from its applied Postgres sequence, and waits for all subscriptions to catch up,
+  including a current media snapshot, before switching. Failed candidates retry
+  while the old socket remains usable. Overlapping messages are deduplicated.
+  Accepted commands finish after socket loss and cache their results in Valkey;
+  retries keep the same command identity. The gateway keeps its runtime alive for
+  36 seconds before HTTP draining so those commands can finish.
+- An API-only rollout does not restart the separately deployed gateway or its
+  sockets. Account/chat state remains in Postgres and active voice state remains
+  in Valkey. API SIGTERM rejects new media commands and drains in-flight HTTP
+  requests for up to 30 seconds. **Shared-mode shutdown does not remove voice
+  participants, close Cloudflare tracks, or revoke their TURN credentials.**
+  Legacy opt-in SSE streams use the ten-second overlap described above. Healthy
+  audio stays client ↔ Cloudflare, independent of API/gateway connections.
+- Memory-only development does not have that voice guarantee: shutdown removes
+  local participants and spends up to 20 seconds on provider cleanup. If HTTP
+  draining exceeds its deadline, the process exits without provider cleanup
+  rather than racing cleanup against unfinished mutations. Do not mix local-mode
+  and shared-mode pods; use the staged Valkey cutover before adding replicas.
+- Updated Android, Apple, and Rust desktop clients also overlap sockets on
+  `migrating`. Chat replay resumes from the applied cursor; promotion requires
+  subscription acknowledgments, the chat replay checkpoint, current media
+  revisions, and any watched presence snapshot. Messages and media snapshots
+  delivered by both sockets are deduplicated. Failed or stalled candidates retry
+  without clearing the old stream's chat/voice state. In-call roster streams keep
+  the existing media capability and do not rejoin the call during handoff.
+  Older installed native versions still briefly reconnect; release the updated
+  clients independently against the existing compatible API/gateway protocol.
+- Deploy the matching API image successfully before the gateway image; the
+  infrastructure gateway workflow verifies that API rollout before changing its
+  pin. Keep infrastructure lifecycle settings in place and migrations compatible
+  with both overlapping versions. Merging application code does not deploy it.
+- Regression coverage uses real local WebSockets, Postgres and Valkey for replay,
+  chat delivery through drain overlap, admission rejection, and accepted-command
+  recovery. Shared-media tests replace both API instances and assert unchanged
+  provider session mappings and zero shutdown track closes/TURN revocations.
+  Browser tests cover repeated mixed chat/media handoffs, failed candidates, stale
+  snapshots, deduplication, and unchanged mocked voice peers after gateway loss.
+  Android JVM tests and Rust desktop tests exercise native handoffs with real
+  local WebSockets. Swift actor tests use an injected transport, compiled and
+  run in a Linux harness; Xcode/macOS/iOS and Windows builds remain separate CI
+  validation. No physical-device handoff acceptance is claimed. Cloudflare is
+  mocked; these checks do **not** prove live-cluster routing or continuous audio.
+  Run the live two-client replacement checks in
+  [Activation and verification](#activation-and-verification) before claiming that.
+  A crash, replacement outage beyond the handoff window, or expired lease can
+  still interrupt updates or force voice recovery.
 
 ## Limits and lifecycle
 
