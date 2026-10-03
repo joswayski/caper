@@ -13,8 +13,12 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Where a package-managed install (the Linux .deb) downloads by hand.
-pub const DOWNLOAD_PAGE: &str = "https://github.com/joswayski/caper/releases/tag/native-latest";
+/// The installer for a copy that cannot update in place, e.g. the Linux .deb.
+pub const DOWNLOAD_URL: &str = if cfg!(windows) {
+    "https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe"
+} else {
+    "https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb"
+};
 const FIRST_CHECK: Duration = Duration::from_secs(20);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
@@ -221,7 +225,7 @@ mod tests {
                 can_apply: true,
             })
         );
-        // Without --install permission details the app offers the download page.
+        // Without --install permission details the app offers a direct download.
         assert!(
             !parse(b"{\"update\":true,\"version\":\"0.1.7\"}")
                 .unwrap()

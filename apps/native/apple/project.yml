@@ -268,7 +268,9 @@ targets:
   CaperCoreTests:
     type: bundle.unit-test
     platform: macOS
-    sources: Tests/CaperCoreTests
+    sources:
+      - Tests/CaperCoreTests
+      - Sources/CaperMacOS/AppUpdater.swift
     dependencies:
       - target: CaperCoreMacOS
       - target: CaperRTCBridge

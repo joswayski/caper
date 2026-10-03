@@ -140,6 +140,9 @@ into it. When a newer build exists, the Mac app shows an alert (and has
 SHA-256 (and, on Mac, its Developer ID team), waits for Caper to quit, swaps in
 the new copy and reopens it. A copy it cannot replace, such as the Linux `.deb`
 or a Mac app outside a writable folder, gets a **Download** link instead.
+That link downloads the matching Mac architecture's ZIP, Windows Setup, or Linux
+`.deb` directly; it does not open the GitHub release page. These downloads still
+need manual installation.
 Releases made before the key is stored skip `latest.json`, and apps from before
 this change need one manual reinstall. Android APKs do not self-update yet.
 
