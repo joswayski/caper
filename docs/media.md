@@ -805,16 +805,40 @@ other type to download as `application/octet-stream`, and always sends
 The edge cache is keyed by object, after signature verification. A leaked URL
 works until it expires, as with Discord's signed attachment links.
 
-### Browser compression and previews
+### Client compression and previews
 
-The web client re-encodes PNG/JPEG/WebP/HEIC stills to WebP at quality 0.92
-(JPEG where the browser cannot encode WebP), keeping the result only when it is
-at least 10% smaller or the original cannot render inline. Re-encoding drops
-EXIF metadata such as GPS. GIF, SVG and AVIF upload unchanged. Images larger
-than 640 px or 512 KiB get a 640 px preview; videos get a poster frame. Nothing
-is transcoded server-side, and the server never trusts client compression: it
-validates what was stored. Video transcoding (WebCodecs) and a wasm port of
-Captures' palette PNG encoder are not implemented.
+Clients compress before upload using settings the API serves with
+`GET /api/assets/usage` (`compression`), so operators tune them with
+configuration and an API restart, not a client release:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `ASSET_PALETTE_COLORS` | 256 | Stills with at most this many distinct colours (screenshots, UI) become a **lossless** indexed PNG, the exact-palette path from Captures. 0 disables. |
+| `ASSET_IMAGE_QUALITY` | 92 | Other stills: lossy WebP (JPEG where WebP encoding is unavailable). 100 disables lossy encoding. |
+| `ASSET_IMAGE_MAX_EDGE` | 4096 | Longest still edge; 0 keeps the original size. |
+| `ASSET_PREVIEW_EDGE` | 640 | Preview size for images and video posters (≤ 512 KiB). |
+| `ASSET_VIDEO_MAX_HEIGHT` | 1080 | Videos are transcoded to H.264 MP4 no taller than this; 0 uploads videos unchanged. |
+| `ASSET_VIDEO_BITRATE_KBPS` | 4000 | Video bitrate for transcodes. |
+| `ASSET_AUDIO_BITRATE_KBPS` | 128 | Audio bitrate for transcodes (AAC, or Opus where AAC encoding is unavailable). |
+
+Rules shared by every client: re-encoded stills are kept only when at least
+10% smaller (or when the original cannot render inline, such as HEIC), which
+also drops EXIF/GPS; GIF, SVG and AVIF upload unchanged; a transcode that would
+drop the audio track, or that the platform cannot encode, keeps the original.
+
+Why both encoders: the indexed PNG is exact and tiny for flat images (a 2560×1440
+UI test image went from 104 KB to 9.5 KB), while lossy WebP is far smaller for
+photos and gradients, where a 256-colour palette would band or dither. Partially
+transparent pixels never take the palette path because canvas round-trips can
+alter them.
+
+The server never transcodes and never trusts client compression: it verifies
+the stored bytes and charges quota for exactly what was stored, so a client
+that skips compression only spends its own allowance faster.
+
+Web specifics: WebCodecs via Mediabunny (loaded on demand). Google Chrome on
+Linux encodes H.264 but not AAC, so those uploads carry Opus audio in MP4;
+open-source Chromium builds without H.264 keep the original file.
 
 ### Deletion and purge
 
@@ -837,6 +861,7 @@ the owner's assets when that flow lands.
 | `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | API | Bucket-scoped R2 Object Read & Write key. All four or none; none leaves upload routes returning 503. |
 | `R2_ENDPOINT` | API, local only | Loopback S3-compatible fake (`http://127.0.0.1:…`). Rejected otherwise. |
 | `ASSET_QUOTA_BYTES` | API | Per-person stored bytes. Default `1073741824`. |
+| `ASSET_IMAGE_QUALITY`, `ASSET_IMAGE_MAX_EDGE`, `ASSET_PALETTE_COLORS`, `ASSET_PREVIEW_EDGE`, `ASSET_VIDEO_MAX_HEIGHT`, `ASSET_VIDEO_BITRATE_KBPS`, `ASSET_AUDIO_BITRATE_KBPS` | API | Client compression settings above; invalid values stop startup. |
 | `ASSET_CDN_ORIGIN`, `ASSET_CDN_SIGNING_SECRET` | API **and** gateway | Worker origin and shared HMAC secret (≥ 32 characters). Without them messages carry attachment metadata but no URLs. |
 
 The bucket needs a CORS rule allowing `PUT` from the web origin with the
@@ -874,9 +899,14 @@ npx wrangler deploy --env staging
   and the real Worker code: a 1.6 MB PNG uploaded as a 143 KB WebP, a second
   member received it live through the gateway, history reload and a 390 px
   layout rendered, a tampered signature returned 404.
+- Google Chrome (stable, Linux) against the same stack: a flat 2560×1440 PNG
+  uploaded as a 9.5 KB lossless indexed PNG (from 104 KB), and a 4 s 2560×1440
+  VP9/Opus WebM was transcoded in the browser to a 1920×1080 H.264 + Opus MP4
+  (2.3 MB → 805 KB) that played back with its poster. Rust and web tests cover
+  the settings, the flood limits and an indexed-PNG decode round-trip.
 - Not yet validated: live R2 (signature acceptance, signed `content-length`
-  and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders,
-  and physical phones.
+  and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders
+  (including Opus-in-MP4 playback on Safari), and physical phones.
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus. On
