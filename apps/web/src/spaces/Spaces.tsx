@@ -1264,8 +1264,35 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
     setView(undefined);
     setSpaces(remaining);
     setDialog(undefined);
-    choose(remaining[0]?.id, undefined, true);
+    choose(remaining[0]?.id, undefined, true, selected.dmId);
   };
+
+  const directNavigation = <section className="direct-section" aria-label="Direct messages">
+    <div className="channel-section-heading">
+      <span className="direct-section-title"><MessageCircle aria-hidden="true" />Direct messages</span>
+      <button type="button" aria-label="New direct message" title="New direct message" onClick={() => setDialog("direct")}><Plus aria-hidden="true" /></button>
+    </div>
+    <ul>
+      {directs.map((conversation) => <li key={conversation.id}>
+        <button type="button" className="channel-select direct-select" aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
+          title={`@${conversation.peer.username}`} onClick={() => openDirect(conversation)}>
+          <span className="direct-avatar" aria-hidden="true">{conversation.peer.displayName.slice(0, 1).toUpperCase()}</span>
+          <span>{conversation.peer.displayName}</span>
+          {directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />}
+        </button>
+      </li>)}
+    </ul>
+    {!directs.length && !directError && <p className="direct-empty">Private conversations, across every space.</p>}
+    {directError && <p className="space-sidebar-error" role="alert">{directError}<button type="button" onClick={() => void refreshDirects()}>Retry direct messages</button></p>}
+    {dialog === "direct" && <StartDirectDialog onClose={() => setDialog(undefined)} onCreated={(conversation) => {
+      setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+      setDialog(undefined);
+      openDirect(conversation);
+    }} />}
+  </section>;
+  const invitationButtons = invitations.map((space) => <button key={space.id} type="button" className="pending-space-invite" aria-label={`Invitation to ${space.name}`} onClick={() => choose(space.id)}>
+    <LockKeyhole aria-hidden="true" /><span>{space.name}</span><small>Invited</small>
+  </button>);
 
   if (loading) return <SpacesLoading />;
   if (invitation) return <>
@@ -1293,6 +1320,29 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
         <button type="button" onClick={() => window.location.reload()}>
           Try again
         </button>
+      </main>
+    );
+  if (!spaces.length && !selected.dmId)
+    return (
+      <main className="spaces-empty">
+        <Wordmark />
+        <section>
+          {notice && <p role="status">{notice}</p>}
+          {invitations.length > 0 && <div className="pending-space-invites"><h2>Pending invitations</h2>{invitationButtons}</div>}
+          <h1>Name your space</h1>
+          <p>
+            Choose something you will recognize easily. You can always change it later!
+          </p>
+          <CreateSpaceForm
+            disabled={!canCreateSpace}
+            onCreated={(space) => {
+              setSpaces([space]);
+              choose(space.id);
+            }}
+          />
+          {!canCreateSpace && <small>You have reached your space limit.</small>}
+          {directNavigation}
+        </section>
       </main>
     );
   if (!detail && !error) return <SpacesLoading />;
@@ -1485,29 +1535,7 @@ export default function Spaces({ embedded = false, initialAccount, initialSpaceL
           );
         })}
       </ul>
-      <section className="direct-section" aria-label="Direct messages">
-        <div className="channel-section-heading">
-          <span className="direct-section-title"><MessageCircle aria-hidden="true" />Direct messages</span>
-          <button type="button" aria-label="New direct message" title="New direct message" onClick={() => setDialog("direct")}><Plus aria-hidden="true" /></button>
-        </div>
-        <ul>
-          {directs.map((conversation) => <li key={conversation.id}>
-            <button type="button" className="channel-select direct-select" aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
-              title={`@${conversation.peer.username}`} onClick={() => openDirect(conversation)}>
-              <span className="direct-avatar" aria-hidden="true">{conversation.peer.displayName.slice(0, 1).toUpperCase()}</span>
-              <span>{conversation.peer.displayName}</span>
-              {directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />}
-            </button>
-          </li>)}
-        </ul>
-        {!directs.length && !directError && <p className="direct-empty">Private conversations, across every space.</p>}
-        {directError && <p className="space-sidebar-error" role="alert">{directError}<button type="button" onClick={() => void refreshDirects()}>Retry direct messages</button></p>}
-        {dialog === "direct" && <StartDirectDialog onClose={() => setDialog(undefined)} onCreated={(conversation) => {
-          setDirects((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
-          setDialog(undefined);
-          openDirect(conversation);
-        }} />}
-      </section>
+      {directNavigation}
       <button className="browse-channels" type="button" onClick={() => setBrowseOpen(true)}><Search aria-hidden="true" />Browse channels</button>
       {!!detail.channelInvitations?.length && <div className="pending-channel-invites">
         <h2>Invitations</h2>

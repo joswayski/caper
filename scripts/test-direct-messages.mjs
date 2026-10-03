@@ -108,7 +108,17 @@ try {
   browser('fill', '.chat-composer textarea', 'TEST FIXTURE — still messaging without a space.');
   browser('press', 'Enter');
   wait('document.querySelector(".chat-messages")?.textContent.includes("still messaging without a space.")');
-  console.log('PASS: DM start/error, canonical reopen, live send/reply, channel isolation, read/unread, space switching, deep link, no-space send and desktop/narrow navigation.');
+  browser('open', `${web}/spaces`);
+  wait('!!document.querySelector(".spaces-empty .direct-select")');
+  assert.equal(evaluate('document.querySelector(".spaces-empty h1").textContent'), 'Name your space', 'Global DMs must preserve first-space onboarding');
+  assert.ok(evaluate('document.documentElement.scrollWidth <= innerWidth'));
+  screenshot('dm-first-space');
+  browser('click', '[aria-label="New direct message"]');
+  browser('fill', '.space-dialog input', 'fixture_alex');
+  browser('click', '.space-dialog button[type="submit"]');
+  wait('document.querySelector(".chat-messages")?.textContent.includes("still messaging without a space.") && !document.querySelector(".space-dialog[open]")');
+  assert.equal((await conversations()).conversations.length, 1, 'No-space onboarding can reopen the existing global DM');
+  console.log('PASS: DM start/error, canonical reopen, live send/reply, channel isolation, read/unread, space switching, space-revocation draft/history, deep link, no-space send/onboarding and desktop/narrow navigation.');
 } finally {
   browser('close');
 }
