@@ -96,6 +96,26 @@ test('space invitation consent and channel grants enforce distinct access contra
   assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
 });
 
+test('management can invite a nonmember without bypassing removed-member cooldown', async (t) => {
+  const { request } = await setup(t);
+  const root = `/api/spaces/${ids.space}`;
+  assert.equal((await request(`${root}/members/${ids.member}`, { method: 'DELETE', auth: true })).response.status, 204);
+  const reinvite = await request(`${root}/members`, { method: 'POST', auth: true, body: { username: 'maya' } });
+  assert.equal(reinvite.response.status, 409);
+  assert.match(reinvite.value.error, /cooldown/);
+  assert.deepEqual((await request(`${root}/invitations`, { auth: true })).value.members, []);
+
+  const invited = await request(`${root}/members`, { method: 'POST', auth: true, body: { username: 'sam' } });
+  assert.equal(invited.response.status, 201);
+  assert.equal(invited.value.id, ids.invitee);
+  assert.deepEqual((await request(`${root}/invitations`, { auth: true })).value.members.map(member => member.username), ['sam']);
+  assert.deepEqual((await request(root, { auth: true })).value.members.map(member => member.id), [ids.owner, ids.other],
+    'a pending invitation must not grant membership');
+  assert.equal((await request(`${root}/channels/${ids.private}/members`, {
+    method: 'POST', auth: true, body: { username: 'sam' },
+  })).response.status, 404, 'a pending invitee cannot receive private channel membership');
+});
+
 test('public preview stays readable without participation; private consent grants and joins together', async (t) => {
   const { request } = await setup(t);
   const publicRoot = `/api/spaces/${ids.space}/channels/${ids.design}`;

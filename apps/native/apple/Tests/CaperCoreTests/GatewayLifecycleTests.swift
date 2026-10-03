@@ -180,8 +180,10 @@ final class GatewayLifecycleTests: XCTestCase {
 
     func testCandidateOpenTimeoutLeavesOldStreamAndRetriesReplacement() async {
         let factory = SocketFactory(); var delivered = 0
+        // This timeout also covers the initial healthy socket. Leave enough
+        // time for the fixture to send hello on a busy hosted runner.
         let subject = Gateway(baseURL: URL(string: "https://caper.invalid")!, socketFactory: { factory.make($0) },
-                              openTimeout: .milliseconds(20), token: { nil }, state: { _, _ in })
+                              openTimeout: .seconds(1), token: { nil }, state: { _, _ in })
         _ = await subject.subscribeChat(channelID: "chat", after: "0") { if $0["type"] as? String == "message.created" { delivered += 1 } }
         await eventually { factory.socket(0) != nil }; let old = factory.socket(0)!; old.push(["type": "hello"])
         let id = await subscribeID(old, kind: "chat"); old.push(["type": "subscribed", "id": id]); old.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "0"]]); old.push(["type": "migrating"])

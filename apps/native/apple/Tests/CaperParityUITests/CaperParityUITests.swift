@@ -934,7 +934,9 @@ final class CaperParityUITests: XCTestCase {
         let twoMembers = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 2"),
             object: app.descendants(matching: .any)["space-members-heading"])
         XCTAssertEqual(XCTWaiter.wait(for: [twoMembers], timeout: 5), .completed)
-        type("maya", into: username)
+        // Removed members have a 24-hour invitation cooldown. Invite an
+        // existing fixture account that has never belonged to this space.
+        type("sam", into: username)
         #if os(iOS)
         capture("manage-space-keyboard", app: app)
         username.typeText("\n")
@@ -946,10 +948,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed,
                        "Inviting must not grant immediate space membership")
         assertStaticText("Pending invitations  1", in: app)
-        assertStaticText("Maya", in: app)
-        assertStaticText("@maya", in: app)
+        assertStaticText("Sam", in: app)
+        assertStaticText("@sam", in: app)
         XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,
             "Successful invitation clears the editable field")
+        capture("manage-space-pending-invitation", app: app)
         app.buttons["Close"].firstMatch.tap()
         XCTAssertFalse(app.textFields["Exact username"].exists)
         XCTAssertTrue(app.buttons["Browse"].exists || app.buttons["account-profile"].isHittable)

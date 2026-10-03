@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 export const fixtureIDs = {
   owner: 'owner0000001', member: 'member000001', other: 'member000002',
+  invitee: 'invitee00001',
   space: 'space0000001', general: 'chan00000001', design: 'chan00000002', private: 'chan00000003',
   demoSpace: 'demo00000001', demo: 'demo00000002',
   direct: 'dm0000000001',
@@ -16,6 +17,9 @@ const members = [
   { ...initialAccount, owner: true },
   { id: ids.member, username: 'maya', displayName: 'Maya', owner: false, avatarId: 31 },
   { id: ids.other, username: 'alex', displayName: 'Alex', owner: false, avatarId: 799 },
+];
+const accounts = [...members,
+  { id: ids.invitee, username: 'sam', displayName: 'Sam', owner: false, avatarId: 719 },
 ];
 const author = (member) => ({ id: member.id, name: member.displayName, isGuest: false, avatarId: member.avatarId });
 const demoSpace = { id: ids.demoSpace, name: 'Caper', ownerId: ids.owner, demo: true };
@@ -333,7 +337,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (!detail.members.some((member) => member.id === user.id)) return reject(response, 404, 'resource not found');
         if (section === 'invitations') {
           if (!owner) return reject(response, 404, 'resource not found');
-          if (method === 'GET') return json(response, 200, { members: members.filter((member) => state.invitations.get(`${spaceId}:${member.id}`)?.status === 'pending') });
+          if (method === 'GET') return json(response, 200, { members: accounts.filter((member) => state.invitations.get(`${spaceId}:${member.id}`)?.status === 'pending') });
           const invitation = state.invitations.get(`${spaceId}:${memberId}`);
           if (method === 'DELETE' && invitation?.status === 'pending') { invitation.status = 'revoked'; return json(response, 204); }
           return reject(response, 404, 'resource not found');
@@ -368,7 +372,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             if (!owner) return reject(response, 404, 'resource not found');
             const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
             if (!/^[a-z0-9_]{3,32}$/.test(username)) return reject(response, 400, 'invalid username');
-            const member = members.find((entry) => entry.username === username);
+            const member = accounts.find((entry) => entry.username === username);
             if (!member) return reject(response, 404, 'user not found');
             if (channelId && !detail.members.some((entry) => entry.id === member.id)) return reject(response, 404, 'Member not found.');
             const exists = channelId ? (state.grants.get(channelId) ?? []).includes(member.id) : detail.members.some((entry) => entry.id === member.id);
