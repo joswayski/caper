@@ -582,7 +582,7 @@ async fn guest_voice_works_without_account_auth_and_requires_call_capabilities()
 }
 
 #[tokio::test]
-async fn authenticated_join_uses_the_account_display_name() {
+async fn authenticated_join_uses_the_account_display_name_without_country() {
     let (s, _) = state();
     for (header, value) in [
         ("authorization", "Bearer test-fixture"),
@@ -595,6 +595,7 @@ async fn authenticated_join_uses_the_account_display_name() {
                     .uri("/api/media/join")
                     .header("content-type", "application/json")
                     .header(header, value)
+                    .header("cf-ipcountry", "US")
                     .body(Body::from(json!({"name":"Random Guest"}).to_string()))
                     .unwrap(),
             )
@@ -618,6 +619,7 @@ async fn authenticated_join_uses_the_account_display_name() {
             snapshot["participants"].as_array().unwrap().iter().all(
                 |participant| participant["name"] == "Test User"
                     && participant["avatarId"] == 42
+                    && participant.get("countryCode").is_none()
                     && participant.get("token").is_none()
                     && participant.get("account_session").is_none()
             )
@@ -635,6 +637,7 @@ async fn authenticated_join_uses_the_account_display_name() {
         assert!(
             presence["participants"].as_array().unwrap().iter().all(
                 |participant| participant["avatarId"] == 42
+                    && participant.get("countryCode").is_none()
                     && participant.get("token").is_none()
                     && participant.get("account_session").is_none()
             )
@@ -668,7 +671,40 @@ async fn stored_participant_without_avatar_id_decodes_and_omits_avatar() {
 }
 
 #[tokio::test]
-async fn snapshot_includes_only_valid_cloudflare_country_codes() {
+async fn account_channel_join_without_account_header_omits_country() {
+    let (mut s, _) = state();
+    // Channel dispatch has already authenticated the account before calling join.
+    s.media_session = Some(b"authenticated-channel-session".to_vec());
+    let response = app(s.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/media/join")
+                .header("content-type", "application/json")
+                .header("cf-ipcountry", "US")
+                .body(Body::from(json!({"name":"Channel member"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let joined: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), BODY_LIMIT).await.unwrap()).unwrap();
+    let snapshot = call(
+        app(s),
+        "POST",
+        "/api/media/snapshot",
+        Some(joined["token"].as_str().unwrap()),
+        json!({}),
+    )
+    .await
+    .1;
+    assert_eq!(snapshot["participants"].as_array().unwrap().len(), 1);
+    assert!(snapshot["participants"][0].get("countryCode").is_none());
+}
+
+#[tokio::test]
+async fn snapshots_ignore_location_headers_and_old_stored_country() {
     let (s, _) = state();
     let join = |name: &str, country: &str| {
         Request::builder()
@@ -695,7 +731,7 @@ async fn snapshot_includes_only_valid_cloudflare_country_codes() {
     )
     .unwrap();
     let snapshot = call(
-        app(s),
+        app(s.clone()),
         "POST",
         "/api/media/snapshot",
         Some(located["token"].as_str().unwrap()),
@@ -704,20 +740,37 @@ async fn snapshot_includes_only_valid_cloudflare_country_codes() {
     .await
     .1;
     let participants = snapshot["participants"].as_array().unwrap();
-    assert_eq!(
+    assert_eq!(participants.len(), 2);
+    assert!(
         participants
             .iter()
-            .find(|participant| participant["name"] == "located")
-            .unwrap()["countryCode"],
-        "US"
+            .any(|participant| participant["id"] == unknown["id"])
     );
     assert!(
         participants
             .iter()
-            .find(|participant| participant["id"] == unknown["id"])
+            .all(|participant| participant.get("countryCode").is_none())
+    );
+
+    let mut stored = serde_json::to_value(s.registry.lock().await.clone()).unwrap();
+    for participant in stored["participants"].as_object_mut().unwrap().values_mut() {
+        participant["country_code"] = json!("US");
+    }
+    let decoded: Registry = serde_json::from_value(stored).unwrap();
+    for projection in [public_snapshot(&decoded), presence_snapshot(&decoded)] {
+        assert_eq!(projection["participants"].as_array().unwrap().len(), 2);
+        assert!(
+            projection["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|participant| participant.get("countryCode").is_none())
+        );
+    }
+    assert!(
+        !serde_json::to_string(&decoded)
             .unwrap()
-            .get("countryCode")
-            .is_none()
+            .contains("country_code")
     );
 }
 

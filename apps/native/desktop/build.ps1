@@ -59,6 +59,9 @@ Copy-Item (Join-Path $Native "target\$Target\release\caper-updater.exe") (Join-P
 Copy-Item (Join-Path $Root "LICENSE"), (Join-Path $Native "README.md"), (Join-Path $Native "THIRD-PARTY-NOTICES.md") $Stage
 Copy-Item (Join-Path $Root "shared\fonts\cache\Satoshi-FFL.txt") $Stage
 Copy-Item (Join-Path $Native "voice-spike\licenses\*") $Stage
+Get-ChildItem (Join-Path $Root 'shared\emoji\*.txt') | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $Stage ("EMOJI-" + $_.Name))
+}
 Copy-Item $env:CAPER_ONNXRUNTIME_LIBRARY $Stage
 Copy-Item (Join-Path $OrtExtract 'LICENSE') (Join-Path $Stage 'ONNX-RUNTIME-LICENSE')
 Copy-Item (Join-Path $OrtExtract 'ThirdPartyNotices.txt') (Join-Path $Stage 'ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt')

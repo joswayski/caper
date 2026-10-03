@@ -145,6 +145,114 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(delivery.cursor, "42")
     }
 
+    func testReactionProtocolAndInterleavedCursorBookkeeping() {
+        func event(_ seq: String = "2", channel: String = "channel") -> [String: Any] {
+            ["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": seq,
+             "messageId": "message", "reactions": [["emoji": "👍", "authorIds": ["author"]]]]
+        }
+        var delivery = ChatDeliveryState()
+        XCTAssertTrue(delivery.receive(seq: "1"))
+        XCTAssertEqual(ReactionEvent.sequence(event(), channelID: "channel"), "2")
+        XCTAssertTrue(delivery.receive(seq: "2"))
+        XCTAssertTrue(delivery.receive(seq: "2"), "duplicate reaction does not move or resync")
+        XCTAssertTrue(delivery.receive(seq: "3"), "message after reaction remains contiguous")
+        XCTAssertFalse(delivery.receive(seq: "5"), "reaction gap is rejected")
+        XCTAssertNil(ReactionEvent.sequence(event(channel: "other"), channelID: "channel"))
+        XCTAssertNil(ReactionEvent.sequence(event("02"), channelID: "channel"), "sequence must be canonical")
+        var invalid = event()
+        invalid["reactions"] = [["emoji": "👍", "authorIds": []]]
+        XCTAssertNil(ReactionEvent.sequence(invalid, channelID: "channel"))
+        invalid["reactions"] = [["emoji": "👍", "authorIds": ["author", "author"]]]
+        XCTAssertNil(ReactionEvent.sequence(invalid, channelID: "channel"))
+        XCTAssertFalse(MessageReactionsEvent(type: "message.reactions", schemaVersion: 1, channelId: "channel", seq: "02",
+                                             messageId: "message", reactions: [MessageReaction(emoji: "👍", authorIds: ["author"])]).isValid)
+        XCTAssertFalse(MessageReactionsEvent(type: "message.reactions", schemaVersion: 1, channelId: "channel", seq: "2",
+                                             messageId: "message", reactions: [MessageReaction(emoji: "👍", authorIds: [])]).isValid)
+    }
+
+    func testReactionSnapshotsRejectStaleAckAndOverlayOlderPage() {
+        let author = ChatAuthor(id: "other", name: "Other", isGuest: false)
+        let content = ChatContent(version: 1, type: "text", text: "hello")
+        let old = ChatMessage(id: "Message00000001", channelId: "Channel12345", seq: "1", author: author,
+                              content: content, createdAt: "now", clientMessageId: "client",
+                              reactions: [MessageReaction(emoji: "👍", authorIds: ["old"])], reactionSeq: "4")
+        var snapshots = ReactionSnapshots()
+        XCTAssertTrue(snapshots.apply(messageID: old.id, seq: "8", reactions: [MessageReaction(emoji: "👍", authorIds: ["self", "other"])]))
+        XCTAssertFalse(snapshots.apply(messageID: old.id, seq: "7", reactions: []), "late HTTP acknowledgement must not revert replay")
+        snapshots.seed([old])
+        XCTAssertEqual(snapshots.overlay(old).reactionSeq, "8")
+        XCTAssertEqual(snapshots.overlay(old).reactions?.first?.authorIds, ["self", "other"], "an older page must retain an unseen newer reaction")
+    }
+
+    func testBundledEmojiCatalogHasCanonicalSelectableArtwork() {
+        XCTAssertEqual(EmojiArtwork.choices.count, 1_870)
+        XCTAssertEqual(EmojiArtwork.id(for: "❤️"), "2764")
+        XCTAssertEqual(EmojiArtwork.id(for: "👨‍👩‍👧‍👦"), "1f468-200d-1f469-200d-1f467-200d-1f466")
+        XCTAssertNotNil(EmojiArtwork.entry(for: "👍"))
+        XCTAssertNotNil(EmojiArtwork.entry(for: "👍🏽"), "non-picker variants still need reaction artwork")
+    }
+
+    func testEmojiArtworkCropsPixelCoordinatesAtAsymmetricPosition() {
+        let entry = EmojiArtwork.entry(for: "👍")
+        XCTAssertEqual(entry?.x, 64)
+        XCTAssertEqual(entry?.y, 128)
+        guard let entry, let image = EmojiArtwork.image(for: entry) else {
+            return XCTFail("Expected bundled thumbs-up artwork")
+        }
+        XCTAssertEqual(image.width, 64)
+        XCTAssertEqual(image.height, 64)
+        var pixels = [UInt8](repeating: 0, count: 64 * 64 * 4)
+        pixels.withUnsafeMutableBytes { bytes in
+            let context = CGContext(data: bytes.baseAddress, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 64 * 4,
+                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            context?.draw(image, in: CGRect(x: 0, y: 0, width: 64, height: 64))
+        }
+        XCTAssertTrue(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] != 0 }, "crop must contain visible pixels")
+    }
+
+    func testReactionSnapshotsRetainLoadedMessagesAndBoundOnlyUnseen() {
+        let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
+        let content = ChatContent(version: 1, type: "text", text: "hello")
+        let messages = (0..<600).map { index in
+            ChatMessage(id: "message-\(index)", channelId: "channel", seq: "\(index + 1)", author: author,
+                        content: content, createdAt: "now", clientMessageId: "client-\(index)",
+                        reactions: [], reactionSeq: "1")
+        }
+        var snapshots = ReactionSnapshots()
+        snapshots.seed(messages)
+        XCTAssertTrue(snapshots.apply(messageID: messages[599].id, seq: "2", reactions: [MessageReaction(emoji: "👍", authorIds: ["author"])]))
+        XCTAssertEqual(snapshots.overlay(messages[599]).reactions?.first?.emoji, "👍")
+
+        for index in 0..<ReactionSnapshots.maximumUnseen {
+            XCTAssertTrue(snapshots.apply(messageID: "unseen-\(index)", seq: "3", reactions: []))
+        }
+        XCTAssertFalse(snapshots.apply(messageID: "unseen-overflow", seq: "3", reactions: []))
+        XCTAssertTrue(snapshots.unseenOverflowed, "ChatModel uses this marker to request a resync")
+    }
+
+    func testSwiftUUIDMatchesCanonicalServerHTTPAndGatewayConfirmation() {
+        let uppercaseID = "AB12CD34-EF56-4789-8ABC-DEF012345678"
+        let canonicalID = "ab12cd34-ef56-4789-8abc-def012345678"
+        var delivery = ChatDeliveryState(cursor: "41")
+        let command = delivery.begin(text: "Swag", makeID: { uppercaseID })
+        XCTAssertEqual(command.id, canonicalID, "Rust parses UUIDs and returns lowercase, not Swift's original casing")
+        XCTAssertEqual(delivery.begin(text: "next draft", makeID: { "other" }), command, "retries keep the same canonical identity")
+        let author = ChatAuthor(id: "SelfAbC12345", name: "Self", isGuest: false)
+        let message = ChatMessage(id: "m", channelId: "ChannelAbC12", seq: "42", author: author,
+                                  content: ChatContent(version: 1, type: "text", text: "Swag"),
+                                  createdAt: "2026-10-01T12:47:00Z", clientMessageId: canonicalID)
+        XCTAssertTrue(MessageValidation.acceptsResponse(message, channelID: "ChannelAbC12", command: command, authorID: author.id))
+        XCTAssertFalse(MessageValidation.acceptsResponse(message, channelID: "channelabc12", command: command, authorID: author.id),
+                       "Only UUIDs are normalized; channel and author IDs are case sensitive")
+        XCTAssertFalse(MessageValidation.acceptsResponse(message, channelID: "ChannelAbC12", command: command, authorID: "selfabc12345"))
+        XCTAssertFalse(delivery.confirmGateway(clientMessageID: canonicalID, authorID: "other", ownAuthorID: author.id))
+        XCTAssertFalse(delivery.confirmGateway(clientMessageID: "ab12cd34-ef56-4789-8abc-def012345679", authorID: author.id, ownAuthorID: author.id))
+        XCTAssertTrue(delivery.receive(seq: "42"))
+        XCTAssertTrue(delivery.confirmGateway(clientMessageID: canonicalID, authorID: author.id, ownAuthorID: author.id))
+        XCTAssertNil(delivery.pending, "a successful send must not leave a duplicate Retry send row")
+        XCTAssertEqual(delivery.cursor, "42")
+    }
+
     func testUnknownOutcomeRetriesExactCommandAndResetPreventsResurrection() {
         var delivery = ChatDeliveryState(cursor: "8")
         let first = delivery.begin(text: "original", makeID: { "id-one" })

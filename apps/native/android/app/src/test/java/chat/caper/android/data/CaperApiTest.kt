@@ -2,6 +2,9 @@ package chat.caper.android.data
 
 import chat.caper.android.model.TurnResponse
 import chat.caper.android.model.ChatAuthor
+import chat.caper.android.model.Space
+import chat.caper.android.model.SpaceList
+import chat.caper.android.model.SpaceDetail
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -38,6 +41,23 @@ class CaperApiTest {
         assertNull(request.requestUrl?.query)
     }
 
+    @Test fun `direct message contract uses global routes and string read cursor`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"conversations":[{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"id":"direct000001","peer":{"id":"account00002","username":"mira","displayName":"Mira"},"lastSeq":"9007199254740993","readSeq":"7"}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertEquals("9007199254740993", api.directConversations("account-secret").conversations.single().lastSeq)
+        api.startDirectConversation("account-secret", " mira ")
+        api.markDirectConversationRead("account-secret", "direct000001", "9007199254740993")
+
+        assertEquals("/api/dms", server.takeRequest().path)
+        assertEquals("{\"username\":\"mira\"}", server.takeRequest().body.readUtf8())
+        val read = server.takeRequest()
+        assertEquals("/api/dms/direct000001/read", read.path)
+        assertEquals("{\"seq\":\"9007199254740993\"}", read.body.readUtf8())
+        assertEquals("Bearer account-secret", read.headers["Authorization"])
+    }
+
     @Test fun `redirect is rejected without forwarding bearer credential`() = runTest {
         val target = MockWebServer()
         try {
@@ -70,6 +90,81 @@ class CaperApiTest {
         )
         assertEquals(listOf("stun:one"), response.iceServers[0].urls)
         assertEquals(listOf("turn:one", "turns:two"), response.iceServers[1].urls)
+    }
+
+    @Test fun `reaction PUT validates message id and sends capability header`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"type":"message.reactions","schemaVersion":1,"channelId":"channel00001","seq":"9","messageId":"message00000001","reactions":[]}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        api.setReaction("account-secret", "chat-secret", "channel00001", "message00000001", "👍", true)
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001/reactions", request.path)
+        assertEquals("chat-secret", request.headers["x-caper-chat-token"])
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+        assertEquals("""{"emoji":"👍","active":true}""", request.body.readUtf8())
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { api.setReaction(null, "x", "channel00001", "short", "👍", true) } }
+    }
+
+    @Test fun `space list defaults invitations for old APIs`() {
+        val response = Json.decodeFromString<SpaceList>(
+            """{"spaces":[],"limits":{"ownedSpaces":20,"totalSpaces":100,"channelsPerSpace":100}}""",
+        )
+        assertTrue(response.invitations.isEmpty())
+    }
+
+    @Test fun `channel joining and invitation fields decode with legacy defaults`() {
+        val legacy = Json.decodeFromString<SpaceDetail>(
+            """{"space":{"id":"space0000001","name":"Studio"},"channels":[{"id":"channel00001","spaceId":"space0000001","name":"general","private":false}],"members":[]}""",
+        )
+        assertTrue(legacy.channels.single().joined)
+        assertTrue(legacy.channelInvitations.isEmpty())
+        val current = Json.decodeFromString<SpaceDetail>(
+            """{"space":{"id":"space0000001","name":"Studio"},"channels":[{"id":"channel00001","spaceId":"space0000001","name":"general","private":false,"joined":false}],"members":[],"channelInvitations":[{"channel":{"id":"private00001","spaceId":"space0000001","name":"plans","private":true,"joined":false},"inviter":{"username":"host","displayName":"Host"}}]}""",
+        )
+        assertFalse(current.channels.single().joined)
+        assertEquals("host", current.channelInvitations.single().inviter.username)
+    }
+
+    @Test fun `channel membership and invitation operations use consent routes`() = runTest {
+        val joined = """{"id":"channel00001","spaceId":"space0000001","name":"general","private":false,"joined":true}"""
+        server.enqueue(MockResponse().setBody(joined)); server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setBody(joined)); server.enqueue(MockResponse().setResponseCode(204))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        api.joinChannel("token", "space0000001", "channel00001")
+        api.leaveChannel("token", "space0000001", "channel00001")
+        api.acceptChannelInvitation("token", "space0000001", "channel00001")
+        api.declineChannelInvitation("token", "space0000001", "channel00001")
+        val requests = List(4) { server.takeRequest() }
+        assertEquals(listOf("POST", "DELETE", "POST", "DELETE"), requests.map { it.method })
+        assertEquals("/api/spaces/space0000001/channels/channel00001/membership", requests[0].path)
+        assertEquals("/api/spaces/space0000001/channels/channel00001/membership", requests[1].path)
+        assertEquals("/api/spaces/space0000001/channels/channel00001/invitation", requests[2].path)
+        assertEquals("/api/spaces/space0000001/channels/channel00001/invitation", requests[3].path)
+    }
+
+    @Test fun `space invitation decodes inviter while older metadata stays compatible`() {
+        val legacy = """{"id":"space0000001","name":"Studio","ownerId":"owner0000001"}"""
+        assertNull(Json.decodeFromString<Space>(legacy).inviter)
+        val response = Json.decodeFromString<Space>(
+            """{"id":"space0000001","name":"Studio","ownerId":"owner0000001","inviter":{"username":"host_user","displayName":"Space Host"}}""",
+        )
+        assertEquals("host_user", response.inviter?.username)
+        assertEquals("Space Host", response.inviter?.displayName)
+    }
+
+    @Test fun `invitation operations use consent endpoints`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"id":"space0000001","name":"Studio","ownerId":"owner0000001"}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertEquals("Studio", api.acceptSpaceInvitation("account-secret", "space0000001").name)
+        api.declineSpaceInvitation("account-secret", "space0000001")
+
+        val accept = server.takeRequest(); val decline = server.takeRequest()
+        assertEquals("POST", accept.method)
+        assertEquals("/api/spaces/space0000001/invitation", accept.path)
+        assertEquals("DELETE", decline.method)
+        assertEquals("/api/spaces/space0000001/invitation", decline.path)
+        assertEquals("Bearer account-secret", decline.headers["Authorization"])
     }
 
     @Test(timeout = 10000) fun `slow response body does not block owner stop and cancellation`() = runBlocking {

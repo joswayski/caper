@@ -236,7 +236,7 @@ export function attachLiveMotion(stage: HTMLElement, scene: HTMLElement, options
   const documentKey = (event: KeyboardEvent) => {
     if (!active || event.key !== "Escape" || event.defaultPrevented) return;
     const from = event.target as Element | null;
-    if (from?.closest?.("dialog, details[open], [popover]") || scene.querySelector("details[open], dialog[open]")) return;
+    if (from?.closest?.("dialog, details[open], [popover]") || scene.querySelector('details[open], dialog[open], [role="dialog"]')) return;
     options.deactivate();
   };
   const documentPress = (event: PointerEvent) => {

@@ -1,19 +1,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { avatarPosition } from "../account/avatar.ts";
+import { avatarUrl } from "../account/avatar.ts";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { callSnapshot } from "../media/events.ts";
 
-test("saved avatar IDs select row-major tiles, including zero and row boundaries", () => {
-  assert.equal(avatarPosition(0), "0% 0%");
-  assert.equal(avatarPosition(31), "100% 0%");
-  assert.equal(avatarPosition(32), "0% 4.166666666666667%");
-  assert.equal(avatarPosition(798), "96.7741935483871% 100%");
-  assert.equal(avatarPosition(799), "100% 100%");
-  assert.equal(new Set(Array.from({ length: 800 }, (_, id) => avatarPosition(id))).size, 800);
+test("all client vector resources match the canonical masters and persisted ID mapping", () => {
+  execFileSync(process.execPath, [new URL("../../../../scripts/generate-avatar-vectors.mjs", import.meta.url).pathname, "--check"]);
 });
 
-test("old API data and invalid saved IDs use initials, never an arbitrary tile", () => {
-  for (const id of [undefined, null, -1, 800, 1.5, NaN, Infinity]) assert.equal(avatarPosition(id), undefined);
+test("all saved IDs have distinct path-only SVG artwork, not embedded rasters", () => {
+  for (let id = 0; id < 800; id++) {
+    assert.equal(avatarUrl(id), `/images/avatars/v3/${id}.svg`);
+    const svg = readFileSync(new URL(`../../public/images/avatars/v3/${id}.svg`, import.meta.url), "utf8");
+    assert.match(svg, /viewBox="0 0 256 256"/);
+    assert.match(svg, /<path d=/);
+    assert.doesNotMatch(svg, /<image|data:|href=/i);
+    for (const [, d] of svg.matchAll(/<path d="([^"]+)"/g)) {
+      assert.match(d, /^[MmLlHhVvCcSsQqTtAaZz\d.,\s+-]+$/, `Invalid path in avatar ${id}`);
+    }
+  }
+});
+
+test("v3 repairs only the reviewed 60 designs across all eight hues", () => {
+  const repaired = new Set([0, 4, 8, 11, 13, 15, 17, 22, 23, 26, 29, 32, 36, 39, 43, 45, 48, 50, 51, 52, 53, 54, 55, 56, 58, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 88, 90, 91, 92, 93, 96, 97, 99]);
+  for (let id = 0; id < 800; id++) {
+    const before = readFileSync(new URL(`../../public/images/avatars/v2/${id}.svg`, import.meta.url), "utf8");
+    const after = readFileSync(new URL(`../../public/images/avatars/v3/${id}.svg`, import.meta.url), "utf8");
+    assert.equal(before !== after, repaired.has(id % 100), `Unexpected artwork change for ${id}`);
+  }
+});
+
+test("old API data and invalid saved IDs use initials, never an arbitrary picture", () => {
+  for (const id of [undefined, null, -1, 800, 1.5, NaN, Infinity]) assert.equal(avatarUrl(id), undefined);
 });
 
 test("active and spectator voice retain saved avatar even when call identity changes", () => {

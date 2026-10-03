@@ -12,11 +12,17 @@ public struct Account: Codable, Equatable, Sendable {
     public var avatarId: Int? = nil
 }
 
+public struct Inviter: Codable, Equatable, Sendable {
+    public let username: String
+    public let displayName: String
+}
+
 public struct Space: Codable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
     public let ownerId: String
     public var demo: Bool?
+    public var inviter: Inviter?
 }
 
 public struct Channel: Codable, Equatable, Identifiable, Sendable {
@@ -24,6 +30,49 @@ public struct Channel: Codable, Equatable, Identifiable, Sendable {
     public let spaceId: String
     public let name: String
     public let `private`: Bool
+    public let joined: Bool
+
+    private enum CodingKeys: String, CodingKey { case id, spaceId, name, `private`, joined }
+    public init(id: String, spaceId: String, name: String, private: Bool, joined: Bool = true) {
+        self.id = id; self.spaceId = spaceId; self.name = name; self.private = `private`; self.joined = joined
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        spaceId = try values.decode(String.self, forKey: .spaceId)
+        name = try values.decode(String.self, forKey: .name)
+        `private` = try values.decode(Bool.self, forKey: .private)
+        joined = try values.decodeIfPresent(Bool.self, forKey: .joined) ?? true
+    }
+}
+
+public struct ChannelInvitation: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { channel.id }
+    public let channel: Channel
+    public let inviter: Inviter
+}
+
+public struct DirectMessagePeer: Codable, Equatable, Sendable {
+    public let id: String
+    public let username: String
+    public let displayName: String
+}
+
+public struct DirectMessageConversation: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let peer: DirectMessagePeer
+    public let lastSeq: String
+    public let readSeq: String
+
+    public var unread: Bool { (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending }
+}
+
+public struct DirectMessagesResponse: Codable, Sendable {
+    public let conversations: [DirectMessageConversation]
+}
+
+public struct PushConfiguration: Codable, Equatable, Sendable {
+    public let platforms: [String]
 }
 
 public struct Member: Codable, Equatable, Identifiable, Sendable {
@@ -42,13 +91,38 @@ public struct SpaceLimits: Codable, Equatable, Sendable {
 
 public struct SpacesResponse: Codable, Sendable {
     public let spaces: [Space]
+    public let invitations: [Space]
     public let limits: SpaceLimits
+
+    private enum CodingKeys: String, CodingKey { case spaces, invitations, limits }
+    public init(spaces: [Space], invitations: [Space] = [], limits: SpaceLimits) {
+        self.spaces = spaces; self.invitations = invitations; self.limits = limits
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        spaces = try values.decode([Space].self, forKey: .spaces)
+        invitations = try values.decodeIfPresent([Space].self, forKey: .invitations) ?? []
+        limits = try values.decode(SpaceLimits.self, forKey: .limits)
+    }
 }
 
 public struct SpaceDetail: Codable, Sendable {
     public let space: Space
     public let channels: [Channel]
     public let members: [Member]
+    public let channelInvitations: [ChannelInvitation]
+
+    private enum CodingKeys: String, CodingKey { case space, channels, members, channelInvitations }
+    public init(space: Space, channels: [Channel], members: [Member], channelInvitations: [ChannelInvitation] = []) {
+        self.space = space; self.channels = channels; self.members = members; self.channelInvitations = channelInvitations
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        space = try values.decode(Space.self, forKey: .space)
+        channels = try values.decode([Channel].self, forKey: .channels)
+        members = try values.decode([Member].self, forKey: .members)
+        channelInvitations = try values.decodeIfPresent([ChannelInvitation].self, forKey: .channelInvitations) ?? []
+    }
 }
 
 public enum PresenceStatus: String, Codable, Sendable { case online, idle, offline, unknown }
@@ -59,6 +133,16 @@ public struct PresenceMember: Codable, Equatable, Sendable {
 }
 
 public enum WorkspaceValidation {
+    public static func normalizeUsername(_ value: String) -> String {
+        String(value.lowercased().filter { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "_") }.prefix(32))
+    }
+
+    public static func usernameError(_ value: String) -> String? {
+        (3...32).contains(value.utf8.count) && value.utf8.allSatisfy({
+            (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+        }) ? nil : "Username must be 3–32 lowercase letters, numbers, or underscores."
+    }
+
     public static func spaceNameError(_ value: String) -> String? {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Enter a space name." }
@@ -109,6 +193,34 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let content: ChatContent
     public let createdAt: String
     public let clientMessageId: String
+    public var reactions: [MessageReaction]? = nil
+    public var reactionSeq: String? = nil
+}
+
+public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
+    public let emoji: String
+    public let authorIds: [String]
+    public var id: String { emoji }
+}
+
+public struct MessageReactionsEvent: Codable, Equatable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let messageId: String
+    public let reactions: [MessageReaction]
+
+    public var isValid: Bool {
+        type == "message.reactions" && schemaVersion == 1 && !channelId.isEmpty && !messageId.isEmpty
+            && (try? Sequence.compare(seq, "0")) != nil
+            && Set(reactions.map(\.emoji)).count == reactions.count
+            && reactions.allSatisfy {
+                !$0.emoji.isEmpty && !$0.authorIds.isEmpty
+                    && Set($0.authorIds).count == $0.authorIds.count
+                    && $0.authorIds.allSatisfy { !$0.isEmpty }
+            }
+    }
 }
 
 public struct ChatHistory: Codable, Sendable {
@@ -122,6 +234,11 @@ public struct ChatHistory: Codable, Sendable {
 public struct HistoryIdentity: Codable, Equatable, Sendable {
     public let id: String
     public let name: String
+    public let direct: Bool?
+
+    public init(id: String, name: String, direct: Bool? = nil) {
+        self.id = id; self.name = name; self.direct = direct
+    }
 }
 
 public struct ChatSession: Codable, Sendable {
@@ -211,7 +328,8 @@ public struct ChatDeliveryState: Sendable {
 
     public mutating func begin(text: String, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
-        let command = PendingMessage(id: makeID(), text: text)
+        // Rust's UUID serialization returns lowercase in both HTTP and replay.
+        let command = PendingMessage(id: makeID().lowercased(), text: text)
         pending = command
         return command
     }
@@ -248,6 +366,63 @@ public struct ChatDeliveryState: Sendable {
     public mutating func reset(cursor: String = "0", preservingPending: Bool = false) {
         self.cursor = cursor
         if !preservingPending { pending = nil; rejected = false }
+    }
+}
+
+enum ReactionEvent {
+    static func sequence(_ event: [String: Any], channelID: String) -> String? {
+        guard event["schemaVersion"] as? Int == 1,
+              event["channelId"] as? String == channelID,
+              let messageID = event["messageId"] as? String, !messageID.isEmpty,
+              let reactions = event["reactions"] as? [[String: Any]],
+              reactions.allSatisfy({ reaction in
+                  guard let emoji = reaction["emoji"] as? String, !emoji.isEmpty,
+                        let authorIDs = reaction["authorIds"] as? [String], !authorIDs.isEmpty else { return false }
+                  return Set(authorIDs).count == authorIDs.count && authorIDs.allSatisfy { !$0.isEmpty }
+              }), Set(reactions.compactMap { $0["emoji"] as? String }).count == reactions.count,
+              let seq = event["seq"] as? String, (try? Sequence.compare(seq, "0")) != nil else { return nil }
+        return seq
+    }
+}
+
+/// Keeps each message's reaction snapshot monotonic independently of the
+/// channel delivery cursor. This lets delayed HTTP acknowledgements and older
+/// history pages fill missing messages without reverting a newer replay.
+struct ReactionSnapshots: Sendable {
+    private var values: [String: (seq: String, reactions: [MessageReaction])] = [:]
+    private var knownMessageIDs: Set<String> = []
+    private(set) var unseenOverflowed = false
+    static let maximumUnseen = 256
+
+    mutating func apply(messageID: String, seq: String?, reactions: [MessageReaction]) -> Bool {
+        guard let seq, (try? Sequence.compare(seq, "0")) != nil else { return false }
+        if let current = values[messageID], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
+        let unseenCount = values.keys.filter { !knownMessageIDs.contains($0) }.count
+        guard knownMessageIDs.contains(messageID) || values[messageID] != nil || unseenCount < Self.maximumUnseen else {
+            unseenOverflowed = true
+            return false
+        }
+        values[messageID] = (seq, reactions)
+        return true
+    }
+
+    mutating func seed(_ messages: [ChatMessage]) {
+        knownMessageIDs.formUnion(messages.map(\.id))
+        for message in messages { _ = apply(messageID: message.id, seq: message.reactionSeq, reactions: message.reactions ?? []) }
+    }
+
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        guard let snapshot = values[message.id] else { return message }
+        var result = message
+        result.reactions = snapshot.reactions
+        result.reactionSeq = snapshot.seq
+        return result
+    }
+
+    mutating func reset() {
+        values.removeAll(keepingCapacity: false)
+        knownMessageIDs.removeAll(keepingCapacity: false)
+        unseenOverflowed = false
     }
 }
 

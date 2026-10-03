@@ -31,6 +31,7 @@ private struct EmailInput: Encodable { let email: String }
 private struct VerifyInput: Encodable { let challengeId: String; let code: String; let tokenTransport = "bearer" }
 private struct ProfileInput: Encodable { let username: String; let displayName: String }
 private struct SendInput: Encodable { let clientMessageId: String; let text: String }
+private struct ReactionInput: Encodable { let emoji: String; let active: Bool }
 private struct SpaceInput: Encodable { let name: String }
 private struct ChannelInput: Encodable {
     let name: String
@@ -38,7 +39,18 @@ private struct ChannelInput: Encodable {
     enum CodingKeys: String, CodingKey { case name; case privateChannel = "private" }
 }
 private struct UsernameInput: Encodable { let username: String }
-private struct MembersResponse: Decodable { let members: [Member] }
+private struct ReadInput: Encodable { let seq: String }
+private struct PushDeviceInput: Encodable { let platform: String; let token: String }
+public struct MembersResponse: Decodable, Sendable {
+    public let members: [Member]
+    public let invitations: [Member]
+    private enum CodingKeys: String, CodingKey { case members, invitations }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        members = try values.decode([Member].self, forKey: .members)
+        invitations = try values.decodeIfPresent([Member].self, forKey: .invitations) ?? []
+    }
+}
 
 public actor APIClient {
     public let baseURL: URL
@@ -101,6 +113,27 @@ public actor APIClient {
     }
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
+    public func directMessages() async throws -> [DirectMessageConversation] {
+        let response: DirectMessagesResponse = try await request("api/dms")
+        guard response.conversations.allSatisfy({
+            (try? Sequence.compare($0.lastSeq, "0")) != nil && (try? Sequence.compare($0.readSeq, "0")) != nil
+                && (try? Sequence.compare($0.readSeq, $0.lastSeq)) != .orderedDescending
+        }) else { throw APIError(status: 502, message: "Caper returned invalid direct messages.") }
+        return response.conversations
+    }
+    public func createDirectMessage(username: String) async throws -> DirectMessageConversation {
+        try await request("api/dms", method: "POST", body: UsernameInput(username: username))
+    }
+    public func markDirectMessageRead(id: String, seq: String) async throws {
+        let _: Empty = try await request("api/dms/\(try pathID(id))/read", method: "POST", body: ReadInput(seq: seq))
+    }
+    public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
+    public func registerPushDevice(platform: String, token: String) async throws {
+        let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token))
+    }
+    public func unregisterPushDevice(platform: String, token: String) async throws {
+        let _: Empty = try await request("api/push/devices", method: "DELETE", body: PushDeviceInput(platform: platform, token: token))
+    }
     public func space(_ id: String) async throws -> SpaceDetail { try await request("api/spaces/\(try pathID(id))") }
 
     public func createSpace(name: String) async throws -> Space {
@@ -136,6 +169,23 @@ public actor APIClient {
         try await request("api/spaces/\(try pathID(spaceID))/members", method: "POST", body: UsernameInput(username: username))
     }
 
+    public func spaceInvitations(spaceID: String) async throws -> [Member] {
+        let response: MembersResponse = try await request("api/spaces/\(try pathID(spaceID))/invitations")
+        return response.members
+    }
+
+    public func cancelSpaceInvitation(spaceID: String, userID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invitations/\(try pathID(userID))", method: "DELETE")
+    }
+
+    public func acceptSpaceInvitation(spaceID: String) async throws -> Space {
+        try await request("api/spaces/\(try pathID(spaceID))/invitation", method: "POST")
+    }
+
+    public func declineSpaceInvitation(spaceID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invitation", method: "DELETE")
+    }
+
     public func removeSpaceMember(spaceID: String, memberID: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/members/\(try pathID(memberID))", method: "DELETE")
     }
@@ -145,12 +195,33 @@ public actor APIClient {
         return response.members
     }
 
+    public func channelInvitations(spaceID: String, channelID: String) async throws -> [Member] {
+        let response: MembersResponse = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members")
+        return response.invitations
+    }
+
     public func addChannelMember(spaceID: String, channelID: String, username: String) async throws -> Member {
         try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members", method: "POST", body: UsernameInput(username: username))
     }
 
     public func removeChannelMember(spaceID: String, channelID: String, memberID: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members/\(try pathID(memberID))", method: "DELETE")
+    }
+
+    public func joinChannel(spaceID: String, channelID: String) async throws -> Channel {
+        try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/membership", method: "POST")
+    }
+
+    public func leaveChannel(spaceID: String, channelID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/membership", method: "DELETE")
+    }
+
+    public func acceptChannelInvitation(spaceID: String, channelID: String) async throws -> Channel {
+        try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/invitation", method: "POST")
+    }
+
+    public func declineChannelInvitation(spaceID: String, channelID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/invitation", method: "DELETE")
     }
 
     public func history(channelID: String? = nil, before: String? = nil) async throws -> ChatHistory {
@@ -177,6 +248,18 @@ public actor APIClient {
         try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: SendInput(clientMessageId: clientMessageID, text: text), extraHeaders: ["x-caper-chat-token": sessionToken])
     }
 
+    public func setReaction(channelID: String, messageID: String, sessionToken: String, emoji: String, active: Bool) async throws -> MessageReactionsEvent {
+        let event: MessageReactionsEvent = try await request(
+            "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))/reactions",
+            method: "PUT", body: ReactionInput(emoji: emoji, active: active),
+            extraHeaders: ["x-caper-chat-token": sessionToken]
+        )
+        guard event.isValid, event.channelId == channelID, event.messageId == messageID else {
+            throw APIError(status: 502, message: "The chat service returned invalid reactions.")
+        }
+        return event
+    }
+
     public func media<T: Decodable, B: Encodable>(channelID: String?, operation: String, token mediaToken: String? = nil, body: B) async throws -> T {
         let root = channelID.map { "api/channels/\($0)/media" } ?? "api/media"
         return try await request("\(root)/\(operation)", method: "POST", body: body, extraHeaders: mediaToken.map { ["x-caper-media-token": $0] } ?? [:])
@@ -196,6 +279,13 @@ public actor APIClient {
 
     private func pathID(_ id: String) throws -> String {
         guard id.count == 12, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { throw APIError(status: 400, message: "Invalid resource ID.") }
+        return id
+    }
+
+    private func messagePathID(_ id: String) throws -> String {
+        guard id.count == 15, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+            throw APIError(status: 400, message: "Invalid message ID.")
+        }
         return id
     }
 

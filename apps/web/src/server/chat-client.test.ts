@@ -236,6 +236,55 @@ async function sendingFixture(t: TestContext) {
   };
 }
 
+test("reaction HTTP snapshots and sequenced delivery agree without skipping messages", async (t) => {
+  const f = await sendingFixture(t);
+  const target = committed({ clientMessageId: "target", text: "React here" }, "1");
+  f.sockets[0].message(target);
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(input), "/api/chat/channels/general/messages/message-1/reactions");
+    assert.equal(init?.method, "PUT");
+    assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+    assert.deepEqual(JSON.parse(String(init?.body)), { emoji: "👍", active: true });
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const adding = f.client.setReaction(target.id, "👍", true);
+  const added = { type: "message.reactions" as const, schemaVersion: 1 as const, channelId: "general", messageId: target.id, seq: "2", reactions: [{ emoji: "👍", authorIds: ["guest"] }] };
+  f.sockets[0].frame(added);
+  f.sockets[0].frame({ ...added, seq: "3", reactions: [] });
+  finish(Response.json(added));
+  await adding;
+  assert.deepEqual(f.state.messages[0].reactions, [], "late HTTP cannot undo a newer removal");
+  assert.equal(f.client.snapshotHistory()?.cursor, "3");
+  f.sockets[0].message(committed({ clientMessageId: "next", text: "After the reactions" }, "4"));
+  assert.equal(f.state.messages.length, 2);
+  assert.equal(f.client.snapshotHistory()?.cursor, "4");
+  const failed = f.client.setReaction(target.id, "👍", true);
+  finish(Response.json({ error: "Please try again" }, { status: 503 }));
+  await assert.rejects(failed, /Please try again/);
+  assert.deepEqual(f.state.messages[0].reactions, []);
+  const retry = f.client.setReaction(target.id, "👍", true);
+  finish(Response.json({ ...added, seq: "5" }));
+  await retry;
+  assert.deepEqual(f.state.messages[0].reactions, added.reactions);
+  assert.equal(f.client.snapshotHistory()?.cursor, "4", "HTTP acknowledgement alone does not advance replay");
+});
+
+test("a late reaction rejection after stopping cannot recreate a chat session", async (t) => {
+  const f = await sendingFixture(t);
+  let finish!: (response: Response) => void;
+  const fetch = t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+  const request = f.client.setReaction("message-1", "👍", true);
+  const before = f.state;
+  f.client.stop();
+  finish(Response.json({ error: "expired" }, { status: 401 }));
+  await request;
+  assert.equal(fetch.mock.callCount(), 1, "do not mint a session for an abandoned conversation");
+  assert.equal(f.state, before);
+  await assert.rejects(f.client.setReaction("message-1", "👍", true), /unavailable/);
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
 test("message sounds exclude history, own messages, and duplicate replay", async (t) => {
   const sounds: string[] = [];
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Audio");
@@ -535,6 +584,33 @@ async function paginationFixture(t: TestContext) {
   return { client, sockets, message, history, requests, get state() { return state; } };
 }
 
+test("history gaps discard older rows without erasing concurrent HTTP reaction snapshots", async (t) => {
+  const f = await sendingFixture(t);
+  const message = (seq: string) => committed({ clientMessageId: `command-${seq}`, text: `Message ${seq}` }, seq);
+  for (const seq of ["1", "2", "3"]) f.sockets[0].message(message(seq));
+  const fresh = { ...message("3"), author: { ...message("3").author, name: "Fresh author" } };
+  const history = { ...f.client.snapshotHistory(), messages: [fresh, message("4")], cursor: "5", hasMore: true };
+  const update = {
+    type: "message.reactions" as const, schemaVersion: 1 as const, channelId: "general",
+    messageId: fresh.id, seq: "6", reactions: [{ emoji: "👍", authorIds: ["guest"] }],
+  };
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request) => {
+    if (String(input).endsWith("/reactions")) return Promise.resolve(Response.json(update));
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  f.sockets[0].frame({ type: "resync_required" });
+  await f.client.setReaction(fresh.id, "👍", true);
+  finish(Response.json(history));
+  await tick();
+  assert.deepEqual(f.state.messages.map((value) => value.seq), ["3", "4"], "missing event 5 may affect an omitted older row");
+  assert.equal(f.state.messages[0].author.name, "Fresh author");
+  assert.deepEqual(f.state.messages[0].reactions, update.reactions);
+  assert.equal(f.state.messages[0].reactionSeq, "6");
+  assert.equal(f.client.snapshotHistory()?.cursor, "5", "HTTP acknowledgement cannot bridge missing replay events");
+  assert.equal(f.state.hasMore, true);
+});
+
 test("older pages serialize, merge with live delivery, retry the same cursor, and stop at the beginning", async (t) => {
   const f = await paginationFixture(t);
   const loading = f.client.loadOlder();
@@ -714,6 +790,20 @@ test("snapshots include older pages and live messages; returning replays the mis
   assert.equal(f.requests.length, 1, "return does not request another history page");
 });
 
+test("unscoped direct-message history can be retained in a timeline snapshot", async (t) => {
+  installBrowser(t);
+  const history: GeneralChatHistory = {
+    space: { id: "", name: "Direct messages" },
+    channel: { id: "direct000001", name: "Mira", direct: true },
+    messages: [], cursor: "0", hasMore: false,
+  };
+  const client = new ChatClient(() => undefined, "direct000001");
+  t.after(() => client.stop());
+  client.start(history);
+  assert.equal(client.snapshotHistory()?.space.id, "");
+  assert.equal(client.snapshotHistory()?.channel.name, "Mira");
+});
+
 test("resync retains visible messages through transient failures but clears them on access denial", async (t) => {
   const f = await paginationFixture(t);
   let finish!: (response: Response) => void;
@@ -727,9 +817,10 @@ test("resync retains visible messages through transient failures but clears them
   assert.equal(f.state.error, "Temporary outage");
   assert.deepEqual(f.state.messages, [4, 5].map(f.message));
   f.client.retryLoad();
-  finish(Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(6).seq, hasMore: true }));
+  finish(Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(7).seq, hasMore: true }));
   await tick();
-  assert.deepEqual(f.state.messages, [4, 5, 6].map(f.message), "a contiguous refresh retains saved pages");
+  assert.deepEqual(f.state.messages, [f.message(6)], "missing sequence 7 may be a reaction on an older cached row");
+  assert.equal(f.state.hasMore, true, "older pages can be loaded again from authoritative history");
   assert.equal(f.state.error, undefined);
   f.client.retryLoad();
   finish(Response.json({ error: "Access removed" }, { status: 403 }));
@@ -737,4 +828,144 @@ test("resync retains visible messages through transient failures but clears them
   assert.equal(f.state.phase, "error");
   assert.deepEqual(f.state.messages, []);
   assert.equal(f.client.snapshotHistory(), undefined);
+});
+
+test("older history from another channel is rejected without contaminating the saved timeline", async (t) => {
+  const f = await paginationFixture(t);
+  const loading = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({
+    messages: [f.message(2), { ...f.message(3), channelId: "other-channel" }],
+    cursor: f.message(5).seq, hasMore: false,
+  }));
+  await loading;
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message), "reject the whole page, including valid rows");
+  assert.match(f.state.olderError!, /another channel/);
+  assert.equal(f.state.loadingOlder, false);
+  assert.equal(f.state.hasMore, true, "the failed page must remain retryable");
+  assert.deepEqual(f.client.snapshotHistory()?.messages, [4, 5].map(f.message));
+});
+
+test("prepared history receives the same channel isolation checks as fetched history", async (t) => {
+  const sockets = installBrowser(t);
+  let state!: ChatViewState;
+  const client = new ChatClient((next) => { state = next; }, "general");
+  t.after(() => client.stop());
+  client.start({
+    space: { id: "space", name: "Caper" }, channel: { id: "general", name: "general" },
+    messages: [{ ...committed({ clientMessageId: "foreign", text: "Wrong channel" }, "1"), channelId: "other-channel" }],
+    cursor: "1", hasMore: false,
+  });
+  assert.equal(state.phase, "error");
+  assert.match(state.error!, /another channel/);
+  assert.deepEqual(state.messages, []);
+  assert.equal(sockets.length, 0);
+});
+
+for (const status of [200, 503]) {
+  test(`an obsolete session response (${status}) cannot overwrite a newer identity or error state`, async (t) => {
+    installBrowser(t);
+    const requests: Array<(response: Response) => void> = [];
+    t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => requests.push(resolve)));
+    let state!: ChatViewState;
+    const client = new ChatClient((next) => { state = next; });
+    t.after(() => client.stop());
+    client.identify("Old", true);
+    client.identify("Current", true);
+    const current = { token: "current", author: { id: "current", name: "Current", isGuest: false } };
+    requests[1](Response.json(current));
+    await tick();
+    requests[0](status === 200
+      ? Response.json({ token: "obsolete", author: { id: "old", name: "Old", isGuest: false } })
+      : Response.json({ error: "Obsolete session failure" }, { status }));
+    await tick();
+    assert.deepEqual(state.author, current.author);
+    assert.equal(state.sessionError, undefined);
+    assert.deepEqual(JSON.parse(localStorage.getItem("caper.chat.session")!), current);
+  });
+}
+
+test("stopped clients cannot persist a late session or start a session retry", async (t) => {
+  installBrowser(t);
+  let finish!: (response: Response) => void;
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", () => {
+    requests++;
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const states: ChatViewState[] = [];
+  const client = new ChatClient((state) => states.push(state));
+  client.identify("Departed", true);
+  client.stop();
+  const updatesBeforeCompletion = states.length;
+  finish(Response.json({ token: "obsolete", author: { id: "departed", name: "Departed", isGuest: false } }));
+  await tick();
+  client.retrySession();
+  assert.equal(localStorage.getItem("caper.chat.session"), null);
+  assert.equal(states.length, updatesBeforeCompletion);
+  assert.equal(requests, 1);
+});
+
+test("resync keeps paginated history while refreshing overlapping author metadata", async (t) => {
+  const f = await paginationFixture(t);
+  const older = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({ messages: [f.message(2), f.message(3)], cursor: f.message(5).seq, hasMore: false }));
+  await older;
+  let finish!: (response: Response) => void;
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", () => {
+    requests++;
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const snapshot = f.client.snapshotHistory()!;
+  f.client.retryLoad();
+  await f.client.loadOlder();
+  assert.equal(requests, 1);
+  assert.deepEqual(f.state.messages.map((message) => message.seq), [2, 3, 4, 5].map((offset) => f.message(offset).seq));
+  const fresh = { ...f.message(5), author: { ...f.message(5).author, name: "Updated name", avatarId: 42 } };
+  finish(Response.json({ ...snapshot, messages: [fresh, f.message(6)], cursor: f.message(6).seq, hasMore: true }));
+  await tick();
+  assert.deepEqual(f.state.messages, [f.message(2), f.message(3), f.message(4), fresh, f.message(6)]);
+  assert.equal(f.state.hasMore, false, "the retained prefix has already reached the beginning");
+});
+
+test("pagination cannot start during a refresh even when older pages remain", async (t) => {
+  const f = await paginationFixture(t);
+  const snapshot = f.client.snapshotHistory()!;
+  const requests: ((response: Response) => void)[] = [];
+  t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { requests.push(resolve); }));
+  f.client.retryLoad();
+  const blockedPage = f.client.loadOlder();
+  assert.equal(requests.length, 1, "a page started after the resync generation would otherwise be lost or corrupt hasMore");
+  await blockedPage;
+  requests[0](Response.json({ ...snapshot, messages: [f.message(6)], cursor: f.message(6).seq }));
+  await tick();
+  const older = f.client.loadOlder();
+  assert.equal(requests.length, 2, "pagination resumes when refresh finishes");
+  requests[1](Response.json({ messages: [f.message(3)], cursor: f.message(6).seq, hasMore: false }));
+  await older;
+  assert.deepEqual(f.state.messages, [3, 4, 5, 6].map(f.message));
+});
+
+test("resync replaces a disconnected range so pagination can fill its gap", async (t) => {
+  const f = await paginationFixture(t);
+  const snapshot = f.client.snapshotHistory()!;
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    ...snapshot, messages: [f.message(7)], cursor: f.message(7).seq, hasMore: true,
+  }));
+  f.client.retryLoad();
+  await tick();
+  assert.deepEqual(f.state.messages, [f.message(7)]);
+  assert.equal(f.state.hasMore, true);
+});
+
+test("older history from another channel is rejected without polluting the timeline", async (t) => {
+  const f = await paginationFixture(t);
+  const loading = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({
+    messages: [f.message(2), { ...f.message(3), channelId: "other" }], cursor: f.message(5).seq, hasMore: false,
+  }));
+  await loading;
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message));
+  assert.equal(f.state.hasMore, true);
+  assert.equal(f.state.olderError, "The chat service returned messages from another channel.");
 });

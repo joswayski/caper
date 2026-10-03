@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import chat.caper.android.data.*
 import chat.caper.android.model.*
+import chat.caper.android.push.PushRegistration
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
 import java.io.IOException
@@ -30,11 +31,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var typingExpiry: Job? = null
     private val typers = mutableMapOf<String, TypingAuthor>()
     private var generation = 0L
+    private var durableReplayCursor: String? = null
+    private var refreshingHistory = false
     private var accountGeneration = 0L
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
+    internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
+    private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
+    private var directRefresh: Job? = null
+    private var pendingDirectIntent: String? = null
+    private var foreground = false
 
     init { loadHome() }
 
@@ -58,18 +66,28 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     mutable.value = AppUiState(screen = SessionScreen.SignedOut)
                     return@launch
                 }
-                val list = api.spaces(requireNotNull(accountToken))
+                val token = requireNotNull(accountToken)
+                val list = api.spaces(token)
+                val directs = runCatching { api.directConversations(token) }
                 if (requestAccountGeneration != accountGeneration) return@launch
                 mutable.value = AppUiState(
                     screen = SessionScreen.Home, account = account,
-                    spaces = list.spaces, limits = list.limits,
+                    spaces = list.spaces, invitations = list.invitations, limits = list.limits,
+                    directConversations = directs.getOrNull()?.conversations.orEmpty(),
+                    error = directs.exceptionOrNull()?.let(::message),
                 )
                 createChatSession(requestAccountGeneration)
                 if (requestAccountGeneration != accountGeneration) return@launch
-                list.spaces.firstOrNull()?.let { selectSpace(it.id) }
+                startDirectRefresh()
+                if (PushRegistration.enabled(getApplication())) viewModelScope.launch {
+                    runCatching { PushRegistration.enable(getApplication()) }
+                }
+                val pending = pendingDirectIntent?.let { id -> mutable.value.directConversations.firstOrNull { it.id == id } }
+                if (pending != null) { pendingDirectIntent = null; selectDirect(pending) }
+                else list.spaces.firstOrNull()?.let { selectSpace(it.id) }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {
-                    mutable.value = AppUiState(screen = SessionScreen.Home, error = message(error))
+                    mutable.value = AppUiState(screen = SessionScreen.SignedOut, error = message(error))
                 }
             }
         }
@@ -110,6 +128,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
         chatToken = null
         chatAuthor = null
+        mutable.value = mutable.value.copy(chatAuthorId = null)
         createChatSession(accountGeneration)
         onSuccess()
     }
@@ -123,10 +142,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         accountToken = null
         chatToken = null
         chatAuthor = null
+        directRefresh?.cancel(); directRefresh = null
         tokens.clear()
-        if (token != null) viewModelScope.launch { runCatching { api.logout(token) } }
+        if (token != null) {
+            viewModelScope.launch { PushRegistration.disable(getApplication(), token) }
+            viewModelScope.launch { runCatching { api.logout(token) } }
+        }
         loadHome()
     }
+
+    fun openDirectFromNotification(id: String?) {
+        if (id == null || !Regex("^[A-Za-z0-9]{12}$").matches(id)) return
+        mutable.value.directConversations.firstOrNull { it.id == id }?.let(::selectDirect) ?: run { pendingDirectIntent = id; refreshDirectConversations() }
+    }
+
+    suspend fun canEnablePush(): Boolean {
+        val token = accountToken ?: return false
+        val epoch = accountGeneration
+        return runCatching { "fcm" in api.pushConfig(token).platforms }.getOrDefault(false) && epoch == accountGeneration
+    }
+
+    suspend fun disablePush() { PushRegistration.disable(getApplication(), accountToken) }
 
     fun selectSpace(id: String) {
         if (mutable.value.spaces.none { it.id == id }) return
@@ -134,17 +170,30 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         closeChannel(clearPending = true)
         mutable.value = mutable.value.copy(deniedVoiceChannels = emptySet())
-        mutable.value = mutable.value.copy(busy = true, error = null, openError = null)
+        mutable.value = mutable.value.copy(busy = true, error = null, openError = null, pendingSpaceInvitations = emptyList())
         viewModelScope.launch {
             try {
                 val detail = api.space(requireAccountToken(), id)
                 if (request != generation) return@launch
                 mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0)
-                detail.channels.firstOrNull()?.let(::selectChannel)
+                detail.channels.firstOrNull { it.joined }?.let(::selectChannel)
             } catch (error: Throwable) {
-                if (request == generation) { retryOpen = { selectSpace(id) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+                if (request == generation) {
+                    if (error is ApiException && error.status == 404) removeUnavailableSpace(id)
+                    else { retryOpen = { selectSpace(id) }; mutable.value = mutable.value.copy(busy = false, openError = message(error)) }
+                }
             }
         }
+    }
+
+    private fun removeUnavailableSpace(id: String) {
+        VoiceCallService.stopIfSpace(getApplication(), id)
+        ++spaceAccessGeneration
+        closeChannel(clearPending = true)
+        mutable.value = mutable.value.copy(
+            spaces = mutable.value.spaces.filter { it.id != id }, selectedSpace = null,
+            busy = false, openError = null, error = "This space is no longer available.",
+        )
     }
 
     private var retryOpen: (() -> Unit)? = null
@@ -155,18 +204,91 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChannel(channel: Channel) {
         val request = ++generation
         closeChannel(clearPending = true)
-        mutable.value = mutable.value.copy(selectedChannel = channel, messages = emptyList(), busy = true, error = null, messagesLoading = true)
+        mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, messages = emptyList(), busy = true, error = null, messagesLoading = true)
         viewModelScope.launch {
             try {
                 val history = api.history(accountToken, channel.id)
                 if (request != generation) return@launch
                 mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false, messagesLoading = false)
-                openGateway(channel.id, history.cursor, request)
+                openGateway(channel.id, history.cursor, request, channel.joined)
             } catch (error: Throwable) {
                 if (request != generation) return@launch
                 if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
                 // Web shows a failed first load in the conversation with Try again.
                 else mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
+            }
+        }
+    }
+
+    fun selectDirect(conversation: DirectConversation) {
+        val request = ++generation
+        closeChannel(clearPending = true)
+        val channel = Channel(conversation.id, "", conversation.peer.displayName, private = true, direct = true)
+        mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = conversation.id, messages = emptyList(), busy = true, error = null, messagesLoading = true)
+        viewModelScope.launch {
+            try {
+                val history = api.history(requireAccountToken(), conversation.id)
+                if (request != generation) return@launch
+                require(history.channel?.direct == true) { "Direct-message history was not marked direct." }
+                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false, messagesLoading = false)
+                openGateway(conversation.id, history.cursor, request)
+                markDirectRead(conversation.id, history.cursor)
+            } catch (error: Throwable) {
+                if (request == generation) mutable.value = mutable.value.copy(busy = false, messagesLoading = false, messagesError = message(error))
+            }
+        }
+    }
+
+    fun startDirect(username: String, done: () -> Unit = {}) = launchAction { request ->
+        val conversation = api.startDirectConversation(requireAccountToken(), username)
+        if (request != accountGeneration) return@launchAction
+        mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
+        done(); selectDirect(conversation)
+    }
+
+    fun refreshDirectConversations() {
+        val token = accountToken ?: return
+        val request = accountGeneration
+        viewModelScope.launch {
+            runCatching { api.directConversations(token) }.onSuccess { result ->
+                if (request == accountGeneration) {
+                    mutable.value = mutable.value.copy(directConversations = result.conversations)
+                    pendingDirectIntent?.let { id -> result.conversations.firstOrNull { it.id == id } }?.let {
+                        pendingDirectIntent = null
+                        selectDirect(it)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startDirectRefresh() {
+        directRefresh?.cancel()
+        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations() } }
+    }
+
+    fun setForeground(active: Boolean) {
+        foreground = active
+        if (!active) return
+        refreshDirectConversations()
+        val current = mutable.value
+        if (!current.messagesLoading) current.selectedDirectId?.let { id ->
+            current.messages.lastOrNull()?.let { markDirectRead(id, it.seq) }
+        }
+    }
+
+    private fun markDirectRead(id: String, seq: String) {
+        if (!foreground) return
+        val token = accountToken ?: return
+        val request = accountGeneration
+        viewModelScope.launch {
+            runCatching { api.markDirectConversationRead(token, id, seq) }.onSuccess {
+                if (request == accountGeneration) mutable.value = mutable.value.copy(directConversations = mutable.value.directConversations.map {
+                    if (it.id == id) it.copy(
+                        readSeq = maxOf(it.readSeq.toBigInteger(), seq.toBigInteger()).toString(),
+                        lastSeq = maxOf(it.lastSeq.toBigInteger(), seq.toBigInteger()).toString(),
+                    ) else it
+                })
             }
         }
     }
@@ -211,7 +333,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun retryMessages() {
         val current = mutable.value
         val channel = current.selectedChannel ?: return
-        if (current.messagesError != null) selectChannel(channel)
+        if (current.messagesError != null) {
+            if (channel.direct) current.directConversations.firstOrNull { it.id == channel.id }?.let(::selectDirect)
+            else selectChannel(channel)
+        }
         else if (current.refreshError != null) resyncChannel(channel.id)
     }
 
@@ -219,7 +344,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val channel = mutable.value.selectedChannel ?: return
         val before = mutable.value.messages.firstOrNull()?.seq ?: return
         val request = generation
-        if (!mutable.value.hasMoreMessages || mutable.value.loadingOlder) return
+        if (refreshingHistory || !mutable.value.hasMoreMessages || mutable.value.loadingOlder) return
         mutable.value = mutable.value.copy(loadingOlder = true, olderError = null)
         viewModelScope.launch {
             try {
@@ -227,7 +352,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 val newer = mutable.value.messages
                 mutable.value = mutable.value.copy(
-                    messages = (history.messages + newer).distinctBy { it.id }, hasMoreMessages = history.hasMore,
+                    messages = mergeMessages(newer, history.messages, unloadedReactions), hasMoreMessages = history.hasMore,
                     loadingOlder = false,
                 )
             } catch (error: Throwable) {
@@ -244,21 +369,26 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         watchVisiblePresence()
     }
 
-    private var availabilityRequest: Job? = null
+    private val availabilityRequests = mutableMapOf<String, Job>()
 
-    /** Web: fetch `${mediaRoot}/status` for the viewed channel; failure or timeout means unavailable. */
-    fun checkVoiceAvailability() {
+    /** Fetch `${mediaRoot}/status` independently for each stable channel action. */
+    fun checkVoiceAvailability(channel: Channel? = mutable.value.selectedChannel) {
         val current = mutable.value
-        val channel = current.selectedChannel ?: return
-        val demo = current.selectedSpace?.space?.demo == true
+        channel ?: return
+        val detail = current.selectedSpace ?: return
+        if (!channel.joined || detail.channels.none { it.id == channel.id && it.joined }) return
+        val spaceId = detail.space.id
+        val demo = detail.space.demo
         val key = voiceRootKey(demo, channel.id)
         val token = accountToken
-        availabilityRequest?.cancel()
-        availabilityRequest = viewModelScope.launch {
+        val accountRequest = accountGeneration
+        availabilityRequests[key]?.cancel()
+        availabilityRequests[key] = viewModelScope.launch {
             val enabled = withTimeoutOrNull(10_000) {
                 runCatching { api.mediaStatus(token, channel.id, demo).enabled }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; false }
             } ?: false
-            mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (key to enabled))
+            if (accountRequest == accountGeneration && mutable.value.selectedSpace?.let { it.space.id == spaceId && it.channels.any { item -> item.id == channel.id } } == true)
+                mutable.value = mutable.value.copy(voiceAvailability = mutable.value.voiceAvailability + (key to enabled))
         }
     }
 
@@ -272,8 +402,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun prepareVoiceJoin(channel: Channel) {
         val current = mutable.value
         val token = accountToken ?: return
-        if (current.selectedSpace?.space?.demo != false || current.voiceAvailable != true ||
-            current.selectedSpace.channels.none { it.id == channel.id } || channel.id in current.deniedVoiceChannels) return
+        if (current.selectedSpace?.space?.demo != false || current.voiceAvailable(channel) != true ||
+            !channel.joined || current.selectedSpace.channels.none { it.id == channel.id && it.joined } || channel.id in current.deniedVoiceChannels) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (preparedVoice[channel.id]?.let { now - it < 4_000 } == true) return
         preparedVoice[channel.id] = now
@@ -287,6 +417,42 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun localPresence(): String = gateway?.localPresence() ?: "offline"
     fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
 
+    fun setReaction(messageId: String, emoji: String, active: Boolean) {
+        val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
+        val request = generation
+        val requestAccountGeneration = accountGeneration
+        val token = accountToken
+        val key = "$messageId:$emoji"
+        if (mutable.value.reactionSaves.any { (saveKey, save) -> save.saving && saveKey.startsWith("$messageId:") }) return
+        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active)))
+        viewModelScope.launch {
+            try {
+                val capability = chatToken ?: createChatSession(requestAccountGeneration) ?: throw IllegalStateException("Chat session is unavailable.")
+                if (requestAccountGeneration != accountGeneration || token != accountToken || request != generation ||
+                    mutable.value.selectedChannel?.let { it.id == channel.id && it.joined } != true) return@launch
+                val update = api.setReaction(token, capability, channel.id, messageId, emoji, active)
+                if (request != generation || mutable.value.selectedChannel?.id != channel.id) return@launch
+                receiveReaction(update, sequenced = false)
+                mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
+            } catch (error: Throwable) {
+                if (request == generation) {
+                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                    else mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active, false, message(error))))
+                }
+            }
+        }
+    }
+
+    fun retryReaction(messageId: String, emoji: String) {
+        val save = mutable.value.reactionSaves["$messageId:$emoji"] ?: return
+        setReaction(messageId, emoji, save.active)
+    }
+
+    fun dismissReactionError(messageId: String, emoji: String) {
+        val key = "$messageId:$emoji"
+        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
+    }
+
     internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
         val request = ++voiceAuthorizationRequest
         val spaceRequest = spaceAccessGeneration
@@ -296,7 +462,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 // The cached sidebar listing is not an authorization decision. Check fresh
                 // server access before start() synchronously replaces a healthy current call.
                 val accessible = api.space(checkNotNull(token), intent.spaceId).let { detail ->
-                    if (detail.space.id != intent.spaceId) emptySet() else detail.channels.mapTo(mutableSetOf()) { it.id }
+                    if (detail.space.id != intent.spaceId) emptySet() else detail.channels.filter { it.joined }.mapTo(mutableSetOf()) { it.id }
                 }
                 if (request != voiceAuthorizationRequest || spaceRequest != spaceAccessGeneration ||
                     !intent.isCurrent(mutable.value, accountGeneration) ||
@@ -321,8 +487,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun send(text: String, confirmed: () -> Unit = {}) {
         if (text.isBlank()) return
-        val channel = mutable.value.selectedChannel ?: return
-        val author = chatAuthor ?: return fail(IllegalStateException("Chat session is unavailable."))
+        val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
+        val author = chatAuthor ?: run {
+            // The session is still being created (or failed earlier): create
+            // it now and send once it exists, instead of refusing the message.
+            val request = generation
+            val accountRequest = accountGeneration
+            viewModelScope.launch {
+                val session = createChatSession(accountRequest)
+                if (request != generation || accountRequest != accountGeneration || mutable.value.selectedChannel?.id != channel.id) return@launch
+                if (session != null && chatAuthor != null) send(text, confirmed)
+                else fail(IllegalStateException("Chat session is unavailable."))
+            }
+            return
+        }
         val request = generation
         val operation = pendingSends.begin(channel.id, author, text, confirmed)
         mutable.value = mutable.value.copy(pendingMessage = PendingMessageUi(
@@ -375,7 +553,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (account != null) require(session.author.id == account.id && !session.author.isGuest) { "Chat identity mismatch." }
             chatToken = session.token
             chatAuthor = session.author
-            mutable.value = mutable.value.copy(sessionError = null)
+            mutable.value = mutable.value.copy(sessionError = null, chatAuthorId = session.author.id)
             session.token
         } catch (error: Throwable) {
             if (requestAccountGeneration == accountGeneration) mutable.value = mutable.value.copy(sessionError = message(error))
@@ -386,16 +564,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Web's Retry session. */
     fun retrySession() { viewModelScope.launch { createChatSession(accountGeneration) } }
 
-    private fun openGateway(channel: String, cursor: String, request: Long) {
+    private fun openGateway(channel: String, cursor: String, request: Long, participating: Boolean = true) {
+        durableReplayCursor = cursor
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
-            onMessage = { value -> viewModelScope.launch { if (generation == request) addMessage(value) } },
-            onTyping = { author, active, revision -> viewModelScope.launch { if (generation == request) receiveTyping(author, active, revision) } },
+            onMessage = { value -> viewModelScope.launch {
+                if (generation == request) {
+                    durableReplayCursor = value.seq
+                    addMessage(value)
+                }
+            } },
+            onReaction = { value -> viewModelScope.launch { if (generation == request) receiveReaction(value) } },
+            onTyping = { author, active, revision -> viewModelScope.launch { if (participating && generation == request) receiveTyping(author, active, revision) } },
             onPresence = { snapshot -> viewModelScope.launch {
-                if (generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
+                if (participating && generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
             } },
             onMedia = { channelId, people -> viewModelScope.launch {
-                if (generation == request && (channelId.isEmpty() && mutable.value.selectedSpace?.space?.demo == true ||
+                if (participating && generation == request && (channelId.isEmpty() && mutable.value.selectedSpace?.space?.demo == true ||
                     mutable.value.selectedSpace?.channels?.any { it.id == channelId } == true && channelId !in mutable.value.deniedVoiceChannels)) {
                     mutable.value = mutable.value.copy(voiceRosters = mutable.value.voiceRosters + (channelId to people))
                 }
@@ -420,9 +605,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status) }
         }
         connection.start()
-        watchVisiblePresence()
+        if (participating) watchVisiblePresence()
         val detail = mutable.value.selectedSpace
-        if (detail != null) connection.watchMedia(detail.channels.take(24).map { it.id }, detail.space.demo)
+        if (participating && detail != null) connection.watchMedia(detail.channels.filter { it.joined }.take(24).map { it.id }, detail.space.demo)
     }
 
     private fun watchVisiblePresence() {
@@ -439,15 +624,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val old = typers[author.id]
         if (old != null && next <= old.revision) return
         if (old == null && typers.size >= 64) return
-        if (active) typers[author.id] = TypingAuthor(author, next, System.currentTimeMillis() + 6_000)
-        else typers.remove(author.id)
+        // Keep stop revisions until expiry so delayed starts cannot revive typing.
+        typers[author.id] = TypingAuthor(author, next, System.currentTimeMillis() + 6_000, active)
         refreshTypers()
     }
 
     private fun refreshTypers() {
         val now = System.currentTimeMillis()
         typers.entries.removeAll { it.value.expiresAt <= now }
-        mutable.value = mutable.value.copy(typingAuthors = typers.values.filter { it.expiresAt > now }.map { it.author })
+        mutable.value = mutable.value.copy(typingAuthors = typers.values.filter { it.typing && it.author.id != chatAuthor?.id }.map { it.author })
         typingExpiry?.cancel()
         val next = typers.values.minOfOrNull { it.expiresAt } ?: return
         typingExpiry = viewModelScope.launch { delay((next - now).coerceAtLeast(1)); refreshTypers() }
@@ -456,12 +641,29 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun addMessage(message: ChatMessage) {
         if (message.channelId != mutable.value.selectedChannel?.id) return
         val messages = mutable.value.messages
-        if (messages.none { it.id == message.id }) {
-            mutable.value = mutable.value.copy(messages = (messages + message).sortedWith(compareBy { java.math.BigInteger(it.seq) }))
+        val isNew = messages.none { it.id == message.id }
+        mutable.value = mutable.value.copy(messages = mergeMessages(messages, listOf(message), unloadedReactions))
+        if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
         confirmPending(message)
+        if (mutable.value.selectedDirectId == message.channelId) markDirectRead(message.channelId, message.seq)
+    }
+
+    private fun receiveReaction(update: ReactionUpdate, sequenced: Boolean = true) {
+        if (update.channelId != mutable.value.selectedChannel?.id) return
+        durableReplayCursor = replayCursorAfterReaction(durableReplayCursor, update, sequenced)
+        if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        val index = mutable.value.messages.indexOfFirst { it.id == update.messageId }
+        if (index < 0) {
+            if (!cacheUnseenReaction(unloadedReactions, update)) {
+                mutable.value.selectedChannel?.id?.let(::resyncChannel)
+                return
+            }
+            return
+        }
+        mutable.value = mutable.value.copy(messages = mutable.value.messages.map { mergeReaction(it, update) })
     }
 
     private fun confirmPending(message: ChatMessage) {
@@ -473,12 +675,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun resyncChannel(channelId: String) {
         val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
+        val previousCursor = durableReplayCursor ?: return
         val request = ++generation
+        unloadedReactions.clear()
         val previous = mutable.value
         closeChannel(clearPending = false)
+        // closeChannel normally discards channel replay state; a failed refresh must remain retryable.
+        durableReplayCursor = previousCursor
+        refreshingHistory = true
         // Keep the conversation readable while it reloads, as the web does.
         mutable.value = mutable.value.copy(
-            selectedChannel = channel, messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
+            selectedChannel = channel, selectedDirectId = previous.selectedDirectId,
+            messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
             gateway = GatewayStatus.CONNECTING, busy = true, error = null,
         )
         viewModelScope.launch {
@@ -486,13 +694,19 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val history = api.history(accountToken, channel.id)
                 if (generation != request || mutable.value.selectedChannel?.id != channel.id) return@launch
                 history.messages.forEach(::confirmPending)
-                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false)
-                openGateway(channel.id, history.cursor, request)
+                val recovered = recoverHistory(mutable.value.messages, previous.hasMoreMessages, previousCursor, history)
+                mutable.value = mutable.value.copy(
+                    messages = recovered.messages, hasMoreMessages = recovered.hasMore, busy = false,
+                )
+                openGateway(channel.id, history.cursor, request, channel.joined)
+                if (channel.direct) markDirectRead(channel.id, history.cursor)
             } catch (error: Throwable) {
                 if (generation == request) {
                     if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
                     else mutable.value = mutable.value.copy(busy = false, refreshError = message(error))
                 }
+            } finally {
+                if (generation == request) refreshingHistory = false
             }
         }
     }
@@ -555,14 +769,43 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         VoiceCallService.stopIfChannel(getApplication(), channel.id)
         val channels = detail.channels.filter { it.id != channel.id }
         replaceDetail(detail.copy(channels = channels)); done()
-        channels.firstOrNull()?.let(::selectChannel) ?: closeChannel(clearPending = true)
+        channels.firstOrNull { it.joined }?.let(::selectChannel) ?: closeChannel(clearPending = true)
     }
     fun addSpaceMember(username: String) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id)
         val member = api.addSpaceMember(requireAccountToken(), detail.space.id, username)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        replaceDetail(detail.copy(members = detail.members.filter { it.id != member.id } + member))
+        mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id } + member)
+    }
+    fun loadSpaceInvitations() = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        val invitations = api.spaceInvitations(requireAccountToken(), detail.space.id).members
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+            mutable.value = mutable.value.copy(pendingSpaceInvitations = invitations)
+    }
+    fun cancelSpaceInvitation(member: Member) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id)
+        api.cancelSpaceInvitation(requireAccountToken(), detail.space.id, member.id)
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+            mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id })
+    }
+    fun acceptInvitation(invitation: Space, done: () -> Unit = {}) = launchAction { request ->
+        val accepted = api.acceptSpaceInvitation(requireAccountToken(), invitation.id)
+        if (request != accountGeneration || mutable.value.invitations.none { it.id == invitation.id }) return@launchAction
+        mutable.value = mutable.value.copy(
+            invitations = mutable.value.invitations.filter { it.id != invitation.id },
+            spaces = mutable.value.spaces.filter { it.id != accepted.id } + accepted,
+        )
+        done(); selectSpace(accepted.id)
+    }
+    fun declineInvitation(invitation: Space, done: () -> Unit = {}) = launchAction { request ->
+        api.declineSpaceInvitation(requireAccountToken(), invitation.id)
+        if (request != accountGeneration || mutable.value.invitations.none { it.id == invitation.id }) return@launchAction
+        mutable.value = mutable.value.copy(invitations = mutable.value.invitations.filter { it.id != invitation.id })
+        done()
     }
     fun removeSpaceMember(member: Member) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -574,16 +817,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun loadChannelGrants(channel: Channel) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
-        val grants = if (channel.private) api.channelMembers(requireAccountToken(), detail.space.id, channel.id).members else emptyList()
+        val response = if (channel.private) api.channelMembers(requireAccountToken(), detail.space.id, channel.id) else MemberList(emptyList())
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        mutable.value = mutable.value.copy(channelGrants = grants)
+        mutable.value = mutable.value.copy(channelGrants = response.members, pendingChannelInvitations = response.invitations)
     }
     fun addChannelGrant(channel: Channel, username: String) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
         val context = AdminMutationContext(request, detail.space.id, channel.id)
         val member = api.addChannelMember(requireAccountToken(), detail.space.id, channel.id, username)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id } + member)
+        mutable.value = mutable.value.copy(pendingChannelInvitations = mutable.value.pendingChannelInvitations.filter { it.id != member.id } + member)
     }
     fun removeChannelGrant(channel: Channel, member: Member) = launchAction { request ->
         val detail = requireNotNull(mutable.value.selectedSpace)
@@ -593,6 +836,61 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(channelGrants = mutable.value.channelGrants.filter { it.id != member.id })
     }
 
+    fun cancelChannelInvitation(channel: Channel, member: Member) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        val context = AdminMutationContext(request, detail.space.id, channel.id)
+        api.removeChannelMember(requireAccountToken(), detail.space.id, channel.id, member.id)
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+            mutable.value = mutable.value.copy(pendingChannelInvitations = mutable.value.pendingChannelInvitations.filter { it.id != member.id })
+    }
+
+    fun joinChannel(channel: Channel) = mutateChannelMembership(channel) {
+        api.joinChannel(requireAccountToken(), it.space.id, channel.id)
+    }
+
+    fun acceptChannelInvitation(invitation: ChannelInvitation) = mutateChannelMembership(invitation.channel) {
+        api.acceptChannelInvitation(requireAccountToken(), it.space.id, invitation.channel.id)
+    }
+
+    fun declineChannelInvitation(invitation: ChannelInvitation) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        api.declineChannelInvitation(requireAccountToken(), detail.space.id, invitation.channel.id)
+        if (request == accountGeneration && mutable.value.selectedSpace?.space?.id == detail.space.id) refreshSpace(detail.space.id, null)
+    }
+
+    fun leaveChannel(channel: Channel) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        api.leaveChannel(requireAccountToken(), detail.space.id, channel.id)
+        if (request != accountGeneration || mutable.value.selectedSpace?.space?.id != detail.space.id) return@launchAction
+        VoiceCallService.stopIfChannel(getApplication(), channel.id)
+        val current = requireNotNull(mutable.value.selectedSpace)
+        val privateLoss = channel.private && current.space.ownerId != mutable.value.account?.id
+        val selected = mutable.value.selectedChannel?.id
+        replaceDetail(current.copy(channels = current.channels.mapNotNull {
+            if (it.id != channel.id) it else if (privateLoss) null else it.copy(joined = false)
+        }))
+        if (selected == channel.id) { ++generation; closeChannel(clearPending = true) }
+        refreshSpace(detail.space.id, if (selected == channel.id && privateLoss) null else selected)
+    }
+
+    private fun mutateChannelMembership(channel: Channel, mutation: suspend (SpaceDetail) -> Channel) = launchAction { request ->
+        val detail = requireNotNull(mutable.value.selectedSpace)
+        mutation(detail)
+        if (request == accountGeneration && mutable.value.selectedSpace?.space?.id == detail.space.id) refreshSpace(detail.space.id, channel.id)
+    }
+
+    private suspend fun refreshSpace(spaceId: String, preferredChannelId: String?) {
+        val account = accountGeneration
+        val navigation = generation
+        val detail = api.space(requireAccountToken(), spaceId)
+        if (accountGeneration != account || generation != navigation || mutable.value.selectedSpace?.space?.id != spaceId) return
+        ++spaceAccessGeneration
+        val preferred = detail.channels.firstOrNull { it.id == preferredChannelId }
+        val fallback = detail.channels.firstOrNull { it.joined }
+        replaceDetail(detail)
+        (preferred ?: fallback)?.let(::selectChannel) ?: closeChannel(clearPending = true)
+    }
+
     private fun replaceDetail(detail: SpaceDetail) {
         mutable.value = mutable.value.copy(
             selectedSpace = detail,
@@ -600,7 +898,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             voiceRosters = mutable.value.voiceRosters.filterKeys { id -> id.isEmpty() && detail.space.demo || detail.channels.any { it.id == id } },
             deniedVoiceChannels = mutable.value.deniedVoiceChannels.filterTo(mutableSetOf()) { id -> detail.channels.any { it.id == id } },
         )
-        gateway?.watchMedia(detail.channels.take(24).map { it.id }, detail.space.demo)
+        gateway?.watchMedia(detail.channels.filter { it.joined }.take(24).map { it.id }, detail.space.demo)
         watchVisiblePresence()
     }
 
@@ -613,14 +911,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun closeChannel(clearPending: Boolean) {
         gateway?.close(); gateway = null
+        durableReplayCursor = null
+        refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
+        unloadedReactions.clear()
         if (clearPending) pendingSends.clear()
         mutable.value = mutable.value.copy(
-            selectedChannel = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
+            reactionSaves = emptyMap(),
         )
     }
 
@@ -664,8 +966,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         else -> "Something went wrong. Please try again."
     }
 
-    private companion object { const val PRESENCE_PAGE_SIZE = 25 }
+    private companion object {
+        const val PRESENCE_PAGE_SIZE = 25
+    }
 }
+
+internal fun mergeDirects(current: List<DirectConversation>, incoming: List<DirectConversation>): List<DirectConversation> =
+    (incoming + current).distinctBy { it.id }
 
 internal class ProfileSaveException(override val message: String) : Exception(message)
 
@@ -689,7 +996,7 @@ internal suspend fun readVoiceDestination(api: CaperApi, token: String?, spaces:
     val space = spaces.firstOrNull { it.id == spaceId } ?: return null
     val detail = api.space(checkNotNull(token), spaceId)
     if (detail.space.id != spaceId) return null
-    val channel = detail.channels.firstOrNull { it.id == channelId } ?: return null
+    val channel = detail.channels.firstOrNull { it.id == channelId && it.joined } ?: return null
     val history = api.history(token, channelId)
     return VoiceDestination(detail, channel, history)
 }

@@ -6,6 +6,8 @@ on:
       - apps/native/**
       - apps/api/src/**
       - shared/design.css
+      - shared/emoji/**
+      - scripts/native-emoji.mjs
       - shared/fonts/**
       - scripts/native_fonts.py
       - scripts/native-parity-fixture.mjs
@@ -19,6 +21,8 @@ on:
       - apps/native/**
       - apps/api/src/**
       - shared/design.css
+      - shared/emoji/**
+      - scripts/native-emoji.mjs
       - shared/fonts/**
       - scripts/native_fonts.py
       - scripts/native-parity-fixture.mjs
@@ -51,6 +55,8 @@ jobs:
       - run: python -m unittest discover -s tests -p test_native_artifacts.py -v
       - run: python shared/fonts/test_native_fonts.py -v
       - run: node --test tests/native-parity-fixture.test.mjs
+      - name: Verify bundled Apple emoji match the shared artwork and licenses
+        run: diff -qr shared/emoji apps/native/apple/Sources/CaperCore/EmojiAssets
 
   updater:
     name: Updater / ${{ matrix.os }}
@@ -278,7 +284,7 @@ jobs:
           script: |
             CMAKE_BUILD_PARALLEL_LEVEL=1 apps/native/android/gradlew -p apps/native/android --no-daemon --max-workers=1 -PcaperFixtureMode=true -PcaperApiBaseUrl=http://localhost:3001 connectedDebugAndroidTest
             mkdir -p apps/native/android/dist/ui
-            find apps/native/android/app/build/outputs/connected_android_test_additional_output -type f \( -name 'voice-roster-connected-*.png' -o -name 'profile-*-test-fixture.png' \) -exec cp {} apps/native/android/dist/ui/ \;
+            find apps/native/android/app/build/outputs/connected_android_test_additional_output -type f \( -name 'voice-roster-connected-*.png' -o -name 'profile-*-test-fixture.png' -o -name 'reaction-*-test-fixture.png' \) -exec cp {} apps/native/android/dist/ui/ \;
             test -s apps/native/android/dist/ui/voice-roster-connected-closed.png && test -s apps/native/android/dist/ui/voice-roster-connected-open.png
             python apps/native/android/smoke.py
       - uses: actions/upload-artifact@v4
@@ -287,8 +293,11 @@ jobs:
           name: caper-ui-android-${{ github.sha }}
           path: |
             apps/native/android/dist/ui/
+            apps/native/android/app/build/reports/tests/
+            apps/native/android/app/build/test-results/
             apps/native/android/app/build/reports/androidTests/
             apps/native/android/app/build/outputs/androidTest-results/
+            apps/native/android/app/build/outputs/connected_android_test_additional_output/
           if-no-files-found: warn
           retention-days: 14
       - name: Stop the parity fixture

@@ -7,6 +7,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+val firebaseEnabled = file("google-services.json").isFile
+if (firebaseEnabled) apply(plugin = "com.google.gms.google-services")
+
 val releaseStore = providers.environmentVariable("CAPER_ANDROID_KEYSTORE")
 val releaseStorePassword = providers.environmentVariable("CAPER_ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = providers.environmentVariable("CAPER_ANDROID_KEY_ALIAS")
@@ -54,6 +57,7 @@ android {
         // readable stack traces for crashes in WebRTC or the audio pipeline.
         ndk { debugSymbolLevel = "FULL" }
         buildConfigField("boolean", "ENABLE_NATIVE_VOICE", "true")
+        buildConfigField("boolean", "FIREBASE_ENABLED", firebaseEnabled.toString())
         externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
     }
 
@@ -80,7 +84,7 @@ android {
         buildConfig = true
     }
     sourceSets["main"].apply {
-        assets.srcDirs("../third_party", "../../../web/public/images/avatars", layout.buildDirectory.dir("generated/caper-fonts/assets"), layout.buildDirectory.dir("native-inputs/assets"))
+        assets.srcDirs("../third_party", rootProject.file("../../../shared/emoji"), layout.buildDirectory.dir("generated/caper-fonts/assets"), layout.buildDirectory.dir("native-inputs/assets"))
         jniLibs.srcDir(layout.buildDirectory.dir("native-inputs/ort/jni"))
         res.srcDir(layout.buildDirectory.dir("generated/caper-fonts/res"))
     }
@@ -129,9 +133,12 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.4")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:5.1.0")
     implementation("io.github.webrtc-sdk:android:150.7871.01")
+    implementation(platform("com.google.firebase:firebase-bom:34.3.0"))
+    implementation("com.google.firebase:firebase-messaging")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")

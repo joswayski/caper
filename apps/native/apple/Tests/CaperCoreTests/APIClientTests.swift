@@ -30,6 +30,33 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+private func requestBodyData(_ request: URLRequest) throws -> Data? {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+    var body = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 { throw try XCTUnwrap(stream.streamError) }
+        if count == 0 { break }
+        body.append(buffer, count: count)
+    }
+    return body
+}
+
+private func chatHistory(_ channel: String, sequences: [Int], cursor: Int, hasMore: Bool, label: String = "message") -> Data {
+    let messages = sequences.map { sequence in
+        """
+        {"id":"m\(sequence)","channelId":"\(channel)","seq":"\(sequence)","author":{"id":"u","name":"User","isGuest":false},"content":{"version":1,"type":"text","text":"\(label) \(sequence)"},"createdAt":"now","clientMessageId":"c\(sequence)"}
+        """
+    }.joined(separator: ",")
+    return Data("""
+    {"space":{"id":"Space1234567","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[\(messages)],"cursor":"\(cursor)","hasMore":\(hasMore)}
+    """.utf8)
+}
+
 final class APIClientTests: XCTestCase {
     override func tearDown() {
         MockURLProtocol.handler = nil
@@ -41,6 +68,127 @@ final class APIClientTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
+    }
+
+    func testReactionPUTUsesChatTokenBodyAndFifteenCharacterMessageID() async throws {
+        let channel = "Channel12345"
+        let message = "Message00000001"
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/api/chat/channels/\(channel)/messages/\(message)/reactions")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-chat-token"), "chat-secret")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            var bodyData = request.httpBody ?? Data()
+            // URLSession may turn the body into a stream before URLProtocol sees it.
+            if let stream = request.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+                var buffer = [UInt8](repeating: 0, count: 1_024)
+                while true {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    guard count >= 0 else { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+                    if count == 0 { break }
+                    bodyData.append(contentsOf: buffer.prefix(count))
+                }
+            }
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+            XCTAssertEqual(body["emoji"] as? String, "👍")
+            XCTAssertEqual(body["active"] as? Bool, true)
+            return (200, Data("""
+            {"type":"message.reactions","schemaVersion":1,"channelId":"\(channel)","seq":"9","messageId":"\(message)","reactions":[{"emoji":"👍","authorIds":["self"]}]}
+            """.utf8))
+        }
+        let event = try await client().setReaction(channelID: channel, messageID: message, sessionToken: "chat-secret", emoji: "👍", active: true)
+        XCTAssertEqual(event.seq, "9")
+        do {
+            _ = try await client().setReaction(channelID: channel, messageID: "only-twelve1", sessionToken: "chat-secret", emoji: "👍", active: true)
+            XCTFail("Expected local message ID rejection")
+        } catch let error as APIError { XCTAssertEqual(error.status, 400) }
+    }
+
+    @MainActor
+    private func waitUntil(_ predicate: @escaping @MainActor () -> Bool) async {
+        for _ in 0..<100 where !predicate() { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(predicate(), "timed out waiting for chat recovery")
+    }
+
+    func testSpacesResponseDefaultsMissingInvitationsToEmpty() throws {
+        let response = try JSONDecoder().decode(SpacesResponse.self, from: Data(#"{"spaces":[],"limits":{"ownedSpaces":2,"totalSpaces":5,"channelsPerSpace":10}}"#.utf8))
+        XCTAssertEqual(response.invitations, [])
+    }
+
+    func testChannelAndDetailDecodeLegacyAndMembershipFields() throws {
+        let legacy = try JSONDecoder().decode(Channel.self, from: Data(#"{"id":"Chan12345678","spaceId":"Space1234567","name":"general","private":false}"#.utf8))
+        XCTAssertTrue(legacy.joined)
+        let detail = try JSONDecoder().decode(SpaceDetail.self, from: Data(#"{"space":{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"},"channels":[{"id":"Chan12345678","spaceId":"Space1234567","name":"lobby","private":false,"joined":false}],"members":[],"channelInvitations":[{"channel":{"id":"Priv12345678","spaceId":"Space1234567","name":"private","private":true,"joined":false},"inviter":{"username":"host","displayName":"Host"}}]}"#.utf8))
+        XCTAssertFalse(detail.channels[0].joined)
+        XCTAssertEqual(detail.channelInvitations.first?.inviter.username, "host")
+        let oldDetail = try JSONDecoder().decode(SpaceDetail.self, from: Data(#"{"space":{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"},"channels":[],"members":[]}"#.utf8))
+        XCTAssertTrue(oldDetail.channelInvitations.isEmpty)
+    }
+
+    func testChannelMembershipAndInvitationRoutes() async throws {
+        var routes: [String] = []
+        MockURLProtocol.handler = { request in
+            routes.append("\(request.httpMethod!) \(request.url!.path)")
+            if request.httpMethod == "POST" { return (200, Data(#"{"id":"Chan12345678","spaceId":"Space1234567","name":"general","private":false,"joined":true}"#.utf8)) }
+            return (204, Data())
+        }
+        let api = client()
+        _ = try await api.joinChannel(spaceID: "Space1234567", channelID: "Chan12345678")
+        try await api.leaveChannel(spaceID: "Space1234567", channelID: "Chan12345678")
+        _ = try await api.acceptChannelInvitation(spaceID: "Space1234567", channelID: "Chan12345678")
+        try await api.declineChannelInvitation(spaceID: "Space1234567", channelID: "Chan12345678")
+        XCTAssertEqual(routes, [
+            "POST /api/spaces/Space1234567/channels/Chan12345678/membership",
+            "DELETE /api/spaces/Space1234567/channels/Chan12345678/membership",
+            "POST /api/spaces/Space1234567/channels/Chan12345678/invitation",
+            "DELETE /api/spaces/Space1234567/channels/Chan12345678/invitation",
+        ])
+    }
+
+    func testInvitationDecodesInviterAndLegacyMetadata() throws {
+        let legacy = try JSONDecoder().decode(Space.self, from: Data(#"{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"}"#.utf8))
+        XCTAssertNil(legacy.inviter)
+        let invitation = try JSONDecoder().decode(Space.self, from: Data(#"{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567","inviter":{"username":"host_user","displayName":"Space Host"}}"#.utf8))
+        XCTAssertEqual(invitation.inviter?.username, "host_user")
+        XCTAssertEqual(invitation.inviter?.displayName, "Space Host")
+    }
+
+    func testInvitationMembershipEndpoints() async throws {
+        let spaceID = "Space1234567"
+        let userID = "Member123456"
+        var requests: [String] = []
+        MockURLProtocol.handler = { request in
+            requests.append("\(request.httpMethod ?? "") \(request.url!.path)")
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/spaces/\(spaceID)/invitations"):
+                return (200, Data(#"{"members":[]}"#.utf8))
+            case ("POST", "/api/spaces/\(spaceID)/invitation"):
+                return (200, Data(#"{"id":"Space1234567","name":"Invited","ownerId":"Owner1234567"}"#.utf8))
+            default: return (204, Data())
+            }
+        }
+        let api = client()
+        let pending = try await api.spaceInvitations(spaceID: spaceID)
+        let accepted = try await api.acceptSpaceInvitation(spaceID: spaceID)
+        XCTAssertEqual(pending, [])
+        XCTAssertEqual(accepted.name, "Invited")
+        try await api.declineSpaceInvitation(spaceID: spaceID)
+        try await api.cancelSpaceInvitation(spaceID: spaceID, userID: userID)
+        XCTAssertEqual(requests, [
+            "GET /api/spaces/\(spaceID)/invitations",
+            "POST /api/spaces/\(spaceID)/invitation",
+            "DELETE /api/spaces/\(spaceID)/invitation",
+            "DELETE /api/spaces/\(spaceID)/invitations/\(userID)",
+        ])
+    }
+
+    func testInviteUsernameNormalizationAndValidation() {
+        XCTAssertEqual(WorkspaceValidation.normalizeUsername(" Alice-TEAM! "), "aliceteam")
+        XCTAssertNil(WorkspaceValidation.usernameError("alice_123"))
+        XCTAssertNotNil(WorkspaceValidation.usernameError("Alice"))
+        XCTAssertNotNil(WorkspaceValidation.usernameError("ab"))
     }
 
     @MainActor
@@ -113,7 +261,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(chat.draft, "")
         chat.draft = "new next draft"
         let payload: [String: Any] = [
-            "id": "message-one", "channelId": channel, "seq": "1", "clientMessageId": command.id,
+            "id": "message-one", "channelId": channel, "seq": "1", "clientMessageId": command.id.lowercased(),
             "author": ["id": "self", "name": "Me", "isGuest": false],
             "content": ["version": 1, "type": "text", "text": command.text], "createdAt": "2026-01-01T00:00:00Z",
         ]
@@ -159,11 +307,12 @@ final class APIClientTests: XCTestCase {
         let command = try XCTUnwrap(chat.pendingMessage)
         chat.draft = "different new draft"
         let response = Data("""
-        {"id":"m1","channelId":"\(channel)","seq":"1","clientMessageId":"\(command.id)","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"submitted first"},"createdAt":"2026-01-01T00:00:00Z"}
+        {"id":"m1","channelId":"\(channel)","seq":"1","clientMessageId":"\(command.id.lowercased())","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"submitted first"},"createdAt":"2026-01-01T00:00:00Z"}
         """.utf8)
         held?.respond(status: 200, data: response)
         await send.value
         XCTAssertNil(chat.pendingMessage)
+        XCTAssertNil(chat.error, "a canonical UUID response is a successful send, not an invalid message")
         XCTAssertEqual(chat.draft, "different new draft")
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])
         chat.receive(["type": "message.created", "seq": "1", "message": payload], generation: 1, channelID: channel)
@@ -391,6 +540,16 @@ final class APIClientTests: XCTestCase {
         model.selectedSpaceID = "Space1234567"
         model.selectedChannelID = "Chan12345678"
         model.challengeID = "challenge"
+        model.selectedDirectMessageID = "Dm1234567890"
+        model.spacesLoaded = true
+        model.spacesError = "offline"
+        model.configurePush(available: true, enabled: true)
+        var locallyDisabled = false
+        model.disablePushLocally = { locallyDisabled = true }
+        model.setPushEnabled = { _ in
+            XCTFail("logout must not await optional push unregister")
+            try? await Task.sleep(for: .seconds(2))
+        }
         let revokeStarted = expectation(description: "remote revoke started")
         var delayedRevoke: MockURLProtocol?
         MockURLProtocol.deferred = { request, urlRequest in
@@ -408,9 +567,153 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(model.selectedSpaceID)
         XCTAssertNil(model.selectedChannelID)
         XCTAssertNil(model.challengeID)
+        XCTAssertNil(model.selectedDirectMessageID)
+        XCTAssertFalse(model.spacesLoaded)
+        XCTAssertNil(model.spacesError)
+        XCTAssertTrue(locallyDisabled)
+        XCTAssertFalse(model.pushEnabled)
+        XCTAssertFalse(model.pushAvailable)
         XCTAssertNil(store.token)
         delayedRevoke?.respond(status: 204)
         await logout.value
+    }
+
+    @MainActor
+    func testDelayedReconnectRefreshKeepsVisibleHistoryAndDraft() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var historyRequests = 0
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            historyRequests += 1
+            return (200, chatHistory(channel, sequences: [1, 2, 3, 4], cursor: 4, hasMore: true))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+        chat.draft = "unfinished reply"
+
+        let refreshStarted = expectation(description: "refresh started")
+        var delayedRefresh: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path.hasSuffix("/messages") == true else { return false }
+            delayedRefresh = request; refreshStarted.fulfill(); return true
+        }
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await fulfillment(of: [refreshStarted], timeout: 2)
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4"])
+        XCTAssertEqual(chat.draft, "unfinished reply")
+        XCTAssertTrue(chat.loading)
+        await chat.loadOlder()
+        XCTAssertEqual(historyRequests, 1, "pagination must not start while refresh is resetting history")
+
+        delayedRefresh?.respond(status: 200, data: chatHistory(channel, sequences: [3, 4, 5], cursor: 5, hasMore: false, label: "fresh"))
+        await waitUntil { !chat.loading }
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(chat.messages.first(where: { $0.seq == "3" })?.content.text, "fresh 3")
+        XCTAssertTrue(chat.hasMore, "the retained older prefix keeps its pagination state")
+        XCTAssertEqual(chat.draft, "unfinished reply")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testReconnectRefreshRetainsOverlapButReplacesAcrossGap() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var response = chatHistory(channel, sequences: [1, 2, 3, 4], cursor: 4, hasMore: true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            return (200, response)
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+
+        response = chatHistory(channel, sequences: [4, 5], cursor: 5, hasMore: false, label: "overlap")
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await waitUntil { !chat.loading && chat.messages.last?.seq == "5" }
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4", "5"])
+        XCTAssertEqual(chat.messages.first(where: { $0.seq == "4" })?.content.text, "overlap 4")
+
+        response = chatHistory(channel, sequences: [7, 8], cursor: 8, hasMore: false, label: "gap")
+        chat.receive(["type": "resync_required"], generation: 2, channelID: channel)
+        await waitUntil { !chat.loading && chat.messages.last?.seq == "8" }
+        XCTAssertEqual(chat.messages.map(\.seq), ["7", "8"], "a gap after durable cursor 5 must replace unpageable retained history")
+        XCTAssertFalse(chat.hasMore)
+        await chat.stop()
+    }
+
+    @MainActor
+    func testReconnectRefreshDropsOlderPagesWhenMissingSequenceMayBeReaction() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var response = chatHistory(channel, sequences: [1, 2, 3, 4, 5], cursor: 5, hasMore: true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            return (200, response)
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+
+        response = chatHistory(channel, sequences: [6], cursor: 7, hasMore: false, label: "fresh")
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await waitUntil { !chat.loading && chat.currentSnapshot()?.cursor == "7" }
+
+        XCTAssertEqual(chat.messages.map(\.seq), ["6"], "missing sequence 7 may be a reaction on an older row, so cached pages are unsafe")
+        XCTAssertFalse(chat.hasMore)
+        response = chatHistory(channel, sequences: [], cursor: 7, hasMore: false)
+        chat.receive(["type": "resync_required"], generation: 2, channelID: channel)
+        await waitUntil { !chat.loading && chat.messages.isEmpty }
+        XCTAssertFalse(chat.hasMore, "an empty authoritative page must clear cached history even at the same cursor")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testTransientReconnectFailureAndRetryPreserveTimeline() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var historyStatus = 200
+        var history = chatHistory(channel, sequences: [1, 2, 3], cursor: 3, hasMore: true)
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            return (historyStatus, historyStatus == 200 ? history : Data(#"{"error":"temporarily unavailable"}"#.utf8))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+        chat.draft = "keep this"
+        historyStatus = 503
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await waitUntil { !chat.loading && chat.error?.contains("temporarily unavailable") == true }
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3"])
+        XCTAssertEqual(chat.draft, "keep this")
+
+        historyStatus = 200
+        history = chatHistory(channel, sequences: [3, 4], cursor: 4, hasMore: false, label: "retried")
+        await chat.retryLoad()
+        XCTAssertEqual(chat.messages.map(\.seq), ["1", "2", "3", "4"])
+        XCTAssertEqual(chat.draft, "keep this")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testDeniedReconnectRefreshClearsRetainedPrivateData() async throws {
+        let channel = "Aaaaaaaaaaaa"
+        var denied = false
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" { return (200, Data(#"{"token":"chat","author":{"id":"u","name":"User","isGuest":false}}"#.utf8)) }
+            if denied { return (403, Data(#"{"error":"Access ended"}"#.utf8)) }
+            return (200, chatHistory(channel, sequences: [1, 2], cursor: 2, hasMore: true))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channel, displayName: "User")
+        chat.draft = "private draft"
+        let revoked = expectation(description: "access revoked")
+        chat.onAccessRevoked = { revokedChannel in
+            XCTAssertEqual(revokedChannel, channel)
+            revoked.fulfill()
+        }
+        denied = true
+        chat.receive(["type": "resync_required"], generation: 1, channelID: channel)
+        await fulfillment(of: [revoked], timeout: 2)
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertTrue(chat.draft.isEmpty)
+        XCTAssertNil(chat.currentAuthor)
+        XCTAssertFalse(chat.hasMore)
+        XCTAssertNotNil(chat.error)
     }
 
     @MainActor
@@ -455,10 +758,25 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(chat.channelName, "new")
         XCTAssertEqual(chat.messages.map(\.content.text), ["new"])
 
+        chat.receiveGatewayState(.connected, error: nil)
+        XCTAssertEqual(chat.liveState, .connected)
+        chat.error = "A genuine send failure"
+        chat.receiveGatewayState(.reconnecting, error: "Live updates disconnected. Reconnecting…")
+        XCTAssertEqual(chat.liveState, .reconnecting)
+        XCTAssertEqual(chat.error, "A genuine send failure")
+        chat.receiveGatewayState(.connected, error: nil)
+        XCTAssertEqual(chat.error, "A genuine send failure", "transport recovery must not erase chat failures")
+        chat.receiveGatewayState(.connected, error: "Channel access was revoked")
+        XCTAssertEqual(chat.error, "Channel access was revoked", "subscription failures must remain visible")
         await chat.stop()
         XCTAssertTrue(chat.messages.isEmpty)
         XCTAssertTrue(chat.draft.isEmpty)
         XCTAssertEqual(chat.liveState, .disconnected)
+        for lateState in [GatewayState.connecting, .connected, .reconnecting] {
+            chat.receiveGatewayState(lateState, error: "Late gateway failure")
+            XCTAssertEqual(chat.liveState, .disconnected)
+            XCTAssertNil(chat.error)
+        }
     }
 
     @MainActor
@@ -706,6 +1024,118 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testEachChannelActionUsesItsOwnAvailabilityAndRevocation() async {
+        let model = AppModel(api: client())
+        let text = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let other = Channel(id: "chan00000002", spaceId: text.spaceId, name: "design", private: true)
+        let space = Space(id: text.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [text, other], members: [])
+        model.selectedChannelID = text.id
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/channels/\(text.id)/media/status": return (200, Data(#"{"enabled":false}"#.utf8))
+            case "/api/channels/\(other.id)/media/status": return (200, Data(#"{"enabled":true}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.refreshVoiceAvailability(channel: text)
+        await model.refreshVoiceAvailability(channel: other)
+        XCTAssertEqual(model.voiceAvailable(in: text), false)
+        XCTAssertEqual(model.voiceAvailable(in: other), true)
+        XCTAssertEqual(model.selectedChannelID, text.id)
+        model.voicePresence.revoke(channelID: other.id)
+        XCTAssertEqual(model.voiceAvailable(in: other), false, "A revoked channel keeps its action disabled")
+    }
+
+    @MainActor
+    func testLateChannelAvailabilityCannotPublishAfterLogout() async {
+        let model = AppModel(api: client())
+        let channel = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let space = Space(id: channel.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [channel], members: [])
+        model.selectedChannelID = channel.id
+        let requested = expectation(description: "channel status request")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/channels/\(channel.id)/media/status" else { return false }
+            held = request; requested.fulfill(); return true
+        }
+        MockURLProtocol.handler = { _ in (204, Data()) }
+        let checking = Task { await model.refreshVoiceAvailability(channel: channel) }
+        await fulfillment(of: [requested], timeout: 2)
+        await model.logout()
+        held?.respond(status: 200, data: Data(#"{"enabled":true}"#.utf8))
+        await checking.value
+        XCTAssertTrue(model.voiceAvailability.isEmpty)
+        XCTAssertNil(model.voiceAvailable(in: channel))
+    }
+
+    @MainActor
+    func testFreshUnjoinedVoiceTargetPreservesExistingCall() async {
+        let model = AppModel(api: client())
+        let current = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
+        let target = Channel(id: "chan00000002", spaceId: current.spaceId, name: "design", private: false)
+        let space = Space(id: current.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+        model.detail = SpaceDetail(space: space, channels: [current, target], members: [])
+        model.selectedSpaceID = space.id
+        model.selectedChannelID = current.id
+        model.voice.phase = .connected
+        model.voice.context = VoiceContext(channelID: current.id, channelName: current.name, spaceID: space.id, spaceName: space.name)
+        var requests: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            requests.append(path)
+            if path == "/api/spaces/\(space.id)" {
+                return (200, Data("""
+                {"space":{"id":"\(space.id)","name":"Fixture","ownerId":"owner0000001"},"channels":[
+                {"id":"\(current.id)","spaceId":"\(space.id)","name":"general","private":false,"joined":true},
+                {"id":"\(target.id)","spaceId":"\(space.id)","name":"design","private":false,"joined":false}],"members":[]}
+                """.utf8))
+            }
+            if path == "/api/chat/channels/\(target.id)/messages" {
+                return (200, Data("""
+                {"space":{"id":"\(space.id)","name":"Fixture"},"channel":{"id":"\(target.id)","name":"design"},"messages":[],"cursor":"0","hasMore":false}
+                """.utf8))
+            }
+            throw URLError(.badURL)
+        }
+        await model.joinVoice(channel: target)
+        XCTAssertEqual(model.voice.context?.channelID, current.id)
+        XCTAssertEqual(model.voice.phase, .connected)
+        XCTAssertEqual(model.selectedChannelID, current.id)
+        XCTAssertEqual(requests, ["/api/spaces/\(space.id)"], "Readable history must not authorize an unjoined voice target")
+    }
+
+    @MainActor
+    func testAcknowledgedChannelLeaveSurvivesFailedDetailRefresh() async {
+        for privateChannel in [false, true] {
+            let model = AppModel(api: client())
+            let channel = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: privateChannel)
+            let space = Space(id: channel.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
+            model.account = Account(id: "member000001", username: "member", displayName: "Member")
+            model.detail = SpaceDetail(space: space, channels: [channel], members: [])
+            model.selectedSpaceID = space.id
+            model.selectedChannelID = channel.id
+            model.chat.draft = "old conversation draft"
+            MockURLProtocol.handler = { request in
+                if request.httpMethod == "DELETE", request.url?.path == "/api/spaces/\(space.id)/channels/\(channel.id)/membership" { return (204, Data()) }
+                return (503, Data(#"{"error":"TEST FIXTURE unavailable"}"#.utf8))
+            }
+            do {
+                try await model.leaveChannel(channel)
+                XCTFail("Detail refresh should fail")
+            } catch {
+                XCTAssertEqual((error as? APIError)?.status, 503)
+            }
+            XCTAssertFalse(model.detail?.channels.contains { $0.id == channel.id && $0.joined } == true)
+            XCTAssertEqual(model.detail?.channels.contains { $0.id == channel.id }, !privateChannel)
+            XCTAssertNil(model.selectedChannelID)
+            XCTAssertTrue(model.chat.draft.isEmpty)
+            XCTAssertTrue(model.chat.messages.isEmpty)
+        }
+    }
+
+    @MainActor
     func testLeaveCancelsPendingPermissionCheckBeforeVoiceSwitch() async throws {
         let model = AppModel(api: client())
         let current = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
@@ -719,13 +1149,18 @@ final class APIClientTests: XCTestCase {
         let requested = expectation(description: "target permission request")
         var held: MockURLProtocol?
         MockURLProtocol.deferred = { request, urlRequest in
-            guard urlRequest.url?.path == "/api/spaces/\(space.id)" else { return false }
+            guard held == nil, urlRequest.url?.path == "/api/spaces/\(space.id)" else { return false }
             held = request; requested.fulfill(); return true
         }
         MockURLProtocol.handler = { _ in throw URLError(.badURL) }
         let joining = Task { await model.joinVoice(channel: target) }
         await fulfillment(of: [requested], timeout: 2)
+        XCTAssertEqual(model.pendingVoiceChannelID, target.id)
+        await model.joinVoice(channel: target)
+        XCTAssertEqual(model.pendingVoiceChannelID, target.id, "Duplicate taps cannot replace the pending authorization")
+        XCTAssertNil(model.navigationError)
         model.leaveVoice()
+        XCTAssertNil(model.pendingVoiceChannelID)
         held?.respond(status: 200, data: Data("""
         {"space":{"id":"\(space.id)","name":"Fixture","ownerId":"owner0000001"},"channels":[
         {"id":"\(current.id)","spaceId":"\(space.id)","name":"general","private":false},
@@ -870,5 +1305,156 @@ final class APIClientTests: XCTestCase {
         await model.select(channel: first)
         XCTAssertEqual(firstHistoryReads, 1, "returning should resume from the retained cursor, not refetch page one")
         XCTAssertEqual(model.chat.currentSnapshot()?.cursor, "41")
+    }
+
+    @MainActor
+    func testSequencedReactionAdvancesDirectMessageReadCursorButHTTPSnapshotDoesNot() async throws {
+        let channel = "dm0000000001"
+        let messageID = "Message00000001"
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages/\(messageID)/reactions":
+                return (200, Data("""
+                {"type":"message.reactions","schemaVersion":1,"channelId":"\(channel)","seq":"3","messageId":"\(messageID)","reactions":[{"emoji":"👍","authorIds":["self"]}]}
+                """.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let message = ChatMessage(id: messageID, channelId: channel, seq: "1",
+                                  author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                  content: ChatContent(version: 1, type: "text", text: "Hello"), createdAt: "now",
+                                  clientMessageId: "client", reactions: [], reactionSeq: "1")
+        let history = ChatHistory(space: HistoryIdentity(id: "", name: "Direct messages"),
+                                  channel: HistoryIdentity(id: channel, name: "Other"), messages: [message], cursor: "1", hasMore: false)
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        var readUpdates = 0
+        chat.onReadCursor = { readUpdates += 1 }
+
+        chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "2",
+                      "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["other"]]]],
+                     generation: 1, channelID: channel)
+        XCTAssertEqual(chat.currentSnapshot()?.cursor, "2")
+        XCTAssertEqual(readUpdates, 1, "a sequenced reaction in an open DM must update its read sequence")
+
+        await chat.setReaction(messageID: messageID, emoji: "👍", active: true)
+        XCTAssertEqual(chat.currentSnapshot()?.cursor, "2", "an HTTP reaction snapshot must not move the WebSocket replay cursor")
+        XCTAssertEqual(readUpdates, 1)
+        await chat.stop()
+    }
+
+    @MainActor
+    func testJoinedConversationBecomesReadOnlyPreviewWithoutRetainingSession() async throws {
+        let channel = "chan00000001"
+        var sessionRequests = 0
+        var reactionRequests = 0
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                sessionRequests += 1
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            if request.url?.path.hasSuffix("/reactions") == true { reactionRequests += 1 }
+            throw URLError(.badURL)
+        }
+        let message = ChatMessage(id: "Message00000001", channelId: channel, seq: "1",
+                                  author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                  content: ChatContent(version: 1, type: "text", text: "Hello"), createdAt: "now",
+                                  clientMessageId: "client", reactions: [MessageReaction(emoji: "👍", authorIds: ["other"])], reactionSeq: "1")
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [message], cursor: "1", hasMore: false)
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        XCTAssertNotNil(chat.currentAuthor)
+
+        await chat.preview(history: history)
+        XCTAssertTrue(chat.isPreview)
+        XCTAssertNil(chat.currentAuthor)
+        XCTAssertEqual(chat.messages.first?.reactions?.first?.emoji, "👍")
+        await chat.setReaction(messageID: message.id, emoji: "👍", active: false)
+        XCTAssertEqual(sessionRequests, 1, "preview must not create or retain a chat session")
+        XCTAssertEqual(reactionRequests, 0, "preview reaction attempts must not write")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testReactionDrivenPreviewResyncReadsHistoryWithoutSessionOrWrite() async throws {
+        let channel = "chan00000001"
+        var paths: [String] = []
+        let refreshed = expectation(description: "preview history refreshed")
+        MockURLProtocol.handler = { request in
+            paths.append(request.url!.path)
+            guard request.url?.path == "/api/chat/channels/\(channel)/messages" else { throw URLError(.badURL) }
+            refreshed.fulfill()
+            return (200, Data("""
+            {"space":{"id":"space0000001","name":"Space"},"channel":{"id":"\(channel)","name":"general"},"messages":[{"id":"Message00000001","channelId":"\(channel)","seq":"1","author":{"id":"other","name":"Other","isGuest":false},"content":{"version":1,"type":"text","text":"Refreshed"},"createdAt":"now","clientMessageId":"client","reactions":[{"emoji":"🎉","authorIds":["other"]}],"reactionSeq":"2"}],"cursor":"2","hasMore":false}
+            """.utf8))
+        }
+        let initial = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [], cursor: "1", hasMore: false)
+        let chat = ChatModel(api: client())
+        await chat.preview(history: initial)
+        chat.receive(["type": "message.reactions", "channelId": channel, "seq": "3"], generation: 1, channelID: channel)
+        await fulfillment(of: [refreshed], timeout: 2)
+        for _ in 0..<20 where chat.messages.isEmpty { await Task.yield() }
+        XCTAssertTrue(chat.isPreview)
+        XCTAssertNil(chat.currentAuthor)
+        XCTAssertEqual(chat.messages.first?.content.text, "Refreshed")
+        XCTAssertEqual(chat.messages.first?.reactions?.first?.emoji, "🎉")
+        await chat.setReaction(messageID: "Message00000001", emoji: "🎉", active: false)
+        XCTAssertFalse(paths.contains("/api/chat/session"))
+        XCTAssertFalse(paths.contains { $0.hasSuffix("/reactions") })
+        await chat.stop()
+    }
+
+    func testDirectMessageContractsAndReadRequest() async throws {
+        let api = client()
+        var requests: [(String, String, Data?)] = []
+        MockURLProtocol.handler = { request in
+            requests.append((request.httpMethod ?? "", request.url!.path, try requestBodyData(request)))
+            switch (request.httpMethod, request.url!.path) {
+            case ("GET", "/api/dms"):
+                return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"exact_name","displayName":"Exact Name"},"lastSeq":"12","readSeq":"9"}]}"#.utf8))
+            case ("POST", "/api/dms"):
+                return (200, Data(#"{"id":"dm0000000001","peer":{"id":"peer","username":"exact_name","displayName":"Exact Name"},"lastSeq":"12","readSeq":"9"}"#.utf8))
+            case ("POST", "/api/dms/dm0000000001/read"): return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        let listed = try await api.directMessages()
+        XCTAssertTrue(listed[0].unread)
+        let created = try await api.createDirectMessage(username: "exact_name")
+        XCTAssertEqual(created.peer.displayName, "Exact Name")
+        try await api.markDirectMessageRead(id: created.id, seq: "12")
+        XCTAssertEqual(requests.map { "\($0.0) \($0.1)" }, ["GET /api/dms", "POST /api/dms", "POST /api/dms/dm0000000001/read"])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[1].2)) as? [String: String], ["username": "exact_name"])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[2].2)) as? [String: String], ["seq": "12"])
+    }
+
+    @MainActor
+    func testDirectMessageNavigationWorksWithoutSpaceAndClearsOnLogout() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        let dm = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "peer", username: "peer", displayName: "Peer"), lastSeq: "1", readSeq: "0")
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/chat/channels/dm0000000001/messages":
+                return (200, Data(#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000001","name":"Peer","direct":true},"messages":[],"cursor":"1","hasMore":false}"#.utf8))
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/dms/dm0000000001/read": return (204, Data())
+            case "/api/dms": return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.select(directMessage: dm)
+        XCTAssertNil(model.selectedSpaceID)
+        XCTAssertEqual(model.selectedDirectMessageID, dm.id)
+        XCTAssertEqual(model.chat.spaceName, "Direct messages")
+        XCTAssertEqual(model.chat.channelName, "Peer")
+        await model.logout()
+        XCTAssertTrue(model.directMessages.isEmpty)
+        XCTAssertNil(model.selectedDirectMessageID)
     }
 }

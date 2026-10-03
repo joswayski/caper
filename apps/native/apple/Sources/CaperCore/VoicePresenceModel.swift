@@ -7,7 +7,6 @@ public struct VoiceSpectator: Decodable, Identifiable, Equatable, Sendable {
     public let name: String
     public let muted: Bool
     public let deafened: Bool
-    public let countryCode: String?
 }
 
 /// Read-only occupancy. Its one Gateway multiplexes at most 24 token-free media
@@ -15,6 +14,7 @@ public struct VoiceSpectator: Decodable, Identifiable, Equatable, Sendable {
 @MainActor @Observable
 public final class VoicePresenceModel {
     public private(set) var rosters: [String: [VoiceSpectator]] = [:]
+    public private(set) var unavailableChannels: Set<String> = []
     public private(set) var online = false
     private let api: APIClient
     @ObservationIgnored private lazy var gateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, _ in
@@ -38,6 +38,7 @@ public final class VoicePresenceModel {
         let attempt = generation
         let previous = subscriptions.values
         subscriptions = [:]; watching = Set(wanted); rosters = [:]; revisions = [:]; online = false
+        unavailableChannels = []
         self.spaceID = spaceID
         for id in previous { await gateway.unsubscribe(id) }
         guard generation == attempt, self.spaceID == spaceID else { return }
@@ -57,10 +58,12 @@ public final class VoicePresenceModel {
         generation += 1
         let previous = subscriptions.values
         subscriptions = [:]; watching = []; rosters = [:]; revisions = [:]; spaceID = nil; online = false
+        unavailableChannels = []
         for id in previous { await gateway.unsubscribe(id) }
     }
 
     public func revoke(channelID: String) {
+        unavailableChannels.insert(channelID)
         watching.remove(channelID)
         rosters.removeValue(forKey: channelID)
         revisions.removeValue(forKey: channelID)

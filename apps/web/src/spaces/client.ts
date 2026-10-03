@@ -2,6 +2,7 @@ export interface Space {
   id: string;
   name: string;
   ownerId: string;
+  inviter?: { username: string; displayName: string };
   demo?: boolean;
 }
 
@@ -10,6 +11,12 @@ export interface Channel {
   spaceId: string;
   name: string;
   private: boolean;
+  joined?: boolean;
+}
+
+export interface ChannelInvitation {
+  channel: Channel;
+  inviter: { username: string; displayName: string };
 }
 
 export interface Member {
@@ -18,6 +25,29 @@ export interface Member {
   username: string;
   displayName: string;
   owner: boolean;
+}
+
+export interface DirectConversation {
+  id: string;
+  peer: { id: string; username: string; displayName: string };
+  lastSeq: string;
+  readSeq: string;
+}
+
+export function directUnread(conversation: DirectConversation) {
+  return BigInt(conversation.lastSeq) > BigInt(conversation.readSeq);
+}
+
+export function listDirectConversations() {
+  return request<{ conversations: DirectConversation[] }>("/api/dms");
+}
+
+export function createDirectConversation(username: string) {
+  return request<DirectConversation>("/api/dms", { method: "POST", body: JSON.stringify({ username: username.trim() }) });
+}
+
+export function readDirectConversation(id: string, seq: string) {
+  return request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
 }
 
 export interface SpaceLimits {
@@ -30,6 +60,7 @@ export interface SpaceDetail {
   space: Space;
   channels: Channel[];
   members: Member[];
+  channelInvitations?: ChannelInvitation[];
 }
 
 export class SpacesApiError extends Error {
@@ -84,7 +115,7 @@ function pathId(id: string) {
 }
 
 export function listSpaces() {
-  return request<{ spaces: Space[]; limits: SpaceLimits }>("/api/spaces");
+  return request<{ spaces: Space[]; invitations?: Space[]; limits: SpaceLimits }>("/api/spaces");
 }
 
 export function getSpace(spaceId: string) {
@@ -133,8 +164,24 @@ export function removeSpaceMember(spaceId: string, memberId: string) {
   return request<void>(`/api/spaces/${pathId(spaceId)}/members/${pathId(memberId)}`, { method: "DELETE" });
 }
 
+export function listSpaceInvitations(spaceId: string) {
+  return request<{ members: Member[] }>(`/api/spaces/${pathId(spaceId)}/invitations`);
+}
+
+export function cancelSpaceInvitation(spaceId: string, memberId: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/invitations/${pathId(memberId)}`, { method: "DELETE" });
+}
+
+export function acceptSpaceInvitation(spaceId: string) {
+  return request<Space>(`/api/spaces/${pathId(spaceId)}/invitation`, { method: "POST" });
+}
+
+export function declineSpaceInvitation(spaceId: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/invitation`, { method: "DELETE" });
+}
+
 export function listChannelMembers(spaceId: string, channelId: string) {
-  return request<{ members: Member[] }>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`);
+  return request<{ members: Member[]; invitations?: Member[] }>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members`);
 }
 
 export function addChannelMember(spaceId: string, channelId: string, username: string) {
@@ -145,4 +192,20 @@ export function addChannelMember(spaceId: string, channelId: string, username: s
 
 export function removeChannelMember(spaceId: string, channelId: string, memberId: string) {
   return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/members/${pathId(memberId)}`, { method: "DELETE" });
+}
+
+export function joinChannel(spaceId: string, channelId: string) {
+  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/membership`, { method: "POST" });
+}
+
+export function leaveChannel(spaceId: string, channelId: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/membership`, { method: "DELETE" });
+}
+
+export function acceptChannelInvitation(spaceId: string, channelId: string) {
+  return request<Channel>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, { method: "POST" });
+}
+
+export function declineChannelInvitation(spaceId: string, channelId: string) {
+  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/invitation`, { method: "DELETE" });
 }

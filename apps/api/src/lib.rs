@@ -57,12 +57,14 @@ mod auth;
 mod channel_media;
 mod chat;
 mod db;
+mod direct;
 mod email;
 mod environment;
 pub mod gateway;
 mod media_store;
 mod notifications;
 mod presence;
+mod push;
 mod spaces;
 use media_store::Timestamp;
 
@@ -729,6 +731,7 @@ pub struct AppState {
     store: Option<Arc<media_store::ValkeyStore>>,
     database: Option<PgPool>,
     chat: Option<chat::Chat>,
+    push: Option<push::Push>,
     events: watch::Sender<()>,
     room_events: Arc<std::sync::Mutex<HashMap<Option<String>, watch::Sender<()>>>>,
     room_interest: Arc<Notify>,
@@ -770,6 +773,7 @@ impl AppState {
             store: None,
             database,
             chat: None,
+            push: None,
             events,
             room_events: Arc::new(std::sync::Mutex::new(HashMap::new())),
             room_interest: Arc::new(Notify::new()),
@@ -800,6 +804,11 @@ impl AppState {
         self.chat = chat::Chat::from_env(self.database.as_ref(), environment).await?;
         if let Some(chat) = self.chat.clone() {
             chat::spawn_publisher(chat);
+        }
+        if self.database.is_some() {
+            let push = push::Push::from_env(self.database.as_ref(), environment).await?;
+            push::spawn_worker(push.clone());
+            self.push = Some(push);
         }
         Ok(())
     }
@@ -869,7 +878,6 @@ struct Participant {
     #[serde(default)]
     avatar_id: Option<i16>,
     name: String,
-    country_code: Option<String>,
     session: String,
     /// A second, receive-only provider session holding every subscription once
     /// created. Cloudflare answers a pull into a session with no negotiated
@@ -1062,15 +1070,19 @@ pub fn app(state: AppState) -> Router {
 }
 
 fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
-    let protected = Router::new()
+    let mut protected = Router::new()
         .route("/api/account/me", get(account_me))
         .route("/api/account/profile", post(account_profile))
         .route("/api/auth/logout", post(auth_logout))
         .merge(spaces::routes())
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            account_auth,
-        ));
+        .merge(direct::routes());
+    if let Some(push) = state.push.clone() {
+        protected = protected.merge(push::routes(push));
+    }
+    let protected = protected.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        account_auth,
+    ));
     let account_login = Router::new()
         .route("/api/auth/email/request", post(auth_email_request))
         .route("/api/auth/email/verify", post(auth_email_verify));
@@ -1321,10 +1333,7 @@ async fn account_profile(
 ) -> Result<Json<Value>, ApiError> {
     let username = input.username.trim().to_ascii_lowercase();
     let display_name = input.display_name.trim();
-    if !(3..=32).contains(&username.len())
-        || !username
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    if !accounts::valid_username(&username)
         || !(1..=64).contains(&display_name.chars().count())
         || display_name.chars().any(char::is_control)
     {
@@ -1700,12 +1709,6 @@ struct InitialPublish {
     session_description: Sdp,
 }
 
-fn country_code(headers: &HeaderMap) -> Option<String> {
-    let code = headers.get("cf-ipcountry")?.to_str().ok()?;
-    (code.len() == 2 && code != "XX" && code.bytes().all(|byte| byte.is_ascii_uppercase()))
-        .then(|| code.to_owned())
-}
-
 async fn join(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1769,7 +1772,6 @@ async fn join(
             )
         }
     };
-    let country_code = country_code(&headers);
     let reservation = Uuid::new_v4();
     let (monitor, pulls) = s
         .update(|r| {
@@ -1954,7 +1956,6 @@ async fn join(
         account_session: s.media_session.clone(),
         avatar_id,
         name: name.into(),
-        country_code,
         session,
         // Later pulls go to a warm receive session from the start.
         receive_session: warm.as_ref().map(|warm| warm.receive.clone()),
@@ -2812,8 +2813,6 @@ struct View<'a> {
     #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
     avatar_id: Option<i16>,
     name: &'a str,
-    #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
-    country_code: Option<&'a str>,
     muted: bool,
     deafened: bool,
     tracks: Vec<TrackView>,
@@ -2846,7 +2845,6 @@ fn public_snapshot(r: &Registry) -> Value {
                 id: p.id,
                 avatar_id: p.avatar_id,
                 name: &p.name,
-                country_code: p.country_code.as_deref(),
                 muted: p.muted,
                 deafened: p.deafened,
                 tracks,
@@ -2861,8 +2859,6 @@ struct PresenceView<'a> {
     #[serde(rename = "avatarId", skip_serializing_if = "Option::is_none")]
     avatar_id: Option<i16>,
     name: &'a str,
-    #[serde(rename = "countryCode", skip_serializing_if = "Option::is_none")]
-    country_code: Option<&'a str>,
     muted: bool,
     deafened: bool,
 }
@@ -2879,7 +2875,6 @@ fn presence_snapshot(r: &Registry) -> Value {
             id: p.id,
             avatar_id: p.avatar_id,
             name: &p.name,
-            country_code: p.country_code.as_deref(),
             muted: p.muted,
             deafened: p.deafened,
         })

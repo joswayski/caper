@@ -43,6 +43,17 @@ class CaperApi(
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
+    suspend fun directConversations(token: String): DirectConversationList = get("/api/dms", token)
+    suspend fun startDirectConversation(token: String, username: String): DirectConversation = post(
+        "/api/dms", buildJsonObject { put("username", username.trim()) }, token,
+    )
+    suspend fun markDirectConversationRead(token: String, id: String, seq: String) {
+        require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
+        request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
+    }
+    suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
+    suspend fun registerPush(token: String, deviceToken: String) { request<Unit>("/api/push/devices", "POST", token, buildJsonObject { put("platform", "fcm"); put("token", deviceToken) }.toString()) }
+    suspend fun unregisterPush(token: String, deviceToken: String) { request<Unit>("/api/push/devices", "DELETE", token, buildJsonObject { put("platform", "fcm"); put("token", deviceToken) }.toString()) }
     suspend fun general(): ChatHistory = validatedHistory(get("/api/chat/general"))
     suspend fun history(token: String?, channel: String, before: String? = null): ChatHistory {
         val history: ChatHistory = get(
@@ -75,6 +86,16 @@ class CaperApi(
         return message.validated(channel, author, clientMessageId, text)
     }
 
+    suspend fun setReaction(token: String?, chatToken: String, channel: String, message: String, emoji: String, active: Boolean): ReactionUpdate {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val update: ReactionUpdate = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message/reactions", "PUT", token,
+            buildJsonObject { put("emoji", emoji); put("active", active) }.toString(),
+            mapOf("x-caper-chat-token" to chatToken),
+        )
+        return update.validated(channel, message)
+    }
+
     suspend fun createSpace(token: String, name: String): Space = post(
         "/api/spaces", buildJsonObject { put("name", name.trim()) }, token,
     )
@@ -93,10 +114,30 @@ class CaperApi(
     suspend fun deleteChannel(token: String, space: String, channel: String) {
         request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}", "DELETE", token)
     }
+    suspend fun joinChannel(token: String, space: String, channel: String): Channel =
+        post("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/membership", token = token)
+    suspend fun leaveChannel(token: String, space: String, channel: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/membership", "DELETE", token)
+    }
+    suspend fun acceptChannelInvitation(token: String, space: String, channel: String): Channel =
+        post("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/invitation", token = token)
+    suspend fun declineChannelInvitation(token: String, space: String, channel: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/invitation", "DELETE", token)
+    }
     suspend fun spaceMembers(token: String, space: String): MemberList = get("/api/spaces/${space.pathId()}/members", token)
     suspend fun addSpaceMember(token: String, space: String, username: String): Member = post(
         "/api/spaces/${space.pathId()}/members", buildJsonObject { put("username", username.trim()) }, token,
     )
+    suspend fun spaceInvitations(token: String, space: String): MemberList =
+        get("/api/spaces/${space.pathId()}/invitations", token)
+    suspend fun cancelSpaceInvitation(token: String, space: String, user: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/invitations/${user.pathId()}", "DELETE", token)
+    }
+    suspend fun acceptSpaceInvitation(token: String, space: String): Space =
+        post("/api/spaces/${space.pathId()}/invitation", token = token)
+    suspend fun declineSpaceInvitation(token: String, space: String) {
+        request<Unit>("/api/spaces/${space.pathId()}/invitation", "DELETE", token)
+    }
     suspend fun removeSpaceMember(token: String, space: String, member: String) {
         request<Unit>("/api/spaces/${space.pathId()}/members/${member.pathId()}", "DELETE", token)
     }
@@ -163,6 +204,7 @@ class CaperApi(
 }
 
 private val externalId = Regex("^[A-Za-z0-9]{12}$")
+private val messageId = Regex("^[A-Za-z0-9]{15}$")
 fun String.pathId(): String = also { require(externalId.matches(it)) { "Invalid resource ID." } }
 
 // OkHttp invokes onResponse on its IO dispatcher. Keep body reads and JSON

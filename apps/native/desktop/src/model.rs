@@ -17,10 +17,18 @@ pub struct Account {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Inviter {
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Space {
     pub id: String,
     pub name: String,
     pub owner_id: String,
+    pub inviter: Option<Inviter>,
     #[serde(default)]
     pub demo: bool,
 }
@@ -32,6 +40,42 @@ pub struct Channel {
     pub space_id: String,
     pub name: String,
     pub private: bool,
+    /// Older servers predate explicit channel membership; their channels were joined.
+    #[serde(default = "default_joined")]
+    pub joined: bool,
+}
+
+fn default_joined() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelInvitation {
+    pub channel: Channel,
+    pub inviter: Inviter,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectPeer {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectConversation {
+    pub id: String,
+    pub peer: DirectPeer,
+    pub last_seq: String,
+    pub read_seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DirectConversations {
+    pub conversations: Vec<DirectConversation>,
 }
 
 /// Spectators receive identity and status, never media track capabilities.
@@ -42,7 +86,6 @@ pub struct VoiceOccupant {
     #[serde(default)]
     pub avatar_id: Option<i32>,
     pub name: String,
-    pub country_code: Option<String>,
     pub muted: bool,
     pub deafened: bool,
 }
@@ -62,6 +105,8 @@ pub struct Member {
 pub struct Spaces {
     pub spaces: Vec<Space>,
     #[serde(default)]
+    pub invitations: Vec<Space>,
+    #[serde(default)]
     pub limits: Option<SpaceLimits>,
 }
 
@@ -78,6 +123,8 @@ pub struct SpaceDetail {
     pub space: Space,
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub channel_invitations: Vec<ChannelInvitation>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -98,6 +145,25 @@ pub struct Content {
     pub text: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Reaction {
+    pub emoji: String,
+    pub author_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReactionUpdate {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema_version: u8,
+    pub channel_id: String,
+    pub seq: String,
+    pub message_id: String,
+    pub reactions: Vec<Reaction>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -108,6 +174,10 @@ pub struct Message {
     pub client_message_id: String,
     pub author: Author,
     pub content: Content,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
+    #[serde(default)]
+    pub reaction_seq: Option<String>,
 }
 
 impl Message {
@@ -115,6 +185,12 @@ impl Message {
         sequence(&self.seq)?;
         if self.content.version != 1 || self.content.kind != "text" {
             return Err("unsupported message content".into());
+        }
+        if let Some(revision) = &self.reaction_seq {
+            sequence(revision)?;
+        }
+        if !valid_reactions(&self.reactions) {
+            return Err("invalid message reactions".into());
         }
         Ok(())
     }
@@ -152,6 +228,8 @@ pub struct Presence {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Members {
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub invitations: Vec<Member>,
 }
 
 #[derive(Default)]
@@ -160,6 +238,7 @@ pub struct Timeline {
     messages: BTreeMap<u64, Message>,
     ids: BTreeSet<String>,
     buffered: BTreeMap<u64, Message>,
+    unseen_reactions: BTreeMap<String, ReactionUpdate>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -176,6 +255,7 @@ impl Timeline {
         self.messages.clear();
         self.ids.clear();
         self.buffered.clear();
+        self.unseen_reactions.clear();
         for message in messages {
             self.merge(message)?;
         }
@@ -205,6 +285,98 @@ impl Timeline {
         Ok(Apply::Applied)
     }
 
+    pub fn apply_sequence(&mut self, value: &str) -> Result<Apply, String> {
+        let seq = sequence(value)?;
+        if seq <= self.cursor {
+            return Ok(Apply::Duplicate);
+        }
+        if seq != self.cursor + 1 {
+            return Ok(Apply::Resync);
+        }
+        self.cursor = seq;
+        while let Some(next) = self.buffered.remove(&(self.cursor + 1)) {
+            self.cursor += 1;
+            self.merge(next)?;
+        }
+        Ok(Apply::Applied)
+    }
+
+    pub fn apply_reactions(&mut self, update: ReactionUpdate) -> Result<Apply, String> {
+        if !self.merge_reactions(&update)? {
+            self.unseen_reactions.clear();
+            return Ok(Apply::Resync);
+        }
+        let applied = self.apply_sequence(&update.seq)?;
+        if applied == Apply::Resync {
+            self.unseen_reactions.clear();
+        }
+        Ok(applied)
+    }
+
+    /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
+    pub fn merge_reaction_ack(&mut self, update: ReactionUpdate) -> Result<(), String> {
+        if self.merge_reactions(&update)? {
+            Ok(())
+        } else {
+            self.unseen_reactions.clear();
+            Err("too many reactions for unloaded messages".into())
+        }
+    }
+
+    fn merge_reactions(&mut self, update: &ReactionUpdate) -> Result<bool, String> {
+        let seq = sequence(&update.seq)?;
+        if update.kind != "message.reactions" || update.schema_version != 1 {
+            return Err("unsupported reaction update".into());
+        }
+        if update.channel_id.is_empty()
+            || update.message_id.is_empty()
+            || !valid_reactions(&update.reactions)
+        {
+            return Err("invalid reaction update".into());
+        }
+        if let Some(message) = self
+            .messages
+            .values_mut()
+            .find(|item| item.id == update.message_id)
+        {
+            if message.channel_id != update.channel_id {
+                return Err("reaction update is for another channel".into());
+            }
+            let current = message
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if seq > current {
+                message.reactions.clone_from(&update.reactions);
+                message.reaction_seq = Some(update.seq.clone());
+            }
+        } else {
+            if self
+                .messages
+                .values()
+                .next()
+                .is_some_and(|message| message.channel_id != update.channel_id)
+            {
+                return Err("reaction update is for another channel".into());
+            }
+            if let Some(current) = self.unseen_reactions.get(&update.message_id) {
+                if seq > sequence(&current.seq)? {
+                    self.unseen_reactions
+                        .insert(update.message_id.clone(), update.clone());
+                }
+            } else {
+                if self.unseen_reactions.len() >= 256 {
+                    return Ok(false);
+                }
+                self.unseen_reactions
+                    .insert(update.message_id.clone(), update.clone());
+            }
+        }
+        Ok(true)
+    }
+
     pub fn merge_sent(&mut self, message: Message) -> Result<(), String> {
         self.merge(message)
     }
@@ -224,14 +396,64 @@ impl Timeline {
         self.messages.values()
     }
 
-    fn merge(&mut self, message: Message) -> Result<(), String> {
+    fn merge(&mut self, mut message: Message) -> Result<(), String> {
         message.validate()?;
+        if let Some(update) = self.unseen_reactions.remove(&message.id) {
+            if update.channel_id != message.channel_id {
+                return Err("reaction update is for another channel".into());
+            }
+            let update_revision = sequence(&update.seq)?;
+            let message_revision = message
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if update_revision > message_revision {
+                message.reactions = update.reactions;
+                message.reaction_seq = Some(update.seq);
+            }
+        }
         let seq = sequence(&message.seq)?;
-        if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
+        if let Some(existing) = self
+            .messages
+            .get_mut(&seq)
+            .filter(|item| item.id == message.id)
+        {
+            let old_revision = existing
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            let new_revision = message
+                .reaction_seq
+                .as_deref()
+                .map(sequence)
+                .transpose()?
+                .unwrap_or(0);
+            if old_revision > new_revision {
+                message.reactions = std::mem::take(&mut existing.reactions);
+                message.reaction_seq = existing.reaction_seq.take();
+            }
+            *existing = message;
+        } else if !self.messages.contains_key(&seq) && self.ids.insert(message.id.clone()) {
             self.messages.insert(seq, message);
         }
         Ok(())
     }
+}
+
+fn valid_reactions(reactions: &[Reaction]) -> bool {
+    let mut emojis = BTreeSet::new();
+    reactions.iter().all(|reaction| {
+        !reaction.emoji.is_empty()
+            && !reaction.author_ids.is_empty()
+            && emojis.insert(reaction.emoji.as_str())
+            && reaction.author_ids.iter().all(|author| !author.is_empty())
+            && reaction.author_ids.iter().collect::<BTreeSet<_>>().len()
+                == reaction.author_ids.len()
+    })
 }
 
 pub fn sequence(value: &str) -> Result<u64, String> {
@@ -250,6 +472,47 @@ pub fn sequence(value: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spaces_default_missing_invitations_to_empty() {
+        let spaces: Spaces = serde_json::from_value(serde_json::json!({
+            "spaces": [],
+            "limits": null
+        }))
+        .unwrap();
+        assert!(spaces.invitations.is_empty());
+    }
+
+    #[test]
+    fn invitation_decodes_inviter_and_legacy_metadata() {
+        let legacy: Space = serde_json::from_value(serde_json::json!({
+            "id": "space", "name": "Studio", "ownerId": "owner"
+        }))
+        .unwrap();
+        assert!(legacy.inviter.is_none());
+        let invitation: Space = serde_json::from_value(serde_json::json!({
+            "id": "space", "name": "Studio", "ownerId": "owner",
+            "inviter": { "username": "host_user", "displayName": "Space Host" }
+        }))
+        .unwrap();
+        let inviter = invitation.inviter.unwrap();
+        assert_eq!(inviter.username, "host_user");
+        assert_eq!(inviter.display_name, "Space Host");
+    }
+
+    #[test]
+    fn channel_membership_and_invitation_defaults_decode_safely() {
+        let detail: SpaceDetail = serde_json::from_value(serde_json::json!({
+            "space": {"id":"s", "name":"Studio", "ownerId":"owner"},
+            "channels": [{"id":"c", "spaceId":"s", "name":"general", "private":false}],
+            "members": []
+        }))
+        .unwrap();
+        assert!(detail.channels[0].joined);
+        assert!(detail.channel_invitations.is_empty());
+        let members: Members = serde_json::from_value(serde_json::json!({"members":[]})).unwrap();
+        assert!(members.invitations.is_empty());
+    }
 
     #[test]
     fn avatar_id_is_optional_json() {
@@ -277,6 +540,8 @@ mod tests {
                 kind: "text".into(),
                 text: id.into(),
             },
+            reactions: Vec::new(),
+            reaction_seq: None,
         }
     }
 
@@ -346,5 +611,156 @@ mod tests {
             Apply::Applied
         );
         assert_eq!(timeline.cursor(), "12");
+    }
+
+    #[test]
+    fn reaction_sequences_bridge_messages_and_reject_gaps() {
+        let mut timeline = Timeline::default();
+        assert_eq!(timeline.apply(message("one", 1)).unwrap(), Apply::Applied);
+        assert_eq!(timeline.apply_sequence("2").unwrap(), Apply::Applied);
+        assert_eq!(timeline.apply_sequence("2").unwrap(), Apply::Duplicate);
+        assert_eq!(timeline.apply(message("three", 3)).unwrap(), Apply::Applied);
+        assert_eq!(timeline.apply_sequence("5").unwrap(), Apply::Resync);
+        assert_eq!(timeline.cursor(), "3");
+        assert_eq!(
+            timeline.messages().count(),
+            2,
+            "reaction does not manufacture a message"
+        );
+    }
+
+    #[test]
+    fn reaction_updates_are_revisioned_and_http_ack_does_not_move_cursor() {
+        let mut timeline = Timeline::default();
+        timeline.apply(message("one", 1)).unwrap();
+        let update = |seq: &str, authors: &[&str]| ReactionUpdate {
+            kind: "message.reactions".into(),
+            schema_version: 1,
+            channel_id: "channel".into(),
+            seq: seq.into(),
+            message_id: "one".into(),
+            reactions: vec![Reaction {
+                emoji: "👍".into(),
+                author_ids: authors.iter().map(|id| (*id).into()).collect(),
+            }],
+        };
+        timeline.merge_reaction_ack(update("3", &["me"])).unwrap();
+        assert_eq!(timeline.cursor(), "1");
+        timeline
+            .merge_reaction_ack(update("2", &["other"]))
+            .unwrap();
+        let reaction = &timeline.messages().next().unwrap().reactions[0];
+        assert_eq!(reaction.author_ids, ["me"]);
+        assert_eq!(timeline.apply_sequence("2"), Ok(Apply::Applied));
+        assert_eq!(
+            timeline.apply_reactions(update("3", &["me"])),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(timeline.cursor(), "3");
+    }
+
+    #[test]
+    fn stale_history_cannot_erase_newer_reactions() {
+        let mut timeline = Timeline::default();
+        let mut current = message("one", 1);
+        current.reaction_seq = Some("8".into());
+        current.reactions = vec![Reaction {
+            emoji: "❤️".into(),
+            author_ids: vec!["me".into()],
+        }];
+        timeline.reset(vec![current], "8").unwrap();
+        timeline.prepend(vec![message("one", 1)]).unwrap();
+        assert_eq!(
+            timeline.messages().next().unwrap().reaction_seq.as_deref(),
+            Some("8")
+        );
+        assert_eq!(timeline.messages().next().unwrap().reactions.len(), 1);
+    }
+
+    fn reaction_update(message_id: &str, seq: u64, author: &str) -> ReactionUpdate {
+        ReactionUpdate {
+            kind: "message.reactions".into(),
+            schema_version: 1,
+            channel_id: "channel".into(),
+            seq: seq.to_string(),
+            message_id: message_id.into(),
+            reactions: vec![Reaction {
+                emoji: "👍".into(),
+                author_ids: vec![author.into()],
+            }],
+        }
+    }
+
+    #[test]
+    fn reaction_arriving_before_older_page_is_overlaid() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("newer", 10)], "10").unwrap();
+        assert_eq!(
+            timeline
+                .apply_reactions(reaction_update("older", 11, "live"))
+                .unwrap(),
+            Apply::Applied
+        );
+        timeline.prepend(vec![message("older", 1)]).unwrap();
+        let older = timeline
+            .messages()
+            .find(|message| message.id == "older")
+            .unwrap();
+        assert_eq!(older.reaction_seq.as_deref(), Some("11"));
+        assert_eq!(older.reactions[0].author_ids, ["live"]);
+    }
+
+    #[test]
+    fn stale_older_page_does_not_erase_unseen_reaction() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("newer", 10)], "10").unwrap();
+        timeline
+            .merge_reaction_ack(reaction_update("older", 15, "live"))
+            .unwrap();
+        let mut stale = message("older", 1);
+        stale.reaction_seq = Some("12".into());
+        stale.reactions = vec![Reaction {
+            emoji: "👍".into(),
+            author_ids: vec!["stale".into()],
+        }];
+        timeline.prepend(vec![stale]).unwrap();
+        let older = timeline
+            .messages()
+            .find(|message| message.id == "older")
+            .unwrap();
+        assert_eq!(older.reaction_seq.as_deref(), Some("15"));
+        assert_eq!(older.reactions[0].author_ids, ["live"]);
+    }
+
+    #[test]
+    fn too_many_unseen_reactions_trigger_resync_and_clear_cache() {
+        let mut timeline = Timeline::default();
+        for seq in 1..=256 {
+            assert_eq!(
+                timeline
+                    .apply_reactions(reaction_update(&format!("message-{seq}"), seq, "author"))
+                    .unwrap(),
+                Apply::Applied
+            );
+        }
+        assert_eq!(
+            timeline
+                .apply_reactions(reaction_update("overflow", 257, "author"))
+                .unwrap(),
+            Apply::Resync
+        );
+        timeline.prepend(vec![message("message-1", 1)]).unwrap();
+        assert!(timeline.messages().next().unwrap().reactions.is_empty());
+    }
+
+    #[test]
+    fn direct_conversation_contract_uses_string_sequences_and_camel_case_peer() {
+        let payload = r#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"fixture_alex","displayName":"TEST FIXTURE Alex"},"lastSeq":"12","readSeq":"9"}]}"#;
+        let parsed: DirectConversations = serde_json::from_str(payload).unwrap();
+        let direct = &parsed.conversations[0];
+        assert_eq!(direct.id, "dm0000000001");
+        assert_eq!(direct.peer.display_name, "TEST FIXTURE Alex");
+        assert_eq!(sequence(&direct.last_seq), Ok(12));
+        assert_eq!(sequence(&direct.read_seq), Ok(9));
     }
 }

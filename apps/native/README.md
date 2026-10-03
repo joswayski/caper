@@ -17,8 +17,8 @@ widgets. Apple and Android have separate native UI implementations. All clients
 talk directly to the same Caper API. No server or Cloudflare credentials belong
 in an app.
 
-The clients are being aligned with the current website: guest General, account
-sign-in and text conversations, owner space/channel/member management, private
+The clients are being aligned with the current website: account sign-in and
+text conversations, owner space/channel/member management, private
 grants, presence, typing, and the responsive rail/sidebar/conversation layout.
 Implementation checkpoints are not acceptance: check each platform's README and
 the exact revision's CI results before relying on a feature. All clients expose
@@ -26,6 +26,14 @@ native voice in default builds, but physical audio and locked-phone calls remain
 unverified. Visual
 matching, audio controls, platform lifecycle behavior, and physical-device
 acceptance remain in progress.
+
+All native clients provide searchable emoji reactions, counted chips, and
+own-reaction highlighting. Channel previews display reactions without allowing
+mutations until the user joins.
+
+First launch without a valid session opens email sign-in, not a Guest workspace.
+New accounts finish their profile, then name their first space. Existing accounts
+restore their saved session and open their spaces; logging out returns to sign-in.
 
 ## Build and download
 
@@ -132,6 +140,9 @@ into it. When a newer build exists, the Mac app shows an alert (and has
 SHA-256 (and, on Mac, its Developer ID team), waits for Caper to quit, swaps in
 the new copy and reopens it. A copy it cannot replace, such as the Linux `.deb`
 or a Mac app outside a writable folder, gets a **Download** link instead.
+That link downloads the matching Mac architecture's ZIP, Windows Setup, or Linux
+`.deb` directly; it does not open the GitHub release page. These downloads still
+need manual installation.
 Releases made before the key is stored skip `latest.json`, and apps from before
 this change need one manual reinstall. Android APKs do not self-update yet.
 
@@ -154,7 +165,7 @@ It listens only on loopback: HTTP on port 3001 and the unified WebSocket on 3002
 sends email, calls a production API, or connects to an SFU. Sign in with any
 syntactically valid test email and the code `ABC234`. The deterministic owner
 account opens **Fixture Studio**, containing visibly labeled sample conversations.
-Guest General works without an account. The fixture supports profile edits,
+The fixture supports profile edits,
 space/channel/member management, private grants, message history/pagination,
 idempotent sends, gateway replay, typing, and deterministic presence.
 
@@ -169,7 +180,7 @@ subscription; add `"denied": false` to permit future subscriptions again.
 Media join and participant-token operations deliberately return 503. Authentication, authorization and
 presence are simplified; this fixture is not a substitute for real API tests.
 
-Compare signed-out/error, populated conversation, guest, narrow Browse-open, and
+Compare fresh-install sign-in, restoration errors, populated conversation, narrow Browse-open, and
 owner-management states. Check actual clicks and keyboard input as well as
 screenshots. Desktop reference size is 1440×900, narrow reference 390×844; browser
 viewport emulation does not prove native mobile or touch behavior. Each platform
@@ -179,8 +190,9 @@ README describes its own preview controls and remaining validation gaps.
 
 Check these states on every native release, not only a wide populated screenshot:
 
-- Guest General uses **Caper** as its shell heading (the server's demo flag and
-  guest permissions are unchanged). Account-space names remain user-defined.
+- A fresh install, expired session, or logout shows email sign-in with no Guest
+  account, conversation composer, or retired public General fallback. A valid
+  saved account still opens its spaces.
 - Join shares the channel row when space permits. Crowded voice groups may wrap,
   as in the browser; neither Join nor channel settings may clip. Check the minimum
   desktop sidebar width, long names, and populated voice rosters.

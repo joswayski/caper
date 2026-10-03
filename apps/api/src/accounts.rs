@@ -5,6 +5,13 @@ use std::collections::HashSet;
 
 use crate::RuntimeEnvironment;
 
+pub(crate) fn valid_username(username: &str) -> bool {
+    (3..=32).contains(&username.len())
+        && username
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DebugUsers(HashSet<String>);
 

@@ -9,6 +9,7 @@ import { detectDownloadPlatform, downloads, type DownloadPlatform } from "../dow
 
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
+const authorUrl = "https://josevalerio.com";
 const contactEmail = "contact@josevalerio.com";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
@@ -72,10 +73,11 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
               : <p>Available for <a href={`${repositoryUrl}/releases/tag/native-latest`}>macOS, Windows, and Linux</a>.</p>}
           </div>
           <p className="experimental-note">
-            Caper is a work in progress and may contain bugs or incomplete features. Mobile apps are available. If you&apos;d like access or have feedback, reach out on{" "}
+            <span className="experimental-warning">Caper is a work in progress and may contain bugs or incomplete features.</span>{" "}
+            Mobile apps are available. If you&apos;d like access or have feedback, reach out on{" "}
             <ContactLinks />
           </p>
-          <p className="made-by">Made by <a href={xUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
+          <p className="made-by">Made by <a href={authorUrl} target="_blank" rel="noreferrer">Jose Valerio</a></p>
         </div>
 
         <LiveWindow />

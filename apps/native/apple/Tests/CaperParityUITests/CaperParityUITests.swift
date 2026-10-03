@@ -73,10 +73,26 @@ final class CaperParityUITests: XCTestCase {
     /// button under the keyboard. macOS clicks the button.
     private func save(_ button: XCUIElement, from field: XCUIElement) {
         #if os(iOS)
-        type("\n", into: field)
+        // A slow simulator sometimes won't refocus the field after a rejected
+        // save; with no keyboard up, tap the button instead.
+        if focus(field) {
+            field.typeText("\n")
+        } else if button.isHittable {
+            button.tap()
+        } else {
+            XCTFail("\(field.label) never took keyboard focus")
+        }
         #else
         button.tap()
         #endif
+    }
+
+    private func focus(_ field: XCUIElement) -> Bool {
+        for _ in 0..<3 {
+            field.tap()
+            if hasKeyboardFocus(field) { return true }
+        }
+        return false
     }
 
     private func type(_ text: String, into field: XCUIElement) {
@@ -84,14 +100,11 @@ final class CaperParityUITests: XCTestCase {
         field.tap()
         field.typeText(text)
         #else
-        for _ in 0..<3 {
-            field.tap()
-            if hasKeyboardFocus(field) {
-                field.typeText(text)
-                return
-            }
+        if focus(field) {
+            field.typeText(text)
+        } else {
+            XCTFail("\(field.label) never took keyboard focus")
         }
-        XCTFail("\(field.label) never took keyboard focus")
         #endif
     }
 
@@ -159,6 +172,29 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    func testReactionChipsPickerAndEmptySearchState() {
+        let app = launch(fixture: "reaction-chips")
+        let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch
+        XCTAssertTrue(own.waitForExistence(timeout: 10))
+        let other = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "not selected by you")).firstMatch
+        XCTAssertTrue(other.exists)
+        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
+        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        capture("reaction-chips-wrapped-fixture", app: app)
+        let add = app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).firstMatch
+        XCTAssertTrue(add.exists); add.tap()
+        #if os(iOS)
+        let search = app.textFields["reaction-picker-search"]
+        #else
+        let search = app.searchFields.firstMatch
+        #endif
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        capture("reaction-picker-open-fixture", app: app)
+        type("definitely-no-such-emoji", into: search)
+        XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
+        capture("reaction-picker-empty-fixture", app: app)
+    }
+
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }
@@ -193,6 +229,60 @@ final class CaperParityUITests: XCTestCase {
         capture("populated", app: app)
     }
 
+    func testStableChannelRowsAndOwnerSettingsMenu() {
+        let app = launch()
+        #if os(iOS)
+        app.buttons["Browse"].tap()
+        #endif
+        let general = app.buttons["channel-chan00000001"]
+        let design = app.buttons["channel-chan00000002"]
+        let generalVoice = app.buttons["join-voice-chan00000001"]
+        let designVoice = app.buttons["join-voice-chan00000002"]
+        XCTAssertTrue(general.waitForExistence(timeout: 10))
+        XCTAssertTrue(design.exists)
+        XCTAssertTrue(generalVoice.exists, "An empty accessible channel keeps its quiet voice action")
+        XCTAssertTrue(designVoice.exists, "An unselected accessible channel keeps its quiet voice action")
+        XCTAssertEqual(generalVoice.label, "Join voice in #general")
+        XCTAssertEqual(designVoice.label, "Join voice in #design")
+        XCTAssertFalse(app.buttons["voice-stack-chan00000001"].exists, "Empty channels expose no voice count or status")
+        XCTAssertGreaterThanOrEqual(generalVoice.frame.minY, general.frame.maxY, "Voice stays below the channel name")
+        XCTAssertLessThanOrEqual(generalVoice.frame.minY - general.frame.maxY, 2, "No extra gap separates the voice action from its channel")
+        XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, "Actions share one stable slot")
+        XCTAssertEqual(generalVoice.frame.width, 108, "The whole reserved action slot is accessible, not just its text")
+        #if os(iOS)
+        XCTAssertGreaterThanOrEqual(general.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(design.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(generalVoice.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(designVoice.frame.height, 44)
+        #else
+        XCTAssertEqual(general.frame.height, 32)
+        XCTAssertEqual(design.frame.height, 32)
+        XCTAssertEqual(generalVoice.frame.height, 28)
+        XCTAssertEqual(designVoice.frame.height, 28)
+        #endif
+
+        let generalFrame = general.frame
+        let voiceFrame = generalVoice.frame
+        let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
+        let stack = app.buttons["voice-stack-chan00000002"]
+        XCTAssertEqual(stack.value as? String, "Collapsed", "Occupied rosters start collapsed")
+        stack.tap()
+        XCTAssertEqual(general.frame, generalFrame, "Expanding another roster must not move the channel name")
+        XCTAssertEqual(generalVoice.frame, voiceFrame, "Expanding another roster must not move Join")
+        XCTAssertEqual(app.descendants(matching: .any)["channel-options-chan00000001"].frame, optionsFrame,
+                       "Expanding another roster must not move the channel menu")
+
+        let options = app.descendants(matching: .any)["channel-options-chan00000001"]
+        XCTAssertTrue(options.exists, "Owners have a permanent channel menu")
+        options.tap()
+        let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 3))
+        settings.tap()
+        assertStaticText("Overview", in: app, timeout: 3)
+        XCTAssertEqual(app.textFields["project-updates"].value as? String, "general", "The menu opens its own channel's editor")
+        capture("channel-settings-from-menu", app: app)
+    }
+
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
@@ -202,7 +292,7 @@ final class CaperParityUITests: XCTestCase {
         let stack = app.buttons["voice-stack-chan00000002"]
         XCTAssertTrue(stack.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
         XCTAssertTrue(stack.label.contains("in voice in design"))
-        XCTAssertEqual(stack.value as? String, "Expanded")
+        XCTAssertEqual(stack.value as? String, "Collapsed")
         #if os(iOS)
         let selected = app.buttons["channel-chan00000001"]
         XCTAssertEqual(selected.value as? String, "Selected")
@@ -212,14 +302,14 @@ final class CaperParityUITests: XCTestCase {
         #endif
         XCTAssertTrue(app.buttons["join-voice-chan00000002"].exists)
         stack.tap()
-        XCTAssertEqual(stack.value as? String, "Collapsed")
+        XCTAssertEqual(stack.value as? String, "Expanded")
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected", "Collapsing voice occupants must not navigate text chat")
         #else
         XCTAssertEqual(selected.value as? String, "# general", "Collapsing voice occupants must not navigate text chat")
         #endif
         stack.tap()
-        XCTAssertEqual(stack.value as? String, "Expanded")
+        XCTAssertEqual(stack.value as? String, "Collapsed")
         capture("spectator-voice-roster", app: app)
 
         var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
@@ -231,7 +321,9 @@ final class CaperParityUITests: XCTestCase {
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: stack)
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed,
                        "Revoked private-channel occupancy must disappear without altering selected chat")
-        XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists)
+        let deniedAction = app.buttons["join-voice-chan00000002"]
+        XCTAssertTrue(deniedAction.exists, "Revocation keeps the stable action slot")
+        XCTAssertFalse(deniedAction.isEnabled, "A revoked channel cannot be joined")
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected")
         #else
@@ -259,22 +351,24 @@ final class CaperParityUITests: XCTestCase {
         #if os(iOS)
         assertStaticText("general / Fixture Studio", in: app)
         #endif
-        assertStaticText("TEST FIXTURE You (you)", in: app)
-        assertStaticText("TEST FIXTURE Maya", in: app)
         XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
         XCTAssertFalse(app.sliders["TEST FIXTURE Maya volume"].exists, "Volume stays in the remote-only Audio menu")
-        let audio = app.buttons["participant-audio-fixture-remote"]
-        XCTAssertTrue(audio.exists)
+        XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists, "Participant controls stay hidden while the roster starts collapsed")
+        XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel has no redundant Leave action")
+        XCTAssertEqual(app.buttons.matching(identifier: "Leave voice").count, 1, "Disconnect lives only in the dock")
         let stack = app.buttons["voice-stack-chan00000001"]
         XCTAssertTrue(stack.exists)
+        XCTAssertEqual(stack.value as? String, "Collapsed")
         capture("active-voice-compact-test-fixture", app: app)
         stack.tap()
-        XCTAssertEqual(stack.value as? String, "Collapsed")
-        XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists)
+        XCTAssertEqual(stack.value as? String, "Expanded")
+        assertStaticText("TEST FIXTURE You (you)", in: app)
+        assertStaticText("TEST FIXTURE Maya", in: app)
+        XCTAssertTrue(app.buttons["participant-audio-fixture-remote"].exists)
         XCTAssertTrue(context.exists, "Call context and Disconnect remain outside the collapsed participant roster")
         XCTAssertTrue(app.buttons["Leave voice"].exists)
-        capture("active-voice-collapsed-test-fixture", app: app)
-        stack.tap()
+        capture("active-voice-expanded-test-fixture", app: app)
+        let audio = app.buttons["participant-audio-fixture-remote"]
         audio.tap()
         XCTAssertTrue(app.sliders["TEST FIXTURE Maya volume"].waitForExistence(timeout: 3))
         #if os(macOS)
@@ -347,12 +441,12 @@ final class CaperParityUITests: XCTestCase {
         saved.doubleClick()
     }
 
-    func testInlineJoinAndProfileBackdropDismissal() {
+    func testSeparateVoiceRowAndProfileBackdropDismissal() {
         let app = launch()
         let channel = app.buttons["channel-chan00000001"]
         let join = app.buttons["join-voice-chan00000001"]
         XCTAssertTrue(join.waitForExistence(timeout: 10))
-        XCTAssertEqual(join.frame.midY, channel.frame.midY, accuracy: 2, "Join stays on the channel's row")
+        XCTAssertEqual(join.frame.minY, channel.frame.maxY, accuracy: 2, "Join stays directly below the channel's row")
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.isHittable)
         XCTAssertLessThan(settings.frame.maxX, app.descendants(matching: .any)["channel-sidebar-resize"].frame.midX)
@@ -421,15 +515,20 @@ final class CaperParityUITests: XCTestCase {
     #endif
 
     func testLogin() {
-        let app = launch(fixture: "login", signedIn: false)
-        assertStaticText("Come on in.", in: app)
+        // Exercise normal session restoration, not a forced login presentation.
+        let app = launch(signedIn: false)
+        assertStaticText("Welcome to Caper", in: app)
+        XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         let email = app.textFields["Email address"]
+        XCTAssertFalse(app.descendants(matching: .any)["message-composer"].exists)
+        XCTAssertFalse(app.buttons["Create space"].exists)
         XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
         capture("login", app: app)
         email.tap(); email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
         XCTAssertTrue(app.textFields["Sign-in code"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.windows.firstMatch.frame.contains(app.textFields["Sign-in code"].frame))
+        XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)
@@ -543,6 +642,50 @@ final class CaperParityUITests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertEqual(stored, 1, "Send must reach the server exactly once, not merely draw a pending row")
+    }
+
+    func testChatReceivesAfterDisconnectWithoutStaleReconnectWarning() async throws {
+        let app = launch()
+        assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app, timeout: 30)
+        var sessionRequest = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/session")!)
+        sessionRequest.httpMethod = "POST"
+        sessionRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        sessionRequest.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        sessionRequest.httpBody = Data(#"{"name":"Fixture Owner"}"#.utf8)
+        let (data, sessionResponse) = try await URLSession.shared.data(for: sessionRequest)
+        XCTAssertEqual((sessionResponse as? HTTPURLResponse)?.statusCode, 200)
+        let session = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let token = try XCTUnwrap(session["token"] as? String)
+        func postMessage(_ text: String) async throws {
+            var send = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages")!)
+            send.httpMethod = "POST"
+            send.setValue("application/json", forHTTPHeaderField: "content-type")
+            send.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+            send.setValue(token, forHTTPHeaderField: "x-caper-chat-token")
+            send.httpBody = try JSONSerialization.data(withJSONObject: ["clientMessageId": UUID().uuidString, "text": text])
+            let (_, sent) = try await URLSession.shared.data(for: send)
+            XCTAssertEqual((sent as? HTTPURLResponse)?.statusCode, 200)
+        }
+        let initial = "TEST FIXTURE initial live delivery \(UUID().uuidString)"
+        try await postMessage(initial)
+        assertStaticText(initial, in: app, timeout: 15)
+        // Receiving an externally posted message proves the initial socket is
+        // subscribed before forcing a failure, rather than racing startup.
+        var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
+        control.httpMethod = "POST"
+        control.setValue("application/json", forHTTPHeaderField: "content-type")
+        control.httpBody = Data(#"{"disconnect":true}"#.utf8)
+        let (_, disconnected) = try await URLSession.shared.data(for: control)
+        XCTAssertEqual((disconnected as? HTTPURLResponse)?.statusCode, 200)
+        let message = "TEST FIXTURE reconnect delivery \(UUID().uuidString)"
+        try await postMessage(message)
+
+        // No app send or navigation can clear the warning. Only socket recovery
+        // and replay/live delivery can make this externally posted message appear.
+        assertStaticText(message, in: app, timeout: 15)
+        XCTAssertEqual(staticTexts(message, in: app).count, 1)
+        XCTAssertFalse(staticTexts("Live updates disconnected. Reconnecting…", in: app).firstMatch.exists)
+        capture("chat-recovered-test-fixture", app: app)
     }
 
     func testVoiceEntryAndAudioPreferencesWithoutFeatureFlag() {
@@ -735,7 +878,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(submit.isEnabled)
     }
 
-    func testRejectedMessageActionsRenderWithoutSending() {
+    func testRejectedMessageActionsRenderWithoutSending() async throws {
         let app = launch(fixture: "chat-rejected")
         assertStaticText("Fixture message that was rejected", in: app)
         let edit = app.buttons["Edit"]
@@ -745,6 +888,33 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Dismiss"].exists)
         XCTAssertFalse(app.buttons["send-message-button"].isEnabled)
         capture("chat-rejected-fixture", app: app)
+
+        // Another message changing the history must not scroll to the last
+        // committed row and hide the rejected row's Edit/Dismiss controls.
+        var sessionRequest = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/session")!)
+        sessionRequest.httpMethod = "POST"
+        sessionRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        sessionRequest.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        sessionRequest.httpBody = Data(#"{"name":"Fixture Owner"}"#.utf8)
+        let (data, sessionResponse) = try await URLSession.shared.data(for: sessionRequest)
+        XCTAssertEqual((sessionResponse as? HTTPURLResponse)?.statusCode, 200)
+        let session = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let token = try XCTUnwrap(session["token"] as? String)
+        let message = "TEST FIXTURE live delivery while rejected \(UUID().uuidString)"
+        var send = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages")!)
+        send.httpMethod = "POST"
+        send.setValue("application/json", forHTTPHeaderField: "content-type")
+        send.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        send.setValue(token, forHTTPHeaderField: "x-caper-chat-token")
+        send.httpBody = try JSONSerialization.data(withJSONObject: ["clientMessageId": UUID().uuidString.lowercased(), "text": message])
+        let (_, sent) = try await URLSession.shared.data(for: send)
+        XCTAssertEqual((sent as? HTTPURLResponse)?.statusCode, 200)
+        assertStaticText(message, in: app, timeout: 15)
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["chat-timeline"].frame.contains(edit.frame), "Live delivery keeps rejected actions in the visible viewport")
+        XCTAssertTrue(app.buttons["Dismiss"].exists)
+        XCTAssertFalse(app.buttons["send-message-button"].isEnabled)
+        capture("chat-rejected-after-live-fixture", app: app)
         edit.tap()
         XCTAssertFalse(app.buttons["Dismiss"].waitForExistence(timeout: 1))
         XCTAssertEqual(app.descendants(matching: .any)["message-composer"].value as? String,
@@ -838,6 +1008,51 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Manage space", in: app)
         assertElement("space-members-heading", label: "Members 3", in: app)
         capture("manage-space", app: app)
+        let username = app.textFields["Exact username"]
+        XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")
+        app.buttons["Remove"].firstMatch.tap()
+        #if os(macOS)
+        let headingProperty = "value"
+        #else
+        let headingProperty = "label"
+        #endif
+        let twoMembers = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 2"),
+            object: app.descendants(matching: .any)["space-members-heading"])
+        XCTAssertEqual(XCTWaiter.wait(for: [twoMembers], timeout: 5), .completed)
+        // Removed members have a 24-hour invitation cooldown. Invite an
+        // existing fixture account that has never belonged to this space.
+        type("sam", into: username)
+        #if os(iOS)
+        capture("manage-space-keyboard", app: app)
+        username.typeText("\n")
+        #else
+        app.buttons["Invite"].tap()
+        #endif
+        let unchanged = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 2"),
+            object: app.descendants(matching: .any)["space-members-heading"])
+        XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed,
+                       "Inviting must not grant immediate space membership")
+        assertStaticText("Pending invitations  1", in: app)
+        assertStaticText("Sam", in: app)
+        assertStaticText("@sam", in: app)
+        XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,
+            "Successful invitation clears the editable field")
+        capture("manage-space-pending-invitation", app: app)
+        app.buttons["Close"].firstMatch.tap()
+        XCTAssertFalse(app.textFields["Exact username"].exists)
+        XCTAssertTrue(app.buttons["Browse"].exists || app.buttons["account-profile"].isHittable)
+    }
+
+    func testManageSpaceCanDismissOnOutsideTap() {
+        let app = launch(fixture: "manage-space")
+        XCTAssertTrue(app.textFields["Exact username"].waitForExistence(timeout: 10))
+        #if os(macOS)
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
+        #else
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
+        #endif
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.textFields["Exact username"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 3), .completed)
     }
 
     func testPrivateChannelOverview() {
@@ -865,10 +1080,20 @@ final class CaperParityUITests: XCTestCase {
         capture("narrow-members", app: app)
         let hideMembers = app.buttons["Hide member list"]
         XCTAssertTrue(hideMembers.isHittable, "The open member panel must leave its toggle accessible")
-        hideMembers.tap()
+        app.buttons["Close member list"].tap()
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        members.tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         navigation.tap()
         assertElement("selected-space-name", label: "Fixture Studio", in: app, timeout: 5)
+        let profile = app.buttons["account-profile"]
+        let settings = app.descendants(matching: .any)["account-settings-menu"]
+        XCTAssertTrue(profile.isHittable)
+        XCTAssertTrue(settings.isHittable)
+        XCTAssertLessThan(profile.frame.minX, 60, "The mobile account bar spans beneath the rail")
+        XCTAssertEqual(profile.frame.midY, settings.frame.midY, accuracy: 3)
+        XCTAssertLessThan(settings.frame.maxY, app.frame.maxY - 16, "Account controls must clear the home indicator")
         capture("narrow-browse", app: app)
     }
     #endif

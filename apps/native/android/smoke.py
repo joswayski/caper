@@ -292,10 +292,11 @@ def main() -> None:
     # Signed-out users now land at authentication. The retired public General
     # demo must not be reconstructed by the fixture; authenticate before
     # exercising the populated account-space coverage below.
-    login = capture("caper-android-login", "Come on in.", seconds=60)
-    for required in ("WELCOME TO CAPER", "Email address", "Email me a code"):
+    login = capture("caper-android-login", "Welcome to Caper", seconds=60)
+    for required in ("Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
-    for retired in ("general", "Join", "TEST FIXTURE"):
+    assert find(login, text="WELCOME TO CAPER") is None, "Login must not repeat the welcome heading"
+    for retired in ("general", "Join", "TEST FIXTURE", "Message #"):
         assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
     assert find(login, description="Channel options") is None
     assert find(login, description="Create channel") is None
@@ -306,16 +307,39 @@ def main() -> None:
     error = capture("caper-android-login-error", "temporarily unavailable")
     assert find(error, text="fixture@example.test") is not None
     tap(text="Email me a code")
-    wait_for(text="Check your email.")
+    verification = wait_for(text="Check your email.")
+    assert find(verification, text="WELCOME TO CAPER") is None, "Verification must not repeat the welcome heading"
     enter_first_field("ABC234")
     tap(text="Continue")
     wait_for(description="Fixture Studio")
+
+    # A failed saved-session restore must stay on authentication, not reveal
+    # the retired Guest/General workspace. A transient failure keeps the vault
+    # credential, so the next successful launch still restores the account.
+    adb("shell", "am", "force-stop", PACKAGE)
+    fixture({"failure": {"path": "/api/account/me", "method": "GET", "status": 503,
+                         "error": "Session restoration temporarily unavailable."}})
+    launch()
+    restore_error = capture("caper-android-restore-error", "Session restoration temporarily unavailable.")
+    assert find(restore_error, text="Welcome to Caper") is not None
+    assert find(restore_error, text="Email address") is not None
+    for retired in ("Guest", "Message #general", "TEST FIXTURE"):
+        assert find(restore_error, contains=retired) is None, f"Restore failure exposes workspace: {retired!r}"
+    adb("shell", "am", "force-stop", PACKAGE)
+    launch()
+    wait_for(description="Fixture Studio")
+
     tap(description="Fixture Studio")
     wait_for(text="design")
+    wait_for(contains="TEST FIXTURE")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
     for required in ("Channels", "general", "design", "planning", "Members", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
+    general = find(desktop, text="general")
+    join = find(desktop, text="Join")
+    assert general is not None and join is not None
+    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
 
     # Hide the list while reading a non-default channel: collapsing must not
     # silently select General, disconnect chat, or expose hidden row actions.
@@ -328,7 +352,7 @@ def main() -> None:
     collapsed = capture("caper-android-channels-collapsed", "Expand channels")
     for hidden in ("general", "design", "planning"):
         assert find(collapsed, text=hidden) is None
-    assert find(collapsed, description="Manage design") is None
+    assert find(collapsed, description="design channel menu") is None
     assert find(collapsed, contains="Message #design") is not None
     assert find(collapsed, text="Create channel") is None, "The action must close its menu"
     tap(description="Channel options")
@@ -337,7 +361,7 @@ def main() -> None:
     tap(description="Collapse channels")
     wait_for(description="Expand channels")
     tap(description="Expand channels")
-    wait_for(description="Manage design")
+    wait_for(description="design channel menu")
     tap(text="general")
     wait_for(contains="Message #general")
 
@@ -408,13 +432,17 @@ def main() -> None:
     assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
     assert sum(1 for node in nodes(profile_error) if node.get("text") == "Edit profile") == 1
     tap(text="Save profile")
-    wait_for(description="Manage planning")
+    wait_for(description="planning channel menu")
 
-    tap(description="Manage planning")
+    tap(description="planning channel menu")
+    channel_menu = capture("caper-android-per-channel-menu", "Channel settings")
+    assert find(channel_menu, text="Channel settings") is not None
+    assert find(channel_menu, contains="invite") is None
+    tap(text="Channel settings")
     overview = capture("caper-android-channel-settings", "Overview")
-    for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Delete channel"):
+    for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Pending invitations", "Delete channel"):
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
-    assert find(overview, text="Add") is not None
+    assert find(overview, text="Invite") is not None
     for removed in ("Private channel access", "Existing username", "Grant"):
         assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
     tap(description="Close")
@@ -470,10 +498,14 @@ def main() -> None:
         for index in range(1, 5)
     ]}})
     wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
+    initial_roster = capture("caper-android-voice-roster-initial", "4 in voice in design. Show who is in voice")
+    assert find(initial_roster, text="Fixture Voice 1") is None, "Occupied rosters must start collapsed"
+    assert find(initial_roster, text="4 in voice") is not None, "Occupancy remains readable beside Join"
+    tap(description="4 in voice in design. Show who is in voice")
     roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
     assert find(roster, text="Fixture Voice 1") is not None
     assert find(roster, text="Fixture Voice 4") is not None
-    assert find(roster, text="+1") is not None, "Avatar stack must cap at three faces"
+    assert find(roster, text="4 in voice") is not None
     assert find(roster, text="4 in voice in design") is None, "Voice count belongs in accessibility, not visible copy"
     assert find(roster, description="Audio controls for Fixture Voice 1") is None, "Spectators must not get local audio controls"
     assert find(roster, text="User volume") is None
@@ -514,6 +546,15 @@ def main() -> None:
     send_left = list(map(int, re.findall(r"\d+", send.attrib["bounds"])))[0]
     assert send_left > composer_right, "Send must be a separate button to the right of the composer"
     tap(description="Send")
+    # Reaction controls make the seeded conversation taller than the narrow
+    # viewport. Scroll the timeline instead of assuming every row fits on screen.
+    after_send = hierarchy()
+    if find(after_send, text=sent_text) is None:
+        timeline = next(node for node in nodes(after_send) if node.get("scrollable") == "true")
+        left, top, right, bottom = map(int, re.findall(r"\d+", timeline.attrib["bounds"]))
+        x = str((left + right) // 2)
+        adb("shell", "input", "swipe", x, str(top + (bottom - top) * 3 // 4),
+            x, str(top + (bottom - top) // 4), "400")
     delivered = wait_for(text=sent_text)
     assert sum(1 for node in nodes(delivered) if node.get("text") == sent_text) == 1, "Sent message rendered more than once"
     composer = next((node for node in nodes(delivered) if node.get("class") == "android.widget.EditText"), None)
@@ -527,7 +568,7 @@ def main() -> None:
         history = json.load(response)
     matching = [message for message in history["messages"] if message["content"]["text"] == sent_text]
     assert len(matching) == 1, "Fixture history did not contain exactly one sent message"
-    assert matching[0]["author"] == {"id": "owner0000001", "name": "Fixture Owner", "isGuest": False}
+    assert matching[0]["author"] == {"id": "owner0000001", "name": "Fixture Owner", "isGuest": False, "avatarId": 0}
     assert matching[0]["channelId"] == "chan00000001" and matching[0]["content"]["version"] == 1
 
     # Exercise the actual default voice entry and Android permission controller.
@@ -539,6 +580,12 @@ def main() -> None:
     join = "Join voice in #general"
     voice_ready = capture("caper-android-voice-ready", join)
     assert find(voice_ready, description=join) is not None
+    for channel in ("general", "design", "planning"):
+        action = find(voice_ready, description=f"Join voice in #{channel}")
+        assert action is not None, f"Accessible #{channel} must expose a stable Join voice action"
+        left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
+        # viewport() sets density 320: 48dp is 96 physical pixels.
+        assert right - left >= 96 and bottom - top >= 96, f"#{channel} voice action must have a 48dp touch target"
     # Web's mute and deafen work before joining, without starting a call.
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
@@ -564,6 +611,11 @@ def main() -> None:
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
     assert find(failed, description="Dismiss voice error") is not None, "Web shows voice errors in the dock"
+    tap(description="Dismiss voice error")
+    assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
+    tap(description=join)
+    retried = capture("caper-android-voice-fixture-retry", "TEST FIXTURE: no real media engine or SFU is connected.")
+    assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
     tap(description="Close navigation")
     chat = wait_for(contains="Message #general")
     assert find(chat, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, \

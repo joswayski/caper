@@ -14,6 +14,7 @@
   <key>MinimumOSVersion</key><string>17.0</string>
   <key>NSCameraUsageDescription</key><string>Caper doesn&apos;t use your camera. Its voice calls are built on WebRTC, which includes camera support.</string>
   <key>NSMicrophoneUsageDescription</key><string>Caper uses your microphone when you join a voice channel.</string>
+  <key>CaperAPNsEnvironment</key><string>$(CAPER_APNS_ENVIRONMENT)</string>
   <key>UIAppFonts</key><array><string>Satoshi-Regular.otf</string><string>Satoshi-Medium.otf</string><string>Satoshi-Bold.otf</string><string>Satoshi-Black.otf</string></array>
   <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
   <key>UILaunchScreen</key><dict/>
