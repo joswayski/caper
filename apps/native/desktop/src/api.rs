@@ -1,11 +1,15 @@
+use crate::attachments::FreshUrl;
+use crate::compress::Compression;
 use crate::model::{
     Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
     Members, Message, ReactionUpdate, Space, SpaceDetail, Spaces,
 };
+use crate::uploads::UploadError;
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::time::Duration;
 use url::Url;
 
@@ -13,6 +17,9 @@ use url::Url;
 pub struct Api {
     base: Url,
     client: Client,
+    /// Storage and CDN transfers: no credentials, no redirects, and no overall
+    /// deadline so large uploads can finish.
+    media: Client,
 }
 
 #[derive(Debug)]
@@ -48,7 +55,17 @@ impl Api {
             .user_agent(concat!("Caper-Desktop/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| "Could not initialize secure networking")?;
-        Ok(Self { base, client })
+        let media = Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(None)
+            .redirect(Policy::none())
+            .build()
+            .map_err(|_| "Could not initialize secure networking")?;
+        Ok(Self {
+            base,
+            client,
+            media,
+        })
     }
 
     pub fn base(&self) -> &Url {
@@ -422,14 +439,150 @@ impl Api {
         channel: &str,
         client_id: &str,
         text: &str,
+        attachment_ids: &[String],
     ) -> Result<Message, ApiError> {
+        let mut body = json!({"clientMessageId":client_id,"text":text});
+        // Ids join the idempotency hash; the key is present only with files.
+        if !attachment_ids.is_empty() {
+            body["attachmentIds"] = json!(attachment_ids);
+        }
         self.request(
             Method::POST,
             &format!("api/chat/channels/{channel}/messages"),
             token,
             Some(chat_token),
-            Some(json!({"clientMessageId":client_id,"text":text})),
+            Some(body),
         )
+    }
+
+    /// Uploads are optional server configuration (503 without storage). Any
+    /// failure hides the attach control; success carries compression settings.
+    pub fn asset_usage(&self, token: &str) -> Result<Compression, ApiError> {
+        let usage: Value =
+            self.request(Method::GET, "api/assets/usage", Some(token), None, None)?;
+        Ok(serde_json::from_value(usage["compression"].clone()).unwrap_or_default())
+    }
+
+    /// Fresh signed URLs for visible attachments; ids the caller cannot see
+    /// are omitted, and malformed entries are skipped.
+    pub fn attachment_urls(
+        &self,
+        token: &str,
+        ids: &[String],
+    ) -> Result<BTreeMap<String, FreshUrl>, ApiError> {
+        let body: Value = self.request(
+            Method::POST,
+            "api/assets/urls",
+            Some(token),
+            None,
+            Some(json!({"ids": ids})),
+        )?;
+        Ok(body["urls"]
+            .as_object()
+            .map(|urls| {
+                urls.iter()
+                    .filter_map(|(id, value)| {
+                        let fresh: FreshUrl = serde_json::from_value(value.clone()).ok()?;
+                        let web =
+                            |url: &str| url.starts_with("https://") || url.starts_with("http://");
+                        (web(&fresh.url) && fresh.preview_url.as_deref().is_none_or(web))
+                            .then(|| (id.clone(), fresh))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// `POST /api/assets`: reserve quota and receive presigned uploads.
+    pub fn create_asset(&self, token: &str, body: Value) -> Result<Value, UploadError> {
+        let response = self
+            .raw(Method::POST, "api/assets", Some(token), None, Some(body))
+            .map_err(|error| UploadError::new(error.message))?;
+        if !response.status().is_success() {
+            return Err(upload_failure(response));
+        }
+        response
+            .json()
+            .map_err(|_| UploadError::new("The upload service returned an invalid response."))
+    }
+
+    /// `POST /api/assets/{id}/complete`: the API verifies the stored bytes.
+    pub fn complete_asset(&self, token: &str, id: &str) -> Result<Value, UploadError> {
+        let response = self
+            .raw(
+                Method::POST,
+                &format!("api/assets/{id}/complete"),
+                Some(token),
+                None,
+                None,
+            )
+            .map_err(|error| UploadError::new(error.message))?;
+        if !response.status().is_success() {
+            return Err(upload_failure(response));
+        }
+        response
+            .json()
+            .map_err(|_| UploadError::new("The upload service returned an invalid response."))
+    }
+
+    /// PUT exact bytes to a presigned storage URL with exactly the returned
+    /// headers. The body sets Content-Length, which the URL signs. No account
+    /// credentials are sent.
+    pub fn put_presigned(
+        &self,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+        body: reqwest::blocking::Body,
+    ) -> Result<(), UploadError> {
+        let url = media_url(url).ok_or_else(|| {
+            UploadError::new("The upload service returned an invalid storage address.")
+        })?;
+        let mut request = self.media.put(url);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .body(body)
+            .send()
+            .map_err(|_| UploadError::new("The upload was interrupted."))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(UploadError::new("Storage refused the upload."))
+        }
+    }
+
+    /// Download attachment media from a signed CDN URL (no credentials).
+    /// Errors carry the HTTP status, if any, for the expired-URL retry.
+    pub fn fetch_media(&self, url: &str) -> Result<Vec<u8>, Option<u16>> {
+        const MAX_MEDIA_BYTES: u64 = 40 * 1024 * 1024;
+        let url = media_url(url).ok_or(None)?;
+        let response = self
+            .media
+            .get(url)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .map_err(|_| None)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Some(status.as_u16()));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_MEDIA_BYTES)
+        {
+            return Err(None);
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(response, MAX_MEDIA_BYTES + 1),
+            &mut bytes,
+        )
+        .map_err(|_| None)?;
+        if bytes.len() as u64 > MAX_MEDIA_BYTES {
+            return Err(None);
+        }
+        Ok(bytes)
     }
 
     pub fn react(
@@ -517,6 +670,38 @@ impl Api {
             attempts_remaining: None,
         })
     }
+}
+
+/// Storage and CDN addresses must be HTTPS, or plain HTTP on loopback for
+/// local development servers.
+fn media_url(url: &str) -> Option<Url> {
+    let url = Url::parse(url).ok()?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    (url.username().is_empty()
+        && url.password().is_none()
+        && (url.scheme() == "https" || (url.scheme() == "http" && local)))
+        .then_some(url)
+}
+
+/// Web `failure`: storage-full and too-large are explicit; otherwise the
+/// server's message.
+fn upload_failure(response: Response) -> UploadError {
+    let status = response.status();
+    let body = response.json::<Value>().ok();
+    if body.as_ref().and_then(|body| body["code"].as_str()) == Some("storage_full") {
+        return UploadError {
+            message: "You’ve used all of your file storage.".into(),
+            storage_full: true,
+        };
+    }
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return UploadError::new("This file is too large to upload.");
+    }
+    UploadError::new(
+        body.as_ref()
+            .and_then(|body| body["error"].as_str())
+            .unwrap_or("This file could not be uploaded."),
+    )
 }
 
 fn checked(response: Response) -> Result<Response, ApiError> {

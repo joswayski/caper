@@ -883,7 +883,7 @@ npx wrangler deploy --env staging
 | Web (desktop and mobile layouts) | Yes: picker, paste, drag and drop | Images, video, audio, file cards |
 | Apple (iOS and macOS) | Yes: Photos picker, file importer, drag and drop on macOS (no paste) | Images, video (AVKit), audio, file cards, "File removed" |
 | Android | Yes: system photo picker and document picker, up to 10 files, draft chips with compression savings and progress. Applies the server `compression` settings on device (indexed PNG within `paletteColors`, else lossy WebP; Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview, tap for full size), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop | Pending (in progress on this branch) | Message text only until the desktop change lands. |
+| Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux) and drag and drop, up to 10. No clipboard image paste. Stills: exact-palette indexed PNG or JPEG (pure Rust; no WebP encoder) with the server settings. Videos upload unchanged (no transcoder); MP4/QuickTime size and duration from headers | Inline images (decoded off the UI thread, cached by attachment id). Video posters, audio and files open in the system browser or player; no in-app playback. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 Apple notes. Attachments decode tolerantly (a malformed entry is skipped).
 Signed URLs are refreshed through `POST /api/assets/urls` when `exp` is past or
@@ -930,7 +930,16 @@ and physical devices are not yet validated.
   the settings, the flood limits and an indexed-PNG decode round-trip.
 - Not yet validated: live R2 (signature acceptance, signed `content-length`
   and CORS), the deployed Worker and its edge cache, Safari/Firefox encoders
-  (including Opus-in-MP4 playback on Safari), and physical phones.
+  (including Opus-in-MP4 playback on Safari), and physical phones. Desktop has
+  not uploaded to a live API/R2/CDN; its Windows file dialog and drag and drop
+  and the Linux portal dialog have not been exercised interactively.
+- Rust desktop unit tests: tolerant attachment parsing, URL expiry and
+  refresh batching with one retry after 403/404, compression decisions, a
+  pixel-exact palette PNG round trip, MP4 header probing, and the upload
+  request sequence against a loopback fake server (exact storage headers and
+  length, no credentials on storage `PUT`s, `attachmentIds` only when present,
+  storage-full errors). The labelled `--fixture parity-attachments` preview
+  was rendered under Xvfb (software Vulkan) at 1440×900 and 900×700.
 - Android: JVM unit tests cover tolerant attachment parsing, URL expiry and
   refresh decisions, the compression decisions (palette PNG versus lossy versus
   keep, preview sizing, video target height), a lossless indexed-PNG round trip

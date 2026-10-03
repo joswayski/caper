@@ -143,6 +143,144 @@ pub struct Content {
     #[serde(rename = "type")]
     pub kind: String,
     pub text: String,
+    /// Additive on version 1 `text` content. Malformed entries are skipped so
+    /// one bad file never rejects a message or a history page.
+    #[serde(
+        default,
+        deserialize_with = "tolerant_attachments",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub attachments: Vec<Attachment>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentKind {
+    Image,
+    Video,
+    Audio,
+    File,
+}
+
+impl AttachmentKind {
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "image" => Self::Image,
+            "video" => Self::Video,
+            "audio" => Self::Audio,
+            "file" => Self::File,
+            _ => return None,
+        })
+    }
+}
+
+/// A file on a message, as the API describes it. URLs are signed per response
+/// and expire; `preview` only says a preview object exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    pub kind: AttachmentKind,
+    pub content_type: String,
+    pub name: String,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(
+        skip_serializing_if = "std::ops::Not::not",
+        serialize_with = "preview_marker"
+    )]
+    pub preview: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unavailable: bool,
+}
+
+fn preview_marker<S: serde::Serializer>(_: &bool, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    serializer.serialize_map(Some(0))?.end()
+}
+
+impl Attachment {
+    /// Mirrors web `isChatAttachment`: required strings and kind, optional
+    /// non-negative numbers, and only http(s) URLs.
+    pub fn parse(value: &serde_json::Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let text = |name: &str| object.get(name)?.as_str().map(str::to_owned);
+        let optional_number = |name: &str| -> Result<Option<u64>, ()> {
+            match object.get(name) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(value) => value
+                    .as_u64()
+                    .or_else(|| {
+                        value
+                            .as_f64()
+                            .filter(|number| number.is_finite() && *number >= 0.0)
+                            .map(|number| number.round() as u64)
+                    })
+                    .map(Some)
+                    .ok_or(()),
+            }
+        };
+        let optional_url = |name: &str| -> Result<Option<String>, ()> {
+            match object.get(name) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(url))
+                    if url.starts_with("https://") || url.starts_with("http://") =>
+                {
+                    Ok(Some(url.clone()))
+                }
+                Some(_) => Err(()),
+            }
+        };
+        let id = text("id").filter(|id| !id.is_empty())?;
+        let size = object.get("size")?;
+        let size = size.as_u64().or_else(|| {
+            size.as_f64()
+                .filter(|number| number.is_finite() && *number >= 0.0)
+                .map(|number| number as u64)
+        })?;
+        let dimension = |name: &str| -> Result<Option<u32>, ()> {
+            optional_number(name)?
+                .map(|value| u32::try_from(value).map_err(|_| ()))
+                .transpose()
+        };
+        Some(Self {
+            id,
+            kind: AttachmentKind::parse(object.get("kind")?.as_str()?)?,
+            content_type: text("contentType")?,
+            name: text("name")?,
+            size,
+            width: dimension("width").ok()?,
+            height: dimension("height").ok()?,
+            duration_ms: optional_number("durationMs").ok()?,
+            preview: object
+                .get("preview")
+                .is_some_and(serde_json::Value::is_object),
+            url: optional_url("url").ok()?,
+            preview_url: optional_url("previewUrl").ok()?,
+            unavailable: object.get("unavailable") == Some(&serde_json::Value::Bool(true)),
+        })
+    }
+}
+
+/// Never fails: a missing, null or non-array field is no attachments, and
+/// malformed entries are dropped.
+fn tolerant_attachments<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Attachment>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_array()
+        .map(|items| items.iter().filter_map(Attachment::parse).collect())
+        .unwrap_or_default())
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -539,6 +677,7 @@ mod tests {
                 version: 1,
                 kind: "text".into(),
                 text: id.into(),
+                attachments: Vec::new(),
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -590,6 +729,90 @@ mod tests {
         assert!(timeline.merge_sent(invalid).is_err());
         assert_eq!(timeline.cursor(), "0");
         assert_eq!(timeline.messages().count(), 0);
+    }
+
+    fn wire_message(attachments: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "id": "m1", "channelId": "channel", "seq": "1", "createdAt": "2026-10-03T00:00:00Z",
+            "clientMessageId": "client", "author": {"id": "u", "name": "U", "isGuest": false},
+            "content": {"version": 1, "type": "text", "text": "", "attachments": attachments}
+        })
+    }
+
+    #[test]
+    fn attachments_parse_tolerantly_without_rejecting_messages() {
+        let message: Message = serde_json::from_value(wire_message(serde_json::json!([
+            {"id": "img", "kind": "image", "contentType": "image/png", "name": "a.png", "size": 1200,
+             "width": 640, "height": 480, "preview": {}, "url": "https://cdn.caper.chat/original/img?exp=9&sig=s",
+             "previewUrl": "https://cdn.caper.chat/preview/img?exp=9&sig=p", "futureField": 1},
+            {"id": "gone", "kind": "file", "contentType": "application/pdf", "name": "a.pdf", "size": 9,
+             "unavailable": true},
+            {"id": "video", "kind": "video", "contentType": "video/mp4", "name": "v.mp4", "size": 2.0,
+             "durationMs": 1500.4},
+            {"id": "bad-kind", "kind": "hologram", "contentType": "x/y", "name": "x", "size": 1},
+            {"id": "bad-url", "kind": "file", "contentType": "x/y", "name": "x", "size": 1, "url": "javascript:alert(1)"},
+            {"id": "bad-width", "kind": "image", "contentType": "image/png", "name": "x", "size": 1, "width": -4},
+            {"kind": "file", "contentType": "x/y", "name": "missing id", "size": 1},
+            {"id": "no-size", "kind": "file", "contentType": "x/y", "name": "x"},
+            "not an object",
+            null
+        ])))
+        .unwrap();
+        message.validate().unwrap();
+        let ids: Vec<_> = message
+            .content
+            .attachments
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, ["img", "gone", "video"]);
+        let image = &message.content.attachments[0];
+        assert_eq!(image.kind, AttachmentKind::Image);
+        assert_eq!((image.width, image.height), (Some(640), Some(480)));
+        assert!(image.preview);
+        assert!(image.preview_url.is_some());
+        assert!(message.content.attachments[1].unavailable);
+        assert_eq!(message.content.attachments[2].duration_ms, Some(1500));
+
+        // A non-array field is no attachments, never a failed message.
+        for value in [
+            serde_json::json!({"id": "x"}),
+            serde_json::json!("text"),
+            serde_json::Value::Null,
+        ] {
+            let message: Message = serde_json::from_value(wire_message(value)).unwrap();
+            assert!(message.content.attachments.is_empty());
+        }
+        let mut legacy = wire_message(serde_json::Value::Null);
+        legacy["content"]
+            .as_object_mut()
+            .unwrap()
+            .remove("attachments");
+        let message: Message = serde_json::from_value(legacy).unwrap();
+        assert!(message.content.attachments.is_empty());
+    }
+
+    #[test]
+    fn attachments_round_trip_through_serialization() {
+        let message: Message = serde_json::from_value(wire_message(serde_json::json!([
+            {"id": "img", "kind": "image", "contentType": "image/png", "name": "a.png", "size": 3,
+             "preview": {}, "url": "https://cdn.caper.chat/original/img?exp=9&sig=s"}
+        ])))
+        .unwrap();
+        let encoded = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            encoded["content"]["attachments"][0],
+            serde_json::json!({"id": "img", "kind": "image", "contentType": "image/png", "name": "a.png",
+                "size": 3, "preview": {}, "url": "https://cdn.caper.chat/original/img?exp=9&sig=s"})
+        );
+        let decoded: Message = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, message);
+        let plain = serde_json::to_value(message_without_attachments()).unwrap();
+        assert!(plain["content"].get("attachments").is_none());
+    }
+
+    fn message_without_attachments() -> Message {
+        message("plain", 1)
     }
 
     #[test]

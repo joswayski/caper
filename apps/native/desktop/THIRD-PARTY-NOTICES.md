@@ -20,6 +20,16 @@ Principal UI/network dependencies are eframe/egui/egui_extras (MIT OR Apache-2.0
 (MIT OR Apache-2.0), reqwest (MIT OR Apache-2.0), tungstenite (MIT OR
 Apache-2.0), and keyring (MIT OR Apache-2.0).
 
+## Attachments
+
+Attachment images are decoded with the pure-Rust `image` crate codecs
+(`png`, `zune-jpeg`, `image-webp`, `gif`; MIT OR Apache-2.0, zune-jpeg also
+Zlib) and encoded with `png` (MIT OR Apache-2.0) and `jpeg-encoder`
+((MIT OR Apache-2.0) AND IJG: this software is based in part on the work of
+the Independent JPEG Group). The exact-palette indexed PNG writer and JPEG
+settings are adapted from Caper's sibling project Captures
+(`joswayski/captures`, Apache-2.0). The file dialog uses `rfd` (MIT).
+
 ## Native audio
 
 The bundled DPDFNet-8 HR model is the same Apache-2.0 asset used by the web

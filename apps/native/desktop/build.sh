@@ -84,7 +84,7 @@ Architecture: amd64
 Installed-Size: $size
 Maintainer: Caper <noreply@caper.chat>
 Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libdbus-1-3, libwayland-client0, libx11-6, libxkbcommon0, libxkbcommon-x11-0, libpulse0, libasound2, libvulkan1 | libgl1
-Recommends: gnome-keyring
+Recommends: gnome-keyring, xdg-desktop-portal
 Description: Native Caper conversation client
  A browser-free client for Caper spaces, text, and experimental voice.
 EOF
