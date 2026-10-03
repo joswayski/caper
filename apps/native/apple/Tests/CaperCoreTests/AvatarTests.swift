@@ -6,6 +6,20 @@ import AppKit
 @testable import CaperCore
 
 final class AvatarTests: XCTestCase {
+    func testDailyIconSelectionIsStableBoundedAndDoesNotRepeat() {
+        XCTAssertEqual(CaperDailyIcon.select(day: "2026-10-03", savedDay: "2026-10-03", savedIndex: 42, random: 799), 42)
+        XCTAssertEqual(Set((0..<800).map { CaperDailyIcon.select(day: "new", savedDay: nil, savedIndex: nil, random: UInt64($0)) }), Set(0..<800))
+        for old in [0, 42, 799] {
+            let choices = Set((0..<799).map { CaperDailyIcon.select(day: "new", savedDay: "old", savedIndex: old, random: UInt64($0)) })
+            XCTAssertEqual(choices, Set(0..<800).subtracting([old]))
+        }
+    }
+
+    func testDailyIconUsesUTCDateBoundaries() {
+        XCTAssertEqual(CaperDailyIcon.utcDay(containing: Date(timeIntervalSince1970: 86_399)), "1970-01-01")
+        XCTAssertEqual(CaperDailyIcon.utcDay(containing: Date(timeIntervalSince1970: 86_400)), "1970-01-02")
+    }
+
     func testPersistedIndicesAndFallback() throws {
         for index in [0, 31, 32, 255, 256, 799] { XCTAssertEqual(CaperAvatar.index(for: index), index) }
         for index in [nil, -1, 800] { XCTAssertNil(CaperAvatar.index(for: index)) }
