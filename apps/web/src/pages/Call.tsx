@@ -295,6 +295,12 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   const identityName = account?.displayName || chatAuthor?.name || name;
   const accountPresence = !!account && !!channel?.spaceId && !channel.demo;
   const joined = useRef(false);
+  const focusedJoin = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    if (connected && focusedJoin.current && !focusedJoin.current.isConnected && document.activeElement === document.body) {
+      document.querySelector<HTMLButtonElement>(".voice-hangup")?.focus();
+    }
+  }, [connected, voiceChannel?.id]);
   // The client reports an error only on the update where it happens, so keep
   // it until the next voice action or until it is dismissed.
   const [voiceError, setVoiceError] = useState<string>();
@@ -659,7 +665,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   };
   const channelLabel = (channelId?: string) => channelId === channel?.id || !channelId ? channel?.name ?? "general" : voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice";
   // Every channel has a separate, stable voice row. The roster expands only
-  // on request; joining and leaving reuse the same action button and its slot.
+  // on request. Connected channels reserve the action slot; leave lives in the dock.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
     const { people, own } = rosterFor(channelId);
@@ -673,8 +679,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
     const leavingHere = state.phase === "leaving" && voiceChannel?.id === channelId;
     const switching = !idle && !activeHere;
     const blocked = joiningHere || leavingHere || actionPending || (!activeHere && joinBlocked);
-    const actionLabel = leavingHere ? "Leaving…" : joiningHere ? "Joining…" : activeHere ? "Leave voice" : switching ? "Switch here" : "Join voice";
-    const actionName = activeHere ? joiningHere ? `Joining voice in #${label}` : `Leave voice in #${label}` : switching ? `Switch voice to #${label}` : channelId === channel?.id ? "Join voice" : `Join voice in #${label}`;
+    const actionLabel = leavingHere ? "Leaving…" : joiningHere ? "Joining…" : switching ? "Switch here" : "Join voice";
+    const actionName = leavingHere ? `Leaving voice in #${label}` : joiningHere ? `Joining voice in #${label}` : switching ? `Switch voice to #${label}` : channelId === channel?.id ? "Join voice" : `Join voice in #${label}`;
     const stack = people.length > 0 && <button className="voice-stack" type="button" aria-expanded={open} aria-controls={listId} aria-label={`${people.length} in voice in ${label}. ${open ? "Hide" : "Show"} who is in voice.`} onClick={() => {
       setExpandedRosters((current) => { const next = new Set(current); open ? next.delete(key) : next.add(key); return next; });
       setVolumeParticipant(undefined);
@@ -686,8 +692,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       <ChevronDown aria-hidden="true" />
     </button>;
     const viewed = channelId === channel?.id;
-    const join = <Tooltip content={activeHere ? joiningHere ? `Connecting to #${label}…` : `Leave voice in #${label}` : joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Leave your current voice channel and join #${label}` : `Join voice in #${label}`}>
-      <button ref={viewed && !activeHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={activeHere ? "" : undefined} aria-label={actionName} aria-disabled={blocked} aria-busy={joiningHere || leavingHere} onPointerEnter={() => { if (!activeHere) prepareChannel(channelId); }} onPointerDown={() => { if (!activeHere) prepareChannel(channelId); }} onFocus={() => { if (!activeHere) prepareChannel(channelId); }} onClick={() => { if (blocked) return; if (activeHere) leave(); else joinChannel(channelId); }}>{activeHere && !joiningHere ? <PhoneOff aria-hidden="true" /> : <Speech aria-hidden="true" />}<span className="channel-join-label">{actionLabel}</span></button>
+    const join = activeHere && connected ? <span className="channel-join-slot" aria-hidden="true" /> : <Tooltip content={joiningHere ? `Connecting to #${label}…` : joinUnavailable ? available === false ? "Joining is not available at this time." : "Checking voice availability…" : switching ? `Leave your current voice channel and join #${label}` : `Join voice in #${label}`}>
+      <button ref={viewed && !activeHere ? viewedJoin : undefined} className="voice-button channel-join" type="button" data-channel={channelId ?? ""} data-connected={activeHere ? "" : undefined} aria-label={actionName} aria-disabled={blocked} aria-busy={joiningHere || leavingHere} onPointerEnter={() => { if (!activeHere) prepareChannel(channelId); }} onPointerDown={() => { if (!activeHere) prepareChannel(channelId); }} onFocus={(event) => { focusedJoin.current = event.currentTarget; if (!activeHere) prepareChannel(channelId); }} onClick={() => { if (!blocked) joinChannel(channelId); }}><Speech aria-hidden="true" /><span className="channel-join-label">{actionLabel}</span></button>
     </Tooltip>;
     return {
       summary: <span className="channel-voice">{stack}{join}</span>,

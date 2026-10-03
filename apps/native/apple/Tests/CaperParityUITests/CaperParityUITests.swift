@@ -223,10 +223,14 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(designVoice.label, "Join voice in #design")
         XCTAssertFalse(app.buttons["voice-stack-chan00000001"].exists, "Empty channels expose no voice count or status")
         XCTAssertGreaterThanOrEqual(generalVoice.frame.minY, general.frame.maxY, "Voice stays below the channel name")
+        XCTAssertLessThanOrEqual(generalVoice.frame.minY - general.frame.maxY, 2, "No extra gap separates the voice action from its channel")
         XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, "Actions share one stable slot")
         #if os(iOS)
         XCTAssertGreaterThanOrEqual(general.frame.height, 44)
         XCTAssertGreaterThanOrEqual(generalVoice.frame.height, 44)
+        #else
+        XCTAssertEqual(general.frame.height, 32)
+        XCTAssertEqual(generalVoice.frame.height, 28)
         #endif
 
         let generalFrame = general.frame
@@ -320,6 +324,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["participant-audio-fixture-self"].exists, "Own row has no local playback menu")
         XCTAssertFalse(app.sliders["TEST FIXTURE Maya volume"].exists, "Volume stays in the remote-only Audio menu")
         XCTAssertFalse(app.buttons["participant-audio-fixture-remote"].exists, "Participant controls stay hidden while the roster starts collapsed")
+        XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel has no redundant Leave action")
+        XCTAssertEqual(app.buttons.matching(identifier: "Leave voice").count, 1, "Disconnect lives only in the dock")
         let stack = app.buttons["voice-stack-chan00000001"]
         XCTAssertTrue(stack.exists)
         XCTAssertEqual(stack.value as? String, "Collapsed")

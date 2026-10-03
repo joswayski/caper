@@ -581,7 +581,7 @@ private struct ChannelSidebarItem: View {
                     #if os(iOS)
                     .frame(height: 44)
                     #else
-                    .frame(height: 38)
+                    .frame(height: 32)
                     #endif
                     .background(model.selectedChannelID == channel.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -670,7 +670,7 @@ private struct ChannelVoiceSlot: View {
         if model.pendingVoiceChannelID == channel.id { return "Joining…" }
         if active {
             if model.voice.phase == .leaving { return "Leaving…" }
-            return model.voice.phase == .joining || model.voice.phase == .reconnecting ? "Joining…" : "Leave voice"
+            return "Joining…"
         }
         return model.voice.phase == .idle || model.voice.phase == .failed ? "Join voice" : "Switch here"
     }
@@ -682,9 +682,7 @@ private struct ChannelVoiceSlot: View {
         default: return "\(actionTitle) in #\(channel.name)"
         }
     }
-    private var actionIcon: String { active && model.voice.phase == .connected ? "phone-off" : "speech" }
     private var actionEnabled: Bool {
-        if active && model.voice.phase == .connected { return true }
         return !pending && model.voiceAvailable(in: channel) == true
     }
 
@@ -714,7 +712,7 @@ private struct ChannelVoiceSlot: View {
                         #if os(iOS)
                         .frame(minWidth: 44, minHeight: 44, alignment: .leading)
                         #else
-                        .frame(minWidth: 42, minHeight: 30, alignment: .leading)
+                        .frame(minWidth: 42, minHeight: 28, alignment: .leading)
                         #endif
                     }.buttonStyle(.plain).modifier(ControlHover())
                         .accessibilityLabel("\(occupants.count) in voice in \(channel.name). \(collapsed ? "Show" : "Hide") who is in voice")
@@ -722,24 +720,29 @@ private struct ChannelVoiceSlot: View {
                         .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
                 }
                 Spacer(minLength: 0)
-                Button {
-                    if active && model.voice.phase == .connected {
-                        CaperEffects.shared.play(.disconnect)
-                        model.leaveVoice()
-                    } else {
+                if active && model.voice.phase == .connected {
+                    Color.clear.frame(width: 108)
+                        #if os(iOS)
+                        .frame(height: 44)
+                        #else
+                        .frame(height: 28)
+                        #endif
+                        .accessibilityHidden(true)
+                } else {
+                    Button {
                         Task { await model.joinVoice(channel: channel) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            CaperIcon(name: "speech", size: 14)
+                            Text(actionTitle).lineLimit(1)
+                        }
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        CaperIcon(name: actionIcon, size: 14)
-                        Text(actionTitle).lineLimit(1)
-                    }
+                    .buttonStyle(QuietVoiceActionButton()).disabled(!actionEnabled)
+                    .help(active ? actionDescription : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? actionDescription)
+                    .accessibilityLabel(actionDescription)
+                    .accessibilityIdentifier("join-voice-\(channel.id)")
+                    .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
                 }
-                .buttonStyle(QuietVoiceActionButton()).disabled(!actionEnabled)
-                .help(active ? actionDescription : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? actionDescription)
-                .accessibilityLabel(actionDescription)
-                .accessibilityIdentifier("join-voice-\(channel.id)")
-                .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
             }
             .padding(.trailing, 4)
             if !collapsed {
@@ -757,7 +760,7 @@ private struct ChannelVoiceSlot: View {
                     }
                 }
             }
-        }.padding(.bottom, 5)
+        }.padding(.bottom, 2)
             .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
     }
 }
@@ -771,7 +774,7 @@ private struct QuietVoiceActionButton: ButtonStyle {
             #if os(iOS)
             .frame(height: 44)
             #else
-            .frame(height: 30)
+            .frame(height: 28)
             #endif
             .background(configuration.isPressed ? CaperTheme.border.opacity(0.55) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 8))

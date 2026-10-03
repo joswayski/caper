@@ -2609,13 +2609,16 @@ native development build workflow.
 SwiftUI, and Rust Windows/Linux desktop use separate channel-name/settings and
 voice rows. Owners get a permanent channel-options menu opening existing privacy
 and member settings; no invite controls are implemented. Quiet speaking-icon
-actions keep their slot through Join voice, Joining, Leave voice, and Switch
-here. Empty channels show no occupancy status; occupied rosters start collapsed.
+actions keep their slot through Join voice, Joining, and Switch here. Connected
+channels reserve that space without a duplicate Leave action: disconnect lives
+only in the voice-connected dock beside the account. Desktop name/voice rows are
+32px/28px with no extra gap; mobile retains its touch targets. Empty channels
+show no occupancy status; occupied rosters start collapsed.
 Selecting text leaves the current call intact. Pending authorization disables
 competing joins, and explicit switching still verifies fresh channel access.
 
 Intentional platform differences: Android uses 48dp targets and count-only
-occupancy; iOS uses 44pt targets; macOS and Rust desktop use 30pt/32px voice
+occupancy; iOS uses 44pt targets; macOS and Rust desktop use 28pt/28px voice
 targets. Apple and Rust desktop drop summary avatars before crowding the count
 at narrow sidebar widths. Rust desktop may shorten `N in voice` to `N` at its
 220px minimum; its accessible name retains the complete occupancy description.

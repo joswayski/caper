@@ -402,14 +402,11 @@ internal data class VoiceJoinIntent(
                 val joiningHere = (activeHere && (voice.phase == VoiceState.Phase.CONNECTING || voice.phase == VoiceState.Phase.RECONNECTING)) || pendingVoiceChannelId == channel.id
                 val switching = activeChannel != null && !activeHere
                 val denied = channel.id in state.deniedVoiceChannels
-                val actionEnabled = activeHere && voice.phase == VoiceState.Phase.CONNECTED ||
-                    pendingVoiceChannelId == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
+                val actionEnabled = pendingVoiceChannelId == null && voice.phase != VoiceState.Phase.CONNECTING && voice.phase != VoiceState.Phase.RECONNECTING &&
                     !denied && available == true
-                val actionLabel = if (joiningHere) "Joining…" else if (activeHere) "Leave voice" else if (switching) "Switch here" else "Join voice"
+                val actionLabel = if (joiningHere) "Joining…" else if (switching) "Switch here" else "Join voice"
                 val actionDescription = if (joiningHere) {
                     "Joining voice in #${channel.name}"
-                } else if (activeHere) {
-                    "Leave voice in #${channel.name}"
                 } else if (switching) "Switch voice to #${channel.name}" else "Join voice in #${channel.name}"
                 Column(Modifier.fillMaxWidth()) {
                     Row(
@@ -435,7 +432,9 @@ internal data class VoiceJoinIntent(
                             Text("${people.size} in voice", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = TextMuted)
                             Icon(if (rosterOpen) painterResource(R.drawable.lucide_chevron_down) else painterResource(R.drawable.lucide_chevron_right), null, Modifier.size(15.dp), tint = TextMuted)
                         } else Spacer(Modifier.weight(1f))
-                        TextButton({ if (activeHere) VoiceCallService.stop(context) else joinVoice(channel) },
+                        if (activeHere && voice.phase == VoiceState.Phase.CONNECTED) {
+                            Spacer(Modifier.width(112.dp).height(48.dp))
+                        } else TextButton({ joinVoice(channel) },
                             enabled = actionEnabled, shape = MaterialTheme.shapes.small,
                             colors = ButtonDefaults.textButtonColors(contentColor = TextMuted, disabledContentColor = TextMuted.copy(alpha = 0.45f)),
                             contentPadding = PaddingValues(horizontal = 6.dp), modifier = Modifier.width(112.dp).heightIn(min = 48.dp)
@@ -447,7 +446,7 @@ internal data class VoiceJoinIntent(
                             .semantics {
                                 contentDescription = if (!activeHere && !denied) voiceJoinUnavailableLabel(available) ?: actionDescription else actionDescription
                             }) {
-                            Icon(painterResource(if (activeHere && !joiningHere) R.drawable.lucide_phone_off else R.drawable.lucide_speech), null, Modifier.size(14.dp))
+                            Icon(painterResource(R.drawable.lucide_speech), null, Modifier.size(14.dp))
                             Spacer(Modifier.width(4.dp)); Text(actionLabel, fontSize = 11.sp, maxLines = 1)
                         }
                     }

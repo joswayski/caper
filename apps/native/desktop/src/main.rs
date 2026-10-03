@@ -3032,23 +3032,27 @@ impl CaperApp {
                             if !self.channels_expanded {
                                 break;
                             }
-                            let active = self.selected_channel.as_deref() == Some(&id);
-                            let (response, settings) = channel_button(
-                                ui, ui.available_width(), &name, private, active, self.owner(),
-                            );
-                            if settings {
-                                self.open_manage_channel(&id, &name, private);
-                            } else if response.clicked() {
-                                self.select_channel(id.clone(), false);
-                            } else if response.hovered() || response.has_focus() {
-                                self.prefetch(NavigationTarget {
-                                    space: self.selected_space.clone(),
-                                    channel: Some(id.clone()),
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                ui.spacing_mut().interact_size.y = 28.0;
+                                let active = self.selected_channel.as_deref() == Some(&id);
+                                let (response, settings) = channel_button(
+                                    ui, ui.available_width(), &name, private, active, self.owner(),
+                                );
+                                if settings {
+                                    self.open_manage_channel(&id, &name, private);
+                                } else if response.clicked() {
+                                    self.select_channel(id.clone(), false);
+                                } else if response.hovered() || response.has_focus() {
+                                    self.prefetch(NavigationTarget {
+                                        space: self.selected_space.clone(),
+                                        channel: Some(id.clone()),
+                                    });
+                                }
+                                ui.push_id(&id, |ui| {
+                                    self.channel_voice_summary(ui, &id, &name);
+                                    self.channel_voice_roster(ui, &id);
                                 });
-                            }
-                            ui.push_id(&id, |ui| {
-                                self.channel_voice_summary(ui, &id, &name);
-                                self.channel_voice_roster(ui, &id);
                             });
                             ui.add_space(3.0);
                         }
@@ -3102,22 +3106,19 @@ impl CaperApp {
         let switching = !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_));
         let action = if joining_here {
             "Joining…"
-        } else if connected {
-            "Leave voice"
         } else if switching {
             "Switch here"
         } else {
             "Join voice"
         };
-        let enabled =
-            connected || authorizing.is_none() && !connecting && self.voice_target(id).is_some();
+        let enabled = authorizing.is_none() && !connecting && self.voice_target(id).is_some();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.add_space(9.0);
             let width = (ui.available_width() - 108.0 - 6.0).max(0.0);
             if !people.is_empty() {
                 let (rect, stack) =
-                    ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click());
                 let label = format!(
                     "{} in voice in {name}. {} who is in voice.",
                     people.len(),
@@ -3224,18 +3225,15 @@ impl CaperApp {
                     }
                 }
             } else {
-                ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::hover());
+                ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::hover());
+            }
+            if connected {
+                // Keep other rows stationary; disconnect belongs to the dock.
+                ui.allocate_exact_size(egui::vec2(108.0, 28.0), egui::Sense::hover());
+                return;
             }
             ui.add_enabled_ui(enabled, |ui| {
-                let button = voice_join_button(
-                    ui,
-                    action,
-                    if connected {
-                        NavIcon::PhoneOff
-                    } else {
-                        NavIcon::Speech
-                    },
-                );
+                let button = voice_join_button(ui, action);
                 // Web's 120 px approach radius around Join.
                 if !own
                     && ui.is_enabled()
@@ -3247,8 +3245,6 @@ impl CaperApp {
                 }
                 let label = if joining_here {
                     format!("Joining voice in #{name}")
-                } else if connected {
-                    format!("Leave voice in #{name}")
                 } else if switching {
                     format!("Switch voice to #{name}")
                 } else {
@@ -3262,13 +3258,7 @@ impl CaperApp {
                     None => button.on_hover_text(label),
                 };
                 if button.clicked() {
-                    if connected {
-                        self.effects.play(Effect::Disconnect);
-                        self.pending_voice_join = None;
-                        self.voice.leave();
-                    } else {
-                        self.join_voice_channel(id);
-                    }
+                    self.join_voice_channel(id);
                 }
             });
         });
@@ -5763,8 +5753,8 @@ fn channel_name_error(name: &str) -> Option<&'static str> {
     }
 }
 
-fn voice_join_button(ui: &mut egui::Ui, label: &str, icon: NavIcon) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(108.0, 32.0), egui::Sense::click());
+fn voice_join_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(108.0, 28.0), egui::Sense::click());
     let hover = response.hovered() || response.has_focus();
     if hover {
         ui.painter().rect_filled(rect, 8.0, RAISED);
@@ -5783,7 +5773,7 @@ fn voice_join_button(ui: &mut egui::Ui, label: &str, icon: NavIcon) -> egui::Res
             egui::pos2(rect.left() + 15.0, rect.center().y),
             egui::vec2(14.0, 14.0),
         ),
-        icon,
+        NavIcon::Speech,
         MUTED,
     );
     ui.painter().text(
@@ -5842,7 +5832,7 @@ fn channel_button(
     active: bool,
     manageable: bool,
 ) -> (egui::Response, bool) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 38.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::SelectableLabel,
@@ -7630,7 +7620,7 @@ mod tests {
     #[test]
     fn channel_actions_keep_exact_bounds_across_occupancy_and_join_states() {
         for sidebar in [220.0, 280.0] {
-            let mut reference = None;
+            let mut reference = Vec::new();
             for state in [
                 "empty",
                 "occupied",
@@ -7701,7 +7691,25 @@ mod tests {
                 };
                 let output = render(&mut app, &context, vec![]);
                 let nodes = output.platform_output.accesskit_update.as_ref().unwrap();
-                let actions: Vec<_> = labels
+                let start = usize::from(matches!(state, "connected" | "switching"));
+                if start == 1 {
+                    assert!(
+                        !nodes
+                            .nodes
+                            .iter()
+                            .any(|(_, node)| node.label() == Some("Leave voice in #general"))
+                    );
+                    assert_eq!(
+                        nodes
+                            .nodes
+                            .iter()
+                            .filter(|(_, node)| node.label() == Some("Leave voice"))
+                            .count(),
+                        1,
+                        "disconnect is only in the dock"
+                    );
+                }
+                let actions: Vec<_> = labels[start..]
                     .iter()
                     .map(|label| {
                         let node = nodes
@@ -7711,21 +7719,35 @@ mod tests {
                             .unwrap_or_else(|| panic!("missing {label}"));
                         let bounds = node.1.bounds().unwrap();
                         assert_eq!(bounds.x1 - bounds.x0, 108.0);
-                        assert_eq!(bounds.y1 - bounds.y0, 32.0);
+                        assert_eq!(bounds.y1 - bounds.y0, 28.0);
                         assert!(bounds.x1 <= 60.0 + f64::from(sidebar));
-                        let disabled = matches!(state, "authorizing" | "joining" | "switching")
-                            && !(state == "switching" && *label == "Leave voice in #general");
+                        let name = label.rsplit('#').next().unwrap();
+                        let name_bounds = nodes
+                            .nodes
+                            .iter()
+                            .find(|(_, node)| node.label() == Some(name))
+                            .unwrap()
+                            .1
+                            .bounds()
+                            .unwrap();
+                        assert_eq!(name_bounds.y1 - name_bounds.y0, 32.0);
+                        assert_eq!(
+                            bounds.y0, name_bounds.y1,
+                            "voice sits directly under its name"
+                        );
+                        let disabled = matches!(state, "authorizing" | "joining" | "switching");
                         assert_eq!(node.1.is_disabled(), disabled, "{state}: {label}");
                         bounds
                     })
                     .collect();
-                if let Some(reference) = &reference {
+                if !reference.is_empty() {
                     assert_eq!(
-                        &actions, reference,
+                        actions.as_slice(),
+                        &reference[start..],
                         "{state} moved an action at {sidebar}px"
                     );
                 } else {
-                    reference = Some(actions);
+                    reference = actions;
                 }
                 assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("No one in voice") || text.galley.job.text == "0 in voice")));
             }

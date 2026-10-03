@@ -228,21 +228,22 @@
    the name, channel menu or voice action. */
 .channel-row, .channel-line { position: relative; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: 8px; }
 .channel-row:has(.channel-link[aria-current]) { background: rgb(182 77 50 / .14); }
-.channel-row .channel-link { min-width: 0; background: transparent; }
+.channel-row .channel-link { min-width: 0; padding-block: 6px; background: transparent; }
 .channel-row .channel-link > span, .channel-line .channel-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel-navigation li[data-voice] { flex-wrap: wrap; }
 .channel-line { flex: 1 1 100%; }
 .channel-line:has(.channel-select[aria-current="page"]) { background: rgb(182 77 50 / .16); }
 .channel-line:hover:not(:has(.channel-select[aria-current="page"])) { background: var(--surface-raised); }
-.channel-line .channel-select, .channel-line .channel-select:hover, .channel-line .channel-select[aria-current="page"] { min-width: 0; padding-right: 4px; background: transparent; }
-.channel-voice { grid-column: 1 / -1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 6px 8px var(--voice-indent); }
+.channel-line .channel-select, .channel-line .channel-select:hover, .channel-line .channel-select[aria-current="page"] { min-width: 0; height: 32px; padding-right: 4px; background: transparent; }
+.channel-voice { grid-column: 1 / -1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 6px 4px var(--voice-indent); }
 .channel-navigation li { --voice-indent: 35px; }
 .channel-item { --voice-indent: 42px; }
 .sidebar-channels { container: channels / inline-size; }
-.voice-stack { min-width: 0; min-height: 32px; flex: 1; display: flex; align-items: center; gap: 4px; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .68rem; cursor: pointer; }
+.voice-stack { min-width: 0; min-height: 28px; flex: 1; display: flex; align-items: center; gap: 4px; padding: 0; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; font: inherit; font-size: .68rem; cursor: pointer; }
 .voice-stack-faces { flex: none; display: flex; align-items: center; }
 .voice-stack-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.channel-join.voice-button { width: 96px; min-height: 32px; margin-left: auto; justify-content: center; gap: 4px; padding: 0 6px; border-color: transparent; color: var(--text-muted); background: transparent; font-size: .72rem; font-weight: 600; }
+.channel-join-slot { width: 96px; min-height: 28px; flex: none; margin-left: auto; }
+.channel-join.voice-button { width: 96px; min-height: 28px; margin-left: auto; justify-content: center; gap: 4px; padding: 0 6px; border-color: transparent; color: var(--text-muted); background: transparent; font-size: .72rem; font-weight: 600; }
 .channel-join.voice-button:hover:not([aria-disabled="true"]), .channel-join.voice-button:focus-visible { border-color: var(--border); color: var(--text); background: var(--surface-raised); }
 .channel-join.voice-button > svg { width: 14px; height: 14px; flex: none; }
 .channel-join.voice-button[aria-busy="true"] { cursor: progress; }
@@ -263,7 +264,9 @@
   .voice-stack-faces { display: none; }
 }
 @media (max-width: 760px), (hover: none), (pointer: coarse) {
-  .channel-join.voice-button, .voice-stack { min-height: 44px; }
+  .channel-row .channel-link { min-height: 44px; padding-block: 12px; }
+  .channel-join.voice-button, .channel-join-slot, .voice-stack { min-height: 44px; }
+  .voice-hangup { width: 44px; height: 44px; }
 }
 .voice-occupants { flex-basis: 100%; display: grid; grid-template-rows: 0fr; transition: grid-template-rows .22s ease; }
 .voice-occupants[data-open] { grid-template-rows: 1fr; }

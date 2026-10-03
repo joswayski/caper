@@ -242,7 +242,7 @@ try {
     evaluate(`voiceFixture.showSpaces();`);
     wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
     evaluate(`await document.fonts.ready;`);
-    const geometry = () => evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => [...line.querySelectorAll('.channel-select, .channel-manage, .channel-join')].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }));`);
+    const geometry = () => evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => [...line.querySelectorAll('.channel-select, .channel-manage, .channel-join, .channel-join-slot')].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }));`);
     const countPosition = () => evaluate(`const r = document.querySelector('.channel-section-toggle .section-count').getBoundingClientRect(); return [r.x, r.y];`);
     const actionContentsFit = () => evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => { const bounds = button.getBoundingClientRect(), icon = button.querySelector('svg').getBoundingClientRect(), label = button.querySelector('.channel-join-label').getBoundingClientRect(); return icon.width === 14 && icon.height === 14 && icon.left > bounds.left && icon.right < label.left && label.right < bounds.right && label.top >= bounds.top && label.bottom <= bounds.bottom; });`);
     for (const width of [1280, 390]) {
@@ -255,6 +255,7 @@ try {
       const before = geometry();
       assert.equal(before.length, 3, 'Every channel, including empty/unselected/private channels, has voice actions');
       assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top >= name.bottom && getComputedStyle(line.querySelector('.channel-manage')).opacity === '1'; });`), 'Voice actions must sit below the name; channel actions never depend on hover');
+      assert.ok(evaluate(`return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), action = line.querySelector('.channel-join').getBoundingClientRect(); return action.top - name.bottom <= 1 && (matchMedia('(hover: hover) and (pointer: fine) and (min-width: 761px)').matches ? name.height === 32 && action.height === 28 : name.height >= 44 && action.height >= 44); });`), 'Compact desktop rows have no extra gap; mobile/no-hover keeps 44px targets');
       assert.ok(evaluate(`return [...document.querySelectorAll('.channel-join')].every(button => button.querySelector('.lucide-speech')?.getAttribute('aria-hidden') === 'true');`), 'Join actions have a decorative speaking icon without changing their accessible names');
       assert.ok(actionContentsFit(), 'Speaking icons and Join labels must fit inside the fixed-width actions');
       assert.equal(evaluate(`return document.querySelectorAll('.voice-stack').length;`), 0, 'Empty channels do not show a zero-occupancy count');
@@ -306,24 +307,26 @@ try {
         voiceFixture.joinPositions = [];
         const button = document.querySelector('.channel-join[data-channel="alpha0000000"]');
         voiceFixture.actionNode = button;
+        const row = button.closest('.channel-line');
         const start = performance.now();
-        const sample = () => { const r = button.getBoundingClientRect(); voiceFixture.joinPositions.push([r.x, r.y, r.width, r.height]); if (performance.now() - start < 600) requestAnimationFrame(sample); };
+        const sample = () => { const r = row.querySelector('.channel-join, .channel-join-slot').getBoundingClientRect(); voiceFixture.joinPositions.push([r.x, r.y, r.width, r.height]); if (performance.now() - start < 600) requestAnimationFrame(sample); };
         requestAnimationFrame(sample);
       `);
-      click('Join voice');
-      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice in #alpha"]')`);
+      browser('focus', '[aria-label="Join voice"]');
+      browser('press', 'Enter');
+      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
       browser('wait', '650');
-      assert.deepEqual(geometry(), before, 'Join → Leave must keep all action targets stationary');
+      assert.deepEqual(geometry(), before, 'Connecting removes the duplicate action without moving other targets');
       assert.equal(evaluate(`return new Set(voiceFixture.joinPositions.map(r => JSON.stringify(r))).size;`), 1, 'No intermediate animation may shift the Join target');
-      assert.ok(evaluate(`return voiceFixture.actionNode === document.querySelector('[aria-label="Leave voice in #alpha"]');`), 'Join/Leave must reuse the same focusable button');
-      assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice in #alpha"] .lucide-phone-off') && !!document.querySelector('[aria-label="Switch voice to #beta"] .lucide-speech');`), 'Leave uses the disconnect icon; switching retains the speaking icon');
-      assert.ok(actionContentsFit(), 'Leave and Switch labels must also fit with their icons');
+      assert.ok(evaluate(`return !voiceFixture.actionNode.isConnected && document.querySelectorAll('[aria-label="Leave voice"]').length === 1 && !document.querySelector('[aria-label="Leave voice in #alpha"]') && document.activeElement === document.querySelector('.voice-hangup');`), 'Disconnect exists only in the dock, which receives keyboard focus after joining');
+      assert.ok(evaluate(`return !!document.querySelector('.voice-hangup .lucide-phone-off') && !!document.querySelector('[aria-label="Switch voice to #beta"] .lucide-speech');`), 'The dock uses the disconnect icon; switching retains the speaking icon');
+      assert.ok(actionContentsFit(), 'Switch labels must fit with their icons');
       screenshot(`channel-${width}-joined`);
       if (width === 390) {
         click('Close navigation');
         // This fixture resized an existing desktop session with members open.
         click('Hide member list');
-        assert.ok(evaluate(`const composer = document.querySelector('#chat-message'), r = composer.getBoundingClientRect(); return document.querySelector('[aria-label="Leave voice in #alpha"]').getBoundingClientRect().height >= 44 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === composer;`), 'Narrow conversation view retains voice actions and unobscured text entry');
+        assert.ok(evaluate(`const composer = document.querySelector('#chat-message'), r = composer.getBoundingClientRect(); return document.querySelector('.voice-hangup').getBoundingClientRect().height >= 44 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === composer;`), 'Narrow conversation retains the dock disconnect target and unobscured text entry');
         screenshot('channel-390-conversation');
         browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
       }
@@ -342,10 +345,11 @@ try {
       if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
       assert.equal(evaluate(`return document.querySelector('[aria-label="Switch voice to #beta"]').textContent;`), 'Switch here');
       click('Switch voice to #beta');
-      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice in #beta"]')`);
+      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('.channel-line:has(.channel-select[aria-current="page"]) .channel-join-slot')`);
       assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), 'ended', 'Explicit switch must release the old capture');
       assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').at(-1).channelId;`), 'beta00000000');
-      click('Leave voice in #beta');
+      assert.equal(evaluate(`return document.querySelectorAll('[aria-label="Leave voice"]').length;`), 1, 'Switching preserves only the dock disconnect');
+      click('Leave voice');
       wait(`voiceFixture.client.phase === 'idle'`);
       browser('find', 'role', 'button', 'click', '--name', 'alpha', '--exact');
       wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
