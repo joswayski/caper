@@ -43,6 +43,55 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testSpacesResponseDefaultsMissingInvitationsToEmpty() throws {
+        let response = try JSONDecoder().decode(SpacesResponse.self, from: Data(#"{"spaces":[],"limits":{"ownedSpaces":2,"totalSpaces":5,"channelsPerSpace":10}}"#.utf8))
+        XCTAssertEqual(response.invitations, [])
+    }
+
+    func testInvitationDecodesInviterAndLegacyMetadata() throws {
+        let legacy = try JSONDecoder().decode(Space.self, from: Data(#"{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567"}"#.utf8))
+        XCTAssertNil(legacy.inviter)
+        let invitation = try JSONDecoder().decode(Space.self, from: Data(#"{"id":"Space1234567","name":"Studio","ownerId":"Owner1234567","inviter":{"username":"host_user","displayName":"Space Host"}}"#.utf8))
+        XCTAssertEqual(invitation.inviter?.username, "host_user")
+        XCTAssertEqual(invitation.inviter?.displayName, "Space Host")
+    }
+
+    func testInvitationMembershipEndpoints() async throws {
+        let spaceID = "Space1234567"
+        let userID = "Member123456"
+        var requests: [String] = []
+        MockURLProtocol.handler = { request in
+            requests.append("\(request.httpMethod ?? "") \(request.url!.path)")
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/spaces/\(spaceID)/invitations"):
+                return (200, Data(#"{"members":[]}"#.utf8))
+            case ("POST", "/api/spaces/\(spaceID)/invitation"):
+                return (200, Data(#"{"id":"Space1234567","name":"Invited","ownerId":"Owner1234567"}"#.utf8))
+            default: return (204, Data())
+            }
+        }
+        let api = client()
+        let pending = try await api.spaceInvitations(spaceID: spaceID)
+        let accepted = try await api.acceptSpaceInvitation(spaceID: spaceID)
+        XCTAssertEqual(pending, [])
+        XCTAssertEqual(accepted.name, "Invited")
+        try await api.declineSpaceInvitation(spaceID: spaceID)
+        try await api.cancelSpaceInvitation(spaceID: spaceID, userID: userID)
+        XCTAssertEqual(requests, [
+            "GET /api/spaces/\(spaceID)/invitations",
+            "POST /api/spaces/\(spaceID)/invitation",
+            "DELETE /api/spaces/\(spaceID)/invitation",
+            "DELETE /api/spaces/\(spaceID)/invitations/\(userID)",
+        ])
+    }
+
+    func testInviteUsernameNormalizationAndValidation() {
+        XCTAssertEqual(WorkspaceValidation.normalizeUsername(" Alice-TEAM! "), "aliceteam")
+        XCTAssertNil(WorkspaceValidation.usernameError("alice_123"))
+        XCTAssertNotNil(WorkspaceValidation.usernameError("Alice"))
+        XCTAssertNotNil(WorkspaceValidation.usernameError("ab"))
+    }
+
     @MainActor
     func testProfileEditPreservesConversationDraftAndRejectedSend() async throws {
         var historyRequests = 0

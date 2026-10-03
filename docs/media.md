@@ -520,9 +520,11 @@ that space, not to anonymous visitors or unrelated accounts. Private channels
 are visible to their explicitly selected space members and the owner. The public
 demo cannot be managed through these APIs.
 
-Owners add existing accounts by exact username and can remove them. This is a
-direct membership change, not an invitation awaiting acceptance. There are no
-invite links, custom roles, ownership transfers or public space discovery yet.
+Owners invite existing accounts by exact username and can remove members or
+cancel pending invitations. Invitees must accept before becoming members.
+Existing memberships are unchanged; the migration does not retroactively ask
+existing members to accept. There are no invite links, custom roles, ownership
+transfers or public space discovery yet.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed.
 Counts include active resources only. Defaults are 20 owned spaces per
@@ -547,12 +549,69 @@ soft delete: it removes access and frees the quota, but retained message rows
 are not physically purged by this feature. There is no restore UI.
 
 The account APIs live at `/api/spaces`, `/api/spaces/{space}`, and their
-`/channels`, `/members`, and `/channels/{channel}/members` subresources. Browser
-cookies or account bearer authentication are required. Only owners manage these
-resources, except a member removing their own membership. Text history and
+`/channels`, `/members`, `/invitations`, `/invitation`, and
+`/channels/{channel}/members` subresources. Browser cookies or account bearer
+authentication are required. Only owners manage resources, except a member
+removing their own membership or an invitee accepting/declining their own invite.
+Text history and
 commands use `/api/chat/channels/{channel}/...`;
 WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
 paths check membership and channel visibility, including replay and live delivery.
+
+### Invitation consent and abuse limits
+
+`GET /api/spaces` returns active `spaces`, metadata-only pending `invitations`
+(space ID, name, owner ID and `inviter: {username, displayName}`), and `limits`.
+Only owners can invite; inviter metadata uses the owner's current public profile,
+not a snapshot at send time. Clients also accept older metadata without `inviter`.
+This additive response needs no migration beyond the invitation tables below.
+Pending invitations live in
+`space_invitations`, not `space_members`: they grant no space-detail, membership,
+channel, history, presence, WebSocket or media access. Acceptance alone inserts
+membership and checks the current total-membership quota under database locks.
+No private-channel grants are implicit. Existing authorization remains based on
+active membership, not invitation status.
+
+| Operation | Route | Result |
+| --- | --- | --- |
+| Owner sends an invitation | `POST /api/spaces/{space}/members` with `{username}` | 201 with invitee member metadata; not an active member |
+| Owner lists pending invitees | `GET /api/spaces/{space}/invitations` | `{members: [...]}` |
+| Owner cancels an invitation | `DELETE /api/spaces/{space}/invitations/{user}` | 204 |
+| Invitee accepts | `POST /api/spaces/{space}/invitation` | 200 with space metadata |
+| Invitee declines | `DELETE /api/spaces/{space}/invitation` | 204 |
+
+Username fields normalize like profile selection: lowercase ASCII letters,
+digits and underscores, 3–32 characters. The API trims/lowercases and rejects
+invalid syntax (400 `invalid username`); it does not silently strip punctuation.
+An authorized owner gets 404 `user not found` for a missing account, or 409
+`user already in space` / `user already invited`. Authorization precedes account
+lookup. Unauthorized/missing spaces and expired/cancelled invitations retain
+generic 404s; the client says “This space is no longer available” without
+revealing whether the space exists for somebody else.
+
+Invitation attempts use a durable Postgres fixed-window counter, shared across
+replicas: **20 per owner per 10 minutes across all spaces**, including invalid
+usernames, failed lookups and duplicates. Attempt 21 and subsequent attempts
+return 429 until the window resets. Each invite expires after **7 days**. Decline,
+cancel and member removal impose a **24-hour cooldown** on the space/user pair.
+At most **50 live pending invites per recipient** and **100 per space** are
+allowed; reaching either cap returns 409. Expired/deleted-space invitations do
+not count. One row per pair retains state/cooldown, rather than an invitation
+event log. These are fixed product limits, not new configuration/secrets.
+
+The browser opens an inert empty shell behind a blurred consent dialog; it never
+downloads private content to blur it. Consent identifies the inviter's display
+name and `@username` and explains the seven-day expiry. Expired invites disappear
+from pending lists and cannot be accepted; accepted memberships do not expire.
+Decline has initial keyboard focus. Owners
+see pending invitees separately from active members and can cancel them. Browser
+space lists refresh on focus/visibility and every 15 seconds while visible;
+revocation removes the rail entry, invalidates cached navigation and clears the
+selected space. An outage is not treated as revocation. Native clients use their
+existing blocking/dimmed consent modals without loading the invited space;
+they currently discover invites at account load and prune stale spaces when
+navigation returns 404, rather than using the browser's periodic list refresh.
+Server access checks apply identically to every client.
 
 Account voice uses `/api/channels/{channel}/media/*`, with the same operation
 names as the guest `/api/media/*` endpoints. Every request needs a valid account
@@ -638,6 +697,70 @@ revoke the new channel rooms. The migration replaces the channel-name unique
 constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
+
+### Invitation rollout and validation (September 30, 2026)
+
+The invitation migration is additive and preserves existing memberships. The
+disposable-Postgres spaces test covers privacy, concurrent duplicate invitations
+and acceptances, membership quotas, expiry, cooldown, and atomic rate/cap limits:
+
+```bash
+CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+cargo test -p caper-api spaces::tests::authorization_self_leave_soft_deletion_and_quota_races -- --ignored
+# With the web dev server running; API calls are explicitly mocked:
+SPACES_TEST_WEB_URL=http://localhost:5174/spaces \
+node scripts/test-space-invitations.mjs
+```
+
+| Platform/check | Invitation validation |
+| --- | --- |
+| API | Real disposable Postgres 15 lifecycle/privacy/concurrency and current-owner inviter metadata test passed; default Rust tests and clippy passed |
+| Browser | Build/287 unit tests passed; Chromium at 1280px and 390px exercised normalization, missing/duplicate/member/429 errors, cancel, inviter/expiry, long names, legacy metadata, consent retry/decline/accept and focus-triggered revocation. DOM confirms no private requests before acceptance; screenshots inspected |
+| Rust desktop (Linux; shared source with Windows) | Native unit tests and Linux build; consent/pending-owner desktop and narrow fixtures rendered and inspected separately from browser. Not Windows execution or live SFU evidence |
+| Apple iOS/macOS | Consent, pending/cancel, validation and 404 cleanup implemented; Swift/Xcode tests and device rendering unavailable in this Linux orb |
+| Android | Consent, pending/cancel, validation and 404 cleanup implemented. Initial PR CI found a MemberManager callback compile error; fixed with explicit callback arguments in the follow-up. JDK/Android SDK tests and physical-device rendering unavailable in this orb; platform CI must verify the fix |
+| Docker/production/live media | No Docker daemon available; image build stages validated directly. No shared database migration, deployment, live SFU or physical-device test performed |
+
+**Deployment order** (operator commands only; merging does not deploy):
+
+1. No infrastructure apply or new secrets/configuration is needed. Keep the
+   existing database/migration roles and shared Valkey configuration. Wait for
+   immutable images and successful native build/test jobs for the merged commit;
+   set `MERGED_SHA` to that full commit SHA. Keep the current single desired API
+   replica. Do not serve invitation mutations from a mix of old and new APIs:
+   old replicas still auto-add members without consent.
+2. Deploy the API first. API startup applies
+   `202609300002_space_invitations.sql` using `MIGRATION_DATABASE_URL` and grants
+   the existing runtime role access to both new tables. No separate manual SQL
+   or data conversion is required. Wait for workflow success, then readiness and
+   all API pods using the new image before releasing clients.
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. No gateway rollout is required for this change: channel authorization still
+   uses `space_members`; pending invitations cannot subscribe. API and gateway
+   images may deploy independently once the existing channel-aware gateway is
+   in place. Deploy web and release native clients only after step 2. Web and
+   native releases can deploy independently of each other; older clients cannot
+   accept invitations and may display invitation creation as membership.
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for workflow success before checking rollout:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   # After native CI succeeds; publishes signed clients/TestFlight:
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   ```
+4. With two test accounts, verify pending lists, no pre-accept detail/chat/media
+   access, accept/decline/cancel, duplicate errors and removal from navigation.
+   Verify existing members still read/send/join; treat provider track cleanup as
+   asynchronous. Check the 20/21 attempt boundary against a disposable space,
+   not unsolicited invitations to real users.
+5. Prefer a forward fix. An older web/native client can run against the new API
+   but loses consent UI; keep the new API and tables. Do not roll back to the
+   old auto-add API while invitations are enabled: that removes the consent
+   boundary. Do not delete invitation/cooldown state or active memberships as
+   rollback. No Valkey/SFU state migration or reset is needed.
 
 ## Shared call state and rolling deployments
 

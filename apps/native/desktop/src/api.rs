@@ -272,6 +272,48 @@ impl Api {
         )
     }
 
+    pub fn invitations(&self, token: &str, space: &str) -> Result<Members, ApiError> {
+        self.request(
+            Method::GET,
+            &format!("api/spaces/{space}/invitations"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn cancel_invitation(&self, token: &str, space: &str, user: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/invitations/{user}"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn accept_invitation(&self, token: &str, space: &str) -> Result<Space, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/invitation"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn decline_invitation(&self, token: &str, space: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/invitation"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
     pub fn remove_member(
         &self,
         token: &str,

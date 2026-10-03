@@ -2,6 +2,8 @@ package chat.caper.android.data
 
 import chat.caper.android.model.TurnResponse
 import chat.caper.android.model.ChatAuthor
+import chat.caper.android.model.Space
+import chat.caper.android.model.SpaceList
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -70,6 +72,38 @@ class CaperApiTest {
         )
         assertEquals(listOf("stun:one"), response.iceServers[0].urls)
         assertEquals(listOf("turn:one", "turns:two"), response.iceServers[1].urls)
+    }
+
+    @Test fun `space list defaults invitations for old APIs`() {
+        val response = Json.decodeFromString<SpaceList>(
+            """{"spaces":[],"limits":{"ownedSpaces":20,"totalSpaces":100,"channelsPerSpace":100}}""",
+        )
+        assertTrue(response.invitations.isEmpty())
+    }
+
+    @Test fun `space invitation decodes inviter while older metadata stays compatible`() {
+        val legacy = """{"id":"space0000001","name":"Studio","ownerId":"owner0000001"}"""
+        assertNull(Json.decodeFromString<Space>(legacy).inviter)
+        val response = Json.decodeFromString<Space>(
+            """{"id":"space0000001","name":"Studio","ownerId":"owner0000001","inviter":{"username":"host_user","displayName":"Space Host"}}""",
+        )
+        assertEquals("host_user", response.inviter?.username)
+        assertEquals("Space Host", response.inviter?.displayName)
+    }
+
+    @Test fun `invitation operations use consent endpoints`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"id":"space0000001","name":"Studio","ownerId":"owner0000001"}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        assertEquals("Studio", api.acceptSpaceInvitation("account-secret", "space0000001").name)
+        api.declineSpaceInvitation("account-secret", "space0000001")
+
+        val accept = server.takeRequest(); val decline = server.takeRequest()
+        assertEquals("POST", accept.method)
+        assertEquals("/api/spaces/space0000001/invitation", accept.path)
+        assertEquals("DELETE", decline.method)
+        assertEquals("/api/spaces/space0000001/invitation", decline.path)
+        assertEquals("Bearer account-secret", decline.headers["Authorization"])
     }
 
     @Test(timeout = 10000) fun `slow response body does not block owner stop and cancellation`() = runBlocking {

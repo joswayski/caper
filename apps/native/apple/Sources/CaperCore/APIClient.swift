@@ -136,6 +136,23 @@ public actor APIClient {
         try await request("api/spaces/\(try pathID(spaceID))/members", method: "POST", body: UsernameInput(username: username))
     }
 
+    public func spaceInvitations(spaceID: String) async throws -> [Member] {
+        let response: MembersResponse = try await request("api/spaces/\(try pathID(spaceID))/invitations")
+        return response.members
+    }
+
+    public func cancelSpaceInvitation(spaceID: String, userID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invitations/\(try pathID(userID))", method: "DELETE")
+    }
+
+    public func acceptSpaceInvitation(spaceID: String) async throws -> Space {
+        try await request("api/spaces/\(try pathID(spaceID))/invitation", method: "POST")
+    }
+
+    public func declineSpaceInvitation(spaceID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invitation", method: "DELETE")
+    }
+
     public func removeSpaceMember(spaceID: String, memberID: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/members/\(try pathID(memberID))", method: "DELETE")
     }

@@ -11,8 +11,9 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null)
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
-@Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false)
-@Serializable data class SpaceList(val spaces: List<Space>, val limits: SpaceLimits)
+@Serializable data class Inviter(val username: String, val displayName: String)
+@Serializable data class Space(val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false, val inviter: Inviter? = null)
+@Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
 @Serializable data class Channel(val id: String, val spaceId: String, val name: String, val private: Boolean)
 @Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
@@ -111,6 +112,7 @@ data class AppUiState(
     val screen: SessionScreen = SessionScreen.Loading,
     val account: Account? = null,
     val spaces: List<Space> = emptyList(),
+    val invitations: List<Space> = emptyList(),
     val limits: SpaceLimits? = null,
     val selectedSpace: SpaceDetail? = null,
     val selectedChannel: Channel? = null,
@@ -135,6 +137,7 @@ data class AppUiState(
     val voiceAvailability: Map<String, Boolean> = emptyMap(),
     val presencePage: Int = 0,
     val channelGrants: List<Member> = emptyList(),
+    val pendingSpaceInvitations: List<Member> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val busy: Boolean = false,

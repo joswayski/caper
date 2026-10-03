@@ -39,10 +39,14 @@ packages=(
   libxcursor-dev
   libxi-dev
   libxkbcommon-dev
+  libxkbcommon-x11-0
   libxrandr-dev
   lld-21
   pkg-config
   postgresql
+  x11-utils
+  xauth
+  xvfb
 )
 missing_packages=()
 for package in "${packages[@]}"; do
