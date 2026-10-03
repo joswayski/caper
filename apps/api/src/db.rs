@@ -208,6 +208,18 @@ mod tests {
     }
 
     #[test]
+    fn embedded_migration_versions_are_unique_and_increasing() {
+        let versions: Vec<_> = sqlx::migrate!("./migrations")
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+        assert!(
+            versions.windows(2).all(|pair| pair[0] < pair[1]),
+            "migration versions must be unique and increasing: {versions:?}"
+        );
+    }
+
+    #[test]
     fn runtime_role_is_quoted_as_a_postgres_identifier() {
         assert_eq!(quote_identifier("caper-runtime"), r#""caper-runtime""#);
         assert_eq!(quote_identifier("quoted\"role"), r#""quoted""role""#);

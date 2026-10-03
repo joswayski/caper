@@ -791,7 +791,7 @@ CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-join
 | Browser | Build/typecheck and unit tests; explicitly mocked Chromium desktop/390px search, preview, retry, persistence, accept/decline and leave. DOM/request assertions verify no private history before consent and zero microphone requests; representative captures inspected |
 | Rust desktop | Independent membership/directory/preview/consent implementation, Linux unit tests/fmt/clippy/build and rendered labelled desktop/narrow preview, directory/private consent and starter-channel disclosure fixtures inspected. Not Windows execution, physical audio, or live SFU evidence |
 | Apple iOS/macOS | Independent implementation and DTO/route tests added. No Swift/Xcode execution or device rendering in this Linux orb; platform CI and device acceptance remain required |
-| Android | Independent implementation and DTO/route tests added. Published channel PR CI built the APK and passed five instrumentation tests, but UI smoke still expects the retired guest demo instead of the current sign-in screen. The full job is not passing. No JDK/Android SDK execution or physical-device rendering in this orb; updated platform CI and device acceptance remain required |
+| Android | Independent implementation and DTO/route tests added. Earlier channel PR CI built the APK and passed five instrumentation tests, but UI smoke expected the retired guest demo. Reconciliation retains current main's sign-in smoke fix; exact-head platform CI and device acceptance remain required. No JDK/Android SDK execution or physical-device rendering in this orb |
 | Native refresh | Invitations/joins are discovered on account/space reload and after mutations. Browser additionally refreshes on focus/visibility and every 15 seconds. Native clients do not claim browser-equivalent periodic discovery; server authorization applies immediately |
 | Docker/live | No Docker daemon available; validate web/API image build stages directly. No deployment, shared database writes, live SFU or physical-device acceptance performed |
 
@@ -805,17 +805,21 @@ only; merge does not deploy):
    `DATABASE_URL` and shared `VALKEY_URL` must already be configured. Keep one
    desired API replica. Use a maintenance window for channel/invitation mutations;
    do not serve them from mixed old/new API versions, since older versions grant
-   private access without consent. Set `MERGED_SHA` to the full merged
-   channel-change SHA after immutable images and exact-head platform checks succeed.
+   private access without consent. Set `BACKEND_SHA` to the full merged #238 SHA
+   whose `api-$BACKEND_SHA` image is published; set `CLIENT_SHA` to the final
+   merged #241 SHA whose web image and native checks succeed. API image builds
+   are path-filtered, so presentation-only #241 may not publish an API tag.
+   API and gateway must use the same backend SHA. One SHA is valid only if that
+   exact revision has the required published API and web images and native checks.
 2. Deploy API first; startup uses the existing direct
    `MIGRATION_DATABASE_URL` to apply every pending embedded migration, including
-   `202609300001_space_invitations.sql` and `202610010001_channel_joining.sql`,
+   `202609300002_space_invitations.sql` and `202610010001_channel_joining.sql`,
    before granting runtime table privileges. The channel migration backfills
    existing active members, not pending space invitees. Already-applied migrations
    are skipped. No manual migration/backfill/reset is required. Wait for workflow
    success, readiness and all API pods using the new image before continuing.
    ```bash
-   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$BACKEND_SHA"
    kubectl -n default rollout status deployment/caper-api --timeout=15m
    ```
 3. Deploy gateway next so typing/media commands enforce participation too. The
@@ -824,7 +828,7 @@ only; merge does not deploy):
    for this rollout. Wait for workflow success and readiness. The workflow/app
    key is `caper-gateway`; the Kubernetes Deployment is `caper-chat-gateway`.
    ```bash
-   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$BACKEND_SHA"
    kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
    ```
 4. Deploy web, then release native clients after their exact-head platform tests
@@ -834,9 +838,9 @@ only; merge does not deploy):
    update owner clients before using private invitations. Wait for each workflow
    to succeed before checking rollout.
    ```bash
-   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$CLIENT_SHA"
    kubectl -n default rollout status deployment/caper-web --timeout=15m
-   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$CLIENT_SHA"
    ```
 5. Verify with two owned test accounts: old conversations remain joined, a new
    member cannot read space/channel history or use media before accepting the

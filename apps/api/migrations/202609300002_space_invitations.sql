@@ -1,3 +1,4 @@
+-- Version follows the already-published 202609300001 avatar migration.
 -- Pending invitations never count as membership or grant channel access.
 -- Retain one row per pair for decline/removal cooldowns, not an unbounded event log.
 CREATE TABLE space_invitations (
