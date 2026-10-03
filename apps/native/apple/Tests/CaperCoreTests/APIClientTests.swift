@@ -30,6 +30,22 @@ private final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+private func requestBodyData(_ request: URLRequest) throws -> Data? {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+    var body = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 { throw try XCTUnwrap(stream.streamError) }
+        if count == 0 { break }
+        body.append(buffer, count: count)
+    }
+    return body
+}
+
 final class APIClientTests: XCTestCase {
     override func tearDown() {
         MockURLProtocol.handler = nil
@@ -507,6 +523,16 @@ final class APIClientTests: XCTestCase {
         model.selectedSpaceID = "Space1234567"
         model.selectedChannelID = "Chan12345678"
         model.challengeID = "challenge"
+        model.selectedDirectMessageID = "Dm1234567890"
+        model.spacesLoaded = true
+        model.spacesError = "offline"
+        model.configurePush(available: true, enabled: true)
+        var locallyDisabled = false
+        model.disablePushLocally = { locallyDisabled = true }
+        model.setPushEnabled = { _ in
+            XCTFail("logout must not await optional push unregister")
+            try? await Task.sleep(for: .seconds(2))
+        }
         let revokeStarted = expectation(description: "remote revoke started")
         var delayedRevoke: MockURLProtocol?
         MockURLProtocol.deferred = { request, urlRequest in
@@ -524,6 +550,12 @@ final class APIClientTests: XCTestCase {
         XCTAssertNil(model.selectedSpaceID)
         XCTAssertNil(model.selectedChannelID)
         XCTAssertNil(model.challengeID)
+        XCTAssertNil(model.selectedDirectMessageID)
+        XCTAssertFalse(model.spacesLoaded)
+        XCTAssertNil(model.spacesError)
+        XCTAssertTrue(locallyDisabled)
+        XCTAssertFalse(model.pushEnabled)
+        XCTAssertFalse(model.pushAvailable)
         XCTAssertNil(store.token)
         delayedRevoke?.respond(status: 204)
         await logout.value
@@ -1069,6 +1101,44 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testSequencedReactionAdvancesDirectMessageReadCursorButHTTPSnapshotDoesNot() async throws {
+        let channel = "dm0000000001"
+        let messageID = "Message00000001"
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/chat/session":
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/chat/channels/\(channel)/messages/\(messageID)/reactions":
+                return (200, Data("""
+                {"type":"message.reactions","schemaVersion":1,"channelId":"\(channel)","seq":"3","messageId":"\(messageID)","reactions":[{"emoji":"👍","authorIds":["self"]}]}
+                """.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let message = ChatMessage(id: messageID, channelId: channel, seq: "1",
+                                  author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                  content: ChatContent(version: 1, type: "text", text: "Hello"), createdAt: "now",
+                                  clientMessageId: "client", reactions: [], reactionSeq: "1")
+        let history = ChatHistory(space: HistoryIdentity(id: "", name: "Direct messages"),
+                                  channel: HistoryIdentity(id: channel, name: "Other"), messages: [message], cursor: "1", hasMore: false)
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        var readUpdates = 0
+        chat.onReadCursor = { readUpdates += 1 }
+
+        chat.receive(["type": "message.reactions", "schemaVersion": 1, "channelId": channel, "seq": "2",
+                      "messageId": messageID, "reactions": [["emoji": "👍", "authorIds": ["other"]]]],
+                     generation: 1, channelID: channel)
+        XCTAssertEqual(chat.currentSnapshot()?.cursor, "2")
+        XCTAssertEqual(readUpdates, 1, "a sequenced reaction in an open DM must update its read sequence")
+
+        await chat.setReaction(messageID: messageID, emoji: "👍", active: true)
+        XCTAssertEqual(chat.currentSnapshot()?.cursor, "2", "an HTTP reaction snapshot must not move the WebSocket replay cursor")
+        XCTAssertEqual(readUpdates, 1)
+        await chat.stop()
+    }
+
+    @MainActor
     func testJoinedConversationBecomesReadOnlyPreviewWithoutRetainingSession() async throws {
         let channel = "chan00000001"
         var sessionRequests = 0
@@ -1129,5 +1199,55 @@ final class APIClientTests: XCTestCase {
         XCTAssertFalse(paths.contains("/api/chat/session"))
         XCTAssertFalse(paths.contains { $0.hasSuffix("/reactions") })
         await chat.stop()
+    }
+
+    func testDirectMessageContractsAndReadRequest() async throws {
+        let api = client()
+        var requests: [(String, String, Data?)] = []
+        MockURLProtocol.handler = { request in
+            requests.append((request.httpMethod ?? "", request.url!.path, try requestBodyData(request)))
+            switch (request.httpMethod, request.url!.path) {
+            case ("GET", "/api/dms"):
+                return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"exact_name","displayName":"Exact Name"},"lastSeq":"12","readSeq":"9"}]}"#.utf8))
+            case ("POST", "/api/dms"):
+                return (200, Data(#"{"id":"dm0000000001","peer":{"id":"peer","username":"exact_name","displayName":"Exact Name"},"lastSeq":"12","readSeq":"9"}"#.utf8))
+            case ("POST", "/api/dms/dm0000000001/read"): return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        let listed = try await api.directMessages()
+        XCTAssertTrue(listed[0].unread)
+        let created = try await api.createDirectMessage(username: "exact_name")
+        XCTAssertEqual(created.peer.displayName, "Exact Name")
+        try await api.markDirectMessageRead(id: created.id, seq: "12")
+        XCTAssertEqual(requests.map { "\($0.0) \($0.1)" }, ["GET /api/dms", "POST /api/dms", "POST /api/dms/dm0000000001/read"])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[1].2)) as? [String: String], ["username": "exact_name"])
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: XCTUnwrap(requests[2].2)) as? [String: String], ["seq": "12"])
+    }
+
+    @MainActor
+    func testDirectMessageNavigationWorksWithoutSpaceAndClearsOnLogout() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        let dm = DirectMessageConversation(id: "dm0000000001", peer: DirectMessagePeer(id: "peer", username: "peer", displayName: "Peer"), lastSeq: "1", readSeq: "0")
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/chat/channels/dm0000000001/messages":
+                return (200, Data(#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000001","name":"Peer","direct":true},"messages":[],"cursor":"1","hasMore":false}"#.utf8))
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/dms/dm0000000001/read": return (204, Data())
+            case "/api/dms": return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"Peer"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.select(directMessage: dm)
+        XCTAssertNil(model.selectedSpaceID)
+        XCTAssertEqual(model.selectedDirectMessageID, dm.id)
+        XCTAssertEqual(model.chat.spaceName, "Direct messages")
+        XCTAssertEqual(model.chat.channelName, "Peer")
+        await model.logout()
+        XCTAssertTrue(model.directMessages.isEmpty)
+        XCTAssertNil(model.selectedDirectMessageID)
     }
 }

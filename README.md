@@ -6,6 +6,10 @@ Early-stage and actively in development.
 Accounts receive a saved, random Caper avatar from 100 designs and eight colorways.
 Custom photo/GIF uploads and an avatar gallery are not implemented yet.
 
+Signed-in accounts can start persistent, private one-to-one messages by username.
+The Direct messages list is shared across spaces. Optional iOS/Android push needs
+provider configuration and signed-device validation; it is not enabled by default.
+
 ## Development
 
 You'll need Node.js 24, npm 11+, Docker Compose, and AWS CLI access to the `staging` profile.

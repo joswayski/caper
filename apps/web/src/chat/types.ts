@@ -39,7 +39,7 @@ export interface ChatHistory {
 
 export interface GeneralChatHistory extends ChatHistory {
   space: { id: string; name: string };
-  channel: { id: string; name: string };
+  channel: { id: string; name: string; direct?: boolean };
 }
 
 export interface ChatSession {

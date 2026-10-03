@@ -1,5 +1,7 @@
+use crate::media_gateway::{CATCHUP_DEADLINE, Connection, ConnectionAttempt, Failure};
 use crate::model::{Author, Message, Presence, ReactionUpdate, VoiceOccupant, sequence};
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -7,7 +9,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
-use tungstenite::{Message as WsMessage, client::IntoClientRequest, stream::MaybeTlsStream};
 
 #[derive(Clone, Debug)]
 pub struct MediaChannel {
@@ -132,24 +133,27 @@ pub fn spawn(
     GatewayControl { stop, activity }
 }
 
-#[derive(Debug)]
-enum Failure {
-    Retry(String),
-    Denied(String),
+struct ChatStream {
+    connection: Connection,
+    subscribed: BTreeSet<String>,
+    cursor: String,
+    ready: bool,
+    media_revisions: BTreeMap<String, u64>,
+    presence: Option<Vec<Presence>>,
 }
 
-#[derive(Clone, Copy)]
-struct Timing {
-    heartbeat: Duration,
-    watchdog: Duration,
-    poll: Duration,
+impl ChatStream {
+    fn new(connection: Connection, cursor: &str) -> Self {
+        Self {
+            connection,
+            subscribed: BTreeSet::new(),
+            cursor: cursor.into(),
+            ready: false,
+            media_revisions: BTreeMap::new(),
+            presence: None,
+        }
+    }
 }
-
-const TIMING: Timing = Timing {
-    heartbeat: Duration::from_secs(10),
-    watchdog: Duration::from_secs(30),
-    poll: Duration::from_millis(200),
-};
 
 #[allow(clippy::too_many_arguments)]
 fn run(
@@ -188,7 +192,6 @@ fn run(
             &events,
             &stop,
             &activity,
-            TIMING,
         );
         let _ = events.send(GatewayEvent::VoiceReset {
             generation: media.epoch,
@@ -234,129 +237,149 @@ fn connect_once(
     presence: Option<&(String, Vec<String>)>,
     media: &MediaWatch,
     events: &Sender<GatewayEvent>,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
     activity: &Mutex<Instant>,
-    timing: Timing,
 ) -> Result<(), Failure> {
-    // Account credentials are carried only by the Authorization header. The
-    // URL remains capability-free so proxies, histories and diagnostics cannot
-    // accidentally retain a token.
-    let mut request = url
-        .as_str()
-        .into_client_request()
-        .map_err(|_| Failure::Retry("Invalid gateway endpoint".into()))?;
-    if let Some(token) = token {
-        let mut authorization =
-            tungstenite::http::HeaderValue::from_str(&format!("Bearer {token}"))
-                .map_err(|_| Failure::Denied("Invalid account credential".into()))?;
-        authorization.set_sensitive(true);
-        request
-            .headers_mut()
-            .insert(tungstenite::http::header::AUTHORIZATION, authorization);
-    }
-    let (mut socket, _) = tungstenite::connect(request).map_err(|error| match error {
-        tungstenite::Error::Http(response)
-            if matches!(response.status().as_u16(), 401 | 403 | 404) =>
-        {
-            Failure::Denied("Your channel access or account session has expired.".into())
-        }
-        _ => Failure::Retry("Live messages are offline.".into()),
-    })?;
-    set_timeout(socket.get_mut(), timing.poll)
-        .map_err(|_| Failure::Retry("Could not configure the live connection.".into()))?;
+    let mut active = ChatStream::new(Connection::open(url, token.as_deref(), stop)?, cursor);
+    let mut candidate: Option<ChatStream> = None;
+    let mut opening: Option<ConnectionAttempt> = None;
+    let mut migrating = false;
+    let mut retry_at = Instant::now();
     let subscription = uuid::Uuid::new_v4().to_string();
     let presence_subscription = presence.map(|_| uuid::Uuid::new_v4().to_string());
-    let mut media_subscriptions: std::collections::BTreeMap<_, _> = media
+    let mut media_subscriptions: BTreeMap<_, _> = media
         .channels
         .iter()
         .take(MAX_MEDIA_CHANNELS)
         .map(|channel| (uuid::Uuid::new_v4().to_string(), (channel, None::<u64>)))
         .collect();
-    let mut subscribed = false;
-    let mut last_server = Instant::now();
-    let mut last_heartbeat = Instant::now();
     loop {
         if stop.load(Ordering::Relaxed) {
-            let _ = socket.close(None);
+            active.connection.close();
+            if let Some(candidate) = &mut candidate {
+                candidate.connection.close();
+            }
             return Ok(());
         }
-        if subscribed && last_heartbeat.elapsed() >= timing.heartbeat {
-            let activity_age = activity.lock().map_or(86_400_000, |at| {
-                at.elapsed().as_millis().min(86_400_000) as u64
-            });
-            socket
-                .send(WsMessage::Text(
-                    json!({"type":"heartbeat","activityAgeMs":activity_age})
-                        .to_string()
-                        .into(),
-                ))
-                .map_err(|_| Failure::Retry("Could not heartbeat the gateway.".into()))?;
-            last_heartbeat = Instant::now();
+        if migrating && candidate.is_none() && opening.is_none() && Instant::now() >= retry_at {
+            opening = Some(ConnectionAttempt::start(url, token.as_deref()));
         }
-        if last_server.elapsed() > timing.watchdog {
-            return Err(Failure::Retry("Live messages timed out.".into()));
+        if let Some(result) = opening.as_ref().and_then(ConnectionAttempt::take) {
+            opening = None;
+            match result {
+                Ok(connection) => candidate = Some(ChatStream::new(connection, cursor)),
+                Err(_) => retry_at = Instant::now() + Duration::from_millis(250),
+            }
         }
-        let frame = match socket.read() {
-            Ok(frame) => {
-                last_server = Instant::now();
-                frame
-            }
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue;
-            }
-            Err(_) => return Err(Failure::Retry("Live messages disconnected.".into())),
-        };
-        let WsMessage::Text(text) = frame else {
-            continue;
-        };
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|_| Failure::Retry("The gateway returned an invalid frame.".into()))?;
-        match value["type"].as_str() {
-            Some("hello") if !subscribed => {
-                socket
-                    .send(WsMessage::Text(
-                        json!({
-                            "type":"subscribe", "id":subscription, "kind":"chat",
-                            "channelId":channel, "after":cursor
-                        })
-                        .to_string()
-                        .into(),
-                    ))
-                    .map_err(|_| Failure::Retry("Could not subscribe to live messages.".into()))?;
-                subscribed = true;
-                if let (Some((space, users)), Some(id)) = (presence, &presence_subscription) {
-                    socket
-                        .send(WsMessage::Text(
-                            json!({
-                                "type":"subscribe", "id":id, "kind":"presence",
-                                "spaceId":space, "userIds":users
-                            })
-                            .to_string()
-                            .into(),
-                        ))
-                        .map_err(|_| {
-                            Failure::Retry("Could not subscribe to member presence.".into())
-                        })?;
+        for replacement in [false, true] {
+            let stream = if replacement {
+                let Some(stream) = &mut candidate else {
+                    continue;
+                };
+                stream
+            } else {
+                &mut active
+            };
+            let result = (|| {
+                if replacement && stream.connection.opened.elapsed() >= CATCHUP_DEADLINE {
+                    return Err(Failure::Retry("replacement did not catch up".into()));
                 }
-                for (id, (channel, _)) in &media_subscriptions {
-                    let mut frame = json!({"type":"subscribe", "id":id, "kind":"media"});
-                    if !channel.demo {
-                        frame["channelId"] = json!(channel.id);
+                let Some(value) = stream.connection.read(activity)? else {
+                    return Ok(false);
+                };
+                receive_frame(
+                    stream,
+                    replacement,
+                    value,
+                    &subscription,
+                    presence_subscription.as_deref(),
+                    generation,
+                    channel,
+                    cursor,
+                    presence,
+                    media.epoch,
+                    &mut media_subscriptions,
+                    events,
+                )
+            })();
+            match result {
+                Ok(true) => migrating = true,
+                Ok(false) => {}
+                Err(_) if replacement => {
+                    if let Some(mut failed) = candidate.take() {
+                        failed.connection.close();
                     }
-                    socket
-                        .send(WsMessage::Text(frame.to_string().into()))
-                        .map_err(|_| {
-                            Failure::Retry("Could not subscribe to voice presence.".into())
-                        })?;
+                    retry_at = Instant::now() + Duration::from_millis(250);
                 }
+                Err(error) => return Err(error),
             }
-            Some("heartbeat") => {}
-            Some("subscribed") if value["id"] == subscription => {
+        }
+        if candidate.as_ref().is_some_and(|stream| {
+            stream.ready
+                && stream.cursor == *cursor
+                && stream.subscribed.contains(&subscription)
+                && presence_subscription
+                    .as_ref()
+                    .is_none_or(|id| stream.subscribed.contains(id) && stream.presence.is_some())
+                && media_subscriptions.iter().all(|(id, (_, revision))| {
+                    stream.subscribed.contains(id)
+                        && stream
+                            .media_revisions
+                            .get(id)
+                            .is_some_and(|seen| revision.is_none_or(|applied| *seen >= applied))
+                })
+        }) {
+            let mut old = std::mem::replace(&mut active, candidate.take().unwrap());
+            if let (Some((space, _)), Some(members)) = (presence, active.presence.take()) {
+                let _ = events.send(GatewayEvent::Presence {
+                    generation,
+                    space: space.clone(),
+                    members,
+                });
+            }
+            old.connection.close();
+            migrating = false;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn receive_frame(
+    stream: &mut ChatStream,
+    replacement: bool,
+    value: Value,
+    subscription: &str,
+    presence_subscription: Option<&str>,
+    generation: u64,
+    channel: &str,
+    cursor: &mut String,
+    presence: Option<&(String, Vec<String>)>,
+    media_epoch: u64,
+    media_subscriptions: &mut BTreeMap<String, (&MediaChannel, Option<u64>)>,
+    events: &Sender<GatewayEvent>,
+) -> Result<bool, Failure> {
+    match value["type"].as_str() {
+        Some("hello") if !stream.connection.hello => {
+            stream.connection.hello = true;
+            stream.cursor = cursor.clone();
+            stream.connection.send(json!({"type":"subscribe", "id":subscription, "kind":"chat", "channelId":channel, "after":cursor}))?;
+            if let (Some((space, users)), Some(id)) = (presence, presence_subscription) {
+                stream.connection.send(json!({"type":"subscribe", "id":id, "kind":"presence", "spaceId":space, "userIds":users}))?;
+            }
+            for (id, (channel, _)) in media_subscriptions.iter() {
+                let mut frame = json!({"type":"subscribe", "id":id, "kind":"media"});
+                if !channel.demo {
+                    frame["channelId"] = json!(channel.id);
+                }
+                stream.connection.send(frame)?;
+            }
+        }
+        Some("heartbeat") => {}
+        Some("subscribed") => {
+            if let Some(id) = value["id"].as_str() {
+                stream.subscribed.insert(id.into());
+            }
+            if !replacement && value["id"] == subscription {
                 let _ = events.send(GatewayEvent::Status {
                     generation,
                     channel: channel.into(),
@@ -364,131 +387,149 @@ fn connect_once(
                     detail: "Live".into(),
                 });
             }
-            Some("event") if value["id"] == subscription => {
-                let event = &value["event"];
-                match event["type"].as_str() {
-                    Some("message.created") => {
-                        let message: Message = serde_json::from_value(event["message"].clone())
-                            .map_err(|_| {
-                                Failure::Retry("The gateway returned an invalid message.".into())
-                            })?;
-                        if message.channel_id != channel
-                            || event["seq"].as_str() != Some(&message.seq)
-                        {
-                            return Err(Failure::Retry(
-                                "The gateway mixed channel data; resyncing.".into(),
-                            ));
-                        }
-                        let previous = sequence(cursor).map_err(Failure::Retry)?;
-                        let next = sequence(&message.seq).map_err(Failure::Retry)?;
-                        if next > previous + 1 {
+        }
+        Some("event") if value["id"] == subscription => {
+            let event = &value["event"];
+            match event["type"].as_str() {
+                Some("message.created") => {
+                    let message: Message = serde_json::from_value(event["message"].clone())
+                        .map_err(|_| {
+                            Failure::Retry("The gateway returned an invalid message.".into())
+                        })?;
+                    if message.channel_id != channel || event["seq"].as_str() != Some(&message.seq)
+                    {
+                        return Err(Failure::Retry(
+                            "The gateway mixed channel data; resyncing.".into(),
+                        ));
+                    }
+                    let previous = sequence(cursor).map_err(Failure::Retry)?;
+                    let next = sequence(&message.seq).map_err(Failure::Retry)?;
+                    let position = sequence(&stream.cursor).map_err(Failure::Retry)?;
+                    if next > position.saturating_add(1) || next > previous.saturating_add(1) {
+                        if !replacement {
                             let _ = events.send(GatewayEvent::Resync {
                                 generation,
                                 channel: channel.into(),
                             });
-                            return Ok(());
                         }
-                        if next <= previous {
-                            continue;
-                        }
-                        *cursor = message.seq.clone();
-                        let _ = events.send(GatewayEvent::Message {
-                            generation,
-                            channel: channel.into(),
-                            message: Box::new(message),
-                        });
+                        return Err(Failure::Retry("Non-contiguous gateway replay.".into()));
                     }
-                    Some("message.reactions") => {
-                        let update: ReactionUpdate = serde_json::from_value(event.clone())
-                            .map_err(|_| {
-                                Failure::Retry("The gateway returned invalid reactions.".into())
-                            })?;
-                        if update.channel_id != channel
-                            || update.kind != "message.reactions"
-                            || update.schema_version != 1
-                            || update.message_id.is_empty()
-                            || update.reactions.iter().any(|reaction| {
-                                reaction.emoji.is_empty()
-                                    || reaction.author_ids.iter().any(String::is_empty)
-                            })
-                        {
-                            return Err(Failure::Retry(
-                                "The gateway returned invalid reactions.".into(),
-                            ));
-                        }
-                        let seq = &update.seq;
-                        let previous = sequence(cursor).map_err(Failure::Retry)?;
-                        let next = sequence(seq).map_err(Failure::Retry)?;
-                        if next > previous + 1 {
+                    if next > position {
+                        stream.cursor = message.seq.clone();
+                    }
+                    if next <= previous {
+                        return Ok(false);
+                    }
+                    *cursor = message.seq.clone();
+                    let _ = events.send(GatewayEvent::Message {
+                        generation,
+                        channel: channel.into(),
+                        message: Box::new(message),
+                    });
+                }
+                Some("message.reactions") => {
+                    let update: ReactionUpdate =
+                        serde_json::from_value(event.clone()).map_err(|_| {
+                            Failure::Retry("The gateway returned invalid reactions.".into())
+                        })?;
+                    if update.channel_id != channel
+                        || update.kind != "message.reactions"
+                        || update.schema_version != 1
+                        || update.message_id.is_empty()
+                        || update.reactions.iter().any(|reaction| {
+                            reaction.emoji.is_empty()
+                                || reaction.author_ids.iter().any(String::is_empty)
+                        })
+                    {
+                        return Err(Failure::Retry(
+                            "The gateway returned invalid reactions.".into(),
+                        ));
+                    }
+                    let previous = sequence(cursor).map_err(Failure::Retry)?;
+                    let next = sequence(&update.seq).map_err(Failure::Retry)?;
+                    let position = sequence(&stream.cursor).map_err(Failure::Retry)?;
+                    if next > position.saturating_add(1) || next > previous.saturating_add(1) {
+                        if !replacement {
                             let _ = events.send(GatewayEvent::Resync {
                                 generation,
                                 channel: channel.into(),
                             });
-                            return Ok(());
                         }
-                        if next <= previous {
-                            continue;
-                        }
-                        *cursor = seq.clone();
-                        let _ = events.send(GatewayEvent::Reactions {
-                            generation,
-                            channel: channel.into(),
-                            update,
-                        });
+                        return Err(Failure::Retry("Non-contiguous gateway replay.".into()));
                     }
-                    Some("resync_required") => {
+                    if next > position {
+                        stream.cursor = update.seq.clone();
+                    }
+                    if next <= previous {
+                        return Ok(false);
+                    }
+                    *cursor = update.seq.clone();
+                    let _ = events.send(GatewayEvent::Reactions {
+                        generation,
+                        channel: channel.into(),
+                        update,
+                    });
+                }
+                Some("resync_required") => {
+                    if !replacement {
                         let _ = events.send(GatewayEvent::Resync {
                             generation,
                             channel: channel.into(),
                         });
-                        return Ok(());
                     }
-                    Some("ready") => {
-                        let ready = event["cursor"]
-                            .as_str()
-                            .ok_or_else(|| Failure::Retry("Invalid gateway cursor".into()))?;
-                        sequence(ready).map_err(Failure::Retry)?;
-                        if ready != cursor {
-                            return Err(Failure::Retry(
-                                "The gateway checkpoint did not match replay.".into(),
-                            ));
-                        }
-                        *cursor = ready.into();
-                    }
-                    Some("typing.updated") => {
-                        let author: Author = serde_json::from_value(event["author"].clone())
-                            .map_err(|_| Failure::Retry("Invalid typing author.".into()))?;
-                        let revision = event["revision"]
-                            .as_str()
-                            .ok_or_else(|| Failure::Retry("Invalid typing revision.".into()))?;
-                        sequence(revision).map_err(Failure::Retry)?;
-                        let _ = events.send(GatewayEvent::Typing {
-                            generation,
-                            channel: channel.into(),
-                            author,
-                            typing: event["typing"].as_bool().unwrap_or(false),
-                            revision: revision.into(),
-                        });
-                    }
-                    _ => {
+                    return Err(Failure::Retry("Gateway replay requires resync.".into()));
+                }
+                Some("ready") => {
+                    let ready = event["cursor"]
+                        .as_str()
+                        .ok_or_else(|| Failure::Retry("Invalid gateway cursor".into()))?;
+                    sequence(ready).map_err(Failure::Retry)?;
+                    if ready != stream.cursor {
                         return Err(Failure::Retry(
-                            "The gateway returned an invalid event.".into(),
+                            "The gateway checkpoint did not match replay.".into(),
                         ));
                     }
+                    stream.ready = true;
+                }
+                Some("typing.updated") => {
+                    if replacement {
+                        return Ok(false);
+                    }
+                    let author: Author = serde_json::from_value(event["author"].clone())
+                        .map_err(|_| Failure::Retry("Invalid typing author.".into()))?;
+                    let revision = event["revision"]
+                        .as_str()
+                        .ok_or_else(|| Failure::Retry("Invalid typing revision.".into()))?;
+                    sequence(revision).map_err(Failure::Retry)?;
+                    let _ = events.send(GatewayEvent::Typing {
+                        generation,
+                        channel: channel.into(),
+                        author,
+                        typing: event["typing"].as_bool().unwrap_or(false),
+                        revision: revision.into(),
+                    });
+                }
+                _ => {
+                    return Err(Failure::Retry(
+                        "The gateway returned an invalid event.".into(),
+                    ));
                 }
             }
-            Some("event")
-                if presence_subscription
-                    .as_ref()
-                    .is_some_and(|id| value["id"] == *id) =>
+        }
+        Some("event")
+            if presence_subscription
+                .as_ref()
+                .is_some_and(|id| value["id"] == *id) =>
+        {
+            let event = &value["event"];
+            if event["type"] == "snapshot"
+                && let Some((space, _)) = presence
             {
-                let event = &value["event"];
-                if event["type"] == "snapshot"
-                    && let Some((space, _)) = presence
-                {
-                    let members: Vec<Presence> =
-                        serde_json::from_value(event["members"].clone())
-                            .map_err(|_| Failure::Retry("Invalid member presence.".into()))?;
+                let members: Vec<Presence> = serde_json::from_value(event["members"].clone())
+                    .map_err(|_| Failure::Retry("Invalid member presence.".into()))?;
+                if replacement {
+                    stream.presence = Some(members);
+                } else {
                     let _ = events.send(GatewayEvent::Presence {
                         generation,
                         space: space.clone(),
@@ -496,87 +537,92 @@ fn connect_once(
                     });
                 }
             }
-            Some("event")
-                if value["id"]
-                    .as_str()
-                    .is_some_and(|id| media_subscriptions.contains_key(id)) =>
-            {
-                let (channel, previous) = media_subscriptions
-                    .get_mut(value["id"].as_str().unwrap())
-                    .unwrap();
-                let event = &value["event"];
-                let revision = event["revision"]
-                    .as_u64()
-                    .filter(|_| event["type"] == "snapshot")
-                    .ok_or_else(|| Failure::Retry("Invalid voice roster.".into()))?;
-                if previous.is_some_and(|old| revision <= old) {
-                    continue;
-                }
-                let participants = serde_json::from_value(event["participants"].clone())
-                    .map_err(|_| Failure::Retry("Invalid voice roster.".into()))?;
-                *previous = Some(revision);
-                let _ = events.send(GatewayEvent::VoiceRoster {
-                    generation: media.epoch,
-                    channel: channel.id.clone(),
-                    participants,
-                });
+        }
+        Some("event")
+            if value["id"]
+                .as_str()
+                .is_some_and(|id| media_subscriptions.contains_key(id)) =>
+        {
+            let (channel, previous) = media_subscriptions
+                .get_mut(value["id"].as_str().unwrap())
+                .unwrap();
+            let event = &value["event"];
+            let revision = event["revision"]
+                .as_u64()
+                .filter(|_| event["type"] == "snapshot")
+                .ok_or_else(|| Failure::Retry("Invalid voice roster.".into()))?;
+            stream
+                .media_revisions
+                .entry(value["id"].as_str().unwrap().into())
+                .and_modify(|position| *position = (*position).max(revision))
+                .or_insert(revision);
+            if previous.is_some_and(|old| revision <= old) {
+                return Ok(false);
             }
-            Some("error")
-                if value["id"]
-                    .as_str()
-                    .is_some_and(|id| media_subscriptions.contains_key(id)) =>
-            {
-                // Remove this logical subscription before accepting another event;
-                // a denied spectator channel must not poison the active chat.
-                let (channel, _) = media_subscriptions
-                    .remove(value["id"].as_str().unwrap())
-                    .unwrap();
-                let _ = events.send(GatewayEvent::VoiceUnavailable {
-                    generation: media.epoch,
-                    channel: channel.id.clone(),
-                    revoked: value["status"]
-                        .as_u64()
-                        .is_some_and(|status| matches!(status, 401 | 403 | 404)),
-                });
+            let participants = serde_json::from_value(event["participants"].clone())
+                .map_err(|_| Failure::Retry("Invalid voice roster.".into()))?;
+            *previous = Some(revision);
+            let _ = events.send(GatewayEvent::VoiceRoster {
+                generation: media_epoch,
+                channel: channel.id.clone(),
+                participants,
+            });
+        }
+        Some("error")
+            if value["id"]
+                .as_str()
+                .is_some_and(|id| media_subscriptions.contains_key(id)) =>
+        {
+            if replacement {
+                return Err(Failure::Retry("Replacement subscription failed.".into()));
             }
-            Some("error") if value["id"] == subscription => {
-                if value["status"]
+            // Remove this logical subscription before accepting another event;
+            // a denied spectator channel must not poison the active chat.
+            let (channel, _) = media_subscriptions
+                .remove(value["id"].as_str().unwrap())
+                .unwrap();
+            let _ = events.send(GatewayEvent::VoiceUnavailable {
+                generation: media_epoch,
+                channel: channel.id.clone(),
+                revoked: value["status"]
                     .as_u64()
-                    .is_some_and(|status| matches!(status, 401 | 403 | 404))
-                {
-                    return Err(Failure::Denied(
-                        value["error"]
-                            .as_str()
-                            .unwrap_or("Channel access denied.")
-                            .into(),
-                    ));
-                }
+                    .is_some_and(|status| matches!(status, 401 | 403 | 404)),
+            });
+        }
+        Some("error") if value["id"] == subscription => {
+            if value["status"]
+                .as_u64()
+                .is_some_and(|status| matches!(status, 401 | 403 | 404))
+            {
+                return Err(Failure::Denied(
+                    value["error"]
+                        .as_str()
+                        .unwrap_or("Channel access denied.")
+                        .into(),
+                ));
+            }
+            if !replacement {
                 let _ = events.send(GatewayEvent::Resync {
                     generation,
                     channel: channel.into(),
                 });
-                return Err(Failure::Retry(
-                    value["error"]
-                        .as_str()
-                        .unwrap_or("Live subscription failed.")
-                        .into(),
-                ));
             }
-            Some("migrating") => return Ok(()),
-            _ => {}
+            return Err(Failure::Retry(
+                value["error"]
+                    .as_str()
+                    .unwrap_or("Live subscription failed.")
+                    .into(),
+            ));
         }
+        Some("migrating") => {
+            if replacement {
+                return Err(Failure::Retry("Replacement is draining.".into()));
+            }
+            return Ok(true);
+        }
+        _ => {}
     }
-}
-
-fn set_timeout(
-    stream: &mut MaybeTlsStream<std::net::TcpStream>,
-    timeout: Duration,
-) -> std::io::Result<()> {
-    match stream {
-        MaybeTlsStream::Plain(stream) => stream.set_read_timeout(Some(timeout)),
-        MaybeTlsStream::Rustls(stream) => stream.get_mut().set_read_timeout(Some(timeout)),
-        _ => Ok(()),
-    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -585,7 +631,192 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::sync::mpsc;
+    use tungstenite::Message as WsMessage;
     use tungstenite::handshake::server::{ErrorResponse, Request, Response};
+
+    #[test]
+    fn mixed_handoffs_preserve_delivery_after_failed_and_stale_candidates() {
+        type Socket = tungstenite::WebSocket<std::net::TcpStream>;
+        fn send(socket: &mut Socket, frame: Value) {
+            socket
+                .send(WsMessage::Text(frame.to_string().into()))
+                .unwrap();
+        }
+        fn accept(listener: &TcpListener, after: &str) -> (Socket, BTreeMap<String, String>) {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut socket =
+                tungstenite::accept_hdr(stream, |request: &Request, response: Response| {
+                    assert_eq!(request.headers()["authorization"], "Bearer account-secret");
+                    assert!(request.uri().query().is_none());
+                    Ok(response)
+                })
+                .unwrap();
+            send(&mut socket, json!({"type":"hello"}));
+            let mut ids = BTreeMap::new();
+            for _ in 0..3 {
+                let frame: Value =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                assert!(frame.get("token").is_none());
+                if frame["kind"] == "chat" {
+                    assert_eq!(frame["after"], after);
+                }
+                let kind = frame["kind"].as_str().unwrap().to_owned();
+                let id = frame["id"].as_str().unwrap().to_owned();
+                send(&mut socket, json!({"type":"subscribed", "id":id}));
+                ids.insert(kind, id);
+            }
+            (socket, ids)
+        }
+        fn ready(socket: &mut Socket, id: &str, cursor: &str) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{"type":"ready", "cursor":cursor}}),
+            );
+        }
+        fn message(socket: &mut Socket, id: &str, seq: &str) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{
+                    "type":"message.created", "seq":seq, "message":{
+                        "id":format!("message-{seq}"), "channelId":"text", "seq":seq,
+                        "clientMessageId":format!("client-{seq}"), "createdAt":"2026-10-03T00:00:00Z",
+                        "author":{"id":"author", "name":"Author", "isGuest":false},
+                        "content":{"version":1,"type":"text","text":seq}
+                    }
+                }}),
+            );
+        }
+        fn reactions(socket: &mut Socket, id: &str, seq: &str) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{
+                    "type":"message.reactions", "schemaVersion":1, "channelId":"text",
+                    "seq":seq, "messageId":"message-38",
+                    "reactions":[{"emoji":"👍", "authorIds":["author"]}]
+                }}),
+            );
+        }
+        fn roster(socket: &mut Socket, id: &str, revision: u64) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{
+                    "type":"snapshot", "revision":revision,
+                    "participants":[{"id":"speaker", "name":format!("revision-{revision}"), "muted":false, "deafened":false}]
+                }}),
+            );
+        }
+        fn presence(socket: &mut Socket, id: &str) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{"type":"snapshot", "members":[{"userId":"author", "status":"online"}]}}),
+            );
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (advance, advanced) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut old, ids) = accept(&listener, "37");
+            ready(&mut old, &ids["chat"], "37");
+            roster(&mut old, &ids["media"], 7);
+            presence(&mut old, &ids["presence"]);
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            send(&mut old, json!({"type":"migrating"}));
+            let (stream, _) = listener.accept().unwrap();
+            let _: Result<_, _> = tungstenite::accept_hdr(stream, |_: &Request, _: Response| {
+                let mut response = ErrorResponse::new(None);
+                *response.status_mut() = tungstenite::http::StatusCode::SERVICE_UNAVAILABLE;
+                Err(response)
+            });
+            message(&mut old, &ids["chat"], "38");
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (mut replacement, next_ids) = accept(&listener, "38");
+            assert_eq!(ids, next_ids, "logical subscriptions survive the handoff");
+            ready(&mut replacement, &ids["chat"], "38");
+            roster(&mut replacement, &ids["media"], 6);
+            presence(&mut replacement, &ids["presence"]);
+            reactions(&mut old, &ids["chat"], "39");
+            roster(&mut old, &ids["media"], 8);
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            reactions(&mut replacement, &ids["chat"], "39");
+            roster(&mut replacement, &ids["media"], 8);
+            assert!(
+                matches!(old.read(), Ok(WsMessage::Close(_))),
+                "old closes only after replacement catches up"
+            );
+            message(&mut replacement, &ids["chat"], "40");
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            send(&mut replacement, json!({"type":"migrating"}));
+            let (mut last, last_ids) = accept(&listener, "40");
+            assert_eq!(ids, last_ids);
+            ready(&mut last, &ids["chat"], "40");
+            roster(&mut last, &ids["media"], 8);
+            presence(&mut last, &ids["presence"]);
+            assert!(matches!(replacement.read(), Ok(WsMessage::Close(_))));
+            message(&mut last, &ids["chat"], "41");
+            assert!(
+                matches!(last.read(), Ok(WsMessage::Close(_))),
+                "stop closes promoted socket"
+            );
+        });
+        let (events, incoming) = mpsc::channel();
+        let control = spawn(
+            &url::Url::parse(&format!("http://{address}")).unwrap(),
+            Some("account-secret".into()),
+            4,
+            "text".into(),
+            "37".into(),
+            Some(("space".into(), vec!["author".into()])),
+            MediaWatch {
+                epoch: 91,
+                channels: vec![MediaChannel {
+                    id: "voice".into(),
+                    demo: false,
+                }],
+            },
+            events,
+        );
+        // Ignore the initial Connecting status, then require uninterrupted live state.
+        while !matches!(
+            incoming.recv_timeout(Duration::from_secs(5)).unwrap(),
+            GatewayEvent::Status { online: true, .. }
+        ) {}
+        advance.send(()).unwrap();
+        let mut messages = vec![];
+        let mut reactions = vec![];
+        let mut rosters = vec![];
+        loop {
+            match incoming.recv_timeout(Duration::from_secs(5)).unwrap() {
+                GatewayEvent::Message { message, .. } => {
+                    let seq = message.seq.clone();
+                    messages.push(seq.clone());
+                    if seq == "38" || seq == "40" {
+                        advance.send(()).unwrap();
+                    }
+                    if seq == "41" {
+                        break;
+                    }
+                }
+                GatewayEvent::VoiceRoster { participants, .. } => {
+                    let name = participants[0].name.clone();
+                    if name == "revision-8" {
+                        advance.send(()).unwrap();
+                    }
+                    rosters.push(name);
+                }
+                GatewayEvent::Reactions { update, .. } => reactions.push(update.seq),
+                GatewayEvent::Presence { .. } | GatewayEvent::Status { online: true, .. } => {}
+                other => panic!("handoff must not disconnect/reset/resync: {other:?}"),
+            }
+        }
+        assert_eq!(messages, ["38", "40", "41"]);
+        assert_eq!(reactions, ["39"], "candidate replay is deduplicated");
+        assert_eq!(rosters, ["revision-7", "revision-8"]);
+        control.stop();
+        server.join().unwrap();
+    }
 
     #[test]
     fn local_gateway_uses_auth_header_resumes_cursor_does_not_echo_and_stops() {

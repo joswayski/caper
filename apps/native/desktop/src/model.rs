@@ -56,6 +56,28 @@ pub struct ChannelInvitation {
     pub inviter: Inviter,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectPeer {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectConversation {
+    pub id: String,
+    pub peer: DirectPeer,
+    pub last_seq: String,
+    pub read_seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DirectConversations {
+    pub conversations: Vec<DirectConversation>,
+}
+
 /// Spectators receive identity and status, never media track capabilities.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -729,5 +751,16 @@ mod tests {
         );
         timeline.prepend(vec![message("message-1", 1)]).unwrap();
         assert!(timeline.messages().next().unwrap().reactions.is_empty());
+    }
+
+    #[test]
+    fn direct_conversation_contract_uses_string_sequences_and_camel_case_peer() {
+        let payload = r#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"fixture_alex","displayName":"TEST FIXTURE Alex"},"lastSeq":"12","readSeq":"9"}]}"#;
+        let parsed: DirectConversations = serde_json::from_str(payload).unwrap();
+        let direct = &parsed.conversations[0];
+        assert_eq!(direct.id, "dm0000000001");
+        assert_eq!(direct.peer.display_name, "TEST FIXTURE Alex");
+        assert_eq!(sequence(&direct.last_seq), Ok(12));
+        assert_eq!(sequence(&direct.read_seq), Ok(9));
     }
 }

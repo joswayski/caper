@@ -27,6 +27,29 @@ export interface Member {
   owner: boolean;
 }
 
+export interface DirectConversation {
+  id: string;
+  peer: { id: string; username: string; displayName: string };
+  lastSeq: string;
+  readSeq: string;
+}
+
+export function directUnread(conversation: DirectConversation) {
+  return BigInt(conversation.lastSeq) > BigInt(conversation.readSeq);
+}
+
+export function listDirectConversations() {
+  return request<{ conversations: DirectConversation[] }>("/api/dms");
+}
+
+export function createDirectConversation(username: string) {
+  return request<DirectConversation>("/api/dms", { method: "POST", body: JSON.stringify({ username: username.trim() }) });
+}
+
+export function readDirectConversation(id: string, seq: string) {
+  return request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
+}
+
 export interface SpaceLimits {
   ownedSpaces: number;
   totalSpaces: number;

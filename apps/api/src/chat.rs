@@ -1,4 +1,4 @@
-//! Public demo commands. Persist before publishing; all future content rules
+//! Channel and direct-message commands. Persist before publishing; content rules
 //! belong on this path, never in a gateway or a delete/recreate bot.
 #[cfg(test)]
 use crate::spaces::channel_access;
@@ -147,24 +147,41 @@ async fn history_page(
     let mut tx = pool.begin().await.map_err(database_error)?;
     // Membership edits lock the space first. Read permissions only after this
     // lock is granted so a waiting history request cannot use revoked grants.
-    sqlx::query("SELECT s.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE c.external_id=$1 FOR SHARE OF s")
-        .bind(channel).fetch_optional(&mut *tx).await.map_err(database_error)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
-    let access: Option<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT c.id,c.last_seq,s.id FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
-         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-           AND NOT s.demo AND $2::bigint IS NOT NULL
-             AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
-             AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
+    let space_id: Option<i64> =
+        sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let Some(space_id) = space_id {
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
+            .bind(space_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    }
+    let access: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT c.id,c.last_seq,c.space_id FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
+           AND ((s.deleted_at IS NULL AND NOT s.demo
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2)))
+                OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
+                    JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          FOR SHARE OF c")
         .bind(channel).bind(user).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head, space_id) =
         access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
-        "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND NOT s.demo AND c.deleted_at IS NULL AND s.deleted_at IS NULL",
+        "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND NOT s.demo AND c.deleted_at IS NULL AND s.deleted_at IS NULL
+         UNION ALL SELECT '', 'Direct messages',u.display_name FROM public.direct_conversations d JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END WHERE d.channel_id=$1 AND $3 IN (d.low_user_id,d.high_user_id) AND u.deleted_at IS NULL",
     )
     .bind(channel_id)
     .bind(space_id)
+    .bind(user)
     .fetch_optional(&mut *tx)
     .await
     .map_err(database_error)?
@@ -179,9 +196,13 @@ async fn history_page(
         .into_iter()
         .map(|(payload, avatar)| enrich_author(payload, avatar))
         .collect();
+    let mut channel_identity = json!({"id":channel,"name":channel_name});
+    if space_id.is_none() {
+        channel_identity["direct"] = json!(true);
+    }
     Ok(
         json!({"messages":rows,"cursor":head.to_string(),"hasMore":more,
-        "space":{"id":space,"name":space_name},"channel":{"id":channel,"name":channel_name}}),
+        "space":{"id":space,"name":space_name},"channel":channel_identity}),
     )
 }
 
@@ -424,22 +445,34 @@ async fn persist(
     let mut tx = pool.begin().await.map_err(database_error)?;
     let (session_id, author_id, name, user_id, avatar_id) =
         authorize_sender(&mut tx, token).await?;
+    let space_id: Option<i64> =
+        sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     // Membership mutations lock the space first. Take that lock in a separate
     // statement so the access query gets a fresh READ COMMITTED snapshot after
     // waiting; a predicate in the locking query can see pre-removal grants.
-    sqlx::query("SELECT s.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE c.external_id=$1 FOR UPDATE OF s")
-        .bind(channel)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let Some(space_id) = space_id {
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(space_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    }
     let row: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT c.id,c.last_seq FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
-         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-           AND NOT s.demo AND $2::bigint IS NOT NULL
+        "SELECT c.id,c.last_seq FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
+           AND ((s.deleted_at IS NULL AND NOT s.demo
                  AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
                  AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
-                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2)
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+                OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
+                    JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          FOR UPDATE OF c",
     )
     .bind(channel)
@@ -473,8 +506,17 @@ async fn persist(
     let seq = head + 1;
     let id = random_id(15);
     let payload = json!({"id":id,"channelId":channel,"seq":seq.to_string(),"author":{"id":author_id,"name":name,"isGuest":user_id.is_none(),"avatarId":avatar_id},"content":content,"createdAt":Utc::now().to_rfc3339(),"clientMessageId":client_id});
-    sqlx::query("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)")
-        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).execute(&mut *tx).await.map_err(database_error)?;
+    let message_id: i64 = sqlx::query_scalar("INSERT INTO public.messages (external_id, channel_id, session_id, client_message_id, request_hash, channel_seq, payload) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id")
+        .bind(id).bind(channel_id).bind(session_id).bind(client_id).bind(hash).bind(seq).bind(&payload).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if let Some(user) = user_id {
+        crate::push::enqueue(&mut tx, channel_id, user, message_id)
+            .await
+            .map_err(database_error)?;
+        if space_id.is_none() {
+            sqlx::query("INSERT INTO public.direct_reads (channel_id,user_id,seq) VALUES ($1,$2,$3) ON CONFLICT (channel_id,user_id) DO UPDATE SET seq=GREATEST(direct_reads.seq,EXCLUDED.seq)")
+                .bind(channel_id).bind(user).bind(seq).execute(&mut *tx).await.map_err(database_error)?;
+        }
+    }
     sqlx::query("INSERT INTO public.channel_events (channel_id, seq, payload) VALUES ($1,$2,$3)")
         .bind(channel_id).bind(seq).bind(json!({"type":"message.created","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":payload})).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("UPDATE public.channels SET last_seq = $2 WHERE id = $1")
@@ -501,16 +543,31 @@ async fn persist_reaction(
     // Match message creation's space -> channel lock order. In particular, a
     // membership revocation which won the space lock cannot be bypassed using
     // a snapshot taken while this request was waiting.
-    sqlx::query("SELECT s.id FROM public.spaces s JOIN public.channels c ON c.space_id=s.id WHERE c.external_id=$1 FOR UPDATE OF s")
-        .bind(channel).fetch_optional(&mut *tx).await.map_err(database_error)?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    let space_id: Option<i64> =
+        sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let Some(space_id) = space_id {
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(space_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    }
     let access: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT c.id,c.last_seq FROM public.channels c JOIN public.spaces s ON s.id=c.space_id
-         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
-           AND NOT s.demo AND $2::bigint IS NOT NULL
-             AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
-             AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
-             AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2)
+        "SELECT c.id,c.last_seq FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
+           AND ((s.deleted_at IS NULL AND NOT s.demo
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+                OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
+                    JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
          FOR UPDATE OF c")
         .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (channel_id, head) =

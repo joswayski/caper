@@ -216,3 +216,28 @@ test('spectator rosters update and revoke without granting capture or account-ch
   assert.equal((await stream.next()).type, 'subscribed');
   assert.equal((await request('/api/media/join', { method: 'POST', body: {} })).response.status, 503);
 });
+
+test('DM reaction fixture advances stream and read heads without changing message sequences', async (t) => {
+  const { request } = await setup(t);
+  await request('/api/dms', { auth: true, method: 'POST', body: { username: 'fixture_alex' } });
+  const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
+  const root = `/api/chat/channels/${ids.direct}/messages`;
+  const sent = await request(root, { auth: true, method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: randomUUID(), text: 'TEST FIXTURE — reactions' } });
+  await request('/__fixture/control', { method: 'POST', body: { incomingReaction: { channelId: ids.direct, messageId: sent.value.id, emoji: '🎉' } } });
+  const reactionPath = `${root}/${sent.value.id}/reactions`;
+  const mutation = { auth: true, method: 'PUT', headers: { 'x-caper-chat-token': session.value.token }, body: { emoji: '🎉', active: true } };
+  const added = await request(reactionPath, mutation);
+  assert.equal(added.value.seq, '3');
+  assert.deepEqual(added.value.reactions, [{ emoji: '🎉', authorIds: [ids.other, ids.owner] }]);
+  assert.deepEqual((await request(reactionPath, mutation)).value, added.value, 'no-op does not allocate a sequence');
+  const history = (await request(root, { auth: true })).value;
+  assert.equal(history.cursor, '3');
+  assert.equal(history.messages[0].seq, '1');
+  assert.equal(history.messages[0].reactionSeq, '3');
+  await request(`/api/dms/${ids.direct}/read`, { auth: true, method: 'POST', body: { seq: '3' } });
+  const dm = (await request('/api/dms', { auth: true })).value.conversations[0];
+  assert.equal(dm.lastSeq, '3');
+  assert.equal(dm.readSeq, '3');
+  await request('/__fixture/control', { method: 'POST', body: { incomingMessage: { channelId: ids.direct, text: 'After reactions' } } });
+  assert.equal((await request(root, { auth: true })).value.messages.at(-1).seq, '4');
+});

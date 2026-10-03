@@ -939,13 +939,17 @@ final class CaperParityUITests: XCTestCase {
         capture("manage-space-keyboard", app: app)
         username.typeText("\n")
         #else
-        app.buttons["Add"].tap()
+        app.buttons["Invite"].tap()
         #endif
-        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 3"),
+        let unchanged = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 2"),
             object: app.descendants(matching: .any)["space-members-heading"])
-        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed,
+                       "Inviting must not grant immediate space membership")
+        assertStaticText("Pending invitations  1", in: app)
+        assertStaticText("Maya", in: app)
+        assertStaticText("@maya", in: app)
         XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,
-            "Successful add clears the editable field")
+            "Successful invitation clears the editable field")
         app.buttons["Close"].firstMatch.tap()
         XCTAssertFalse(app.textFields["Exact username"].exists)
         XCTAssertTrue(app.buttons["Browse"].exists || app.buttons["account-profile"].isHittable)

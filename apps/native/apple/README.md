@@ -8,9 +8,25 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 - The caper.chat shell at desktop and narrow widths: space rail, channel sidebar, toggleable responsive member panel, Browse navigation, conversation stage, Satoshi typography, and the web color/spacing tokens.
 - Space/channel/member owner workflows: create/delete/rename spaces and channels, add/remove existing accounts by username, private-channel toggle and grants.
 - HTTP chat history and pagination, idempotent sends, ordered gateway delivery/replay, reconnect/error state, typing, and paginated member presence.
+- Account-global one-to-one direct messages, including exact-username creation, unread/read cursors, space-independent navigation, and the existing ordered chat/gateway pipeline.
 - Generation fences for account/channel transitions, immediate revoked-data clearing, separate in-memory chat/media capabilities, and same-origin-only credential redirects.
 
 The native UI and platform projects still require exact-head Apple CI before they are considered build-verified. The Linux orb used for implementation has no Swift or Xcode installation.
+
+## Direct-message notifications (iOS)
+
+The notification toggle appears only after authenticated `GET /api/push/config` advertises the build's provider: Debug uses `apnsSandbox`, Release uses `apns`. Opt-in requests notification permission and registers the APNs token with `POST /api/push/devices`; token rotation re-registers it, and logout first sends `DELETE /api/push/devices`. A tap reads only `conversationId` from the privacy-preserving payload and opens that DM after authentication. The expected alert is fixed server-side to title `Caper` and body `You have a new direct message.`; message text must never be included.
+
+Enable Push Notifications for both development and distribution identifiers in Apple Developer, and configure the server provider with an APNs token key (never add the `.p8` file here). Generate/build with the normal commands, supplying the registered identifier and team:
+
+```sh
+CAPER_IOS_BUNDLE_ID=chat.caper.ios ./apps/native/apple/prepare.sh
+xcodebuild -project apps/native/apple/CaperApple.xcodeproj -scheme CaperIOS \
+  -configuration Release -destination 'generic/platform=iOS' \
+  DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CAPER_IOS_BUNDLE_ID=chat.caper.ios archive
+```
+
+`Configuration/iOS-Debug.entitlements` selects the APNs sandbox and `iOS-Release.entitlements` selects production; automatic signing supplies the matching provisioning profile. Unsigned simulator builds continue to build but cannot receive APNs device tokens. Provider setup requires the key ID, team ID, bundle topic, and `.p8` contents in the server's secret store; no provider key belongs in source control. Validate permission denial/re-enable, token rotation, logout deletion, account switching, sandbox and production delivery, foreground receipt, terminated-app taps, and payload privacy on physical signed devices. Simulator and Linux checks do not validate APNs delivery; macOS notification registration is intentionally not implemented in this change.
 
 ## Fonts and licenses
 

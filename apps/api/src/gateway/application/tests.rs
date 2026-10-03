@@ -358,10 +358,95 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         .unwrap();
     gateways[0].0.begin_shutdown();
     next(&mut old, "migrating", None).await;
+    let http = reqwest::Client::new();
+    for (index, (_, address)) in gateways.iter().enumerate() {
+        assert_eq!(
+            http.get(format!("http://{address}/health"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            http.get(format!("http://{address}/readyz"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            [StatusCode::SERVICE_UNAVAILABLE, StatusCode::NO_CONTENT][index]
+        );
+    }
+    let mut request = format!("ws://{}/api/chat/events", gateways[0].1)
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("cookie", format!("caper_session={token}").parse().unwrap());
+    let error = tokio_tungstenite::connect_async(request)
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if response.status() == StatusCode::SERVICE_UNAVAILABLE
+    ));
+    let mut replacement = connect(gateways[1].1, &token).await;
+    // The current multiplexed protocol must keep delivering chat while the old
+    // gateway drains, not just recover an accepted media command afterward.
+    transmit(
+        &mut replacement,
+        json!({"type":"subscribe","kind":"chat","id":"chat","channelId":channel,"after":"1"}),
+    )
+    .await;
+    assert_eq!(
+        next(&mut replacement, "event", Some("chat")).await["event"]["seq"],
+        "2",
+        "the replacement replays only the missing message"
+    );
+    assert_eq!(
+        next(&mut replacement, "event", Some("chat")).await["event"]["cursor"],
+        "2"
+    );
+    next(&mut replacement, "subscribed", Some("chat")).await;
+    chat::spawn_publisher(chat.clone());
+    let response = crate::app(gateways[1].0.application.state.clone().unwrap())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/chat/channels/{channel}/messages"))
+                .header("content-type", "application/json")
+                .header("x-caper-chat-token", &chat_token)
+                .body(Body::from(json!({"clientMessageId":Uuid::new_v4(),"text":"sent while the gateway is draining"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let during_rollout: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 128 * 1024).await.unwrap()).unwrap();
+    assert_eq!(during_rollout["seq"], "3");
+    assert_eq!(
+        during_rollout["content"]["text"],
+        "sent while the gateway is draining"
+    );
+    assert_eq!(during_rollout["author"]["id"], user_external);
+    for socket in [&mut old, &mut replacement] {
+        assert_eq!(
+            next(socket, "event", Some("chat")).await["event"]["message"],
+            during_rollout,
+            "both sockets deliver the message during overlap"
+        );
+    }
+    let draining_id = Uuid::new_v4().to_string();
+    transmit(&mut old, json!({"type":"command","id":draining_id,"issuedAt":chrono::Utc::now().timestamp_millis(),"method":"media.status","channelId":channel})).await;
+    let refused = next(&mut old, "result", Some(&draining_id)).await;
+    assert_eq!(refused["status"], 503);
+    assert_eq!(refused["body"]["code"], "gateway_draining");
     // Lose the original socket while the provider is still accepting Join.
     // Its detached command must finish; another gateway must not execute it.
     drop(old);
-    let mut replacement = connect(gateways[1].1, &token).await;
     transmit(&mut replacement, command.clone()).await;
     let pending = next(&mut replacement, "result", Some(&id)).await;
     assert_eq!(pending["status"], 409);

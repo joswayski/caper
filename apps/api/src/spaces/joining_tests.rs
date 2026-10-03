@@ -98,6 +98,14 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
             (private, member.user.id)
         ]
     );
+    // Exercise participation with the complete current schema after checking
+    // the joining migration's backfill in isolation.
+    for migration in sqlx::migrate!("./migrations")
+        .iter()
+        .filter(|migration| migration.version > 202610010001)
+    {
+        pool.execute(migration.sql.as_ref()).await.unwrap();
+    }
     let state = AppState::with_database(
         Config::test(false),
         Arc::new(Cloudflare::new()),

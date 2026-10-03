@@ -645,6 +645,124 @@ async fn reactions_are_durable_idempotent_authorized_and_transactional() {
         .unwrap();
 }
 
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn direct_reactions_require_participants_and_preserve_history_sequences(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["alice", "bob", "outsider"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id")
+            .bind(name).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let channel = "reaction-dm".to_owned();
+    let channel_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,name,private) VALUES($1,'direct',true) RETURNING id")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.direct_conversations(channel_id,low_user_id,high_user_id) VALUES($1,$2,$3)")
+        .bind(channel_id).bind(users[0]).bind(users[1]).execute(&pool).await.unwrap();
+    let original = persist(
+        &pool,
+        &channel,
+        "alice",
+        Uuid::new_v4(),
+        "DM reaction target",
+    )
+    .await
+    .unwrap();
+    let message = original["id"].as_str().unwrap();
+    let added = persist_reaction(&pool, &channel, message, "bob", "🎉", true)
+        .await
+        .unwrap();
+    assert_eq!(added["seq"], "2");
+    assert_eq!(
+        added["reactions"],
+        json!([{"emoji":"🎉","authorIds":["bob"]}])
+    );
+    assert_eq!(
+        persist_reaction(&pool, &channel, message, "bob", "🎉", true)
+            .await
+            .unwrap(),
+        added,
+        "no-op returns the same snapshot without another event",
+    );
+    for active in [true, false] {
+        assert_eq!(
+            persist_reaction(&pool, &channel, message, "outsider", "🎉", active)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND,
+        );
+    }
+    let history = history_page(&pool, &channel, None, Some(users[0]))
+        .await
+        .unwrap();
+    assert_eq!(history["channel"]["direct"], true);
+    assert_eq!(history["channel"]["name"], "bob");
+    assert_eq!(history["cursor"], "2");
+    assert_eq!(history["messages"][0]["seq"], "1");
+    assert_eq!(history["messages"][0]["reactionSeq"], "2");
+    assert_eq!(history["messages"][0]["reactions"], added["reactions"]);
+    for reader in [None, Some(users[2])] {
+        assert_eq!(
+            history_page(&pool, &channel, None, reader)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let removed = persist_reaction(&pool, &channel, message, "bob", "🎉", false)
+        .await
+        .unwrap();
+    assert_eq!(removed["seq"], "3");
+    assert_eq!(removed["reactions"], json!([]));
+    let (head, events, activity, reactions): (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT last_seq,
+            (SELECT count(*) FROM public.channel_events WHERE channel_id=c.id),
+            (SELECT count(*) FROM public.message_reaction_activity),
+            (SELECT count(*) FROM public.message_reactions)
+         FROM public.channels c WHERE external_id=$1",
+    )
+    .bind(&channel)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((head, events, activity, reactions), (3, 3, 2, 0));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.channel_joins")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0,
+        "DMs do not require space-channel joins"
+    );
+    sqlx::query("UPDATE public.users SET deleted_at=now() WHERE id=$1")
+        .bind(users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        persist_reaction(&pool, &channel, message, "bob", "🎉", false)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND,
+        "even no-ops require two active participants"
+    );
+    assert_eq!(
+        history_page(&pool, &channel, None, Some(users[1]))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 async fn event(socket: &mut Socket) -> Value {

@@ -43,6 +43,17 @@ class CaperApi(
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
+    suspend fun directConversations(token: String): DirectConversationList = get("/api/dms", token)
+    suspend fun startDirectConversation(token: String, username: String): DirectConversation = post(
+        "/api/dms", buildJsonObject { put("username", username.trim()) }, token,
+    )
+    suspend fun markDirectConversationRead(token: String, id: String, seq: String) {
+        require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
+        request<Unit>("/api/dms/${id.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
+    }
+    suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
+    suspend fun registerPush(token: String, deviceToken: String) { request<Unit>("/api/push/devices", "POST", token, buildJsonObject { put("platform", "fcm"); put("token", deviceToken) }.toString()) }
+    suspend fun unregisterPush(token: String, deviceToken: String) { request<Unit>("/api/push/devices", "DELETE", token, buildJsonObject { put("platform", "fcm"); put("token", deviceToken) }.toString()) }
     suspend fun general(): ChatHistory = validatedHistory(get("/api/chat/general"))
     suspend fun history(token: String?, channel: String, before: String? = null): ChatHistory {
         val history: ChatHistory = get(

@@ -1,6 +1,6 @@
 use crate::model::{
-    Account, Channel, ChatSession, History, Member, Members, Message, ReactionUpdate, Space,
-    SpaceDetail, Spaces,
+    Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
+    Members, Message, ReactionUpdate, Space, SpaceDetail, Spaces,
 };
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
@@ -109,6 +109,35 @@ impl Api {
 
     pub fn spaces(&self, token: &str) -> Result<Spaces, ApiError> {
         self.request(Method::GET, "api/spaces", Some(token), None, None)
+    }
+
+    pub fn direct_conversations(&self, token: &str) -> Result<DirectConversations, ApiError> {
+        self.request(Method::GET, "api/dms", Some(token), None, None)
+    }
+
+    pub fn create_direct(
+        &self,
+        token: &str,
+        username: &str,
+    ) -> Result<DirectConversation, ApiError> {
+        self.request(
+            Method::POST,
+            "api/dms",
+            Some(token),
+            None,
+            Some(json!({"username": username})),
+        )
+    }
+
+    pub fn read_direct(&self, token: &str, id: &str, seq: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::POST,
+            &format!("api/dms/{id}/read"),
+            Some(token),
+            None,
+            Some(json!({"seq": seq})),
+        )?)
+        .map(|_| ())
     }
 
     pub fn general_history(&self, token: Option<&str>) -> Result<History, ApiError> {

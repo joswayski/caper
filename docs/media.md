@@ -745,14 +745,17 @@ and a skin-tone selector are deferred.
 grant, channel participation (`channel_joins`), and session permissions as sending.
 Readable previews retain reaction snapshots but cannot add, remove, or retry
 reactions. Even no-op writes require participation, and a write queued behind
-leave rechecks permission after acquiring the space lock. Unicode qualification variants are
+leave rechecks permission after acquiring the space lock. Direct-message reactions
+require one of the two active participants, not space membership or a channel
+join. History holds the channel lock through snapshot reads for both channel
+types. Unicode qualification variants are
 canonicalized; arbitrary text, multiple emoji, and emoji newer than 15.0 are
 rejected. Membership is unique by internal message ID, canonical emoji, and
 internal user ID; separate account chat sessions therefore cannot inflate counts.
 Both reaction membership and rate-limit activity use `user_id` foreign keys to
 `users.id`. Snapshot/event generation joins those keys to `users.external_id`;
 only public IDs appear in `authorIds`, including the stored history/outbox payloads.
-Account membership is required; the retired public General demo is not writable.
+An account is required; the retired public General demo is not writable.
 
 The response and transactional outbox use
 `{type:"message.reactions",schemaVersion:1,channelId,seq,messageId,reactions}`.
@@ -764,7 +767,10 @@ returns the current snapshot revision (or `"0"`) without allocating an event.
 HTTP snapshots never advance a client's replay cursor. Per-message revisions
 prevent stale replies or older pages from overwriting newer reactions. A full
 history resync drops older cached pages so missed reactions cannot remain stale;
-those pages can be loaded again. Normal reconnects replay missing events.
+those pages can be loaded again. Normal reconnects replay missing events, including
+during native gateway handoffs. A visible direct conversation marks sequenced
+reaction events read; HTTP snapshots do not advance that read cursor. Reactions
+do not generate push notifications.
 
 Limits are 20 emoji kinds and 1,000 total contributions per message, plus 60
 mutations per actor/channel/minute. No-op retries do not consume that budget.
@@ -785,7 +791,9 @@ message snapshots, sequence allocation, and outbox commit together.
    `kubectl -n default rollout status deployment/caper-api --timeout=15m`.
    API startup uses the existing direct `MIGRATION_DATABASE_URL` to apply all
    pending migrations, including `202609290001_message_reactions.sql`, space
-   invitations, and channel joining, plus runtime grants before serving.
+   invitations, channel joining, `202610030001_direct_messages.sql`, and
+   `202610030002_push.sql`, plus runtime grants before serving. Optional push
+   delivery can stay disabled; no push provider setup is required for reactions.
    Already-applied migrations are skipped. No manual writes or separate job are needed.
    Verify `/readyz` and that existing history/sends still work.
 3. **Gateway next:** deploy the cumulative gateway so typing/media commands also
@@ -810,7 +818,8 @@ message snapshots, sequence allocation, and outbox commit together.
    emoji, one user's highlight, counts after refresh and reconnect, and denied
    access to private messages. Public previews must show reactions but reject
    writes until joined; leaving must disable writes. Check desktop hover/keyboard
-   and narrow layouts. Include invitation consent and channel joining checks below.
+   and narrow layouts, two-person DM reaction updates/read cursors, and outsider
+   denial. Include invitation consent and channel joining checks below.
 6. **Rollback:** roll back the web first to reduce reaction writes. Updated
    native apps also expose writes; retain the compatible API while preparing
    corrective client releases. Do not restore old clients that cannot consume
@@ -1553,25 +1562,62 @@ live ingestion into the user's dataset has not been verified.
 ## Deployment behavior
 
 - Web-only deployments do not reload already-open tabs; production media control
-  requests route straight to Rust. Keep API changes compatible with old tabs and
-  future native clients, which will not all update at deployment time.
-- API rolling updates start a replacement and wait for its readiness probe before
-  terminating the old pod. This removes the deliberate stop-before-start gap,
-  **not** today's call interruptions from separate in-memory registries.
-- On SIGTERM, Rust ends SSE streams, stops accepting connections and gives in-flight HTTP requests
-  up to 30 seconds to finish, then spends up to 20 seconds on existing provider
-  cleanup. If HTTP draining exceeds its deadline, the process exits without
-  provider cleanup rather than racing cleanup against unfinished mutations.
-  As with a crash, provider cleanup is not guaranteed and TURN expiry still applies.
-- A database connection alone does not make calls survive deployments. Future
-  work must persist capabilities, SFU sessions/tracks/subscriptions and leases;
-  coordinate participant mutations and cleanup across pods; and replace
-  process-exit call teardown with session handoff and expiry-based cleanup.
-  Database migrations must remain compatible with both overlapping versions.
-- Deploy the infrastructure grace-period change before the new API image. The
-  infrastructure repository's `docs/operations.md` describes Flux reconciliation;
-  image deployment commands are below. No live rolling-call validation has been
-  performed for these changes; client recovery tests use mocked media/API responses.
+  requests route straight to Rust. Keep API/gateway changes compatible with old
+  tabs and native clients, which will not all update at deployment time.
+- The production infrastructure manifests configure **both API and gateway** with
+  two replicas, `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `/readyz`, a
+  five-second `preStop`, and 65-second termination grace. This is the desired
+  configuration, not proof of the live cluster's state. All overlapping API and
+  gateway pods must use the same `VALKEY_URL` and compatible state schema.
+- Gateway SIGTERM makes `/readyz` fail and rejects new sockets/commands. Existing
+  sockets receive `migrating` and keep delivering chat/media updates for 20 seconds.
+  The browser opens a replacement without closing the old socket, resumes chat
+  from its applied Postgres sequence, and waits for all subscriptions to catch up,
+  including a current media snapshot, before switching. Failed candidates retry
+  while the old socket remains usable. Overlapping messages are deduplicated.
+  Accepted commands finish after socket loss and cache their results in Valkey;
+  retries keep the same command identity. The gateway keeps its runtime alive for
+  36 seconds before HTTP draining so those commands can finish.
+- An API-only rollout does not restart the separately deployed gateway or its
+  sockets. Account/chat state remains in Postgres and active voice state remains
+  in Valkey. API SIGTERM rejects new media commands and drains in-flight HTTP
+  requests for up to 30 seconds. **Shared-mode shutdown does not remove voice
+  participants, close Cloudflare tracks, or revoke their TURN credentials.**
+  Legacy opt-in SSE streams use the ten-second overlap described above. Healthy
+  audio stays client ↔ Cloudflare, independent of API/gateway connections.
+- Memory-only development does not have that voice guarantee: shutdown removes
+  local participants and spends up to 20 seconds on provider cleanup. If HTTP
+  draining exceeds its deadline, the process exits without provider cleanup
+  rather than racing cleanup against unfinished mutations. Do not mix local-mode
+  and shared-mode pods; use the staged Valkey cutover before adding replicas.
+- Updated Android, Apple, and Rust desktop clients also overlap sockets on
+  `migrating`. Chat replay resumes from the applied cursor; promotion requires
+  subscription acknowledgments, the chat replay checkpoint, current media
+  revisions, and any watched presence snapshot. Messages and media snapshots
+  delivered by both sockets are deduplicated. Failed or stalled candidates retry
+  without clearing the old stream's chat/voice state. In-call roster streams keep
+  the existing media capability and do not rejoin the call during handoff.
+  Older installed native versions still briefly reconnect; release the updated
+  clients independently against the existing compatible API/gateway protocol.
+- Deploy the matching API image successfully before the gateway image; the
+  infrastructure gateway workflow verifies that API rollout before changing its
+  pin. Keep infrastructure lifecycle settings in place and migrations compatible
+  with both overlapping versions. Merging application code does not deploy it.
+- Regression coverage uses real local WebSockets, Postgres and Valkey for replay,
+  chat delivery through drain overlap, admission rejection, and accepted-command
+  recovery. Shared-media tests replace both API instances and assert unchanged
+  provider session mappings and zero shutdown track closes/TURN revocations.
+  Browser tests cover repeated mixed chat/media handoffs, failed candidates, stale
+  snapshots, deduplication, and unchanged mocked voice peers after gateway loss.
+  Android JVM tests and Rust desktop tests exercise native handoffs with real
+  local WebSockets. Swift actor tests use an injected transport, compiled and
+  run in a Linux harness; Xcode/macOS/iOS and Windows builds remain separate CI
+  validation. No physical-device handoff acceptance is claimed. Cloudflare is
+  mocked; these checks do **not** prove live-cluster routing or continuous audio.
+  Run the live two-client replacement checks in
+  [Activation and verification](#activation-and-verification) before claiming that.
+  A crash, replacement outage beyond the handoff window, or expired lease can
+  still interrupt updates or force voice recovery.
 
 ## Limits and lifecycle
 
@@ -3500,3 +3546,179 @@ Provider-specific staging results are obsolete. PlanetScale connectivity, physic
 desktop/mobile account access, and live authenticated SFU voice remain untested.
 Earlier media results above predate account-backed participant display names and do
 not validate that integration.
+
+## Account-global direct messages and optional mobile push
+
+One-to-one DMs belong to two accounts, not to a space. Start by exact username;
+the canonical pair has one conversation even when both people start it at once.
+The list appears below channels in every space, including accounts with no spaces.
+Web pins it above the account controls; narrow web and mobile clients expose it in
+Browse navigation. Leaving or deleting a space does not delete DMs. Space owners
+have no special DM access. This is server-authorized privacy, not end-to-end
+encryption. Group DMs, attachments, message deletion, blocking, and DM voice are
+not implemented. Existing text length, send limits, typing, history pagination,
+idempotent sends, outbox and gateway replay rules apply unchanged.
+
+API contracts (account authentication required):
+
+- `GET /api/dms` → `{conversations:[{id,peer:{id,username,displayName},lastSeq,readSeq}]}`.
+- `POST /api/dms` with `{username}` returns that pair's conversation.
+- `POST /api/dms/{id}/read` with `{seq}` monotonically advances the caller's read
+  cursor, bounded to the durable channel head. Sequences are decimal strings.
+- Message history/send/typing and gateway chat subscriptions use the existing
+  channel endpoints with the DM ID. History sets `channel.direct=true` and an
+  empty `space.id`. Only the pair can access it; media endpoints reject DMs.
+
+Lists refresh every 15 seconds; the open conversation receives live gateway
+messages. Unread means the durable head is beyond the account's read cursor.
+Read state is account-wide, not device-wide. New conversations are limited to
+20/minute and 1,000 per initiating account. Exact usernames are discoverable by
+starting a conversation; membership in a shared space is not required.
+
+### Push is optional and requires provider acceptance
+
+`GET /api/push/config` returns supported platforms (`fcm`, `apns`, `apnsSandbox`).
+Authenticated `POST`/`DELETE /api/push/devices` accept `{platform,token}`.
+Registrations are bound to a valid account session and hashed device token; raw
+tokens are submitted to SNS, not retained in Postgres. Endpoint ARNs are private
+server data. Users explicitly opt in; clients hide the control for unavailable
+platforms. Browser Web Push, macOS push and Rust desktop OS notifications are
+intentionally not included. Android requires its Firebase build configuration;
+iOS requires a signed device with the matching APS entitlement.
+
+SNS uses its standard AWS workload-identity/region provider chain. Configure any
+subset of `PUSH_FCM_APPLICATION_ARN`, `PUSH_APNS_APPLICATION_ARN` and
+`PUSH_APNS_SANDBOX_APPLICATION_ARN` in the API's private runtime configuration.
+Blank disables that provider; all blank starts no push worker and requires no
+additional AWS access. The gateway needs no SNS configuration. Do not supply
+provider keys to the browser or API; SNS holds the FCM service-account/APNs key.
+
+Each committed DM enqueues one peer notification in the message transaction.
+The API worker expands valid devices, claims with `SKIP LOCKED`, retries temporary
+errors up to eight attempts, and abandons notifications after 24 hours or session
+revocation/account reassignment. SNS acceptance is not proof of device receipt.
+Crash recovery can deliver duplicates; this is at-least-once best effort, not
+exactly-once. Notifications contain only opaque conversation/message IDs and
+generic copy: **Caper / You have a new direct message.** No sender or message text
+is sent to the provider. Android uses data-only FCM v1 messages so local opt-out
+can suppress display; APNs uses a standard alert, not PushKit/incoming-call push.
+Already submitted provider notifications cannot be recalled after logout.
+Opening a notification still requires current account authorization.
+Logout clears local account/conversation state and push opt-in without waiting
+for provider cleanup. iOS unregisters locally and relies on session revocation;
+Android starts session revocation independently of its best-effort, ten-second
+push unregister attempt. Offline remote revocation can still fail.
+
+Provider provisioning is an operator action, not part of merging this PR. On a
+trusted operator machine, disable shell tracing, use `umask 077`, and prepare
+private SNS attribute JSON files outside this checkout:
+
+- FCM: `{"PlatformCredential":"<contents of Firebase service-account JSON as a string>"}`.
+- APNs: `PlatformPrincipal` = signing key ID, `PlatformCredential` = `.p8`
+  contents, `ApplePlatformTeamID` = team ID, `ApplePlatformBundleID` = registered
+  iOS bundle ID. Use the same attributes for production and sandbox applications.
+
+```sh
+aws sns create-platform-application --region us-east-1 --name CaperAndroid \
+  --platform GCM --attributes file:///secure/caper/fcm-attributes.json \
+  --query PlatformApplicationArn --output text
+aws sns create-platform-application --region us-east-1 --name CaperIOS \
+  --platform APNS --attributes file:///secure/caper/apns-attributes.json \
+  --query PlatformApplicationArn --output text
+aws sns create-platform-application --region us-east-1 --name CaperIOSSandbox \
+  --platform APNS_SANDBOX --attributes file:///secure/caper/apns-attributes.json \
+  --query PlatformApplicationArn --output text
+```
+
+Use approved credentials/profile for the target account. Only provision desired
+platforms, and retain the returned ARNs securely. The API role needs only
+`sns:CreatePlatformEndpoint`, `sns:SetEndpointAttributes`, and `sns:Publish`, not
+platform-application administration or endpoint deletion. SNS registration actions
+do not support resource-level IAM permissions; use `Resource: "*"` with the
+approved region/account constraints, and review direct-publish permissions with
+the infrastructure owner. There is no user-controlled ARN or unrestricted SNS
+proxy. Follow AWS's [FCM v1 setup](https://docs.aws.amazon.com/sns/latest/dg/sns-fcm-authentication-methods.html),
+[APNs attributes](https://docs.aws.amazon.com/sns/latest/api/API_SetPlatformApplicationAttributes.html),
+and [IAM action support](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonsns.html).
+
+### Deployment order
+
+1. **Prerequisites/infrastructure:** existing account auth, Postgres, Valkey and
+   compatible shared-mode API/gateway must be healthy. No DNS/SFU/TURN changes are
+   needed for DMs. Keep the existing API replica policy. Push may stay disabled:
+   no SNS/IAM/Firebase/APNs changes are then necessary. If enabling it, first
+   provision the selected applications and reviewed API IAM permissions above.
+2. **Secrets/configuration:** if enabling push, securely merge returned ARN keys
+   into `production/apps/caper` (never replace its other keys) and ensure they are
+   projected into the API environment. From a trusted machine with an already
+   reviewed complete replacement JSON file:
+   `aws secretsmanager put-secret-value --region us-east-1 --secret-id production/apps/caper --secret-string file:///secure/caper/reviewed-runtime.json`.
+   Do not print its contents. Native Firebase/APNs setup follows each native
+   README. No additional configuration is needed with push disabled.
+3. **Database/API:** after image builds, deploy the exact merged SHA. API startup
+   applies `202610030001_direct_messages.sql` and `202610030002_push.sql` through
+   the migration role and grants runtime table/sequence access. No separate SQL
+   job or manual migration is required. Back up the database first; never reset it.
+   These versions follow the already-published channel-joining
+   migration; never rename or edit migrations already recorded in a shared ledger.
+   Inspect the ledger before rollout. If a non-disposable database ran the earlier
+   feature branch's conflicting DM versions, stop for a migration-history
+   compatibility plan rather than renaming or deleting applied records.
+   ```sh
+   psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+     -c 'SELECT version, description, success FROM public._sqlx_migrations ORDER BY version;'
+   MERGED_SHA=<reviewed-merge-sha>
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+4. **Gateway before clients:** the new participant access query must be on every
+   gateway pod before exposing DMs. Older gateway images deny DM subscriptions.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+5. **Web/native clients:** deploy web after both backend roles are healthy.
+   Android, iOS/macOS and Rust desktop releases can then ship independently.
+   Do not release uncompiled native changes: run their build/test scripts on
+   Android/Apple toolchains and inspect real affected layouts first.
+   ```sh
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ./apps/native/android/build.sh
+   ./apps/native/apple/build.sh macos
+   ./apps/native/apple/build.sh ios
+   ```
+6. **Verify/rollback:** with two owned accounts, create in both directions, send,
+   reconnect, page history, switch spaces and check unread/read state; a third
+   account must get 404 for history/send/socket. Verify opted-in physical Android
+   and signed iOS devices, sandbox/production APNs, background/terminated taps,
+   denied permission, token rotation, logout and account switching before enabling
+   those providers broadly. To stop push, blank its ARN keys through the reviewed
+   configuration path and restart the API. Rolling back web/native removes the
+   entry points. Keep the API on an image containing the applied migrations:
+   SQLx validates the database's migration history, so a pre-migration API image
+   is not a safe rollback. An API rollback requires a reviewed build retaining
+   those migrations and disabling the feature, not deleting migration records.
+   Gateway rollback can disable DM subscriptions while preserving durable data.
+   Leave the additive migrations in place; do not drop DM/message/push data or
+   restore a database without a separate recovery review. Merging does not deploy.
+
+### Validation boundary
+
+Run the disposable DB/gateway and fake-provider tests in addition to the ordinary
+Rust suite (never point these at shared databases):
+
+```sh
+DATABASE_URL='postgres://user@127.0.0.1:55432/postgres' \
+CHAT_TEST_DATABASE_URL='postgres://user@127.0.0.1:55432/postgres' \
+CHAT_TEST_VALKEY_URL='redis://127.0.0.1:6379' \
+TEST_VALKEY_URL='redis://127.0.0.1:6379' \
+  cargo test --locked -p caper-api -- --ignored --skip tests::shared
+```
+
+The loopback UI fixture provides `fixture_alex` / `TEST FIXTURE Alex`, not a real
+account or push provider. Browser checks do not prove native rendering or device
+push. Android/Apple compilation, physical device layouts, APNs/FCM credential
+validation and sustained/offline notification delivery remain release acceptance
+requirements. Notifications currently have no scheduled pruning; operators must
+review storage growth and provider endpoint lifecycle before a large rollout.
