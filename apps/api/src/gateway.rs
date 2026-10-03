@@ -301,18 +301,18 @@ async fn catch_up(
         if access.id != channel {
             return Err(());
         }
-        let rows: Vec<(i64, Value)> = sqlx::query_as("SELECT seq, payload FROM public.channel_events WHERE channel_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq LIMIT 16")
+        let rows: Vec<(i64, Value, Option<i16>)> = sqlx::query_as("SELECT e.seq,e.payload,u.avatar_id FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.channel_seq=e.seq LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.channel_id=$1 AND e.seq>$2 AND e.seq<=$3 ORDER BY e.seq LIMIT 16")
             .bind(channel).bind(*after).bind(head).fetch_all(&state.chat.pool).await.map_err(|_| ())?;
         if rows.is_empty() {
             write(socket, json!({"type":"resync_required"})).await?;
             return Err(());
         }
-        for (seq, payload) in rows {
+        for (seq, payload, avatar_id) in rows {
             if seq != *after + 1 {
                 write(socket, json!({"type":"resync_required"})).await?;
                 return Err(());
             }
-            write(socket, payload).await?;
+            write(socket, crate::chat::enrich_author(payload, avatar_id)).await?;
             *after = seq;
         }
     }

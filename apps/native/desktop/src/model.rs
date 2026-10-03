@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub id: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
     pub username: Option<String>,
     pub display_name: Option<String>,
     #[serde(default)]
@@ -45,8 +47,9 @@ pub struct Channel {
 #[serde(rename_all = "camelCase")]
 pub struct VoiceOccupant {
     pub id: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
     pub name: String,
-    pub country_code: Option<String>,
     pub muted: bool,
     pub deafened: bool,
 }
@@ -55,6 +58,8 @@ pub struct VoiceOccupant {
 #[serde(rename_all = "camelCase")]
 pub struct Member {
     pub id: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
     pub username: String,
     pub display_name: String,
     pub owner: bool,
@@ -88,6 +93,8 @@ pub struct SpaceDetail {
 #[serde(rename_all = "camelCase")]
 pub struct Author {
     pub id: String,
+    #[serde(default)]
+    pub avatar_id: Option<i32>,
     pub name: String,
     pub is_guest: bool,
 }
@@ -280,6 +287,14 @@ mod tests {
         assert_eq!(inviter.display_name, "Space Host");
     }
 
+    #[test]
+    fn avatar_id_is_optional_json() {
+        let old: Account = serde_json::from_str(r#"{"id":"old"}"#).unwrap();
+        let saved: Account = serde_json::from_str(r#"{"id":"saved","avatarId":16}"#).unwrap();
+        assert_eq!(old.avatar_id, None);
+        assert_eq!(saved.avatar_id, Some(16));
+    }
+
     fn message(id: &str, seq: u64) -> Message {
         Message {
             id: id.into(),
@@ -289,6 +304,7 @@ mod tests {
             client_message_id: format!("client-{id}"),
             author: Author {
                 id: "author".into(),
+                avatar_id: None,
                 name: "A".into(),
                 is_guest: false,
             },

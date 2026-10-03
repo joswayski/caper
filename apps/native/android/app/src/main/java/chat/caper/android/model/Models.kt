@@ -8,7 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonTransformingSerializer
 
 @Serializable data class MediaStatus(val enabled: Boolean = false)
-@Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false)
+@Serializable data class Account(val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null)
 @Serializable data class Challenge(val challengeId: String)
 @Serializable data class VerifyResult(val account: Account, val token: String)
 @Serializable data class Inviter(val username: String, val displayName: String)
@@ -16,9 +16,9 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
 @Serializable data class Channel(val id: String, val spaceId: String, val name: String, val private: Boolean)
-@Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean)
+@Serializable data class Member(val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null)
 @Serializable data class SpaceDetail(val space: Space, val channels: List<Channel>, val members: List<Member>)
-@Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean)
+@Serializable data class ChatAuthor(val id: String, val name: String, val isGuest: Boolean, val avatarId: Int? = null)
 @Serializable data class ChatContent(val version: Int, val type: String, val text: String)
 @Serializable data class ChatMessage(
     val id: String,
@@ -62,17 +62,17 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
 @Serializable data class Participant(
     val id: String,
     val name: String,
-    val countryCode: String? = null,
     val muted: Boolean,
     val deafened: Boolean,
     val tracks: List<MediaTrack>,
+    val avatarId: Int? = null,
 )
 @Serializable data class MediaSnapshot(val participants: List<Participant>, val revision: Long? = null)
 @Serializable data class SpectatorParticipant(
-    val id: String, val name: String, val countryCode: String? = null,
-    val muted: Boolean, val deafened: Boolean,
+    val id: String, val name: String,
+    val muted: Boolean, val deafened: Boolean, val avatarId: Int? = null,
 ) {
-    fun asParticipant() = Participant(id, name, countryCode, muted, deafened, emptyList())
+    fun asParticipant() = Participant(id, name, muted, deafened, emptyList(), avatarId)
 }
 @Serializable data class SpectatorSnapshot(val participants: List<SpectatorParticipant>, val revision: Long)
 @Serializable data class SessionDescription(val type: String, val sdp: String)
@@ -97,6 +97,9 @@ sealed interface SessionScreen {
 
 /** Web keys availability by media root: General uses the demo root. */
 fun voiceRootKey(demo: Boolean, channelId: String) = if (demo) "" else channelId
+
+/** A valid persisted v1 atlas tile, or null for old/invalid API data. */
+fun caperAvatarIndex(avatarId: Int?): Int? = avatarId?.takeIf { it in 0..799 }
 
 /** Web's Join tooltip while availability is unknown or false; null once available. */
 fun voiceJoinUnavailableLabel(available: Boolean?): String? = when (available) {

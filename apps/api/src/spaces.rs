@@ -150,6 +150,7 @@ struct Channel {
 #[serde(rename_all = "camelCase")]
 struct Member {
     id: String,
+    avatar_id: i16,
     username: String,
     display_name: String,
     owner: bool,
@@ -575,8 +576,9 @@ async fn add_space_member(
         StatusCode::CREATED,
         Json(Member {
             id: member.1,
-            username: member.2,
-            display_name: member.3,
+            avatar_id: member.2,
+            username: member.3,
+            display_name: member.4,
             owner: member.0 == principal.user.id,
         }),
     ))
@@ -608,8 +610,8 @@ async fn list_invitations(
 ) -> Result<Json<Value>, ApiError> {
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     let id = owner_space(&mut tx, &space, principal.user.id).await?;
-    let rows: Vec<Member> = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT u.external_id,u.username,u.display_name FROM public.space_invitations i
+    let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, String, String)>(
+        "SELECT u.external_id,u.avatar_id,u.username,u.display_name FROM public.space_invitations i
          JOIN public.users u ON u.id=i.user_id WHERE i.space_id=$1 AND i.status='pending'
            AND i.updated_at > now()-interval '7 days' AND u.deleted_at IS NULL
          ORDER BY i.updated_at,u.id",
@@ -619,8 +621,9 @@ async fn list_invitations(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, username, display_name)| Member {
+    .map(|(id, avatar_id, username, display_name)| Member {
         id,
+        avatar_id,
         username,
         display_name,
         owner: false,
@@ -768,8 +771,8 @@ async fn list_channel_members(
 ) -> Result<Json<Value>, ApiError> {
     let pool = pool(&state)?;
     let (space_id, channel_id) = owned_channel(pool, &space, &channel, principal.user.id).await?;
-    let rows: Vec<Member> = sqlx::query_as::<_, (String, String, String, bool)>(
-        "SELECT u.external_id,u.username,u.display_name,s.owner_id=u.id
+    let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, String, String, bool)>(
+        "SELECT u.external_id,u.avatar_id,u.username,u.display_name,s.owner_id=u.id
          FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id
          JOIN public.spaces s ON s.id=sm.space_id
          WHERE sm.space_id=$2 AND u.deleted_at IS NULL
@@ -782,8 +785,9 @@ async fn list_channel_members(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, username, display_name, owner)| Member {
+    .map(|(id, avatar_id, username, display_name, owner)| Member {
         id,
+        avatar_id,
         username,
         display_name,
         owner,
@@ -823,8 +827,9 @@ async fn add_channel_member(
         },
         Json(Member {
             id: member.1,
-            username: member.2,
-            display_name: member.3,
+            avatar_id: member.2,
+            username: member.3,
+            display_name: member.4,
             owner: member.0 == principal.user.id,
         }),
     ))
@@ -920,19 +925,19 @@ async fn owned_channel(
 async fn find_user_for_update(
     tx: &mut Transaction<'_, Postgres>,
     username: &str,
-) -> Result<(i64, String, String, String), ApiError> {
+) -> Result<(i64, String, i16, String, String), ApiError> {
     let username = username.trim().to_ascii_lowercase();
     if !crate::accounts::valid_username(&username) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid username"));
     }
-    sqlx::query_as("SELECT id,external_id,username,display_name FROM public.users WHERE username=$1 AND deleted_at IS NULL AND display_name IS NOT NULL FOR UPDATE")
+    sqlx::query_as("SELECT id,external_id,avatar_id,username,display_name FROM public.users WHERE username=$1 AND deleted_at IS NULL AND display_name IS NOT NULL FOR UPDATE")
         .bind(username).fetch_optional(&mut **tx).await.map_err(database_error)?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "user not found"))
 }
 
 async fn members(pool: &PgPool, space: i64) -> Result<Vec<Member>, ApiError> {
-    Ok(sqlx::query_as::<_,(String,String,String,bool)>("SELECT u.external_id,u.username,u.display_name,s.owner_id=u.id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id JOIN public.spaces s ON s.id=sm.space_id WHERE sm.space_id=$1 AND u.deleted_at IS NULL ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id")
-        .bind(space).fetch_all(pool).await.map_err(database_error)?.into_iter().map(|(id,username,display_name,owner)|Member{id,username,display_name,owner}).collect())
+    Ok(sqlx::query_as::<_,(String,i16,String,String,bool)>("SELECT u.external_id,u.avatar_id,u.username,u.display_name,s.owner_id=u.id FROM public.space_members sm JOIN public.users u ON u.id=sm.user_id JOIN public.spaces s ON s.id=sm.space_id WHERE sm.space_id=$1 AND u.deleted_at IS NULL ORDER BY (s.owner_id=u.id) DESC,lower(u.username),u.id")
+        .bind(space).fetch_all(pool).await.map_err(database_error)?.into_iter().map(|(id,avatar_id,username,display_name,owner)|Member{id,avatar_id,username,display_name,owner}).collect())
 }
 
 fn constraint_or_database(error: sqlx::Error, message: &'static str) -> ApiError {
@@ -993,6 +998,7 @@ mod tests {
             user: User {
                 id,
                 external_id: external_id.to_owned(),
+                avatar_id: 42,
                 email: None,
                 username: Some(username.to_owned()),
                 display_name: Some(username.to_owned()),
@@ -1132,6 +1138,7 @@ mod tests {
                 user: User {
                     id: incomplete_id,
                     external_id: incomplete_external,
+                    avatar_id: 42,
                     email: None,
                     username: None,
                     display_name: None,

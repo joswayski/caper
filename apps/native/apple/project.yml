@@ -80,7 +80,7 @@ targets:
     type: framework
     platform: macOS
     sources:
-      - Sources/CaperCore
+      - path: Sources/CaperCore
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]
@@ -102,7 +102,7 @@ targets:
     type: framework
     platform: iOS
     sources:
-      - Sources/CaperCore
+      - path: Sources/CaperCore
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]
@@ -267,7 +267,10 @@ targets:
   CaperIOSCoreTests:
     type: bundle.unit-test
     platform: iOS
-    sources: Tests/CaperIOSCoreTests
+    sources:
+      - Tests/CaperIOSCoreTests
+      - Tests/CaperCoreTests/AvatarTests.swift
+      - Tests/CaperCoreTests/GatewayLifecycleTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

@@ -3,10 +3,10 @@ import Observation
 
 public struct VoiceSpectator: Decodable, Identifiable, Equatable, Sendable {
     public let id: String
+    public var avatarId: Int? = nil
     public let name: String
     public let muted: Bool
     public let deafened: Bool
-    public let countryCode: String?
 }
 
 /// Read-only occupancy. Its one Gateway multiplexes at most 24 token-free media

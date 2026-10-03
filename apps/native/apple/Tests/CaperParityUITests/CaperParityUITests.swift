@@ -73,10 +73,26 @@ final class CaperParityUITests: XCTestCase {
     /// button under the keyboard. macOS clicks the button.
     private func save(_ button: XCUIElement, from field: XCUIElement) {
         #if os(iOS)
-        type("\n", into: field)
+        // A slow simulator sometimes won't refocus the field after a rejected
+        // save; with no keyboard up, tap the button instead.
+        if focus(field) {
+            field.typeText("\n")
+        } else if button.isHittable {
+            button.tap()
+        } else {
+            XCTFail("\(field.label) never took keyboard focus")
+        }
         #else
         button.tap()
         #endif
+    }
+
+    private func focus(_ field: XCUIElement) -> Bool {
+        for _ in 0..<3 {
+            field.tap()
+            if hasKeyboardFocus(field) { return true }
+        }
+        return false
     }
 
     private func type(_ text: String, into field: XCUIElement) {
@@ -84,14 +100,11 @@ final class CaperParityUITests: XCTestCase {
         field.tap()
         field.typeText(text)
         #else
-        for _ in 0..<3 {
-            field.tap()
-            if hasKeyboardFocus(field) {
-                field.typeText(text)
-                return
-            }
+        if focus(field) {
+            field.typeText(text)
+        } else {
+            XCTFail("\(field.label) never took keyboard focus")
         }
-        XCTFail("\(field.label) never took keyboard focus")
         #endif
     }
 
@@ -838,6 +851,44 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Manage space", in: app)
         assertElement("space-members-heading", label: "Members 3", in: app)
         capture("manage-space", app: app)
+        let username = app.textFields["Exact username"]
+        XCTAssertTrue(username.isEnabled, "The dialog must not inherit the disabled workspace")
+        app.buttons["Remove"].firstMatch.tap()
+        #if os(macOS)
+        let headingProperty = "value"
+        #else
+        let headingProperty = "label"
+        #endif
+        let twoMembers = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 2"),
+            object: app.descendants(matching: .any)["space-members-heading"])
+        XCTAssertEqual(XCTWaiter.wait(for: [twoMembers], timeout: 5), .completed)
+        type("maya", into: username)
+        #if os(iOS)
+        capture("manage-space-keyboard", app: app)
+        username.typeText("\n")
+        #else
+        app.buttons["Add"].tap()
+        #endif
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 3"),
+            object: app.descendants(matching: .any)["space-members-heading"])
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed)
+        XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,
+            "Successful add clears the editable field")
+        app.buttons["Close"].firstMatch.tap()
+        XCTAssertFalse(app.textFields["Exact username"].exists)
+        XCTAssertTrue(app.buttons["Browse"].exists || app.buttons["account-profile"].isHittable)
+    }
+
+    func testManageSpaceCanDismissOnOutsideTap() {
+        let app = launch(fixture: "manage-space")
+        XCTAssertTrue(app.textFields["Exact username"].waitForExistence(timeout: 10))
+        #if os(macOS)
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
+        #else
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
+        #endif
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.textFields["Exact username"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 3), .completed)
     }
 
     func testPrivateChannelOverview() {
@@ -865,10 +916,20 @@ final class CaperParityUITests: XCTestCase {
         capture("narrow-members", app: app)
         let hideMembers = app.buttons["Hide member list"]
         XCTAssertTrue(hideMembers.isHittable, "The open member panel must leave its toggle accessible")
-        hideMembers.tap()
+        app.buttons["Close member list"].tap()
+        XCTAssertEqual(staticTexts("Members", in: app).count, 0)
+        members.tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).tap()
         XCTAssertEqual(staticTexts("Members", in: app).count, 0)
         navigation.tap()
         assertElement("selected-space-name", label: "Fixture Studio", in: app, timeout: 5)
+        let profile = app.buttons["account-profile"]
+        let settings = app.descendants(matching: .any)["account-settings-menu"]
+        XCTAssertTrue(profile.isHittable)
+        XCTAssertTrue(settings.isHittable)
+        XCTAssertLessThan(profile.frame.minX, 60, "The mobile account bar spans beneath the rail")
+        XCTAssertEqual(profile.frame.midY, settings.frame.midY, accuracy: 3)
+        XCTAssertLessThan(settings.frame.maxY, app.frame.maxY - 16, "Account controls must clear the home indicator")
         capture("narrow-browse", app: app)
     }
     #endif

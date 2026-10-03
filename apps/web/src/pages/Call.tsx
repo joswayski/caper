@@ -10,6 +10,7 @@ import Chat from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
 import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
+import Avatar from "../components/Avatar";
 import Tooltip from "../components/Tooltip";
 import Wordmark from "../components/Wordmark";
 import { watchPresence as watchAccountPresence, type PresenceStatus } from "../gateway/client";
@@ -27,9 +28,7 @@ import "./call.css";
 
 const initialState: CallViewState = { phase: "idle", muted: false, deafened: false, inputVolume: 100, voiceProcessingStrength: DEFAULT_VOICE_PROCESSING_STRENGTH, monitoring: false, participants: [], remoteMedia: [] };
 type PublicPresence = { participants: Array<Omit<Participant, "tracks">> };
-const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 const MAX_WATCHED_CHANNELS = 24;
-const flags = import.meta.glob<string>("../../../../node_modules/flag-icons/flags/4x3/*.svg", { import: "default", query: "?url" });
 
 /** How close (px) the pointer must come to a Join button to start preparing the join. */
 const JOIN_PREPARE_RADIUS = 120;
@@ -133,20 +132,6 @@ function AudioMenu({ label, settings, open, onOpenChange, menuRef, children }: {
   </div>;
 }
 
-function ParticipantCountry({ code }: { code?: string }) {
-  const [flag, setFlag] = useState<{ code: string; source: string }>();
-  useEffect(() => {
-    if (!code || !/^[A-Z]{2}$/.test(code)) return;
-    let current = true;
-    const load = flags[`../../../../node_modules/flag-icons/flags/4x3/${code.toLowerCase()}.svg`];
-    void load?.().then((source) => { if (current) setFlag({ code, source }); }).catch(() => undefined);
-    return () => { current = false; };
-  }, [code]);
-  if (!code || flag?.code !== code) return null;
-  const name = regionNames.of(code) ?? code;
-  return <img className="participant-country" src={flag.source} alt={`From ${name}`} title={name} />;
-}
-
 function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStream; muted: boolean; name: string; output: string; volume: number }) {
   const ref = useRef<HTMLAudioElement>(null);
   const gainRef = useRef<GainNode | null>(null);
@@ -226,7 +211,7 @@ export interface VoiceSlot { summary: ReactNode; list: ReactNode }
 
 interface CallProps {
   channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean };
-  membersPanel?: ReactNode;
+  membersPanel?: (onClose: () => void) => ReactNode;
   onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
   /** Channels in the current space, whose voice rosters appear under them. */
@@ -619,9 +604,9 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
                 const speaking = isSpeaking(participant);
                 return <li ref={own && volumeParticipant === participant.id ? volumeMenuRef : undefined} className={`participant ${volumeParticipant === participant.id ? "volume-open" : ""}`} key={participant.id} onContextMenu={!own || self ? undefined : (event) => { event.preventDefault(); setVolumeParticipant(participant.id); }}>
                   <span className="participant-avatar">
-                    <span className={`avatar ${speaking ? "speaking" : "quiet"}`} aria-hidden="true">{participant.name.slice(0, 1).toUpperCase()}</span>
+                    <span className={`avatar ${speaking ? "speaking" : "quiet"}`}><Avatar avatarId={participant.avatarId} name={participant.name} /></span>
                   </span>
-                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong><ParticipantCountry code={participant.countryCode} />{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}
+                  <span className="participant-name"><strong>{participant.name}{self ? " (you)" : ""}</strong>{participantStatus && <span className="participant-status" title={participantStatus}>{participantMuted && <MicOff aria-hidden="true" />}{participantDeafened && <HeadphoneOff aria-hidden="true" />}<span className="sr-only">{participantStatus}</span></span>}
                     {!self && mutedParticipants.has(participant.id) && <span className="participant-local-muted"><VolumeX aria-hidden="true" />You muted {participant.name}</span>}
                   </span>
                   {own && <VoiceActivity
@@ -692,7 +677,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       setVolumeParticipant(undefined);
     }}>
       <span className="voice-stack-faces" aria-hidden="true">
-        {people.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && !open && isSpeaking(participant) ? " speaking" : ""}`}>{participant.name.slice(0, 1).toUpperCase()}</span>)}
+        {people.slice(0, 3).map((participant) => <span key={participant.id} className={`voice-stack-avatar${own && !open && isSpeaking(participant) ? " speaking" : ""}`}><Avatar avatarId={participant.avatarId} name={participant.name} /></span>)}
         {people.length > 3 && <small>+{people.length - 3}</small>}
       </span>
       <ChevronDown aria-hidden="true" />
@@ -765,7 +750,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
           </div>}
           <div className="call-account">
             <button className="account-profile" type="button" disabled={!identityReady} aria-label={account ? `Edit profile for ${identityName}` : "Sign in to edit your profile"} onClick={() => { if (account) setProfileOpen(true); else window.location.assign("/login"); }}>
-              <span className="account-avatar"><span aria-hidden="true">{identityName.slice(0, 1).toUpperCase()}</span><PresenceDot status={accountPresence ? selfPresence : localPresence} live={accountPresence ? presenceLive : true} /></span>
+              <span className="account-avatar"><Avatar avatarId={account?.avatarId} name={identityName} /><PresenceDot status={accountPresence ? selfPresence : localPresence} live={accountPresence ? presenceLive : true} /></span>
               <strong className="account-name" title={identityName}>{identityName || "Loading…"}</strong>
             </button>
             <div className={`voice-action-group${state.muted ? " active" : ""}`}>
@@ -813,7 +798,10 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
             {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />
         </div>
-        {membersVisible && membersPanel}
+        {membersVisible && membersPanel && <>
+          <button type="button" className="member-list-backdrop" aria-label="Close member list" onClick={() => setMembersVisible(false)} />
+          {membersPanel(() => setMembersVisible(false))}
+        </>}
       </section>
       <dialog ref={profileDialog} className="audio-dialog profile-dialog" aria-labelledby="profile-dialog-title" onCancel={(event) => { event.preventDefault(); setProfileOpen(false); }}>
         <div className="audio-dialog-heading">

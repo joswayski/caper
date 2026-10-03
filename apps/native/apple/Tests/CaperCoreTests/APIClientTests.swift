@@ -504,10 +504,25 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(chat.channelName, "new")
         XCTAssertEqual(chat.messages.map(\.content.text), ["new"])
 
+        chat.receiveGatewayState(.connected, error: nil)
+        XCTAssertEqual(chat.liveState, .connected)
+        chat.error = "A genuine send failure"
+        chat.receiveGatewayState(.reconnecting, error: "Live updates disconnected. Reconnecting…")
+        XCTAssertEqual(chat.liveState, .reconnecting)
+        XCTAssertEqual(chat.error, "A genuine send failure")
+        chat.receiveGatewayState(.connected, error: nil)
+        XCTAssertEqual(chat.error, "A genuine send failure", "transport recovery must not erase chat failures")
+        chat.receiveGatewayState(.connected, error: "Channel access was revoked")
+        XCTAssertEqual(chat.error, "Channel access was revoked", "subscription failures must remain visible")
         await chat.stop()
         XCTAssertTrue(chat.messages.isEmpty)
         XCTAssertTrue(chat.draft.isEmpty)
         XCTAssertEqual(chat.liveState, .disconnected)
+        for lateState in [GatewayState.connecting, .connected, .reconnecting] {
+            chat.receiveGatewayState(lateState, error: "Late gateway failure")
+            XCTAssertEqual(chat.liveState, .disconnected)
+            XCTAssertNil(chat.error)
+        }
     }
 
     @MainActor
