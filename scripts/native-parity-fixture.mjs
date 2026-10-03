@@ -186,12 +186,14 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (typeof body.clientMessageId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId)
             || typeof body.text !== 'string' || !body.text.trim() || [...body.text].length > 4000 || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(body.text))
             return reject(response, 400, 'Enter a message of at most 4,000 characters.');
-          const key = `${channel.id}:${body.clientMessageId}`;
+          // Rust parses UUIDs and serializes them lowercase; do not echo Swift's casing.
+          const clientMessageId = body.clientMessageId.toLowerCase();
+          const key = `${channel.id}:${clientMessageId}`;
           const previous = state.sendKeys.get(key);
           if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === body.text
             ? json(response, 200, previous.message) : reject(response, 409, 'Message ID already used.');
           const message = { id: randomUUID(), channelId: channel.id, seq: String(messages.length + 1), author: who,
-            content: { version: 1, type: 'text', text: body.text }, createdAt: new Date().toISOString(), clientMessageId: body.clientMessageId };
+            content: { version: 1, type: 'text', text: body.text }, createdAt: new Date().toISOString(), clientMessageId };
           messages.push(message); state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text, message });
           broadcast('chat', channel.id, { type: 'message.created', channelId: channel.id, seq: message.seq, message });
@@ -351,14 +353,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         client.send({ type: 'subscribed', id: frame.id });
       } else if (frame.type === 'unsubscribe') client.subscriptions.delete(frame.id);
       else if (frame.type === 'command') {
+        const id = frame.id.toLowerCase();
         if (frame.method === 'typing') {
           const who = state.chatSessions.get(frame.chatToken);
           const channel = channelFor(frame.channelId);
-          if (!who || !channel || typeof frame.body?.typing !== 'boolean') return client.send({ type: 'result', id: frame.id, status: 401, body: { error: 'guest session expired' } });
+          if (!who || !channel || typeof frame.body?.typing !== 'boolean') return client.send({ type: 'result', id, status: 401, body: { error: 'guest session expired' } });
           broadcast('chat', channel.id, { type: 'typing.updated', channelId: channel.id, author: who,
             typing: frame.body.typing, revision: String(++state.typingRevision) });
-          client.send({ type: 'result', id: frame.id, status: 204, body: {} });
-        } else client.send({ type: 'result', id: frame.id, status: 503, body: { error: 'TEST FIXTURE: no live SFU.' } });
+          client.send({ type: 'result', id, status: 204, body: {} });
+        } else client.send({ type: 'result', id, status: 503, body: { error: 'TEST FIXTURE: no live SFU.' } });
       }
       else if (frame.type === 'heartbeat') client.send({ type: 'heartbeat' });
     };

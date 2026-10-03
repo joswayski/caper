@@ -239,7 +239,8 @@ public struct ChatDeliveryState: Sendable {
 
     public mutating func begin(text: String, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
-        let command = PendingMessage(id: makeID(), text: text)
+        // Rust's UUID serialization returns lowercase in both HTTP and replay.
+        let command = PendingMessage(id: makeID().lowercased(), text: text)
         pending = command
         return command
     }
