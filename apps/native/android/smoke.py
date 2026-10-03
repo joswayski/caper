@@ -328,7 +328,7 @@ def main() -> None:
     collapsed = capture("caper-android-channels-collapsed", "Expand channels")
     for hidden in ("general", "design", "planning"):
         assert find(collapsed, text=hidden) is None
-    assert find(collapsed, description="Manage design") is None
+    assert find(collapsed, description="design channel menu") is None
     assert find(collapsed, contains="Message #design") is not None
     assert find(collapsed, text="Create channel") is None, "The action must close its menu"
     tap(description="Channel options")
@@ -337,7 +337,7 @@ def main() -> None:
     tap(description="Collapse channels")
     wait_for(description="Expand channels")
     tap(description="Expand channels")
-    wait_for(description="Manage design")
+    wait_for(description="design channel menu")
     tap(text="general")
     wait_for(contains="Message #general")
 
@@ -408,9 +408,13 @@ def main() -> None:
     assert find(profile_error, text="Save profile") is not None, "Rejected save must keep the form open"
     assert sum(1 for node in nodes(profile_error) if node.get("text") == "Edit profile") == 1
     tap(text="Save profile")
-    wait_for(description="Manage planning")
+    wait_for(description="planning channel menu")
 
-    tap(description="Manage planning")
+    tap(description="planning channel menu")
+    channel_menu = capture("caper-android-per-channel-menu", "Channel settings")
+    assert find(channel_menu, text="Channel settings") is not None
+    assert find(channel_menu, contains="invite") is None
+    tap(text="Channel settings")
     overview = capture("caper-android-channel-settings", "Overview")
     for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Delete channel"):
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
@@ -470,10 +474,14 @@ def main() -> None:
         for index in range(1, 5)
     ]}})
     wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
+    initial_roster = capture("caper-android-voice-roster-initial", "4 in voice in design. Show who is in voice")
+    assert find(initial_roster, text="Fixture Voice 1") is None, "Occupied rosters must start collapsed"
+    assert find(initial_roster, text="4 in voice") is not None, "Occupancy remains readable beside Join"
+    tap(description="4 in voice in design. Show who is in voice")
     roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
     assert find(roster, text="Fixture Voice 1") is not None
     assert find(roster, text="Fixture Voice 4") is not None
-    assert find(roster, text="+1") is not None, "Avatar stack must cap at three faces"
+    assert find(roster, text="4 in voice") is not None
     assert find(roster, text="4 in voice in design") is None, "Voice count belongs in accessibility, not visible copy"
     assert find(roster, description="Audio controls for Fixture Voice 1") is None, "Spectators must not get local audio controls"
     assert find(roster, text="User volume") is None
@@ -539,6 +547,12 @@ def main() -> None:
     join = "Join voice in #general"
     voice_ready = capture("caper-android-voice-ready", join)
     assert find(voice_ready, description=join) is not None
+    for channel in ("general", "design", "planning"):
+        action = find(voice_ready, description=f"Join voice in #{channel}")
+        assert action is not None, f"Accessible #{channel} must expose a stable Join voice action"
+        left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
+        # viewport() sets density 320: 48dp is 96 physical pixels.
+        assert right - left >= 96 and bottom - top >= 96, f"#{channel} voice action must have a 48dp touch target"
     # Web's mute and deafen work before joining, without starting a call.
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
@@ -564,6 +578,11 @@ def main() -> None:
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
     assert find(failed, description="Dismiss voice error") is not None, "Web shows voice errors in the dock"
+    tap(description="Dismiss voice error")
+    assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
+    tap(description=join)
+    retried = capture("caper-android-voice-fixture-retry", "TEST FIXTURE: no real media engine or SFU is connected.")
+    assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
     tap(description="Close navigation")
     chat = wait_for(contains="Message #general")
     assert find(chat, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, \

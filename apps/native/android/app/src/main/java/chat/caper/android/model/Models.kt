@@ -140,10 +140,11 @@ data class AppUiState(
     val busy: Boolean = false,
     val error: String? = null,
 ) {
-    /** The viewed channel's media root decides every Join, as on web. */
-    val voiceAvailable: Boolean? get() = selectedChannel?.let { channel ->
+    /** Each channel's media root decides its own stable sidebar Join action. */
+    fun voiceAvailable(channel: Channel): Boolean? =
         voiceAvailability[voiceRootKey(selectedSpace?.space?.demo == true, channel.id)]
-    }
+
+    val voiceAvailable: Boolean? get() = selectedChannel?.let(::voiceAvailable)
 }
 
 data class PendingMessageUi(

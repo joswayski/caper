@@ -2605,6 +2605,30 @@ feature parity and platform acceptance remain incomplete. No backend migration,
 provider secret, production restart, or infrastructure change is required by the
 native development build workflow.
 
+**Stable channel controls, October 3, 2026:** web, Android, shared iOS/macOS
+SwiftUI, and Rust Windows/Linux desktop use separate channel-name/settings and
+voice rows. Owners get a permanent channel-options menu opening existing privacy
+and member settings; no invite controls are implemented. Quiet speaking-icon
+actions keep their slot through Join voice, Joining, Leave voice, and Switch
+here. Empty channels show no occupancy status; occupied rosters start collapsed.
+Selecting text leaves the current call intact. Pending authorization disables
+competing joins, and explicit switching still verifies fresh channel access.
+
+Intentional platform differences: Android uses 48dp targets and count-only
+occupancy; iOS uses 44pt targets; macOS and Rust desktop use 30pt/32px voice
+targets. Apple and Rust desktop drop summary avatars before crowding the count
+at narrow sidebar widths. Rust desktop may shorten `N in voice` to `N` at its
+220px minimum; its accessible name retains the complete occupancy description.
+
+Local acceptance: Android unit tests, lint and four-ABI debug packaging, Rust
+desktop unit/accessibility-geometry tests and a Linux fixture render, plus web
+build/tests and mocked browser interactions. Fixtures do not establish live SFU
+behavior. Android smoke/device execution, Apple build/XCTest/UI rendering,
+Windows execution, physical touch targets, and live multi-network voice remain
+pending platform acceptance. Ship updated native binaries after those checks;
+web and native releases can proceed independently without API/gateway changes,
+database migrations, infrastructure apply, or new secrets.
+
 **Apple chat confirmation/recovery correction, October 3, 2026:** Swift sends
 lowercase message and gateway-command UUIDs to match Rust's canonical result IDs.
 Opaque channel, author, and subscription IDs remain case-sensitive. The native

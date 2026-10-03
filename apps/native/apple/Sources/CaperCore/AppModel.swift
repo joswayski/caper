@@ -25,6 +25,7 @@ public final class AppModel {
     public var openingChannelID: String?
     /// Voice availability by media root ("general" or a channel id); nil while unchecked.
     public private(set) var voiceAvailability: [String: Bool] = [:]
+    public private(set) var pendingVoiceChannelID: String?
     public var navigationError: String?
     public let api: APIClient
     public let chat: ChatModel
@@ -74,6 +75,8 @@ public final class AppModel {
     public func start() async {
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
+        voiceAvailability.removeAll()
         await voicePresence.stop()
         clearNavigationCache()
         let attempt = generation
@@ -105,6 +108,8 @@ public final class AppModel {
         guard let challengeID else { return }
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
+        voiceAvailability.removeAll()
         await voicePresence.stop()
         clearNavigationCache()
         let attempt = generation
@@ -156,6 +161,8 @@ public final class AppModel {
     public func logout() async {
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
+        voiceAvailability.removeAll()
         clearNavigationCache()
         voice.leaveImmediately()
         account = nil; spaces = []; detail = nil; spacesLoaded = false; spacesError = nil
@@ -541,6 +548,7 @@ public final class AppModel {
     private func removeCurrentSpace(id: String) async {
         generation += 1
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
         openingSpaceID = nil; openingChannelID = nil
@@ -562,11 +570,10 @@ public final class AppModel {
 
     public func leaveVoice() {
         voiceJoinGeneration += 1
+        pendingVoiceChannelID = nil
         voice.leaveImmediately()
     }
 
-    /// Verify the target at click time. Reading another text channel must not
-    /// change the call, and a stale/private channel must not evict a healthy one.
     /// The media root voice uses for the viewed channel, as web keys its availability.
     public var viewedVoiceRoot: String? {
         guard let detail, let channelID = selectedChannelID else { return nil }
@@ -575,9 +582,20 @@ public final class AppModel {
 
     public var voiceAvailable: Bool? { viewedVoiceRoot.flatMap { voiceAvailability[$0] } }
 
-    public func refreshVoiceAvailability() async {
-        guard let root = viewedVoiceRoot else { return }
+    public func voiceAvailable(in channel: Channel) -> Bool? {
+        guard let detail, detail.channels.contains(where: { $0.id == channel.id }) else { return nil }
+        if voicePresence.unavailableChannels.contains(channel.id) { return false }
+        return voiceAvailability[detail.space.demo == true ? "general" : channel.id]
+    }
+
+    public func refreshVoiceAvailability(channel: Channel? = nil) async {
+        guard let detail,
+              let channel = channel ?? detail.channels.first(where: { $0.id == selectedChannelID }) else { return }
+        let root = detail.space.demo == true ? "general" : channel.id
+        let accountGeneration = generation
         let enabled = (try? await api.mediaStatus(channelID: root == "general" ? nil : root)) ?? false
+        guard !Task.isCancelled, generation == accountGeneration, self.detail?.space.id == detail.space.id,
+              self.detail?.channels.contains(where: { $0.id == channel.id }) == true else { return }
         voiceAvailability[root] = enabled
     }
 
@@ -587,7 +605,7 @@ public final class AppModel {
     /// keeps the session 8 s, so reissue at most every 4 s. The public demo
     /// creates on join; failures only mean an ordinary join.
     public func prepareVoiceJoin(channel: Channel) {
-        guard account != nil, let detail, detail.space.demo != true, voiceAvailable == true,
+        guard account != nil, let detail, detail.space.demo != true, voiceAvailable(in: channel) == true,
               detail.channels.contains(where: { $0.id == channel.id }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         let now = ContinuousClock.now
@@ -596,11 +614,15 @@ public final class AppModel {
         Task { try? await api.media(channelID: channel.id, operation: "prepare", body: [String: String]()) }
     }
 
+    /// Verify at click time; a denied switch must not evict a healthy call.
     public func joinVoice(channel: Channel) async {
-        guard let detail, detail.channels.contains(where: { $0.id == channel.id }),
+        guard pendingVoiceChannelID == nil, voice.phase != .joining, voice.phase != .reconnecting,
+              voice.phase != .leaving, let detail, detail.channels.contains(where: { $0.id == channel.id }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         voiceJoinGeneration += 1
         let joinAttempt = voiceJoinGeneration
+        pendingVoiceChannelID = channel.id
+        defer { if voiceJoinGeneration == joinAttempt { pendingVoiceChannelID = nil } }
         let accountGeneration = generation
         let space = detail.space
         let ownerID = account?.id

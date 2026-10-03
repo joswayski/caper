@@ -61,6 +61,7 @@ pub enum Command {
         before: String,
     },
     MediaStatus {
+        generation: u64,
         root: String,
         token: Option<String>,
         channel: Option<String>,
@@ -235,6 +236,7 @@ pub enum Event {
         result: Result<History, LoadError>,
     },
     MediaStatus {
+        generation: u64,
         root: String,
         enabled: bool,
     },
@@ -565,10 +567,12 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             return;
         }
         Command::MediaStatus {
+            generation,
             root,
             token,
             channel,
         } => Event::MediaStatus {
+            generation,
             root,
             enabled: api.media_status(token.as_deref(), channel.as_deref()),
         },
