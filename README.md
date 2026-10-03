@@ -6,10 +6,12 @@ Early-stage and actively in development.
 Accounts receive a saved, random Caper avatar from 100 designs and eight colorways.
 Custom photo/GIF avatars and an avatar gallery are not implemented yet.
 
-Signed-in members can attach up to 10 files per message on the web: images
-(compressed in the browser), video, audio and other files, within a per-person
-storage allowance (1 GB by default). Android, Apple and Rust desktop show the
-message text but not its files yet. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
+Signed-in members can attach up to 10 files per message on web, Android,
+iPhone/Mac and Windows/Linux desktop: images, video, audio and other files,
+compressed on the device (lossless PNG for flat screenshots, WebP/JPEG for
+photos, H.264 video where the platform can encode it) within a per-person
+storage allowance (1 GB by default). Desktop opens video and audio in the
+system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 Signed-in accounts can start persistent, private one-to-one messages by username.
 The Direct messages list is shared across spaces. Optional iOS/Android push needs
