@@ -186,7 +186,7 @@ internal data class VoiceJoinIntent(
     var channelsExpanded by rememberSaveable { mutableStateOf(true) }
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
-    var pendingVoiceJoin by remember(viewModel.accountEpoch, state.selectedSpace?.space?.id) { mutableStateOf<VoiceJoinIntent?>(null) }
+    var pendingVoiceJoin by remember(viewModel.accountEpoch, viewModel.spaceAccessEpoch, state.selectedSpace?.space?.id) { mutableStateOf<VoiceJoinIntent?>(null) }
     var voicePermissionError by remember { mutableStateOf<String?>(null) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
         val requested = pendingVoiceJoin
@@ -208,7 +208,7 @@ internal data class VoiceJoinIntent(
             }
         } else pendingVoiceJoin = null
     }
-    LaunchedEffect(voice, pendingVoiceJoin) {
+    LaunchedEffect(voice, pendingVoiceJoin, state) {
         val requested = pendingVoiceJoin ?: return@LaunchedEffect
         if (!requested.isCurrent(state, viewModel.accountEpoch) || !VoiceCallService.joinAuthorizationCurrent(requested.controlEpoch)) pendingVoiceJoin = null
     }
