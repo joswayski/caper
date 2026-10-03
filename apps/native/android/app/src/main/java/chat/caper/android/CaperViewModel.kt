@@ -39,6 +39,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
+    private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
     private var directRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var foreground = false
@@ -127,6 +128,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(account = account, screen = SessionScreen.Home)
         chatToken = null
         chatAuthor = null
+        mutable.value = mutable.value.copy(chatAuthorId = null)
         createChatSession(accountGeneration)
         onSuccess()
     }
@@ -350,7 +352,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 val newer = mutable.value.messages
                 mutable.value = mutable.value.copy(
-                    messages = (history.messages + newer).distinctBy { it.id }, hasMoreMessages = history.hasMore,
+                    messages = mergeMessages(newer, history.messages, unloadedReactions), hasMoreMessages = history.hasMore,
                     loadingOlder = false,
                 )
             } catch (error: Throwable) {
@@ -414,6 +416,42 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun reportActivity() { gateway?.reportActivity() }
     fun localPresence(): String = gateway?.localPresence() ?: "offline"
     fun setTyping(active: Boolean) { chatToken?.let { gateway?.sendTyping(it, active) } }
+
+    fun setReaction(messageId: String, emoji: String, active: Boolean) {
+        val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return
+        val request = generation
+        val requestAccountGeneration = accountGeneration
+        val token = accountToken
+        val key = "$messageId:$emoji"
+        if (mutable.value.reactionSaves.any { (saveKey, save) -> save.saving && saveKey.startsWith("$messageId:") }) return
+        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active)))
+        viewModelScope.launch {
+            try {
+                val capability = chatToken ?: createChatSession(requestAccountGeneration) ?: throw IllegalStateException("Chat session is unavailable.")
+                if (requestAccountGeneration != accountGeneration || token != accountToken || request != generation ||
+                    mutable.value.selectedChannel?.let { it.id == channel.id && it.joined } != true) return@launch
+                val update = api.setReaction(token, capability, channel.id, messageId, emoji, active)
+                if (request != generation || mutable.value.selectedChannel?.id != channel.id) return@launch
+                receiveReaction(update, sequenced = false)
+                mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
+            } catch (error: Throwable) {
+                if (request == generation) {
+                    if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
+                    else mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves + (key to ReactionSaveUi(emoji, active, false, message(error))))
+                }
+            }
+        }
+    }
+
+    fun retryReaction(messageId: String, emoji: String) {
+        val save = mutable.value.reactionSaves["$messageId:$emoji"] ?: return
+        setReaction(messageId, emoji, save.active)
+    }
+
+    fun dismissReactionError(messageId: String, emoji: String) {
+        val key = "$messageId:$emoji"
+        mutable.value = mutable.value.copy(reactionSaves = mutable.value.reactionSaves - key)
+    }
 
     internal fun authorizeVoiceJoin(intent: VoiceJoinIntent, onAuthorized: () -> Unit, onFailure: (String) -> Unit) {
         val request = ++voiceAuthorizationRequest
@@ -515,7 +553,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (account != null) require(session.author.id == account.id && !session.author.isGuest) { "Chat identity mismatch." }
             chatToken = session.token
             chatAuthor = session.author
-            mutable.value = mutable.value.copy(sessionError = null)
+            mutable.value = mutable.value.copy(sessionError = null, chatAuthorId = session.author.id)
             session.token
         } catch (error: Throwable) {
             if (requestAccountGeneration == accountGeneration) mutable.value = mutable.value.copy(sessionError = message(error))
@@ -536,6 +574,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     addMessage(value)
                 }
             } },
+            onReaction = { value -> viewModelScope.launch { if (generation == request) receiveReaction(value) } },
             onTyping = { author, active, revision -> viewModelScope.launch { if (participating && generation == request) receiveTyping(author, active, revision) } },
             onPresence = { snapshot -> viewModelScope.launch {
                 if (participating && generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
@@ -602,13 +641,29 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun addMessage(message: ChatMessage) {
         if (message.channelId != mutable.value.selectedChannel?.id) return
         val messages = mutable.value.messages
-        if (messages.none { it.id == message.id }) {
-            mutable.value = mutable.value.copy(messages = (messages + message).sortedWith(compareBy { java.math.BigInteger(it.seq) }))
+        val isNew = messages.none { it.id == message.id }
+        mutable.value = mutable.value.copy(messages = mergeMessages(messages, listOf(message), unloadedReactions))
+        if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             if (message.author.id != chatAuthor?.id) chat.caper.android.ui.CaperEffects.play(chat.caper.android.ui.CaperEffects.Effect.Message)
         }
         confirmPending(message)
         if (mutable.value.selectedDirectId == message.channelId) markDirectRead(message.channelId, message.seq)
+    }
+
+    private fun receiveReaction(update: ReactionUpdate, sequenced: Boolean = true) {
+        if (update.channelId != mutable.value.selectedChannel?.id) return
+        durableReplayCursor = replayCursorAfterReaction(durableReplayCursor, update, sequenced)
+        if (sequenced && mutable.value.selectedDirectId == update.channelId) markDirectRead(update.channelId, update.seq)
+        val index = mutable.value.messages.indexOfFirst { it.id == update.messageId }
+        if (index < 0) {
+            if (!cacheUnseenReaction(unloadedReactions, update)) {
+                mutable.value.selectedChannel?.id?.let(::resyncChannel)
+                return
+            }
+            return
+        }
+        mutable.value = mutable.value.copy(messages = mutable.value.messages.map { mergeReaction(it, update) })
     }
 
     private fun confirmPending(message: ChatMessage) {
@@ -622,6 +677,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
         val previousCursor = durableReplayCursor ?: return
         val request = ++generation
+        unloadedReactions.clear()
         val previous = mutable.value
         closeChannel(clearPending = false)
         // closeChannel normally discards channel replay state; a failed refresh must remain retryable.
@@ -859,12 +915,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
+        unloadedReactions.clear()
         if (clearPending) pendingSends.clear()
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,
             voiceRosters = emptyMap(),
             gateway = GatewayStatus.DISCONNECTED, pendingMessage = if (clearPending) null else mutable.value.pendingMessage,
+            reactionSaves = emptyMap(),
         )
     }
 
@@ -908,7 +966,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         else -> "Something went wrong. Please try again."
     }
 
-    private companion object { const val PRESENCE_PAGE_SIZE = 25 }
+    private companion object {
+        const val PRESENCE_PAGE_SIZE = 25
+    }
 }
 
 internal fun mergeDirects(current: List<DirectConversation>, incoming: List<DirectConversation>): List<DirectConversation> =

@@ -308,7 +308,7 @@ public actor Gateway {
     private func receiveEvent(_ event: [String: Any], id: String, from stream: Stream) async throws {
         guard var logical = subscriptions[id], var streamState = stream.subscriptions[id], let kind = logical.frame["kind"] as? String else { return }
         if kind == "chat" {
-            if event["type"] as? String == "message.created" {
+            if event["type"] as? String == "message.created" || event["type"] as? String == "message.reactions" {
                 guard let next = sequence(event["seq"]) else { throw URLError(.cannotParseResponse) }
                 if let position = streamState.position, next > position &+ 1 { throw URLError(.cannotParseResponse) }
                 streamState.position = max(streamState.position ?? 0, next)

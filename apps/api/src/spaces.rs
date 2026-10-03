@@ -144,11 +144,7 @@ async fn check_channel_access(
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
-    .map(|(id, last_seq, space_id)| ChannelAccess {
-        id,
-        last_seq,
-        space_id,
-    })
+    .map(|(id, last_seq, space_id)| ChannelAccess { id, last_seq, space_id })
     .ok_or_else(not_found)
 }
 

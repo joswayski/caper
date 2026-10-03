@@ -4,6 +4,7 @@ import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.ChatContent
 import chat.caper.android.model.ChatHistory
 import chat.caper.android.model.ChatMessage
+import chat.caper.android.model.MessageReaction
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -20,6 +21,28 @@ class HistoryRecoveryTest {
         assertEquals(true, result.hasMore)
     }
 
+    @Test fun `fresh metadata wins without regressing newer retained reactions`() {
+        val retained = message("3", "same", "stale text").copy(
+            reactions = listOf(MessageReaction("👍", listOf("new"))), reactionSeq = "9",
+        )
+        val fresh = message("3", "same", "fresh text").copy(
+            reactions = listOf(MessageReaction("👍", listOf("old"))), reactionSeq = "8",
+        )
+        for (cursor in listOf("3", "8")) {
+            val result = recoverHistory(
+                retained = listOf(message("1"), retained), retainedHasMore = true,
+                appliedCursor = "3", refreshed = history(fresh, cursor = cursor),
+            )
+
+            assertEquals(if (cursor == "3") listOf("1", "3") else listOf("3"), result.messages.map { it.seq })
+            assertEquals(cursor == "3", result.hasMore)
+            val overlapping = result.messages.single { it.id == "same" }
+            assertEquals("fresh text", overlapping.content.text)
+            assertEquals("9", overlapping.reactionSeq)
+            assertEquals(listOf("new"), overlapping.reactions.single().authorIds)
+        }
+    }
+
     @Test fun `adjacent refreshed page retains older prefix`() {
         val result = recoverHistory(
             retained = listOf(message("2"), message("3")), retainedHasMore = true,
@@ -28,6 +51,16 @@ class HistoryRecoveryTest {
 
         assertEquals(listOf("2", "3", "4"), result.messages.map { it.seq })
         assertEquals(true, result.hasMore)
+    }
+
+    @Test fun `missing reaction sequence drops retained prefix`() {
+        val result = recoverHistory(
+            retained = listOf(message("2"), message("5")), retainedHasMore = true,
+            appliedCursor = "5", refreshed = history(message("6"), cursor = "7", hasMore = false),
+        )
+
+        assertEquals(listOf("6"), result.messages.map { it.seq })
+        assertEquals(false, result.hasMore)
     }
 
     @Test fun `gap drops retained range`() {
@@ -82,8 +115,11 @@ class HistoryRecoveryTest {
         assertEquals(false, result.hasMore)
     }
 
-    private fun history(vararg messages: ChatMessage, hasMore: Boolean = false) =
-        ChatHistory(messages.toList(), messages.lastOrNull()?.seq ?: "0", hasMore)
+    private fun history(
+        vararg messages: ChatMessage,
+        cursor: String = messages.lastOrNull()?.seq ?: "0",
+        hasMore: Boolean = false,
+    ) = ChatHistory(messages.toList(), cursor, hasMore)
 
     private fun message(seq: String, id: String = "message-$seq", text: String = seq) = ChatMessage(
         id = id, channelId = "channel", seq = seq,

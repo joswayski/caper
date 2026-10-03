@@ -31,6 +31,7 @@ private struct EmailInput: Encodable { let email: String }
 private struct VerifyInput: Encodable { let challengeId: String; let code: String; let tokenTransport = "bearer" }
 private struct ProfileInput: Encodable { let username: String; let displayName: String }
 private struct SendInput: Encodable { let clientMessageId: String; let text: String }
+private struct ReactionInput: Encodable { let emoji: String; let active: Bool }
 private struct SpaceInput: Encodable { let name: String }
 private struct ChannelInput: Encodable {
     let name: String
@@ -247,6 +248,18 @@ public actor APIClient {
         try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: SendInput(clientMessageId: clientMessageID, text: text), extraHeaders: ["x-caper-chat-token": sessionToken])
     }
 
+    public func setReaction(channelID: String, messageID: String, sessionToken: String, emoji: String, active: Bool) async throws -> MessageReactionsEvent {
+        let event: MessageReactionsEvent = try await request(
+            "api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))/reactions",
+            method: "PUT", body: ReactionInput(emoji: emoji, active: active),
+            extraHeaders: ["x-caper-chat-token": sessionToken]
+        )
+        guard event.isValid, event.channelId == channelID, event.messageId == messageID else {
+            throw APIError(status: 502, message: "The chat service returned invalid reactions.")
+        }
+        return event
+    }
+
     public func media<T: Decodable, B: Encodable>(channelID: String?, operation: String, token mediaToken: String? = nil, body: B) async throws -> T {
         let root = channelID.map { "api/channels/\($0)/media" } ?? "api/media"
         return try await request("\(root)/\(operation)", method: "POST", body: body, extraHeaders: mediaToken.map { ["x-caper-media-token": $0] } ?? [:])
@@ -266,6 +279,13 @@ public actor APIClient {
 
     private func pathID(_ id: String) throws -> String {
         guard id.count == 12, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { throw APIError(status: 400, message: "Invalid resource ID.") }
+        return id
+    }
+
+    private func messagePathID(_ id: String) throws -> String {
+        guard id.count == 15, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+            throw APIError(status: 400, message: "Invalid message ID.")
+        }
         return id
     }
 

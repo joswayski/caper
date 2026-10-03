@@ -296,7 +296,7 @@ def main() -> None:
     for required in ("Email address", "Email me a code"):
         assert find(login, text=required) is not None, f"Login is missing {required!r}"
     assert find(login, text="WELCOME TO CAPER") is None, "Login must not repeat the welcome heading"
-    for retired in ("general", "Join", "TEST FIXTURE"):
+    for retired in ("general", "Join", "TEST FIXTURE", "Message #"):
         assert find(login, contains=retired) is None, f"Signed-out screen exposes retired demo content: {retired!r}"
     assert find(login, description="Channel options") is None
     assert find(login, description="Create channel") is None
@@ -331,10 +331,15 @@ def main() -> None:
 
     tap(description="Fixture Studio")
     wait_for(text="design")
+    wait_for(contains="TEST FIXTURE")
     desktop = capture("caper-android-populated-desktop", "Fixture Studio")
     for required in ("Channels", "general", "design", "planning", "Members", "Maya"):
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
+    general = find(desktop, text="general")
+    join = find(desktop, text="Join")
+    assert general is not None and join is not None
+    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
 
     # Hide the list while reading a non-default channel: collapsing must not
     # silently select General, disconnect chat, or expose hidden row actions.
@@ -435,9 +440,9 @@ def main() -> None:
     assert find(channel_menu, contains="invite") is None
     tap(text="Channel settings")
     overview = capture("caper-android-channel-settings", "Overview")
-    for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Delete channel"):
+    for required in ("Private channel", "Only you and the people you add can view or join.", "Members", "Exact username", "Pending invitations", "Delete channel"):
         assert find(overview, contains=required) is not None, f"Channel overview is missing {required!r}"
-    assert find(overview, text="Add") is not None
+    assert find(overview, text="Invite") is not None
     for removed in ("Private channel access", "Existing username", "Grant"):
         assert find(overview, contains=removed) is None, f"Unexpected member-management copy: {removed}"
     tap(description="Close")
@@ -541,6 +546,15 @@ def main() -> None:
     send_left = list(map(int, re.findall(r"\d+", send.attrib["bounds"])))[0]
     assert send_left > composer_right, "Send must be a separate button to the right of the composer"
     tap(description="Send")
+    # Reaction controls make the seeded conversation taller than the narrow
+    # viewport. Scroll the timeline instead of assuming every row fits on screen.
+    after_send = hierarchy()
+    if find(after_send, text=sent_text) is None:
+        timeline = next(node for node in nodes(after_send) if node.get("scrollable") == "true")
+        left, top, right, bottom = map(int, re.findall(r"\d+", timeline.attrib["bounds"]))
+        x = str((left + right) // 2)
+        adb("shell", "input", "swipe", x, str(top + (bottom - top) * 3 // 4),
+            x, str(top + (bottom - top) // 4), "400")
     delivered = wait_for(text=sent_text)
     assert sum(1 for node in nodes(delivered) if node.get("text") == sent_text) == 1, "Sent message rendered more than once"
     composer = next((node for node in nodes(delivered) if node.get("class") == "android.widget.EditText"), None)

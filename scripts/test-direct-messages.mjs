@@ -68,6 +68,22 @@ try {
   browser('click', '.direct-select');
   wait('document.querySelector(".chat-messages")?.textContent.includes("Unread while browsing a channel.") && !document.querySelector(".direct-unread")');
   assert.equal((await conversations()).conversations[0].readSeq, '3');
+  const dmHistory = await (await fetch(`${api}/api/chat/channels/dm0000000001/messages`, { headers: { authorization: 'Bearer fixture-owner-token', connection: 'close' } })).json();
+  const reactionMessage = dmHistory.messages[0].id;
+  await control({ incomingReaction: { channelId: 'dm0000000001', messageId: reactionMessage, emoji: '🎉' } });
+  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-label") === "🎉, 1 reaction"');
+  wait('fetch("/api/dms").then(r => r.json()).then(v => v.conversations[0].readSeq === "4")');
+  assert.equal((await conversations()).conversations[0].readSeq, '4', 'Reactions advance read receipts even though the newest message is still sequence 3');
+  browser('click', '.chat-reaction');
+  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-pressed") === "true" && !document.querySelector(".chat-reaction").disabled');
+  assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '2');
+  screenshot('dm-reactions-desktop');
+  browser('click', '.chat-reaction');
+  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-pressed") === "false" && !document.querySelector(".chat-reaction").disabled');
+  assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '1');
+  browser('reload');
+  wait('document.querySelector(".chat-reaction")?.getAttribute("aria-label") === "🎉, 1 reaction"');
+  wait('fetch("/api/dms").then(r => r.json()).then(v => v.conversations[0].readSeq === "6")');
   // Reopening the canonical pair must not create a second conversation.
   browser('click', '[aria-label="New direct message"]');
   browser('fill', '.space-dialog input', '@fixture_alex');
@@ -118,7 +134,7 @@ try {
   browser('click', '.space-dialog button[type="submit"]');
   wait('document.querySelector(".chat-messages")?.textContent.includes("still messaging without a space.") && !document.querySelector(".space-dialog[open]")');
   assert.equal((await conversations()).conversations.length, 1, 'No-space onboarding can reopen the existing global DM');
-  console.log('PASS: DM start/error, canonical reopen, live send/reply, channel isolation, read/unread, space switching, space-revocation draft/history, deep link, no-space send/onboarding and desktop/narrow navigation.');
+  console.log('PASS: DM start/error, canonical reopen, live send/reply, reaction add/remove/persistence/read receipts, channel isolation, read/unread, space switching, space-revocation draft/history, deep link, no-space send/onboarding and desktop/narrow navigation.');
 } finally {
   browser('close');
 }

@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 export const fixtureIDs = {
   owner: 'owner0000001', member: 'member000001', other: 'member000002',
+  invitee: 'invitee00001',
   space: 'space0000001', general: 'chan00000001', design: 'chan00000002', private: 'chan00000003',
   demoSpace: 'demo00000001', demo: 'demo00000002',
   direct: 'dm0000000001',
@@ -16,6 +17,9 @@ const members = [
   { ...initialAccount, owner: true },
   { id: ids.member, username: 'maya', displayName: 'Maya', owner: false, avatarId: 31 },
   { id: ids.other, username: 'alex', displayName: 'Alex', owner: false, avatarId: 799 },
+];
+const accounts = [...members,
+  { id: ids.invitee, username: 'sam', displayName: 'Sam', owner: false, avatarId: 719 },
 ];
 const author = (member) => ({ id: member.id, name: member.displayName, isGuest: false, avatarId: member.avatarId });
 const demoSpace = { id: ids.demoSpace, name: 'Caper', ownerId: ids.owner, demo: true };
@@ -41,6 +45,7 @@ function initialState() {
   }))]));
   return {
     spaces: [{ space, channels, members: clone(members) }], messages, directs: [],
+    reactionEvents: new Map(),
     invitations: new Map(),
     channelInvitations: new Map(),
     joins: new Map(channels.map(channel => [channel.id, channel.private ? [ids.owner, ids.member] : members.map(member => member.id)])),
@@ -85,6 +90,26 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (sub.kind === kind && (sub.channelId ?? ids.demo) === channelId) client.send({ type: 'event', id, event });
     }
   };
+  const channelEvents = (channelId) => [
+    ...(state.messages.get(channelId) ?? []).map(message => ({ type: 'message.created', channelId, seq: message.seq, message })),
+    ...(state.reactionEvents.get(channelId) ?? []),
+  ].sort((a, b) => BigInt(a.seq) < BigInt(b.seq) ? -1 : 1);
+  const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? '0';
+  const react = (channelId, message, emoji, userId, active) => {
+    const reactions = message.reactions ?? [];
+    const own = reactions.find(reaction => reaction.emoji === emoji)?.authorIds.includes(userId) ?? false;
+    if (own !== active) {
+      const reaction = reactions.find(reaction => reaction.emoji === emoji) ?? { emoji, authorIds: [] };
+      if (!reactions.includes(reaction)) reactions.push(reaction);
+      reaction.authorIds = active ? [...reaction.authorIds, userId] : reaction.authorIds.filter(id => id !== userId);
+      message.reactions = reactions.filter(reaction => reaction.authorIds.length);
+      message.reactionSeq = String(BigInt(channelHead(channelId)) + 1n);
+      const event = { type: 'message.reactions', schemaVersion: 1, channelId, seq: message.reactionSeq, messageId: message.id, reactions: clone(message.reactions) };
+      state.reactionEvents.set(channelId, [...(state.reactionEvents.get(channelId) ?? []), event]);
+      broadcast('chat', channelId, event);
+    }
+    return { type: 'message.reactions', schemaVersion: 1, channelId, seq: message.reactionSeq ?? '0', messageId: message.id, reactions: message.reactions ?? [] };
+  };
   const json = (response, status, body, headers = {}) => {
     response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers });
     response.end(status === 204 ? undefined : JSON.stringify(body));
@@ -120,12 +145,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (!channelFor(channelId)) return reject(response, 404, 'Fixture channel not found.');
           const messages = state.messages.get(channelId) ?? [];
           const message = {
-            id: `fixture${String(messages.length + 1).padStart(8, '0')}`, channelId, seq: String(messages.length + 1),
+            id: `fixture${String(messages.length + 1).padStart(8, '0')}`, channelId, seq: String(BigInt(channelHead(channelId)) + 1n),
             author: author(members[2]), content: { version: 1, type: 'text', text: `TEST FIXTURE — ${body.incomingMessage.text}` },
             clientMessageId: randomUUID(), createdAt: new Date().toISOString(),
           };
           messages.push(message); state.messages.set(channelId, messages);
           broadcast('chat', channelId, { type: 'message.created', channelId, seq: message.seq, message });
+        }
+        if (body.incomingReaction) {
+          const { channelId, messageId, emoji, active = true } = body.incomingReaction;
+          const message = state.messages.get(channelId)?.find(message => message.id === messageId);
+          if (!message) return reject(response, 404, 'Fixture message not found.');
+          react(channelId, message, emoji, ids.other, active);
         }
         if (body.media) {
           const channelId = body.media.channelId ?? ids.demo;
@@ -168,7 +199,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           }
           return json(response, 200, state.directs[0]);
         }
-        return json(response, 200, { conversations: state.directs.map((conversation) => ({ ...conversation, lastSeq: state.messages.get(conversation.id)?.at(-1)?.seq ?? '0' })) });
+        return json(response, 200, { conversations: state.directs.map((conversation) => ({ ...conversation, lastSeq: channelHead(conversation.id) })) });
       }
       const directRead = /^\/api\/dms\/([^/]+)\/read$/.exec(path);
       if (directRead && method === 'POST') {
@@ -176,7 +207,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const conversation = state.directs.find((item) => item.id === directRead[1]);
         if (!conversation) return reject(response, 404, 'Conversation not found.');
         if (!/^(0|[1-9]\d*)$/.test(body.seq)) return reject(response, 400, 'Invalid cursor.');
-        const head = BigInt(state.messages.get(conversation.id)?.at(-1)?.seq ?? '0');
+        const head = BigInt(channelHead(conversation.id));
         const bounded = BigInt(body.seq) > head ? head : BigInt(body.seq);
         if (bounded > BigInt(conversation.readSeq)) conversation.readSeq = String(bounded);
         return json(response, 204);
@@ -224,6 +255,17 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       if (mediaChannel && !canParticipate(channelFor(mediaChannel[1]), user)) return reject(response, 404, 'resource not found');
       if (/^\/api\/(?:channels\/[^/]+\/)?media\/status$/.test(path)) return json(response, 200, { enabled: true });
       if (/^\/api\/(?:channels\/[^/]+\/)?media\//.test(path)) return reject(response, 503, 'TEST FIXTURE: no real media engine or SFU is connected.');
+      const reaction = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/reactions$/.exec(path);
+      if (reaction && method === 'PUT') {
+        const channel = channelFor(reaction[1]);
+        if (!channel || !canParticipate(channel, user)) return reject(response, 404, 'resource not found');
+        const who = state.chatSessions.get(request.headers['x-caper-chat-token']);
+        if (!who || who.isGuest) return reject(response, 401, 'Messaging session required.');
+        if (typeof body.emoji !== 'string' || !body.emoji || typeof body.active !== 'boolean') return reject(response, 400, 'Invalid fixture reaction.');
+        const message = state.messages.get(channel.id)?.find(message => message.id === reaction[2]);
+        if (!message) return reject(response, 404, 'Message not found.');
+        return json(response, 200, react(channel.id, message, body.emoji, who.id, body.active));
+      }
       const chat = /^\/api\/chat\/channels\/([^/]+)\/messages$/.exec(path);
       if (path === '/api/chat/general' || chat) {
         const channel = channelFor(chat?.[1] ?? ids.demo);
@@ -243,7 +285,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           const previous = state.sendKeys.get(key);
           if (previous) return previous.token === request.headers['x-caper-chat-token'] && previous.text === body.text
             ? json(response, 200, previous.message) : reject(response, 409, 'Message ID already used.');
-          const message = { id: randomUUID(), channelId: channel.id, seq: String(messages.length + 1), author: who,
+          const message = { id: randomUUID(), channelId: channel.id, seq: String(BigInt(channelHead(channel.id)) + 1n), author: who,
             content: { version: 1, type: 'text', text: body.text }, createdAt: new Date().toISOString(), clientMessageId };
           messages.push(message); state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers['x-caper-chat-token'], text: body.text, message });
@@ -253,7 +295,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const before = url.searchParams.get('before');
         if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, 'invalid cursor');
         const available = before !== null ? messages.filter((message) => BigInt(message.seq) < BigInt(before)) : messages;
-        return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), cursor: messages.at(-1)?.seq ?? '0', hasMore: available.length > 50 });
+        return json(response, 200, { space: spaceFor(channel.spaceId), channel, messages: available.slice(-50), cursor: channelHead(channel.id), hasMore: available.length > 50 });
       }
       const spacePath = /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members|invitations|invitation|membership)(?:\/([^/]+))?)?$/.exec(path);
       if (spacePath) {
@@ -295,7 +337,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (!detail.members.some((member) => member.id === user.id)) return reject(response, 404, 'resource not found');
         if (section === 'invitations') {
           if (!owner) return reject(response, 404, 'resource not found');
-          if (method === 'GET') return json(response, 200, { members: members.filter((member) => state.invitations.get(`${spaceId}:${member.id}`)?.status === 'pending') });
+          if (method === 'GET') return json(response, 200, { members: accounts.filter((member) => state.invitations.get(`${spaceId}:${member.id}`)?.status === 'pending') });
           const invitation = state.invitations.get(`${spaceId}:${memberId}`);
           if (method === 'DELETE' && invitation?.status === 'pending') { invitation.status = 'revoked'; return json(response, 204); }
           return reject(response, 404, 'resource not found');
@@ -330,7 +372,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             if (!owner) return reject(response, 404, 'resource not found');
             const username = typeof body.username === 'string' ? body.username.trim().toLowerCase() : '';
             if (!/^[a-z0-9_]{3,32}$/.test(username)) return reject(response, 400, 'invalid username');
-            const member = members.find((entry) => entry.username === username);
+            const member = accounts.find((entry) => entry.username === username);
             if (!member) return reject(response, 404, 'user not found');
             if (channelId && !detail.members.some((entry) => entry.id === member.id)) return reject(response, 404, 'Member not found.');
             const exists = channelId ? (state.grants.get(channelId) ?? []).includes(member.id) : detail.members.some((entry) => entry.id === member.id);
@@ -430,9 +472,9 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (!canRead(channelFor(channelId), identity(request))) return client.send({ type: 'error', id: frame.id, status: 404, error: 'resource not found' });
           if (!messages || !/^(0|[1-9]\d*)$/.test(frame.after ?? '0')) return client.send({ type: 'error', id: frame.id, status: 400, error: 'invalid subscription' });
           client.subscriptions.set(frame.id, frame);
-          for (const message of messages.filter((message) => BigInt(message.seq) > BigInt(frame.after ?? '0')))
-            client.send({ type: 'event', id: frame.id, event: { type: 'message.created', channelId: message.channelId, seq: message.seq, message } });
-          client.send({ type: 'event', id: frame.id, event: { type: 'ready', cursor: messages.at(-1)?.seq ?? '0' } });
+          for (const event of channelEvents(channelId).filter(event => BigInt(event.seq) > BigInt(frame.after ?? '0')))
+            client.send({ type: 'event', id: frame.id, event });
+          client.send({ type: 'event', id: frame.id, event: { type: 'ready', cursor: channelHead(channelId) } });
         } else if (frame.kind === 'presence') {
           if (!frame.spaceId || !Array.isArray(frame.userIds) || !frame.userIds.length || frame.userIds.length > 100)
             return client.send({ type: 'error', id: frame.id, status: 400, error: 'invalid subscription' });

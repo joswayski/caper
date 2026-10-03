@@ -1,5 +1,5 @@
 use crate::media_gateway::{CATCHUP_DEADLINE, Connection, ConnectionAttempt, Failure};
-use crate::model::{Author, Message, Presence, VoiceOccupant, sequence};
+use crate::model::{Author, Message, Presence, ReactionUpdate, VoiceOccupant, sequence};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -36,6 +36,11 @@ pub enum GatewayEvent {
         generation: u64,
         channel: String,
         message: Box<Message>,
+    },
+    Reactions {
+        generation: u64,
+        channel: String,
+        update: ReactionUpdate,
     },
     Typing {
         generation: u64,
@@ -422,6 +427,49 @@ fn receive_frame(
                         message: Box::new(message),
                     });
                 }
+                Some("message.reactions") => {
+                    let update: ReactionUpdate =
+                        serde_json::from_value(event.clone()).map_err(|_| {
+                            Failure::Retry("The gateway returned invalid reactions.".into())
+                        })?;
+                    if update.channel_id != channel
+                        || update.kind != "message.reactions"
+                        || update.schema_version != 1
+                        || update.message_id.is_empty()
+                        || update.reactions.iter().any(|reaction| {
+                            reaction.emoji.is_empty()
+                                || reaction.author_ids.iter().any(String::is_empty)
+                        })
+                    {
+                        return Err(Failure::Retry(
+                            "The gateway returned invalid reactions.".into(),
+                        ));
+                    }
+                    let previous = sequence(cursor).map_err(Failure::Retry)?;
+                    let next = sequence(&update.seq).map_err(Failure::Retry)?;
+                    let position = sequence(&stream.cursor).map_err(Failure::Retry)?;
+                    if next > position.saturating_add(1) || next > previous.saturating_add(1) {
+                        if !replacement {
+                            let _ = events.send(GatewayEvent::Resync {
+                                generation,
+                                channel: channel.into(),
+                            });
+                        }
+                        return Err(Failure::Retry("Non-contiguous gateway replay.".into()));
+                    }
+                    if next > position {
+                        stream.cursor = update.seq.clone();
+                    }
+                    if next <= previous {
+                        return Ok(false);
+                    }
+                    *cursor = update.seq.clone();
+                    let _ = events.send(GatewayEvent::Reactions {
+                        generation,
+                        channel: channel.into(),
+                        update,
+                    });
+                }
                 Some("resync_required") => {
                     if !replacement {
                         let _ = events.send(GatewayEvent::Resync {
@@ -641,6 +689,16 @@ mod tests {
                 }}),
             );
         }
+        fn reactions(socket: &mut Socket, id: &str, seq: &str) {
+            send(
+                socket,
+                json!({"type":"event", "id":id, "event":{
+                    "type":"message.reactions", "schemaVersion":1, "channelId":"text",
+                    "seq":seq, "messageId":"message-38",
+                    "reactions":[{"emoji":"👍", "authorIds":["author"]}]
+                }}),
+            );
+        }
         fn roster(socket: &mut Socket, id: &str, revision: u64) {
             send(
                 socket,
@@ -679,10 +737,10 @@ mod tests {
             ready(&mut replacement, &ids["chat"], "38");
             roster(&mut replacement, &ids["media"], 6);
             presence(&mut replacement, &ids["presence"]);
-            message(&mut old, &ids["chat"], "39");
+            reactions(&mut old, &ids["chat"], "39");
             roster(&mut old, &ids["media"], 8);
             advanced.recv_timeout(Duration::from_secs(5)).unwrap();
-            message(&mut replacement, &ids["chat"], "39");
+            reactions(&mut replacement, &ids["chat"], "39");
             roster(&mut replacement, &ids["media"], 8);
             assert!(
                 matches!(old.read(), Ok(WsMessage::Close(_))),
@@ -727,6 +785,7 @@ mod tests {
         ) {}
         advance.send(()).unwrap();
         let mut messages = vec![];
+        let mut reactions = vec![];
         let mut rosters = vec![];
         loop {
             match incoming.recv_timeout(Duration::from_secs(5)).unwrap() {
@@ -747,11 +806,13 @@ mod tests {
                     }
                     rosters.push(name);
                 }
+                GatewayEvent::Reactions { update, .. } => reactions.push(update.seq),
                 GatewayEvent::Presence { .. } | GatewayEvent::Status { online: true, .. } => {}
                 other => panic!("handoff must not disconnect/reset/resync: {other:?}"),
             }
         }
-        assert_eq!(messages, ["38", "39", "40", "41"]);
+        assert_eq!(messages, ["38", "40", "41"]);
+        assert_eq!(reactions, ["39"], "candidate replay is deduplicated");
         assert_eq!(rosters, ["revision-7", "revision-8"]);
         control.stop();
         server.join().unwrap();

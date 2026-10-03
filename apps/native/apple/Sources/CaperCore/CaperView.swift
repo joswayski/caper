@@ -1348,10 +1348,10 @@ private struct ChatView: View {
     /// Scroll the unsent message into view after the current layout pass, so a
     /// row that just grew (its error and actions appeared) is fully visible.
     private func revealPending(_ proxy: ScrollViewProxy) {
-        guard let id = chat.pendingMessage?.id else { return }
+        guard chat.pendingMessage != nil else { return }
         Task { @MainActor in
             await Task.yield()
-            proxy.scrollTo("pending-\(id)", anchor: .bottom)
+            proxy.scrollTo("chat-timeline-bottom", anchor: .bottom)
         }
     }
     init(model: AppModel, narrow: Bool, browse: @escaping () -> Void, membersVisible: Bool, toggleMembers: @escaping () -> Void) {
@@ -1414,7 +1414,7 @@ private struct ChatView: View {
                             if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
                                 ChatDateDivider(createdAt: message.createdAt)
                             }
-                            MessageRow(message: message).id(message.id)
+                            MessageRow(message: message, chat: chat).id(message.id)
                         }
                         if let pending = chat.pendingMessage {
                             if chat.messages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
@@ -1440,6 +1440,7 @@ private struct ChatView: View {
                                 Text(model.selectedDirectMessageID == nil ? "Start the conversation in #\(chat.channelName.lowercased())." : "Only you and \(chat.channelName) can read this conversation.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                             }.padding(.top, 80)
                         }
+                        Color.clear.frame(height: 1).id("chat-timeline-bottom")
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")
@@ -1633,6 +1634,8 @@ struct ChatDateDivider: View {
 
 private struct MessageRow: View {
     let message: ChatMessage
+    @Bindable var chat: ChatModel
+    @State private var pickerVisible = false
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId)
@@ -1644,14 +1647,159 @@ private struct MessageRow: View {
                 }
                 Text(message.content.text).font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                ReactionRow(message: message, chat: chat) { pickerVisible = true }
+                if let error = chat.reactionErrors[message.id] {
+                    HStack(spacing: 8) {
+                        Text(error)
+                        Button("Retry") { Task { await chat.retryReaction(messageID: message.id) } }
+                            .disabled(chat.isPreview || chat.currentAuthor == nil)
+                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
+                }
             }
         }.padding(.horizontal, 18).padding(.vertical, 10)
+            .onChange(of: chat.isPreview) { _, preview in
+                if preview { pickerVisible = false }
+            }
+            .sheet(isPresented: $pickerVisible) {
+                ReactionPicker { emoji in
+                    pickerVisible = false
+                    Task { await chat.setReaction(messageID: message.id, emoji: emoji, active: true) }
+                }
+            }
     }
     private func timeLabel(_ value: String) -> String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return "" }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+private struct ReactionRow: View {
+    let message: ChatMessage
+    @Bindable var chat: ChatModel
+    let showPicker: () -> Void
+
+    var body: some View {
+        ReactionFlowLayout(spacing: 6) {
+            ForEach(message.reactions ?? []) { reaction in
+                ReactionChip(messageID: message.id, reaction: reaction, chat: chat)
+            }
+            Button(action: showPicker) {
+                Image(systemName: "face.smiling").font(.system(size: 16, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    #if os(iOS)
+                    .frame(minWidth: 44, minHeight: 44)
+                    #endif
+            }
+            .buttonStyle(.plain)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            .disabled(chat.isPreview || chat.reactionSaving.contains(message.id) || chat.currentAuthor == nil)
+            .accessibilityLabel("Add reaction")
+            .accessibilityIdentifier("add-reaction-\(message.id)")
+            if chat.reactionSaving.contains(message.id) {
+                ProgressView().controlSize(.small).accessibilityLabel("Saving reaction")
+            }
+        }
+        .accessibilityIdentifier("reaction-row-\(message.id)")
+    }
+}
+
+private struct ReactionChip: View {
+    let messageID: String
+    let reaction: MessageReaction
+    @Bindable var chat: ChatModel
+    private var own: Bool { chat.currentAuthor.map { reaction.authorIds.contains($0.id) } ?? false }
+
+    var body: some View {
+        Button {
+            Task { await chat.setReaction(messageID: messageID, emoji: reaction.emoji, active: !own) }
+        } label: {
+            HStack(spacing: 4) {
+                EmojiArtworkView(emoji: reaction.emoji, size: 18)
+                Text("\(reaction.authorIds.count)").font(CaperTheme.font(11, weight: .bold))
+            }
+            .padding(.horizontal, 7).frame(height: 28)
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #endif
+            .background(own ? CaperTheme.terracotta.opacity(0.24) : CaperTheme.surface)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(own ? CaperTheme.terracottaBright : CaperTheme.border))
+        }
+        .buttonStyle(.plain)
+        .disabled(chat.isPreview || chat.reactionSaving.contains(messageID) || chat.currentAuthor == nil)
+        .accessibilityLabel("\(reaction.emoji) reaction, \(reaction.authorIds.count), \(own ? "selected by you" : "not selected by you")")
+        .accessibilityAddTraits(own ? .isSelected : [])
+    }
+}
+
+private struct ReactionFlowLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        layout(subviews: subviews, width: proposal.width ?? .infinity).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = layout(subviews: subviews, width: bounds.width)
+        for (index, point) in result.points.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), anchor: .topLeading, proposal: .unspecified)
+        }
+    }
+
+    private func layout(subviews: Subviews, width: CGFloat) -> (size: CGSize, points: [CGPoint]) {
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        var points: [CGPoint] = []
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            points.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return (CGSize(width: width.isFinite ? width : max(0, x - spacing), height: y + rowHeight), points)
+    }
+}
+
+private struct ReactionPicker: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    let select: (String) -> Void
+    private var choices: [EmojiCatalogEntry] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !term.isEmpty else { return EmojiArtwork.choices }
+        return EmojiArtwork.choices.filter { $0.name.lowercased().contains(term) || $0.keywords.lowercased().contains(term) }
+    }
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                #if os(iOS)
+                TextField("Search emoji", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("reaction-picker-search")
+                    .padding(12)
+                #endif
+                if choices.isEmpty {
+                    ContentUnavailableView("No emoji found", systemImage: "magnifyingglass", description: Text("Try another search."))
+                        .accessibilityIdentifier("reaction-picker-empty")
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 42), spacing: 8)], spacing: 8) {
+                            ForEach(choices) { entry in
+                                Button { select(entry.emoji) } label: {
+                                    EmojiArtworkView(emoji: entry.emoji, size: 30).frame(width: 42, height: 42)
+                                }.buttonStyle(.plain).accessibilityLabel(entry.name)
+                            }
+                        }.padding(12)
+                    }.accessibilityIdentifier("reaction-picker-grid")
+                }
+            }
+            .navigationTitle("Add reaction")
+            #if os(macOS)
+            .searchable(text: $query, prompt: "Search emoji")
+            #endif
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }.frame(minWidth: 320, minHeight: 420)
     }
 }
 

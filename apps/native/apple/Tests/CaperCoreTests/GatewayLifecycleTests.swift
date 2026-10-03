@@ -113,11 +113,18 @@ final class GatewayLifecycleTests: XCTestCase {
         await eventually { !old.cancelled }; XCTAssertFalse(old.cancelled, "subscribed at cursor zero must not promote before ready")
         old.push(["type": "event", "id": chat, "event": ["type": "message.created", "seq": "1"]])
         candidate.push(["type": "event", "id": chat, "event": ["type": "message.created", "seq": "1"]])
-        candidate.push(["type": "event", "id": chat, "event": ["type": "ready", "cursor": "1"]])
-        await eventually { chatEvents.contains("message.created") }; XCTAssertEqual(chatEvents.filter { $0 == "message.created" }.count, 1)
+        await eventually { chatEvents.contains("message.created") }
+        let reaction: [String: Any] = ["type": "message.reactions", "schemaVersion": 1, "channelId": "chat",
+                                       "seq": "2", "messageId": "message-1", "reactions": [["emoji": "🎉", "authorIds": ["peer"]]]]
+        old.push(["type": "event", "id": chat, "event": reaction])
+        await eventually { chatEvents.contains("message.reactions") }
+        candidate.push(["type": "event", "id": chat, "event": reaction])
+        candidate.push(["type": "event", "id": chat, "event": ["type": "ready", "cursor": "2"]])
+        XCTAssertEqual(chatEvents.filter { $0 == "message.created" }.count, 1)
         XCTAssertFalse(old.cancelled, "chat catch-up alone must not drop voice")
         candidate.push(["type": "event", "id": media, "event": ["type": "snapshot", "revision": 1]])
         await eventually("candidate did not promote") { old.cancelled }
+        XCTAssertEqual(chatEvents.filter { $0 == "message.reactions" }.count, 1, "candidate reaction replay must be deduplicated")
         XCTAssertEqual(mediaRevisions, [1], "stale candidate snapshot must not be redelivered")
         XCTAssertEqual(states, [.connecting, .connected], "planned handoff must not publish disconnection")
         await subject.stop()
@@ -173,8 +180,10 @@ final class GatewayLifecycleTests: XCTestCase {
 
     func testCandidateOpenTimeoutLeavesOldStreamAndRetriesReplacement() async {
         let factory = SocketFactory(); var delivered = 0
+        // This timeout also covers the initial healthy socket. Leave enough
+        // time for the fixture to send hello on a busy hosted runner.
         let subject = Gateway(baseURL: URL(string: "https://caper.invalid")!, socketFactory: { factory.make($0) },
-                              openTimeout: .milliseconds(20), token: { nil }, state: { _, _ in })
+                              openTimeout: .seconds(1), token: { nil }, state: { _, _ in })
         _ = await subject.subscribeChat(channelID: "chat", after: "0") { if $0["type"] as? String == "message.created" { delivered += 1 } }
         await eventually { factory.socket(0) != nil }; let old = factory.socket(0)!; old.push(["type": "hello"])
         let id = await subscribeID(old, kind: "chat"); old.push(["type": "subscribed", "id": id]); old.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "0"]]); old.push(["type": "migrating"])

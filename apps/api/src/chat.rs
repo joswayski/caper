@@ -1,15 +1,17 @@
 //! Channel and direct-message commands. Persist before publishing; content rules
 //! belong on this path, never in a gateway or a delete/recreate bot.
+#[cfg(test)]
+use crate::spaces::channel_access;
 use crate::{
     ApiError, AppState, RuntimeEnvironment, account_token,
     auth::random_id,
-    spaces::{channel_access, channel_participation, session_user},
+    spaces::{channel_participation, session_user},
 };
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
@@ -89,6 +91,10 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/chat/channels/{channel}/messages",
             get(history).post(send),
         )
+        .route(
+            "/api/chat/channels/{channel}/messages/{message}/reactions",
+            put(set_reaction),
+        )
         .route("/api/chat/channels/{channel}/typing", post(typing))
 }
 
@@ -135,21 +141,54 @@ async fn history_page(
     before: Option<i64>,
     user: Option<i64>,
 ) -> Result<Value, ApiError> {
-    let access = channel_access(pool, channel, user).await?;
+    // Hold a shared channel lock from captured head through payload reads. A
+    // reaction commit takes the exclusive lock, so a page can never contain a
+    // reactionSeq newer than its cursor (nor omit a reaction at that cursor).
+    let mut tx = pool.begin().await.map_err(database_error)?;
+    // Membership edits lock the space first. Read permissions only after this
+    // lock is granted so a waiting history request cannot use revoked grants.
+    let space_id: Option<i64> =
+        sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let Some(space_id) = space_id {
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR SHARE")
+            .bind(space_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    }
+    let access: Option<(i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT c.id,c.last_seq,c.space_id FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
+           AND ((s.deleted_at IS NULL AND NOT s.demo
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2)))
+                OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
+                    JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+         FOR SHARE OF c")
+        .bind(channel).bind(user).fetch_optional(&mut *tx).await.map_err(database_error)?;
+    let (channel_id, head, space_id) =
+        access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     let (space, space_name, channel_name): (String, String, String) = sqlx::query_as(
         "SELECT s.external_id,s.name,lower(c.name) FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE c.id=$1 AND s.id=$2 AND NOT s.demo AND c.deleted_at IS NULL AND s.deleted_at IS NULL
          UNION ALL SELECT '', 'Direct messages',u.display_name FROM public.direct_conversations d JOIN public.users u ON u.id=CASE WHEN d.low_user_id=$3 THEN d.high_user_id ELSE d.low_user_id END WHERE d.channel_id=$1 AND $3 IN (d.low_user_id,d.high_user_id) AND u.deleted_at IS NULL",
     )
-    .bind(access.id)
-    .bind(access.space_id)
+    .bind(channel_id)
+    .bind(space_id)
     .bind(user)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(database_error)?
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
     // Bound by the captured committed head. Later commits are replayed by WS.
     let mut rows: Vec<(Value, Option<i16>)> = sqlx::query_as("SELECT m.payload,u.avatar_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id = $1 AND m.channel_seq <= $2 AND ($3::bigint IS NULL OR m.channel_seq < $3) ORDER BY m.channel_seq DESC LIMIT $4")
-        .bind(access.id).bind(access.last_seq).bind(before).bind(PAGE + 1).fetch_all(pool).await.map_err(database_error)?;
+        .bind(channel_id).bind(head).bind(before).bind(PAGE + 1).fetch_all(&mut *tx).await.map_err(database_error)?;
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     rows.reverse();
@@ -158,11 +197,11 @@ async fn history_page(
         .map(|(payload, avatar)| enrich_author(payload, avatar))
         .collect();
     let mut channel_identity = json!({"id":channel,"name":channel_name});
-    if access.space_id.is_none() {
+    if space_id.is_none() {
         channel_identity["direct"] = json!(true);
     }
     Ok(
-        json!({"messages":rows,"cursor":access.last_seq.to_string(),"hasMore":more,
+        json!({"messages":rows,"cursor":head.to_string(),"hasMore":more,
         "space":{"id":space,"name":space_name},"channel":channel_identity}),
     )
 }
@@ -222,6 +261,46 @@ async fn session(
 struct SendInput {
     client_message_id: Uuid,
     text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReactionInput {
+    emoji: String,
+    active: bool,
+}
+
+fn normalized_emoji(value: &str) -> Result<&'static str, ApiError> {
+    emojis::get(value)
+        // Keep the API and the bundled web artwork on the same emoji version.
+        .filter(|emoji| emoji.emoji_version() <= emojis::EmojiVersion::new(15, 0))
+        .map(|emoji| emoji.as_str())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "emoji must be one supported Unicode emoji (through Emoji 15.0)",
+            )
+        })
+}
+
+async fn set_reaction(
+    State(state): State<AppState>,
+    Path((channel, message)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(input): Json<ReactionInput>,
+) -> Result<Json<Value>, ApiError> {
+    let chat = enabled(&state)?;
+    let event = persist_reaction(
+        &chat.pool,
+        &channel,
+        &message,
+        sender_token(&headers)?,
+        normalized_emoji(&input.emoji)?,
+        input.active,
+    )
+    .await?;
+    chat.wake.notify_one();
+    Ok(Json(event))
 }
 
 /// Single pre-publication boundary. Future replacement rules run here before
@@ -449,6 +528,149 @@ async fn persist(
     tx.commit().await.map_err(database_error)?;
     tracing::info!(event_name = "chat_committed", "message committed");
     Ok(payload)
+}
+
+async fn persist_reaction(
+    pool: &PgPool,
+    channel: &str,
+    message: &str,
+    token: &str,
+    emoji: &str,
+    active: bool,
+) -> Result<Value, ApiError> {
+    let mut tx = pool.begin().await.map_err(database_error)?;
+    let (_, _, _, user_id, _) = authorize_sender(&mut tx, token).await?;
+    // Match message creation's space -> channel lock order. In particular, a
+    // membership revocation which won the space lock cannot be bypassed using
+    // a snapshot taken while this request was waiting.
+    let space_id: Option<i64> =
+        sqlx::query_scalar("SELECT space_id FROM public.channels WHERE external_id=$1")
+            .bind(channel)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    if let Some(space_id) = space_id {
+        sqlx::query("SELECT id FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(space_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    }
+    let access: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT c.id,c.last_seq FROM public.channels c LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE c.external_id=$1 AND c.deleted_at IS NULL AND $2::bigint IS NOT NULL
+           AND ((s.deleted_at IS NULL AND NOT s.demo
+                 AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2)
+                 AND (s.owner_id=$2 OR NOT c.private OR EXISTS(SELECT 1 FROM public.channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=$2))
+                 AND EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+                OR (c.space_id IS NULL AND EXISTS(SELECT 1 FROM public.direct_conversations d
+                    JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+                    WHERE d.channel_id=c.id AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL)))
+         FOR UPDATE OF c")
+        .bind(channel).bind(user_id).fetch_optional(&mut *tx).await.map_err(database_error)?;
+    let (channel_id, head) =
+        access.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "channel not found"))?;
+    let row: Option<(i64, Value)> = sqlx::query_as(
+        "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 FOR UPDATE",
+    )
+    .bind(channel_id)
+    .bind(message)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    let (message_id, mut payload) =
+        row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND user_id=$3)")
+        .bind(message_id).bind(emoji).bind(user_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+
+    if exists != active {
+        sqlx::query("DELETE FROM public.message_reaction_activity WHERE user_id=$1 AND created_at <= now()-interval '1 minute'")
+            .bind(user_id).execute(&mut *tx).await.map_err(database_error)?;
+        let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM public.message_reaction_activity a JOIN public.messages m ON m.id=a.message_id WHERE m.channel_id=$1 AND a.user_id=$2 AND a.created_at > now()-interval '1 minute'")
+            .bind(channel_id).bind(user_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+        if recent >= 60 {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "reaction updates too frequent",
+            ));
+        }
+        if active {
+            let (kinds, actors, total): (i64, i64, i64) = sqlx::query_as(
+                "SELECT count(DISTINCT emoji),count(*) FILTER (WHERE emoji=$2),count(*) FROM public.message_reactions WHERE message_id=$1")
+                .bind(message_id).bind(emoji).fetch_one(&mut *tx).await.map_err(database_error)?;
+            if (actors == 0 && kinds >= 20) || total >= 1000 {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "reaction limit reached",
+                ));
+            }
+            sqlx::query(
+                "INSERT INTO public.message_reactions(message_id,emoji,user_id) VALUES($1,$2,$3)",
+            )
+            .bind(message_id)
+            .bind(emoji)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        } else {
+            sqlx::query("DELETE FROM public.message_reactions WHERE message_id=$1 AND emoji=$2 AND user_id=$3")
+                .bind(message_id).bind(emoji).bind(user_id).execute(&mut *tx).await.map_err(database_error)?;
+        }
+        sqlx::query(
+            "INSERT INTO public.message_reaction_activity(message_id,user_id) VALUES($1,$2)",
+        )
+        .bind(message_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+    }
+
+    let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
+        "SELECT r.emoji,array_agg(u.external_id ORDER BY u.external_id) FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id WHERE r.message_id=$1 GROUP BY r.emoji ORDER BY r.emoji")
+        .bind(message_id).fetch_all(&mut *tx).await.map_err(database_error)?;
+    let reactions: Vec<Value> = rows
+        .into_iter()
+        .map(|(emoji, author_ids)| json!({"emoji":emoji,"authorIds":author_ids}))
+        .collect();
+    let seq = if exists == active {
+        payload
+            .get("reactionSeq")
+            .and_then(Value::as_str)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    } else {
+        head + 1
+    };
+    let event = json!({"type":"message.reactions","schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"messageId":message,"reactions":reactions});
+    if exists != active {
+        payload["reactions"] = event["reactions"].clone();
+        payload["reactionSeq"] = json!(seq.to_string());
+        sqlx::query("UPDATE public.messages SET payload=$2 WHERE id=$1")
+            .bind(message_id)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
+            .bind(channel_id)
+            .bind(seq)
+            .bind(&event)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        sqlx::query("UPDATE public.channels SET last_seq=$2 WHERE id=$1")
+            .bind(channel_id)
+            .bind(seq)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+    }
+    tx.commit().await.map_err(database_error)?;
+    Ok(event)
 }
 
 /// API replicas claim disjoint outbox batches. Broker arrival order is not an

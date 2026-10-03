@@ -59,7 +59,7 @@ function fixture() {
       const channel = channels.find(channel => channel.id === history[1]);
       if (!channel) return error(404, 'resource not found');
       if (method === 'POST') return error(503, 'TEST FIXTURE: sends disabled');
-      return Response.json({ space, channel, cursor: '1', hasMore: false, messages: [{ id: `message-${channel.id}`, channelId: channel.id, seq: '1', clientMessageId: '00000000-0000-4000-8000-000000000001', createdAt: '2026-10-01T14:00:00Z', author: { id: 'owner1234567', name: 'TEST FIXTURE Owner', isGuest: false }, content: { version: 1, type: 'text', text: `TEST FIXTURE — ${channel.name} conversation. Previewing does not join this channel.` } }] });
+      return Response.json({ space, channel, cursor: '1', hasMore: false, messages: [{ id: `message-${channel.id}`, channelId: channel.id, seq: '1', clientMessageId: '00000000-0000-4000-8000-000000000001', createdAt: '2026-10-01T14:00:00Z', author: { id: 'owner1234567', name: 'TEST FIXTURE Owner', isGuest: false }, reactions: [{ emoji: '👍', authorIds: [account.id, 'owner1234567'] }], reactionSeq: '1', content: { version: 1, type: 'text', text: `TEST FIXTURE — ${channel.name} conversation. Previewing does not join this channel.` } }] });
     }
     if (path === '/api/chat/session') return Response.json({ token: 'fixture-only', author: { id: account.id, name: account.displayName, isGuest: false } });
     if (path.endsWith('/media/status')) return Response.json({ enabled: false });
@@ -95,6 +95,9 @@ try {
   assert.equal(evaluate('channelFixture.state.joined.includes("other1234567")'), false);
   assert.equal(evaluate('channelFixture.requests.some(r => r.path.includes("other1234567/media") || r.path.endsWith("membership"))'), false);
   assert.equal(evaluate('channelFixture.microphones'), 0);
+  wait('!!document.querySelector(".chat-reaction")');
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('document.querySelector(".chat-reaction").textContent'), '2');
   screenshot('public-channel-preview-1280');
   evaluate('channelFixture.fail = true');
   browser('find', 'role', 'button', 'click', '--name', 'Join channel', '--exact');
@@ -106,9 +109,21 @@ try {
   assert.equal(evaluate('channelFixture.microphones'), 0);
   browser('reload');
   wait('document.querySelector("#space-channel-list").textContent.includes("design")');
+  wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-reaction:not(:disabled)")');
+  browser('find', 'first', '.chat-reaction', 'click');
+  wait('!!document.querySelector(".chat-send-error")');
+  const reactionWrites = evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length');
+  assert.equal(reactionWrites, 1, 'Joined channel can attempt a reaction; mock intentionally rejects to expose retry');
+  browser('find', 'first', '.chat-add-reaction', 'click');
+  wait('!!document.querySelector(".chat-reaction-picker")');
   evaluate('channelFixture.state.joined = channelFixture.state.joined.filter(id => id !== "other1234567"); window.dispatchEvent(new Event("focus"))');
   wait('!!document.querySelector(".channel-preview") && !document.querySelector("#chat-message")');
   assert.equal(evaluate('document.querySelector("#space-channel-list").textContent.includes("design")'), false);
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
+  assert.equal(evaluate('document.querySelector(".chat-reaction-picker") === null'), true);
+  assert.equal(evaluate('[...document.querySelectorAll("button")].filter(button => button.textContent === "Retry reaction").every(button => button.disabled)'), true);
+  evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction, .chat-send-error button")].filter(button => button.textContent !== "Dismiss").forEach(button => button.click())');
+  assert.equal(evaluate('channelFixture.requests.filter(r => r.path.endsWith("/reactions")).length'), reactionWrites);
   browser('find', 'role', 'button', 'click', '--name', 'Join channel', '--exact');
   wait('!!document.querySelector("#chat-message") && channelFixture.state.joined.includes("other1234567")');
   browser('click', '.channel-membership-leave');
@@ -137,6 +152,8 @@ try {
   browser('find', 'role', 'button', 'click', '--name', 'Preview #design', '--exact');
   wait('!!document.querySelector(".channel-preview")');
   assert.equal(evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+  wait('!!document.querySelector(".chat-reaction")');
+  assert.equal(evaluate('[...document.querySelectorAll(".chat-reaction,.chat-add-reaction")].every(button => button.disabled)'), true);
   screenshot('public-channel-preview-390');
   browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
   browser('click', '.pending-channel-invite');

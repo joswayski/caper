@@ -172,6 +172,29 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
+    func testReactionChipsPickerAndEmptySearchState() {
+        let app = launch(fixture: "reaction-chips")
+        let own = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "selected by you")).firstMatch
+        XCTAssertTrue(own.waitForExistence(timeout: 10))
+        let other = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "not selected by you")).firstMatch
+        XCTAssertTrue(other.exists)
+        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "reaction,")).count, 20)
+        XCTAssertGreaterThanOrEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 2, "fixture includes long and empty reaction rows")
+        capture("reaction-chips-wrapped-fixture", app: app)
+        let add = app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).firstMatch
+        XCTAssertTrue(add.exists); add.tap()
+        #if os(iOS)
+        let search = app.textFields["reaction-picker-search"]
+        #else
+        let search = app.searchFields.firstMatch
+        #endif
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        capture("reaction-picker-open-fixture", app: app)
+        type("definitely-no-such-emoji", into: search)
+        XCTAssertTrue(app.descendants(matching: .any)["reaction-picker-empty"].waitForExistence(timeout: 5))
+        capture("reaction-picker-empty-fixture", app: app)
+    }
+
     private func assertStaticText(_ text: String, in app: XCUIApplication, timeout: TimeInterval = 10) {
         XCTAssertTrue(staticTexts(text, in: app).firstMatch.waitForExistence(timeout: timeout), "Missing text: \(text)")
     }
@@ -962,18 +985,25 @@ final class CaperParityUITests: XCTestCase {
         let twoMembers = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 2"),
             object: app.descendants(matching: .any)["space-members-heading"])
         XCTAssertEqual(XCTWaiter.wait(for: [twoMembers], timeout: 5), .completed)
-        type("maya", into: username)
+        // Removed members have a 24-hour invitation cooldown. Invite an
+        // existing fixture account that has never belonged to this space.
+        type("sam", into: username)
         #if os(iOS)
         capture("manage-space-keyboard", app: app)
         username.typeText("\n")
         #else
-        app.buttons["Add"].tap()
+        app.buttons["Invite"].tap()
         #endif
-        let restored = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 3"),
+        let unchanged = XCTNSPredicateExpectation(predicate: NSPredicate(format: "%K == %@", headingProperty, "Members 2"),
             object: app.descendants(matching: .any)["space-members-heading"])
-        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [unchanged], timeout: 5), .completed,
+                       "Inviting must not grant immediate space membership")
+        assertStaticText("Pending invitations  1", in: app)
+        assertStaticText("Sam", in: app)
+        assertStaticText("@sam", in: app)
         XCTAssertTrue(username.value as? String == "" || username.value as? String == username.placeholderValue,
-            "Successful add clears the editable field")
+            "Successful invitation clears the editable field")
+        capture("manage-space-pending-invitation", app: app)
         app.buttons["Close"].firstMatch.tap()
         XCTAssertFalse(app.textFields["Exact username"].exists)
         XCTAssertTrue(app.buttons["Browse"].exists || app.buttons["account-profile"].isHittable)

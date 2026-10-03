@@ -1,5 +1,13 @@
 # Third-party software
 
+## Twemoji / emoji picker data
+
+The embedded emoji sprite sheets use Twemoji graphics © Twitter, Inc. and other
+contributors under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+Picker names and keywords are derived from emoji-picker-react under the MIT
+license. Full source notices are maintained in `shared/emoji/NOTICE.txt`,
+`shared/emoji/PACKAGE-LICENSE.txt`, and `shared/emoji/PICKER-LICENSE.txt`.
+
 Caper Desktop is distributed with Rust dependencies listed exactly in `Cargo.lock`.
 Their package metadata and license identifiers are available from crates.io and
 the corresponding source repositories. The application does not bundle a browser,

@@ -26,6 +26,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,6 +51,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -893,14 +897,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     keyboardActions = KeyboardActions(onSend = {
                         val pending = state.pendingMessage
                         // Web: Enter retries an unconfirmed send; a rejected one waits for Edit or Dismiss.
-                        if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
-                        else if (draft.isNotBlank()) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" }
+                        if (state.chatAuthorId != null) {
+                            if (pending != null) { if (!pending.rejected && pending.error != null) viewModel.send(pending.text) }
+                            else if (draft.isNotBlank()) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" }
+                        }
                     }),
                     colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = SurfaceComposer, unfocusedContainerColor = SurfaceComposer, focusedBorderColor = Terracotta, unfocusedBorderColor = Border),
                 )
                 FilledIconButton(
                     { if (draft.isNotBlank() && state.pendingMessage == null) { val sent = draft; viewModel.setTyping(false); viewModel.send(sent); draft = "" } },
-                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null,
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "Send" }, enabled = draft.isNotBlank() && state.pendingMessage == null && state.chatAuthorId != null,
                     shape = MaterialTheme.shapes.small,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = Terracotta, contentColor = Color.White,
@@ -976,7 +982,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (index == 0 || !sameLocalDay(state.messages[index - 1].createdAt, message.createdAt)) {
                 DateDivider(message.createdAt)
             }
-            MessageRow(message)
+            ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError)
         }
         state.pendingMessage?.let { pending -> item("pending:${pending.clientMessageId}") {
             Column {
@@ -1010,6 +1016,79 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable internal fun ReactionMessageRow(
+    message: ChatMessage, state: AppUiState,
+    setReaction: (String, String, Boolean) -> Unit,
+    retryReaction: (String, String) -> Unit,
+    dismissReactionError: (String, String) -> Unit,
+) {
+    var picker by remember { mutableStateOf(false) }
+    val own = state.chatAuthorId ?: state.account?.id
+    val canReact = state.selectedChannel?.joined == true
+    LaunchedEffect(canReact) { if (!canReact) picker = false }
+    val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
+    val saving = saves.firstOrNull { it.saving }
+    Column {
+        MessageRow(message)
+        FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            message.reactions.forEach { reaction ->
+                val selected = own != null && own in reaction.authorIds
+                OutlinedButton(
+                    onClick = { setReaction(message.id, reaction.emoji, !selected) }, enabled = canReact && saving == null,
+                    shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, if (selected) Terracotta else Border),
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Terracotta.copy(alpha = .18f) else Color.Transparent),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.heightIn(min = 48.dp).semantics {
+                        this.selected = selected
+                        contentDescription = "${reaction.emoji} reaction, ${reaction.authorIds.size}"
+                    },
+                ) { EmojiImage(reaction.emoji, null, Modifier.size(19.dp)); Spacer(Modifier.width(5.dp)); Text(reaction.authorIds.size.toString()) }
+            }
+            OutlinedButton({ picker = true }, enabled = canReact && saving == null, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), contentPadding = PaddingValues(6.dp), modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Add reaction" }) {
+                EmojiImage("🙂", null, Modifier.size(19.dp))
+            }
+        }
+        if (saving != null) Text("Saving ${saving.emoji} reaction…", Modifier.padding(start = 62.dp, top = 4.dp), color = TextMuted, fontSize = 11.sp)
+        saves.filter { it.error != null }.forEach { save ->
+            Column(Modifier.padding(start = 62.dp, end = 18.dp, top = 4.dp)) {
+                Text(save.error ?: "Reaction could not be saved.", color = Terracotta, fontSize = 11.sp)
+                Row {
+                    TextButton({ retryReaction(message.id, save.emoji) }, enabled = canReact, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
+                    TextButton({ dismissReactionError(message.id, save.emoji) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Dismiss") }
+                }
+            }
+        }
+    }
+    if (picker && canReact) EmojiPicker(onDismiss = { picker = false }) { emoji ->
+        picker = false
+        setReaction(message.id, emoji, true)
+    }
+}
+
+@Composable private fun EmojiPicker(onDismiss: () -> Unit, select: (String) -> Unit) {
+    val context = LocalContext.current
+    val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable } }
+    var query by rememberSaveable { mutableStateOf("") }
+    val shown = remember(query, catalog) {
+        val needle = query.trim().lowercase(Locale.ROOT)
+        if (needle.isEmpty()) catalog else catalog.filter { it.name.lowercase(Locale.ROOT).contains(needle) || it.keywords.lowercase(Locale.ROOT).contains(needle) }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) { Text("Add reaction", Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss) { Text("Close") } }
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
+                if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
+                else LazyVerticalGrid(GridCells.Adaptive(44.dp), modifier = Modifier.heightIn(max = 390.dp)) {
+                    gridItems(shown, key = { it.id }) { entry ->
+                        IconButton({ select(entry.emoji) }, Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = entry.name }) { EmojiImage(entry.emoji, null, Modifier.size(30.dp)) }
+                    }
+                }
+            }
+        }
+    }
+}
 @Composable private fun MessageRow(message: ChatMessage) = MessageRow(message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId)
 @Composable private fun MessageRow(author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {

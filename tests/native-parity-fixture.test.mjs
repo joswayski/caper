@@ -96,6 +96,26 @@ test('space invitation consent and channel grants enforce distinct access contra
   assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
 });
 
+test('management can invite a nonmember without bypassing removed-member cooldown', async (t) => {
+  const { request } = await setup(t);
+  const root = `/api/spaces/${ids.space}`;
+  assert.equal((await request(`${root}/members/${ids.member}`, { method: 'DELETE', auth: true })).response.status, 204);
+  const reinvite = await request(`${root}/members`, { method: 'POST', auth: true, body: { username: 'maya' } });
+  assert.equal(reinvite.response.status, 409);
+  assert.match(reinvite.value.error, /cooldown/);
+  assert.deepEqual((await request(`${root}/invitations`, { auth: true })).value.members, []);
+
+  const invited = await request(`${root}/members`, { method: 'POST', auth: true, body: { username: 'sam' } });
+  assert.equal(invited.response.status, 201);
+  assert.equal(invited.value.id, ids.invitee);
+  assert.deepEqual((await request(`${root}/invitations`, { auth: true })).value.members.map(member => member.username), ['sam']);
+  assert.deepEqual((await request(root, { auth: true })).value.members.map(member => member.id), [ids.owner, ids.other],
+    'a pending invitation must not grant membership');
+  assert.equal((await request(`${root}/channels/${ids.private}/members`, {
+    method: 'POST', auth: true, body: { username: 'sam' },
+  })).response.status, 404, 'a pending invitee cannot receive private channel membership');
+});
+
 test('public preview stays readable without participation; private consent grants and joins together', async (t) => {
   const { request } = await setup(t);
   const publicRoot = `/api/spaces/${ids.space}/channels/${ids.design}`;
@@ -215,4 +235,29 @@ test('spectator rosters update and revoke without granting capture or account-ch
   assert.deepEqual(await stream.next(), { type: 'event', id: 'restored', event: { type: 'snapshot', revision: 3, participants: [participant] } });
   assert.equal((await stream.next()).type, 'subscribed');
   assert.equal((await request('/api/media/join', { method: 'POST', body: {} })).response.status, 503);
+});
+
+test('DM reaction fixture advances stream and read heads without changing message sequences', async (t) => {
+  const { request } = await setup(t);
+  await request('/api/dms', { auth: true, method: 'POST', body: { username: 'fixture_alex' } });
+  const session = await request('/api/chat/session', { auth: true, method: 'POST', body: { name: 'Fixture Owner' } });
+  const root = `/api/chat/channels/${ids.direct}/messages`;
+  const sent = await request(root, { auth: true, method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: randomUUID(), text: 'TEST FIXTURE — reactions' } });
+  await request('/__fixture/control', { method: 'POST', body: { incomingReaction: { channelId: ids.direct, messageId: sent.value.id, emoji: '🎉' } } });
+  const reactionPath = `${root}/${sent.value.id}/reactions`;
+  const mutation = { auth: true, method: 'PUT', headers: { 'x-caper-chat-token': session.value.token }, body: { emoji: '🎉', active: true } };
+  const added = await request(reactionPath, mutation);
+  assert.equal(added.value.seq, '3');
+  assert.deepEqual(added.value.reactions, [{ emoji: '🎉', authorIds: [ids.other, ids.owner] }]);
+  assert.deepEqual((await request(reactionPath, mutation)).value, added.value, 'no-op does not allocate a sequence');
+  const history = (await request(root, { auth: true })).value;
+  assert.equal(history.cursor, '3');
+  assert.equal(history.messages[0].seq, '1');
+  assert.equal(history.messages[0].reactionSeq, '3');
+  await request(`/api/dms/${ids.direct}/read`, { auth: true, method: 'POST', body: { seq: '3' } });
+  const dm = (await request('/api/dms', { auth: true })).value.conversations[0];
+  assert.equal(dm.lastSeq, '3');
+  assert.equal(dm.readSeq, '3');
+  await request('/__fixture/control', { method: 'POST', body: { incomingMessage: { channelId: ids.direct, text: 'After reactions' } } });
+  assert.equal((await request(root, { auth: true })).value.messages.at(-1).seq, '4');
 });

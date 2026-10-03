@@ -5,6 +5,7 @@ mod avatar_images;
 mod credentials;
 mod daily_icon;
 mod effects;
+mod emoji;
 mod gateway;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -149,6 +150,12 @@ struct NavigationTarget {
     channel: Option<String>,
 }
 
+#[derive(Clone)]
+struct PendingReaction {
+    desired: bool,
+    sent: bool,
+}
+
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
     worker: Worker,
@@ -200,6 +207,12 @@ struct CaperApp {
     display_name: String,
     draft: String,
     pending: Option<PendingSend>,
+    reaction_picker: Option<String>,
+    reaction_search: String,
+    reaction_search_focus: bool,
+    reaction_textures: emoji::Textures,
+    pending_reactions: BTreeMap<(String, String), PendingReaction>,
+    reaction_errors: BTreeMap<String, String>,
     typers: BTreeMap<String, Typer>,
     typing_sent: bool,
     typing_edited: Instant,
@@ -296,6 +309,12 @@ impl CaperApp {
             display_name: String::new(),
             draft: String::new(),
             pending: None,
+            reaction_picker: None,
+            reaction_search: String::new(),
+            reaction_search_focus: false,
+            reaction_textures: emoji::Textures::default(),
+            pending_reactions: BTreeMap::new(),
+            reaction_errors: BTreeMap::new(),
             typers: BTreeMap::new(),
             typing_sent: false,
             typing_edited: now,
@@ -354,7 +373,36 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if matches!(
+                if name == "parity-reactions" {
+                    app.session = Some(ChatSession {
+                        token: "fixture-token".into(),
+                        author: Author {
+                            id: "fixture-owner".into(),
+                            name: "Fixture Owner".into(),
+                            is_guest: false,
+                            avatar_id: Some(0),
+                        },
+                    });
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    messages[1].reactions = vec![
+                        model::Reaction {
+                            emoji: "👍".into(),
+                            author_ids: vec!["fixture-owner".into(), "fixture-maya".into()],
+                        },
+                        model::Reaction {
+                            emoji: "❤️".into(),
+                            author_ids: vec!["fixture-maya".into()],
+                        },
+                        model::Reaction {
+                            emoji: "🎉".into(),
+                            author_ids: vec!["fixture-alex".into()],
+                        },
+                    ];
+                    messages[1].reaction_seq = Some("4".into());
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid reaction fixture");
+                } else if matches!(
                     name,
                     "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
                 ) {
@@ -770,6 +818,8 @@ impl CaperApp {
                     kind: "text".into(),
                     text: text.into(),
                 },
+                reactions: Vec::new(),
+                reaction_seq: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -1037,6 +1087,51 @@ impl CaperApp {
                 {
                     self.sent(result)
                 }
+                Event::Reacted {
+                    generation,
+                    channel,
+                    message,
+                    emoji,
+                    active,
+                    result,
+                } if current(
+                    generation,
+                    self.generation,
+                    Some(&channel),
+                    self.selected_channel.as_deref(),
+                ) =>
+                {
+                    let key = (message.clone(), emoji.clone());
+                    match result {
+                        Ok(update)
+                            if update.channel_id == channel && update.message_id == message =>
+                        {
+                            if self.timeline.merge_reaction_ack(update).is_err() {
+                                self.reload_channel();
+                            }
+                            self.reaction_errors.remove(&message);
+                            let desired = self
+                                .pending_reactions
+                                .get(&key)
+                                .map_or(active, |pending| pending.desired);
+                            self.pending_reactions.remove(&key);
+                            if desired != active {
+                                self.set_reaction(&message, &emoji, desired);
+                            }
+                        }
+                        Ok(_) => self.reload_channel(),
+                        Err(error) if matches!(error.status, Some(401 | 403 | 404)) => {
+                            self.pending_reactions.remove(&key);
+                            self.clear_channel(&error.message);
+                        }
+                        Err(error) => {
+                            if let Some(pending) = self.pending_reactions.get_mut(&key) {
+                                pending.sent = false;
+                            }
+                            self.reaction_errors.insert(message, error.message);
+                        }
+                    }
+                }
                 Event::Admin { generation, result } if generation == self.generation => {
                     self.loading = false;
                     match result {
@@ -1146,24 +1241,40 @@ impl CaperApp {
         self.older_armed = false;
         self.older_anchor = None;
         self.load_error = None;
-        // A refresh may retain paginated history, but never bridge a missing
-        // range using the highest HTTP-confirmed send instead of replay cursor.
-        let contiguous = history.messages.first().is_some_and(|first| {
-            model::sequence(&first.seq).is_ok_and(|first| {
-                first <= model::sequence(&self.timeline.cursor()).unwrap_or(0) + 1
+        // Every missing event must be a refreshed message. An unaccounted
+        // sequence may be a reaction on an older cached row.
+        let applied = model::sequence(&self.timeline.cursor()).unwrap_or(0);
+        let mut accounted = applied;
+        let contiguous = !history.messages.is_empty()
+            && history.messages.iter().all(|message| {
+                model::sequence(&message.seq).is_ok_and(|next| {
+                    if next <= applied {
+                        return true;
+                    }
+                    if next != accounted + 1 {
+                        return false;
+                    }
+                    accounted = next;
+                    true
+                })
             })
-        });
+            && model::sequence(&history.cursor) == Ok(accounted);
         let retained_older = contiguous
             && self.timeline.messages().next().is_some_and(|oldest| {
                 history.messages.first().is_some_and(|first| {
                     model::sequence(&oldest.seq).ok() < model::sequence(&first.seq).ok()
                 })
             });
-        let mut messages = history.messages;
-        if contiguous {
-            // First occurrence wins in Timeline::reset; prefer fresh metadata.
-            messages.extend(self.timeline.messages().cloned());
-        }
+        // Timeline::merge takes incoming metadata and the higher reaction revision.
+        // Keep newer snapshots on overlapping rows even when older pages must reload.
+        let fresh_ids: BTreeSet<_> = history.messages.iter().map(|message| &message.id).collect();
+        let mut messages: Vec<_> = self
+            .timeline
+            .messages()
+            .filter(|message| contiguous || fresh_ids.contains(&message.id))
+            .cloned()
+            .collect();
+        messages.extend(history.messages);
         if let Err(error) = self.timeline.reset(messages, &history.cursor) {
             self.clear_channel(&error);
             return;
@@ -1503,6 +1614,9 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.reaction_picker = None;
+        self.pending_reactions.clear();
+        self.reaction_errors.clear();
         self.draft.clear();
         self.typers.clear();
         self.error = None;
@@ -1731,6 +1845,23 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Reactions {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                match self.timeline.apply_reactions(update) {
+                    Ok(model::Apply::Applied) => self.mark_selected_direct_read(),
+                    Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
+                    _ => {}
+                }
+            }
             GatewayEvent::Typing {
                 generation,
                 channel,
@@ -1932,6 +2063,9 @@ impl CaperApp {
         self.older_anchor = None;
         self.load_error = None;
         self.pending = None;
+        self.reaction_picker = None;
+        self.pending_reactions.clear();
+        self.reaction_errors.clear();
         self.draft.clear();
         self.typers.clear();
         self.live = "Offline".into();
@@ -5213,6 +5347,7 @@ impl CaperApp {
                         });
                     }
                 });
+            self.emoji_picker(ui.ctx());
             self.after_history(ui, &history, heading.response.rect);
         });
     }
@@ -5326,7 +5461,7 @@ impl CaperApp {
         }
     }
 
-    fn message(&self, ui: &mut egui::Ui, message: &model::Message) {
+    fn message(&mut self, ui: &mut egui::Ui, message: &model::Message) {
         let time = display_time(&message.created_at);
         message_row(
             ui,
@@ -5337,6 +5472,229 @@ impl CaperApp {
             message.author.is_guest,
             false,
         );
+        let author = self
+            .session
+            .as_ref()
+            .map(|session| session.author.id.clone());
+        let can_react = self.selected_is_joined() && self.session.is_some();
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 62,
+                right: 18,
+                top: 2,
+                bottom: 5,
+            })
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let saving = self
+                        .pending_reactions
+                        .iter()
+                        .any(|((id, _), pending)| id == &message.id && pending.sent);
+                    for reaction in &message.reactions {
+                        let owned = author
+                            .as_ref()
+                            .is_some_and(|id| reaction.author_ids.iter().any(|entry| entry == id));
+                        let Some(entry) = emoji::find(&reaction.emoji) else {
+                            continue;
+                        };
+                        let image = self.reaction_textures.image(ui, entry, 18.0);
+                        let label = format!(
+                            "{}, {} {}{}",
+                            entry.name,
+                            reaction.author_ids.len(),
+                            if reaction.author_ids.len() == 1 {
+                                "reaction"
+                            } else {
+                                "reactions"
+                            },
+                            if owned { ", including you" } else { "" }
+                        );
+                        let response = ui.add_enabled(
+                            can_react && !saving,
+                            egui::Button::image_and_text(
+                                image,
+                                RichText::new(reaction.author_ids.len().to_string()).size(11.0),
+                            )
+                            .fill(if owned {
+                                Color32::from_rgb(57, 35, 30)
+                            } else {
+                                RAISED
+                            })
+                            .stroke(Stroke::new(
+                                1.0,
+                                if owned { TERRACOTTA_BRIGHT } else { BORDER },
+                            ))
+                            .corner_radius(8),
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                can_react && !saving,
+                                label.clone(),
+                            )
+                        });
+                        if response.clicked() {
+                            self.set_reaction(&message.id, &reaction.emoji, !owned);
+                        }
+                    }
+                    if can_react && let Some(entry) = emoji::find("🙂") {
+                        let image = self.reaction_textures.image(ui, entry, 18.0);
+                        let add = ui
+                            .add_enabled(!saving, egui::Button::image(image).small())
+                            .on_hover_text("Add reaction");
+                        add.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                !saving,
+                                "Add reaction",
+                            )
+                        });
+                        if add.clicked() {
+                            self.reaction_picker = Some(message.id.clone());
+                            self.reaction_search.clear();
+                            self.reaction_search_focus = true;
+                        }
+                    }
+                    if saving {
+                        ui.label(RichText::new("Saving reaction…").size(11.0).color(MUTED));
+                    }
+                });
+                if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(ERROR, error);
+                        if can_react
+                            && ui.small_button("Retry").clicked()
+                            && let Some(((message, emoji), pending)) = self
+                                .pending_reactions
+                                .iter()
+                                .find(|((id, _), pending)| id == &message.id && !pending.sent)
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                        {
+                            self.set_reaction(&message, &emoji, pending.desired);
+                        }
+                        if ui.small_button("Dismiss").clicked() {
+                            self.reaction_errors.remove(&message.id);
+                            self.pending_reactions
+                                .retain(|(id, _), _| id != &message.id);
+                        }
+                    });
+                }
+            });
+    }
+
+    fn set_reaction(&mut self, message: &str, emoji: &str, active: bool) {
+        if !self.selected_is_joined() {
+            return;
+        }
+        let (Some(session), Some(channel)) = (&self.session, &self.selected_channel) else {
+            return;
+        };
+        let chat_token = session.token.clone();
+        let channel = channel.clone();
+        let key = (message.to_owned(), emoji.to_owned());
+        if let Some(pending) = self.pending_reactions.get_mut(&key) {
+            pending.desired = active;
+            if pending.sent {
+                return;
+            }
+        }
+        self.pending_reactions.insert(
+            key,
+            PendingReaction {
+                desired: active,
+                sent: true,
+            },
+        );
+        self.worker.send(Command::React {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token,
+            channel,
+            message: message.to_owned(),
+            emoji: emoji.to_owned(),
+            active,
+        });
+    }
+
+    fn emoji_picker(&mut self, context: &egui::Context) {
+        let Some(message) = self.reaction_picker.clone() else {
+            return;
+        };
+        if !self.selected_is_joined() || self.session.is_none() {
+            self.reaction_picker = None;
+            return;
+        }
+        let mut open = true;
+        let mut close_requested = context.input(|input| input.key_pressed(egui::Key::Escape));
+        let mut selected = None;
+        egui::Window::new("Add reaction")
+            .id(egui::Id::new("emoji-picker"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .show(context, |ui| {
+                let search_id = egui::Id::new("emoji-picker-search");
+                let _search = ui.add(
+                    egui::TextEdit::singleline(&mut self.reaction_search)
+                        .id(search_id)
+                        .hint_text("Search emoji…")
+                        .desired_width(f32::INFINITY),
+                );
+                if self.reaction_search_focus {
+                    ui.memory_mut(|memory| memory.request_focus(search_id));
+                    self.reaction_search_focus = false;
+                }
+                ui.add_space(6.0);
+                let query = self.reaction_search.trim().to_lowercase();
+                let choices: Vec<_> = emoji::catalog()
+                    .iter()
+                    .filter(|entry| {
+                        entry.selectable
+                            && (query.is_empty()
+                                || entry.name.to_lowercase().contains(&query)
+                                || entry.keywords.to_lowercase().contains(&query)
+                                || entry.category.to_lowercase().contains(&query))
+                    })
+                    .collect();
+                if choices.is_empty() {
+                    ui.label(RichText::new("No emoji found").color(MUTED));
+                }
+                egui::ScrollArea::vertical().max_height(330.0).show_rows(
+                    ui,
+                    38.0,
+                    choices.len().div_ceil(8),
+                    |ui, rows| {
+                        for row in rows {
+                            ui.horizontal(|ui| {
+                                for entry in choices.iter().skip(row * 8).take(8) {
+                                    let image = self.reaction_textures.image(ui, entry, 30.0);
+                                    let response = ui
+                                        .add(egui::Button::image(image).frame(false))
+                                        .on_hover_text(&entry.name);
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            &entry.name,
+                                        )
+                                    });
+                                    if response.clicked() {
+                                        selected = Some(entry.emoji.clone());
+                                    }
+                                }
+                            });
+                        }
+                    },
+                );
+            });
+        if let Some(emoji) = selected {
+            self.set_reaction(&message, &emoji, true);
+            close_requested = true;
+        }
+        if !open || close_requested {
+            self.reaction_picker = None;
+        }
     }
 
     fn channel_name(&self) -> &str {
@@ -7337,8 +7695,8 @@ fn avatar_icon(index: usize) -> egui::IconData {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingSend, Phase, avatar_icon,
-        endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
+        CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingReaction, PendingSend, Phase,
+        avatar_icon, endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
         take_date_divider, timestamp_parts, voice,
     };
 
@@ -7365,7 +7723,7 @@ mod tests {
         }
     }
     use crate::model::{
-        Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
+        self, Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
         SpaceDetail, Spaces,
     };
     use crate::worker::LoadError;
@@ -7913,11 +8271,20 @@ mod tests {
         assert!(!app.owner());
         assert!(app.can_leave_space());
         let space = app.selected_space.clone().unwrap();
-        // There is no public General fallback after leaving the last space.
-        app.spaces.retain(|entry| !entry.demo);
+        // Exercise leaving the last account space, with no demo fallback.
+        app.spaces.retain(|entry| entry.id == space);
         assert!(!app.needs_first_space());
         app.draft = "private draft".into();
         app.pending = Some(PendingSend::prepare(None, "private draft"));
+        app.pending_reactions.insert(
+            ("message".into(), "👍".into()),
+            PendingReaction {
+                desired: true,
+                sent: true,
+            },
+        );
+        app.reaction_errors
+            .insert("message".into(), "failed".into());
         assert!(app.timeline.messages().next().is_some());
         app.select_channel("next".into(), false);
         let stale_generation = app.generation;
@@ -7931,6 +8298,21 @@ mod tests {
         assert!(app.timeline.messages().next().is_none());
         assert!(app.draft.is_empty());
         assert!(app.pending.is_none());
+        assert!(app.pending_reactions.is_empty());
+        assert!(app.reaction_errors.is_empty());
+        app.accept_navigation(
+            stale_generation,
+            app.navigation,
+            Ok(crate::worker::PreparedNavigation {
+                detail: None,
+                conversation: Some((history("old-private"), Ok(session()))),
+            }),
+        );
+        assert!(
+            app.selected_channel.is_none(),
+            "late old generation ignored"
+        );
+        assert!(app.timeline.messages().next().is_none());
         assert!(!app.can_leave_space());
         app.accept_navigation(
             stale_generation,
@@ -8128,6 +8510,56 @@ mod tests {
             "preview must not render a composer: {labels:?}"
         );
         assert!(!app.loading, "rendering a preview must not send a mutation");
+    }
+
+    #[test]
+    fn unjoined_preview_shows_reactions_without_reaction_controls_or_mutations() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let channel = app.selected_channel.clone().unwrap();
+        app.detail
+            .as_mut()
+            .unwrap()
+            .channels
+            .iter_mut()
+            .find(|entry| entry.id == channel)
+            .unwrap()
+            .joined = false;
+        let message = app.timeline.messages().nth(1).unwrap().id.clone();
+        let key = (message.clone(), "👍".to_owned());
+        app.pending_reactions.insert(
+            key.clone(),
+            PendingReaction {
+                desired: true,
+                sent: false,
+            },
+        );
+        app.reaction_errors
+            .insert(message.clone(), "Try again".into());
+        app.reaction_picker = Some(message.clone());
+
+        app.set_reaction(&message, "👍", false);
+        assert!(app.pending_reactions[&key].desired);
+        let output = render(&mut app, &context, vec![]);
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            labels.contains(&"2"),
+            "reaction chip count must remain visible: {labels:?}"
+        );
+        assert!(!labels.contains(&"Add reaction"), "{labels:?}");
+        assert!(!labels.contains(&"Retry"), "{labels:?}");
+        assert!(app.reaction_picker.is_none());
     }
 
     #[test]
@@ -9938,6 +10370,8 @@ mod tests {
                 kind: "text".into(),
                 text: pending.text.clone(),
             },
+            reactions: Vec::new(),
+            reaction_seq: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -10013,6 +10447,8 @@ mod tests {
                     kind: "text".into(),
                     text: "sent".into(),
                 },
+                reactions: Vec::new(),
+                reaction_seq: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);
@@ -10145,6 +10581,26 @@ mod tests {
             app.directs[0].read_seq, "4",
             "only the retained timeline is read"
         );
+        let channel = app.selected_channel.clone().unwrap();
+        app.gateway(GatewayEvent::Reactions {
+            generation: app.generation,
+            channel: channel.clone(),
+            update: model::ReactionUpdate {
+                kind: "message.reactions".into(),
+                schema_version: 1,
+                channel_id: channel,
+                seq: "5".into(),
+                message_id: "fixture-message-1".into(),
+                reactions: vec![model::Reaction {
+                    emoji: "👍".into(),
+                    author_ids: vec!["fixture-maya".into()],
+                }],
+            },
+        });
+        assert_eq!(
+            app.directs[0].read_seq, "5",
+            "a foreground reaction event advances the direct read cursor"
+        );
         app.directs[0].read_seq = "8".into();
         app.mark_selected_direct_read();
         assert_eq!(
@@ -10223,12 +10679,16 @@ mod tests {
         let context = egui::Context::default();
         // Above JavaScript's safe integer range, but inside the API's i64 contract.
         let base = 9_007_199_254_740_992_u64;
-        for (first, old_more, fresh_more, expected, expected_more) in [
-            (Some(4), false, true, vec![2, 4, 9], false),
-            (Some(5), true, false, vec![2, 4, 5, 9], true),
-            (Some(6), false, true, vec![6], true),
-            (Some(2), true, false, vec![2, 4, 9], false),
-            (None, true, false, vec![], false),
+        for (fresh, cursor, old_more, fresh_more, expected, expected_more) in [
+            (vec![4], 4, false, true, vec![2, 4, 9], false),
+            (vec![5], 5, true, false, vec![2, 4, 5, 9], true),
+            (vec![5, 6], 6, true, false, vec![2, 4, 5, 6, 9], true),
+            (vec![6], 6, false, true, vec![6], true),
+            (vec![2], 2, true, false, vec![2], false),
+            (vec![], 0, true, false, vec![], false),
+            // The missing sequence may update a reaction on message 2.
+            (vec![5], 6, true, false, vec![5], false),
+            (vec![4, 5, 7], 7, true, false, vec![4, 5, 7], false),
         ] {
             let mut app = CaperApp::new(
                 &context,
@@ -10243,8 +10703,14 @@ mod tests {
                 message.seq = (base + offset).to_string();
                 message
             };
+            let mut cached = message(4);
+            cached.reaction_seq = Some((base + 10).to_string());
+            cached.reactions = vec![model::Reaction {
+                emoji: "👍".into(),
+                author_ids: vec!["newer-actor".into()],
+            }];
             app.timeline
-                .reset(vec![message(2), message(4)], &(base + 4).to_string())
+                .reset(vec![message(2), cached], &(base + 4).to_string())
                 .unwrap();
             // An HTTP confirmation must not bridge the missing replay range.
             app.timeline.merge_sent(message(9)).unwrap();
@@ -10264,12 +10730,12 @@ mod tests {
             );
 
             let mut refreshed = history(&channel);
-            refreshed.cursor = (base + first.unwrap_or(0)).to_string();
+            refreshed.cursor = (base + cursor).to_string();
             refreshed.has_more = fresh_more;
-            if let Some(offset) = first {
-                let mut fresh = message(offset);
-                fresh.author.name = "Refreshed author".into();
-                refreshed.messages.push(fresh);
+            for offset in &fresh {
+                let mut fresh_message = message(*offset);
+                fresh_message.author.name = "Refreshed author".into();
+                refreshed.messages.push(fresh_message);
             }
             app.accept_channel(refreshed, Ok(session()), false, &channel);
             assert_eq!(
@@ -10283,7 +10749,7 @@ mod tests {
                     .collect::<Vec<_>>()
             );
             assert_eq!(app.has_more, expected_more);
-            if let Some(offset) = first {
+            for offset in &fresh {
                 assert_eq!(
                     app.timeline
                         .messages()
@@ -10293,6 +10759,15 @@ mod tests {
                         .name,
                     "Refreshed author"
                 );
+            }
+            if fresh.contains(&4) {
+                let retained = app
+                    .timeline
+                    .messages()
+                    .find(|item| item.id == "message-4")
+                    .unwrap();
+                assert_eq!(retained.reaction_seq, Some((base + 10).to_string()));
+                assert_eq!(retained.reactions[0].author_ids, ["newer-actor"]);
             }
             app.clear_channel("Access revoked");
             assert_eq!(app.timeline.messages().count(), 0);

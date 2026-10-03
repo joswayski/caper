@@ -10,9 +10,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.*
 import okhttp3.*
 
+internal fun reactionSequence(event: JsonObject, channelId: String): String {
+    return Json.decodeFromJsonElement(ReactionUpdate.serializer(), event).validated(channelId).seq
+}
+
 class GatewayClient(
     private val baseUrl: String, private val token: String?, private val channelId: String,
     initialCursor: String, private val onMessage: (ChatMessage) -> Unit,
+    private val onReaction: (ReactionUpdate) -> Unit = {},
     private val onTyping: (ChatAuthor, Boolean, String) -> Unit = { _, _, _ -> },
     private val onPresence: (PresenceSnapshot) -> Unit = {},
     private val onMedia: (String, List<Participant>) -> Unit = { _, _ -> },
@@ -154,6 +159,19 @@ class GatewayClient(
                 if (n == applied + BigInteger.ONE) {
                     val message = json.decodeFromJsonElement(ChatMessage.serializer(), event.getValue("message")).validated(channelId)
                     require(message.seq == next); cursor = next; onMessage(message)
+                } else if (n > applied) error("Logical delivery gap")
+                maybePromote(s)
+            }
+            "message.reactions" -> {
+                val next = reactionSequence(event, channelId)
+                val n = next.toBigIntegerOrNull() ?: error("Invalid sequence")
+                val local = s.chatPosition.toBigIntegerOrNull() ?: error("Invalid cursor")
+                if (n == local + BigInteger.ONE) s.chatPosition = next else if (n > local) error("Non-contiguous replay")
+                val applied = cursor.toBigIntegerOrNull() ?: error("Invalid cursor")
+                if (n == applied + BigInteger.ONE) {
+                    val update = json.decodeFromJsonElement(ReactionUpdate.serializer(), event).validated(channelId)
+                    cursor = next
+                    onReaction(update)
                 } else if (n > applied) error("Logical delivery gap")
                 maybePromote(s)
             }

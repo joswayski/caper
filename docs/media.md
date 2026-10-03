@@ -732,6 +732,161 @@ constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
 
+## Message reactions
+
+Desktop web exposes **Add reaction** on message hover or keyboard focus. On
+narrow/touch browser layouts it stays visible, and the searchable picker opens
+as a bottom sheet. Reactions appear below the message with counts; your own
+chips have a terracotta tint and `aria-pressed=true`. Clicking a chip adds or
+removes your contribution. Choosing an emoji in the picker only adds it. Pending
+messages cannot be reacted to. Failed saves show an explicit retry of the same
+desired state rather than an ambiguous toggle.
+
+Android, iOS/macOS, and Rust desktop also provide searchable standard-emoji
+pickers, counted chips, own-contribution highlighting, add/remove, and save-error
+retry. Native/mobile actions remain visible without hover. Clients preserve
+per-message reaction revisions independently of the channel replay cursor.
+
+The picker offers standard Emoji 15.0 artwork, self-hosted from `@twemoji/svg`
+and attributed at `/emoji/NOTICE.txt` (Twemoji graphics, CC BY 4.0). The web
+build/dev preparation verifies artwork for every offered emoji. It makes no
+emoji-CDN requests and loads the picker code on demand. These are images, not
+the operating system's emoji font, so supported reactions look consistent across
+all clients. Native apps bundle raster sprite sheets generated from the same
+artwork with `node scripts/native-emoji.mjs` (requires npm dependencies and
+ImageMagick 7). Android and Rust read `shared/emoji`; SwiftPM requires a generated
+copy inside its target, checked byte-for-byte by CI, including licenses.
+Message-body emoji are unchanged. Custom uploads, frequently used/top-five lists,
+and a skin-tone selector are deferred.
+
+`PUT /api/chat/channels/{channel}/messages/{message}/reactions` accepts
+`{emoji,active}` and `X-Caper-Chat-Token`. It checks the same channel/member/private
+grant, channel participation (`channel_joins`), and session permissions as sending.
+Readable previews retain reaction snapshots but cannot add, remove, or retry
+reactions. Even no-op writes require participation, and a write queued behind
+leave rechecks permission after acquiring the space lock. Direct-message reactions
+require one of the two active participants, not space membership or a channel
+join. History holds the channel lock through snapshot reads for both channel
+types. Unicode qualification variants are
+canonicalized; arbitrary text, multiple emoji, and emoji newer than 15.0 are
+rejected. Membership is unique by internal message ID, canonical emoji, and
+internal user ID; separate account chat sessions therefore cannot inflate counts.
+Both reaction membership and rate-limit activity use `user_id` foreign keys to
+`users.id`. Snapshot/event generation joins those keys to `users.external_id`;
+only public IDs appear in `authorIds`, including the stored history/outbox payloads.
+An account is required; the retired public General demo is not writable.
+
+The response and transactional outbox use
+`{type:"message.reactions",schemaVersion:1,channelId,seq,messageId,reactions}`.
+Each reaction is `{emoji,authorIds}`; IDs are visible to the channel's readers,
+as message-author IDs already are. `seq` participates in the existing ordered
+channel stream. History contains the current `reactions` and `reactionSeq`
+snapshot; original message `seq`, timestamp, and content do not change. A no-op
+returns the current snapshot revision (or `"0"`) without allocating an event.
+HTTP snapshots never advance a client's replay cursor. Per-message revisions
+prevent stale replies or older pages from overwriting newer reactions. A full
+history resync retains older cached pages only when the refreshed messages account
+for every sequence since the applied replay cursor (or the head is unchanged).
+Otherwise, a missed event may be a reaction on an older row, so cached pages are
+discarded and can be loaded again. Empty refreshed history also clears cached
+pages. Normal reconnects replay missing events, including
+during native gateway handoffs. A visible direct conversation marks sequenced
+reaction events read; HTTP snapshots do not advance that read cursor. Reactions
+do not generate push notifications.
+
+Limits are 20 emoji kinds and 1,000 total contributions per message, plus 60
+mutations per actor/channel/minute. No-op retries do not consume that budget.
+Expired rate records are removed when that actor next mutates. Reactions,
+message snapshots, sequence allocation, and outbox commit together.
+
+### Deployment order for reactions
+
+1. **Prerequisites/infrastructure/secrets:** no infrastructure apply, new service,
+   feature flag, or secret is required. Keep the existing PostgreSQL/Valkey/chat
+   configuration. Keep one desired API replica and use a maintenance window for
+   consent/participation mutations rather than mixing old and new API versions.
+   Obtain the immutable merged reaction revision as `MERGED_SHA`; wait for
+   that revision's API/web images and native build artifacts before deployment.
+2. **Database/API first:**
+   `gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"`.
+   Watch the exact workflow run, then
+   `kubectl -n default rollout status deployment/caper-api --timeout=15m`.
+   API startup uses the existing direct `MIGRATION_DATABASE_URL` to apply all
+   pending migrations, including `202609290001_message_reactions.sql`, space
+   invitations, channel joining, `202610030001_direct_messages.sql`, and
+   `202610030002_push.sql`, plus runtime grants before serving. Optional push
+   delivery can stay disabled; no push provider setup is required for reactions.
+   Already-applied migrations are skipped. No manual writes or separate job are needed.
+   Verify `/readyz` and that existing history/sends still work.
+3. **Gateway next:** deploy the cumulative gateway so typing/media commands also
+   enforce channel participation:
+   `gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"`.
+   Watch the exact run, then
+   `kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m`.
+   No Valkey/SFU reset is needed. Do not change replicas or close healthy tracks.
+4. **Native clients:** after API and gateway readiness, release Android, Apple, and Rust
+   desktop clients from the same revision:
+   `gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$MERGED_SHA"`.
+   Watch that exact run and have native testers update before exposing web
+   reactions. Older clients may fail to advance across reaction events; they
+   must update. Check add/remove, search, own/other chips, persistence, errors,
+   reconnect, and account/channel switching on each platform. Native builds
+   against the fixture do not prove physical-device or production behavior.
+5. **Web last:**
+   `gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"`,
+   watch that exact run, then
+   `kubectl -n default rollout status deployment/caper-web --timeout=15m`.
+   Reload pre-release browser tabs. Verify two users adding/removing the same
+   emoji, one user's highlight, counts after refresh and reconnect, and denied
+   access to private messages. Public previews must show reactions but reject
+   writes until joined; leaving must disable writes. Check desktop hover/keyboard
+   and narrow layouts, two-person DM reaction updates/read cursors, and outsider
+   denial. Include invitation consent and channel joining checks below.
+6. **Rollback:** roll back the web first to reduce reaction writes. Updated
+   native apps also expose writes; retain the compatible API while preparing
+   corrective client releases. Do not restore old clients that cannot consume
+   reaction events. The migration is additive: do not drop reaction
+   data or rewrite stored events. Do not roll API/gateway back across the consent
+   or participation boundary. Prefer a forward fix. Merging alone deploys
+   none of these components; the commands above require operator authorization.
+
+Channel-participation integration validation (October 3, 2026): the disposable
+Postgres/Valkey suite passes cross-channel add/remove/no-op denial, join/leave,
+and a mutation blocked behind leave. Denial preserves reaction membership,
+activity, message snapshot, channel sequence, and outbox. Root Rust tests and
+strict Clippy pass. Mocked Chromium desktop/390px checks cover visible preview
+counts, disabled mutations, picker closure and disabled retry after participation
+revocation, plus normal own/other chips and picker rendering. Screenshots were
+inspected; browser mocks are not live transport or native-device evidence.
+Native implementations also gate mutations on participation. Rust desktop's
+retained-session preview regression passes. Android JVM tests, instrumentation
+compilation and lint run locally; instrumentation execution and Apple builds/tests
+require platform CI. Apple bundles both emoji and invitation artwork. No
+production migrations or deployments have been performed.
+
+Historical validation before channel-participation integration: `npm run check`
+and all 292 web tests passed. Rust
+formatting, Clippy with warnings denied, and workspace tests passed (110 passed,
+24 ignored); the separately executed disposable Postgres/Valkey chat suite passed
+all 7 tests, including persistence, duplicate/concurrent adds, removals, account
+identity, authorization/revocation, outbox rollback, mutation limits, and both
+reaction-cap boundaries. Rust desktop tests passed after integrating the native
+reaction UI (124 passed, 9 ignored). `cargo build --locked --release --package
+caper-api` passed. Docker had no daemon, so API/web build stages were validated
+directly rather than building container images.
+Chromium desktop and 390px narrow-layout checks used the real local API, Postgres,
+and gateway: two-viewer updates, refresh persistence, chip ownership/removal,
+search/empty state, and Escape/focus return passed. A deliberately simulated HTTP
+503 verified the visible save error and successful retry after restoring the API.
+Screenshots were inspected; the narrow capture is browser layout coverage, not
+a physical phone or touch/Safari test. Those browser checks predate the subsequent
+merge retiring public General. Android's 83 JVM tests and instrumentation-test
+compilation passed locally with JDK 17 and Android SDK 36. Apple compilation and
+all simulator/device UI checks run in GitHub CI, not this Linux orb. Check the current PR's
+CI results and native screenshots before release. Physical devices, native live
+cross-client reactions, and production rollout checks remain required. No
+deployment or production database write was performed.
+
 ### Invitation rollout and validation (September 30, 2026)
 
 The invitation migration is additive and preserves existing memberships. The
@@ -830,20 +985,22 @@ CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-join
 | Docker/live | No Docker daemon available; validate web/API image build stages directly. No deployment, shared database writes, live SFU or physical-device acceptance performed |
 
 **Deployment order** for space invitations and channel joining (operator actions
-only; merge does not deploy):
+only; merge does not deploy). When rolling out the cumulative reaction revision,
+use **Deployment order for reactions** above, including its client compatibility
+requirements, instead of a separate invitation/channel rollout.
 
-1. Merge space-invitation consent (#234), retarget the stacked channel change
-   (#238) to `main` and merge it, then retarget and merge the invitation-presentation
-   follow-up. A separate #234 or #238 deployment is unnecessary;
-   deploy the final cumulative images once. No new infrastructure, secrets or
+1. Space invitations, channel participation, and invitation presentation are
+   merged. Deploy their cumulative images once, not as separate feature rollouts.
+   No new infrastructure, secrets or
    configuration is required. Existing direct `MIGRATION_DATABASE_URL`, runtime
    `DATABASE_URL` and shared `VALKEY_URL` must already be configured. Keep one
    desired API replica. Use a maintenance window for channel/invitation mutations;
    do not serve them from mixed old/new API versions, since older versions grant
-   private access without consent. Set `BACKEND_SHA` to the full merged #238 SHA
-   whose `api-$BACKEND_SHA` image is published; set `CLIENT_SHA` to the final
-   merged #241 SHA whose web image and native checks succeed. API image builds
-   are path-filtered, so presentation-only #241 may not publish an API tag.
+   private access without consent. Set `BACKEND_SHA` to a full merged revision
+   containing channel participation whose `api-$BACKEND_SHA` image is published;
+   set `CLIENT_SHA` to a compatible merged revision whose web image and native
+   checks succeed. API image builds are path-filtered, so presentation-only
+   revisions may not publish an API tag.
    API and gateway must use the same backend SHA. One SHA is valid only if that
    exact revision has the required published API and web images and native checks.
 2. Deploy API first; startup uses the existing direct

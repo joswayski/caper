@@ -19,6 +19,18 @@ fn text_limits_count_unicode_and_preserve_literal_text() {
 }
 
 #[test]
+fn reactions_accept_one_standard_emoji_and_canonicalize_qualification() {
+    assert_eq!(normalized_emoji("🚀").unwrap(), "🚀");
+    assert_eq!(normalized_emoji("🐿").unwrap(), "🐿️");
+    assert_eq!(normalized_emoji("👩‍💻").unwrap(), "👩‍💻");
+    assert_eq!(normalized_emoji("👍🏽").unwrap(), "👍🏽");
+    assert_eq!(normalized_emoji("🫨").unwrap(), "🫨");
+    for invalid in ["", "hello", "🚀🚀", ":rocket:", "A️", "🫩"] {
+        assert!(normalized_emoji(invalid).is_err(), "accepted {invalid:?}");
+    }
+}
+
+#[test]
 fn cursors_do_not_round_at_javascript_integer_limit() {
     assert_eq!(cursor("9007199254740993").unwrap(), 9_007_199_254_740_993);
     assert!(cursor("-1").is_err());
@@ -33,6 +45,722 @@ fn external_ids_match_existing_alphabet_and_lengths() {
         assert_eq!(id.len(), length);
         assert!(id.bytes().all(|v| v.is_ascii_alphanumeric()));
     }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn reactions_are_durable_idempotent_authorized_and_transactional() {
+    let options =
+        PgConnectOptions::from_str(&std::env::var("CHAT_TEST_DATABASE_URL").unwrap()).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("reactions_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    seed(&pool).await.unwrap();
+    // Keep user primary keys distinct from chat-session keys and public IDs.
+    pool.execute("ALTER TABLE public.users ALTER COLUMN id RESTART WITH 1000")
+        .await
+        .unwrap();
+    // Keep the original actor IDs while exercising account-only channels.
+    for token in ["guest-one", "guest-two"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id")
+            .bind(token).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(token).bind(&hash).bind(user).execute(&pool).await.unwrap();
+    }
+    let reader: i64 =
+        sqlx::query_scalar("SELECT id FROM public.users WHERE external_id='guest-one'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let shared_space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('reaction-space','Reactions',$1) RETURNING id")
+        .bind(reader).fetch_one(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO public.space_members(space_id,user_id) SELECT $1,id FROM public.users",
+    )
+    .bind(shared_space)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let channel = "reaction-channel".to_string();
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'reactions')")
+        .bind(&channel)
+        .bind(shared_space)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT c.id,u.id FROM public.channels c CROSS JOIN public.users u WHERE c.external_id=$1")
+        .bind(&channel).execute(&pool).await.unwrap();
+    let original = persist(
+        &pool,
+        &channel,
+        "guest-one",
+        Uuid::new_v4(),
+        "reaction target",
+    )
+    .await
+    .unwrap();
+    let id = original["id"].as_str().unwrap();
+
+    // A capability for one joined channel does not confer participation in
+    // another readable channel. Reads remain available as a preview.
+    let preview_channel = "reaction-preview-channel";
+    let preview_channel_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'preview') RETURNING id",
+    )
+    .bind(preview_channel)
+    .bind(shared_space)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let guest_two: i64 =
+        sqlx::query_scalar("SELECT id FROM public.users WHERE external_id='guest-two'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(preview_channel_id)
+        .bind(guest_two)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let preview_message = persist(
+        &pool,
+        preview_channel,
+        "guest-two",
+        Uuid::new_v4(),
+        "readable preview",
+    )
+    .await
+    .unwrap();
+    let preview_message_id = preview_message["id"].as_str().unwrap();
+    assert!(
+        history_page(&pool, preview_channel, None, Some(reader))
+            .await
+            .is_ok()
+    );
+    for active in [true, false] {
+        assert_eq!(
+            persist_reaction(
+                &pool,
+                preview_channel,
+                preview_message_id,
+                "guest-one",
+                "👍",
+                active,
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&pool)
+        .await
+        .unwrap();
+    persist_reaction(
+        &pool,
+        preview_channel,
+        preview_message_id,
+        "guest-one",
+        "👍",
+        true,
+    )
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for active in [false, true] {
+        assert_eq!(
+            persist_reaction(
+                &pool,
+                preview_channel,
+                preview_message_id,
+                "guest-one",
+                "👍",
+                active,
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    // A reaction queued behind leave must use a fresh READ COMMITTED snapshot
+    // after the space lock and leave every reaction-related row unchanged.
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before: (Value, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT m.payload,c.last_seq,
+                (SELECT count(*) FROM public.message_reactions WHERE message_id=m.id),
+                (SELECT count(*) FROM public.message_reaction_activity WHERE message_id=m.id),
+                (SELECT count(*) FROM public.channel_events WHERE channel_id=c.id)
+         FROM public.messages m JOIN public.channels c ON c.id=m.channel_id
+         WHERE m.external_id=$1",
+    )
+    .bind(preview_message_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let mut leaving = pool.begin().await.unwrap();
+    let blocker: i32 =
+        sqlx::query_scalar("SELECT pg_backend_pid() FROM public.spaces WHERE id=$1 FOR UPDATE")
+            .bind(shared_space)
+            .fetch_one(&mut *leaving)
+            .await
+            .unwrap();
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=$1 AND user_id=$2")
+        .bind(preview_channel_id)
+        .bind(reader)
+        .execute(&mut *leaving)
+        .await
+        .unwrap();
+    let reaction_pool = pool.clone();
+    let queued_message = preview_message_id.to_owned();
+    let queued = tokio::spawn(async move {
+        persist_reaction(
+            &reaction_pool,
+            preview_channel,
+            &queued_message,
+            "guest-one",
+            "👍",
+            false,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))")
+                .bind(blocker).fetch_one(&pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("reaction should wait behind leave");
+    leaving.commit().await.unwrap();
+    assert_eq!(
+        queued.await.unwrap().unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    let after: (Value, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT m.payload,c.last_seq,
+                (SELECT count(*) FROM public.message_reactions WHERE message_id=m.id),
+                (SELECT count(*) FROM public.message_reaction_activity WHERE message_id=m.id),
+                (SELECT count(*) FROM public.channel_events WHERE channel_id=c.id)
+         FROM public.messages m JOIN public.channels c ON c.id=m.channel_id
+         WHERE m.external_id=$1",
+    )
+    .bind(preview_message_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        after, before,
+        "denial must not mutate snapshot, sequence, reactions, activity, or outbox"
+    );
+
+    assert_eq!(
+        persist_reaction(&pool, &channel, id, "wrong", "👍", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        persist_reaction(&pool, &channel, "absent", "guest-one", "👍", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        persist_reaction(&pool, &channel, id, "guest-one", "👍", false)
+            .await
+            .unwrap()["seq"],
+        "0"
+    );
+    let (first, duplicate) = tokio::join!(
+        persist_reaction(&pool, &channel, id, "guest-one", "👍", true),
+        persist_reaction(&pool, &channel, id, "guest-one", "👍", true),
+    );
+    let first = first.unwrap();
+    assert_eq!(first, duplicate.unwrap());
+    assert_eq!(first["seq"], "2");
+    assert_eq!(
+        first["reactions"],
+        json!([{"emoji":"👍","authorIds":["guest-one"]}])
+    );
+    for table in ["message_reactions", "message_reaction_activity"] {
+        let stored_user: i64 = sqlx::query_scalar(&format!("SELECT user_id FROM public.{table}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_user, reader,
+            "{table} must store the user's primary key"
+        );
+    }
+    for statement in [
+        "INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT id,'🤔',$2 FROM public.messages WHERE external_id=$1",
+        "INSERT INTO public.message_reaction_activity(message_id,user_id) SELECT id,$2 FROM public.messages WHERE external_id=$1",
+    ] {
+        let error = sqlx::query(statement)
+            .bind(id)
+            .bind(i64::MAX)
+            .execute(&pool)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref(),
+            Some("23503"),
+            "both tables must reject a nonexistent user via a foreign key"
+        );
+    }
+    let other = persist_reaction(&pool, &channel, id, "guest-two", "👍", true)
+        .await
+        .unwrap();
+    assert_eq!(other["seq"], "3");
+    assert_eq!(
+        other["reactions"][0]["authorIds"],
+        json!(["guest-one", "guest-two"])
+    );
+    let removed = persist_reaction(&pool, &channel, id, "guest-one", "👍", false)
+        .await
+        .unwrap();
+    assert_eq!(removed["seq"], "4");
+    assert_eq!(removed["reactions"][0]["authorIds"], json!(["guest-two"]));
+    assert_eq!(
+        removed,
+        persist_reaction(&pool, &channel, id, "guest-one", "👍", false)
+            .await
+            .unwrap()
+    );
+    // Failure at the outbox must also roll back membership, payload and head.
+    pool.execute("ALTER TABLE public.channel_events ADD CONSTRAINT reject_next CHECK(seq < 5)")
+        .await
+        .unwrap();
+    assert!(
+        persist_reaction(&pool, &channel, id, "guest-one", "🎉", true)
+            .await
+            .is_err()
+    );
+    pool.execute("ALTER TABLE public.channel_events DROP CONSTRAINT reject_next")
+        .await
+        .unwrap();
+    // History must refresh the avatar without dropping the reaction snapshot.
+    sqlx::query("UPDATE public.users SET avatar_id=719 WHERE id=$1")
+        .bind(reader)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let page = history_page(&pool, &channel, None, Some(reader))
+        .await
+        .unwrap();
+    assert_eq!(page["cursor"], "4");
+    assert_eq!(page["messages"][0]["seq"], "1");
+    assert_eq!(page["messages"][0]["reactionSeq"], "4");
+    assert_eq!(page["messages"][0]["reactions"], removed["reactions"]);
+    assert_eq!(page["messages"][0]["author"]["avatarId"], 719);
+    assert_eq!(page["messages"][0]["author"]["id"], "guest-one");
+    let events: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM public.channel_events WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) ORDER BY seq",
+    )
+    .bind(&channel)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[1], first);
+    assert_eq!(events[3], removed);
+    let next = persist(
+        &pool,
+        &channel,
+        "guest-one",
+        Uuid::new_v4(),
+        "after reactions",
+    )
+    .await
+    .unwrap();
+    assert_eq!(next["seq"], "5");
+
+    // Multiple capabilities for one account are one actor, not two votes.
+    let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES('account','reactor','Reactor') RETURNING id").fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(shared_space)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel).bind(user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+        .bind(b"parent".as_slice()).bind(user).execute(&pool).await.unwrap();
+    for token in ["account-one", "account-two"] {
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,'Reactor',$3,$4)")
+            .bind(token).bind(Sha256::digest(token.as_bytes()).as_slice()).bind(user).bind(b"parent".as_slice()).execute(&pool).await.unwrap();
+    }
+    let account = persist_reaction(&pool, &channel, id, "account-one", "❤️", true)
+        .await
+        .unwrap();
+    assert_eq!(
+        account,
+        persist_reaction(&pool, &channel, id, "account-two", "❤️", true)
+            .await
+            .unwrap()
+    );
+    assert!(
+        account["reactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == &json!({"emoji":"❤️","authorIds":["account"]}))
+    );
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('private-space','Private',$1) RETURNING id").bind(user).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let private_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,private) VALUES('private-channel',$1,'private',true) RETURNING id").bind(space).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(private_id)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let private_message = persist(
+        &pool,
+        "private-channel",
+        "account-one",
+        Uuid::new_v4(),
+        "private",
+    )
+    .await
+    .unwrap();
+    let private_message = private_message["id"].as_str().unwrap();
+    assert_eq!(
+        persist_reaction(
+            &pool,
+            "private-channel",
+            private_message,
+            "guest-one",
+            "👍",
+            true
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        persist_reaction(&pool, &channel, private_message, "account-one", "👍", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    // Turn the actor into a non-owner member to check explicit grants.
+    let owner: i64 = sqlx::query_scalar(
+        "INSERT INTO public.users(external_id) VALUES('other-owner') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE public.spaces SET owner_id=$1 WHERE id=$2")
+        .bind(owner)
+        .bind(space)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        persist_reaction(
+            &pool,
+            "private-channel",
+            private_message,
+            "account-one",
+            "👍",
+            true
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) VALUES($1,$2)")
+        .bind(private_id)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        persist_reaction(
+            &pool,
+            "private-channel",
+            private_message,
+            "account-one",
+            "👍",
+            true
+        )
+        .await
+        .is_ok()
+    );
+    sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
+        .bind(space)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        persist_reaction(
+            &pool,
+            "private-channel",
+            private_message,
+            "account-one",
+            "👍",
+            false
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE public.account_sessions SET revoked_at=now() WHERE user_id=$1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        persist_reaction(&pool, &channel, id, "account-two", "❤️", false)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    // The 60-mutation budget counts toggles, but not no-op retries.
+    for index in 0..58 {
+        persist_reaction(&pool, &channel, id, "guest-one", "🔥", index % 2 == 0)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        persist_reaction(&pool, &channel, id, "guest-one", "🔥", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(
+        persist_reaction(&pool, &channel, id, "guest-one", "🔥", false)
+            .await
+            .is_ok()
+    );
+    // A full set of kinds still allows joining an existing kind. Total
+    // contributions have a separate boundary, and removal must work at it.
+    let bounded = persist(&pool, &channel, "guest-two", Uuid::new_v4(), "limits")
+        .await
+        .unwrap();
+    let bounded_id = bounded["id"].as_str().unwrap();
+    let kinds = [
+        "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍",
+        "🥰", "😘", "😗", "😙", "😚",
+    ];
+    sqlx::query("INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT m.id,emoji,$3 FROM public.messages m CROSS JOIN unnest($2::text[]) AS emoji WHERE m.external_id=$1")
+        .bind(bounded_id).bind(kinds.as_slice()).bind(reader).execute(&pool).await.unwrap();
+    assert!(
+        persist_reaction(&pool, &channel, bounded_id, "guest-two", "😀", true)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        persist_reaction(&pool, &channel, bounded_id, "guest-two", "👍", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    sqlx::query("DELETE FROM public.message_reactions WHERE message_id=(SELECT id FROM public.messages WHERE external_id=$1)")
+        .bind(bounded_id).execute(&pool).await.unwrap();
+    sqlx::query("WITH actors AS (INSERT INTO public.users(external_id) SELECT 'fixture-'||n FROM generate_series(1,999) AS n RETURNING id) INSERT INTO public.message_reactions(message_id,emoji,user_id) SELECT m.id,'👍',actors.id FROM public.messages m CROSS JOIN actors WHERE m.external_id=$1")
+        .bind(bounded_id).execute(&pool).await.unwrap();
+    let full = persist_reaction(&pool, &channel, bounded_id, "guest-two", "👍", true)
+        .await
+        .unwrap();
+    assert_eq!(
+        full["reactions"][0]["authorIds"].as_array().unwrap().len(),
+        1000
+    );
+    assert_eq!(
+        persist_reaction(&pool, &channel, bounded_id, "guest-two", "🎉", true)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    assert!(
+        persist_reaction(&pool, &channel, bounded_id, "guest-two", "👍", true)
+            .await
+            .is_ok()
+    );
+    let removed = persist_reaction(&pool, &channel, bounded_id, "guest-two", "👍", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        removed["reactions"][0]["authorIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        999
+    );
+    pool.close().await;
+    admin
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn direct_reactions_require_participants_and_preserve_history_sequences(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["alice", "bob", "outsider"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id")
+            .bind(name).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let channel = "reaction-dm".to_owned();
+    let channel_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,name,private) VALUES($1,'direct',true) RETURNING id")
+        .bind(&channel).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.direct_conversations(channel_id,low_user_id,high_user_id) VALUES($1,$2,$3)")
+        .bind(channel_id).bind(users[0]).bind(users[1]).execute(&pool).await.unwrap();
+    let original = persist(
+        &pool,
+        &channel,
+        "alice",
+        Uuid::new_v4(),
+        "DM reaction target",
+    )
+    .await
+    .unwrap();
+    let message = original["id"].as_str().unwrap();
+    let added = persist_reaction(&pool, &channel, message, "bob", "🎉", true)
+        .await
+        .unwrap();
+    assert_eq!(added["seq"], "2");
+    assert_eq!(
+        added["reactions"],
+        json!([{"emoji":"🎉","authorIds":["bob"]}])
+    );
+    assert_eq!(
+        persist_reaction(&pool, &channel, message, "bob", "🎉", true)
+            .await
+            .unwrap(),
+        added,
+        "no-op returns the same snapshot without another event",
+    );
+    for active in [true, false] {
+        assert_eq!(
+            persist_reaction(&pool, &channel, message, "outsider", "🎉", active)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND,
+        );
+    }
+    let history = history_page(&pool, &channel, None, Some(users[0]))
+        .await
+        .unwrap();
+    assert_eq!(history["channel"]["direct"], true);
+    assert_eq!(history["channel"]["name"], "bob");
+    assert_eq!(history["cursor"], "2");
+    assert_eq!(history["messages"][0]["seq"], "1");
+    assert_eq!(history["messages"][0]["reactionSeq"], "2");
+    assert_eq!(history["messages"][0]["reactions"], added["reactions"]);
+    for reader in [None, Some(users[2])] {
+        assert_eq!(
+            history_page(&pool, &channel, None, reader)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let removed = persist_reaction(&pool, &channel, message, "bob", "🎉", false)
+        .await
+        .unwrap();
+    assert_eq!(removed["seq"], "3");
+    assert_eq!(removed["reactions"], json!([]));
+    let (head, events, activity, reactions): (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT last_seq,
+            (SELECT count(*) FROM public.channel_events WHERE channel_id=c.id),
+            (SELECT count(*) FROM public.message_reaction_activity),
+            (SELECT count(*) FROM public.message_reactions)
+         FROM public.channels c WHERE external_id=$1",
+    )
+    .bind(&channel)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((head, events, activity, reactions), (3, 3, 2, 0));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.channel_joins")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0,
+        "DMs do not require space-channel joins"
+    );
+    sqlx::query("UPDATE public.users SET deleted_at=now() WHERE id=$1")
+        .bind(users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        persist_reaction(&pool, &channel, message, "bob", "🎉", false)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND,
+        "even no-ops require two active participants"
+    );
+    assert_eq!(
+        history_page(&pool, &channel, None, Some(users[1]))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 type Socket =

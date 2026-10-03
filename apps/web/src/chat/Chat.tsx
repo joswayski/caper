@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle, type ListProps, type ContextProp } from "react-virtuoso";
 import { ChatClient, initialChatView } from "./client.ts";
+import MessageReactions from "./MessageReactions.tsx";
 import { dateDivider } from "./dates.ts";
 import type { ChatAuthor, GeneralChatHistory } from "./types.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -59,16 +60,19 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const followLatest = useRef(true);
   const latestMessage = state.messages.at(-1);
+  // Reaction events advance the conversation stream without adding a message.
+  // HTTP reaction snapshots do not advance this committed replay cursor.
+  const readCursor = clientRef.current?.snapshotHistory()?.cursor ?? initialHistory?.cursor ?? latestMessage?.seq ?? "0";
   const readCallback = useRef(onReadCursor);
   readCallback.current = onReadCursor;
   useEffect(() => {
     const read = () => {
-      if (state.phase === "ready" && document.visibilityState === "visible") readCallback.current?.(latestMessage?.seq ?? "0");
+      if (state.phase === "ready" && document.visibilityState === "visible") readCallback.current?.(readCursor);
     };
     read();
     document.addEventListener("visibilitychange", read);
     return () => document.removeEventListener("visibilitychange", read);
-  }, [state.phase, latestMessage?.seq, channelId]);
+  }, [state.phase, readCursor, channelId]);
 
   useLayoutEffect(() => {
     const composer = composerRef.current;
@@ -198,6 +202,12 @@ export default function Chat({ name, signedIn, identityReady, channelId, channel
       <div>
         <header><strong>{author?.name ?? name}</strong>{author?.isGuest && <span>Guest</span>}<time dateTime={message.createdAt}>{hydrated ? timeLabel(message.createdAt) : ""}</time></header>
         <p>{"content" in message ? message.content.text : message.text}</p>
+        {"content" in message && <MessageReactions message={message} authorId={state.author?.id} readOnly={readOnly}
+          onReact={async (messageId, emoji, active) => {
+            if (readOnly) throw new Error("Join this channel to react.");
+            if (!clientRef.current) throw new Error("Chat is not ready yet.");
+            await clientRef.current.setReaction(messageId, emoji, active);
+          }} />}
         {pending && state.sendError && <div className="chat-send-status chat-send-error" role="alert">
           <span>{state.sendRejected ? "Not sent." : "Not confirmed yet."} {state.sendError}</span>
           {state.sendRejected ? <>

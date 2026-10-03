@@ -92,6 +92,19 @@ class CaperApiTest {
         assertEquals(listOf("turn:one", "turns:two"), response.iceServers[1].urls)
     }
 
+    @Test fun `reaction PUT validates message id and sends capability header`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"type":"message.reactions","schemaVersion":1,"channelId":"channel00001","seq":"9","messageId":"message00000001","reactions":[]}"""))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        api.setReaction("account-secret", "chat-secret", "channel00001", "message00000001", "👍", true)
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001/reactions", request.path)
+        assertEquals("chat-secret", request.headers["x-caper-chat-token"])
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+        assertEquals("""{"emoji":"👍","active":true}""", request.body.readUtf8())
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { api.setReaction(null, "x", "channel00001", "short", "👍", true) } }
+    }
+
     @Test fun `space list defaults invitations for old APIs`() {
         val response = Json.decodeFromString<SpaceList>(
             """{"spaces":[],"limits":{"ownedSpaces":20,"totalSpaces":100,"channelsPerSpace":100}}""",

@@ -86,6 +86,16 @@ class CaperApi(
         return message.validated(channel, author, clientMessageId, text)
     }
 
+    suspend fun setReaction(token: String?, chatToken: String, channel: String, message: String, emoji: String, active: Boolean): ReactionUpdate {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val update: ReactionUpdate = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message/reactions", "PUT", token,
+            buildJsonObject { put("emoji", emoji); put("active", active) }.toString(),
+            mapOf("x-caper-chat-token" to chatToken),
+        )
+        return update.validated(channel, message)
+    }
+
     suspend fun createSpace(token: String, name: String): Space = post(
         "/api/spaces", buildJsonObject { put("name", name.trim()) }, token,
     )
@@ -194,6 +204,7 @@ class CaperApi(
 }
 
 private val externalId = Regex("^[A-Za-z0-9]{12}$")
+private val messageId = Regex("^[A-Za-z0-9]{15}$")
 fun String.pathId(): String = also { require(externalId.matches(it)) { "Invalid resource ID." } }
 
 // OkHttp invokes onResponse on its IO dispatcher. Keep body reads and JSON

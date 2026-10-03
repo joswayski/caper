@@ -236,6 +236,55 @@ async function sendingFixture(t: TestContext) {
   };
 }
 
+test("reaction HTTP snapshots and sequenced delivery agree without skipping messages", async (t) => {
+  const f = await sendingFixture(t);
+  const target = committed({ clientMessageId: "target", text: "React here" }, "1");
+  f.sockets[0].message(target);
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(input), "/api/chat/channels/general/messages/message-1/reactions");
+    assert.equal(init?.method, "PUT");
+    assert.equal(new Headers(init?.headers).get("x-caper-chat-token"), "opaque");
+    assert.deepEqual(JSON.parse(String(init?.body)), { emoji: "👍", active: true });
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const adding = f.client.setReaction(target.id, "👍", true);
+  const added = { type: "message.reactions" as const, schemaVersion: 1 as const, channelId: "general", messageId: target.id, seq: "2", reactions: [{ emoji: "👍", authorIds: ["guest"] }] };
+  f.sockets[0].frame(added);
+  f.sockets[0].frame({ ...added, seq: "3", reactions: [] });
+  finish(Response.json(added));
+  await adding;
+  assert.deepEqual(f.state.messages[0].reactions, [], "late HTTP cannot undo a newer removal");
+  assert.equal(f.client.snapshotHistory()?.cursor, "3");
+  f.sockets[0].message(committed({ clientMessageId: "next", text: "After the reactions" }, "4"));
+  assert.equal(f.state.messages.length, 2);
+  assert.equal(f.client.snapshotHistory()?.cursor, "4");
+  const failed = f.client.setReaction(target.id, "👍", true);
+  finish(Response.json({ error: "Please try again" }, { status: 503 }));
+  await assert.rejects(failed, /Please try again/);
+  assert.deepEqual(f.state.messages[0].reactions, []);
+  const retry = f.client.setReaction(target.id, "👍", true);
+  finish(Response.json({ ...added, seq: "5" }));
+  await retry;
+  assert.deepEqual(f.state.messages[0].reactions, added.reactions);
+  assert.equal(f.client.snapshotHistory()?.cursor, "4", "HTTP acknowledgement alone does not advance replay");
+});
+
+test("a late reaction rejection after stopping cannot recreate a chat session", async (t) => {
+  const f = await sendingFixture(t);
+  let finish!: (response: Response) => void;
+  const fetch = t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => { finish = resolve; }));
+  const request = f.client.setReaction("message-1", "👍", true);
+  const before = f.state;
+  f.client.stop();
+  finish(Response.json({ error: "expired" }, { status: 401 }));
+  await request;
+  assert.equal(fetch.mock.callCount(), 1, "do not mint a session for an abandoned conversation");
+  assert.equal(f.state, before);
+  await assert.rejects(f.client.setReaction("message-1", "👍", true), /unavailable/);
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
 test("message sounds exclude history, own messages, and duplicate replay", async (t) => {
   const sounds: string[] = [];
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Audio");
@@ -535,6 +584,33 @@ async function paginationFixture(t: TestContext) {
   return { client, sockets, message, history, requests, get state() { return state; } };
 }
 
+test("history gaps discard older rows without erasing concurrent HTTP reaction snapshots", async (t) => {
+  const f = await sendingFixture(t);
+  const message = (seq: string) => committed({ clientMessageId: `command-${seq}`, text: `Message ${seq}` }, seq);
+  for (const seq of ["1", "2", "3"]) f.sockets[0].message(message(seq));
+  const fresh = { ...message("3"), author: { ...message("3").author, name: "Fresh author" } };
+  const history = { ...f.client.snapshotHistory(), messages: [fresh, message("4")], cursor: "5", hasMore: true };
+  const update = {
+    type: "message.reactions" as const, schemaVersion: 1 as const, channelId: "general",
+    messageId: fresh.id, seq: "6", reactions: [{ emoji: "👍", authorIds: ["guest"] }],
+  };
+  let finish!: (response: Response) => void;
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request) => {
+    if (String(input).endsWith("/reactions")) return Promise.resolve(Response.json(update));
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  f.sockets[0].frame({ type: "resync_required" });
+  await f.client.setReaction(fresh.id, "👍", true);
+  finish(Response.json(history));
+  await tick();
+  assert.deepEqual(f.state.messages.map((value) => value.seq), ["3", "4"], "missing event 5 may affect an omitted older row");
+  assert.equal(f.state.messages[0].author.name, "Fresh author");
+  assert.deepEqual(f.state.messages[0].reactions, update.reactions);
+  assert.equal(f.state.messages[0].reactionSeq, "6");
+  assert.equal(f.client.snapshotHistory()?.cursor, "5", "HTTP acknowledgement cannot bridge missing replay events");
+  assert.equal(f.state.hasMore, true);
+});
+
 test("older pages serialize, merge with live delivery, retry the same cursor, and stop at the beginning", async (t) => {
   const f = await paginationFixture(t);
   const loading = f.client.loadOlder();
@@ -741,9 +817,10 @@ test("resync retains visible messages through transient failures but clears them
   assert.equal(f.state.error, "Temporary outage");
   assert.deepEqual(f.state.messages, [4, 5].map(f.message));
   f.client.retryLoad();
-  finish(Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(6).seq, hasMore: true }));
+  finish(Response.json({ ...f.client.snapshotHistory(), messages: [f.message(6)], cursor: f.message(7).seq, hasMore: true }));
   await tick();
-  assert.deepEqual(f.state.messages, [4, 5, 6].map(f.message), "a contiguous refresh retains saved pages");
+  assert.deepEqual(f.state.messages, [f.message(6)], "missing sequence 7 may be a reaction on an older cached row");
+  assert.equal(f.state.hasMore, true, "older pages can be loaded again from authoritative history");
   assert.equal(f.state.error, undefined);
   f.client.retryLoad();
   finish(Response.json({ error: "Access removed" }, { status: 403 }));

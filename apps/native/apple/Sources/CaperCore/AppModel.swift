@@ -934,7 +934,10 @@ public final class ChatModel {
     public var error: String?
     public var hasMore = false
     public var typingNames: [String] = []
+    public var reactionSaving: Set<String> = []
+    public var reactionErrors: [String: String] = [:]
     public var currentAuthor: ChatAuthor? { session?.author }
+    public private(set) var isPreview = false
     /// Web's failed first load: no conversation to show, only the error.
     public private(set) var loadFailed = false
     /// Web's session error: history loaded but sending needs a new chat session.
@@ -950,6 +953,8 @@ public final class ChatModel {
     private var subscriptionID: String?
     private var generation = 0
     private var delivery = ChatDeliveryState()
+    private var reactionSnapshots = ReactionSnapshots()
+    private var failedReactions: [String: (emoji: String, active: Bool)] = [:]
     private var typers: [String: (author: ChatAuthor, typing: Bool, revision: String, expires: Date)] = [:]
     private var typingActive = false
     private var typingSent = false
@@ -1009,10 +1014,13 @@ public final class ChatModel {
         let oldSubscription = subscriptionID
         subscriptionID = nil
         clearLocal(preservingPending: false)
+        isPreview = true
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
         guard generation == requestGeneration else { return }
         channelID = history.channel?.id; spaceID = history.space?.id
-        messages = history.messages; delivery.reset(cursor: history.cursor); hasMore = history.hasMore
+        reactionSnapshots.seed(history.messages)
+        messages = history.messages.map { reactionSnapshots.overlay($0) }
+        delivery.reset(cursor: history.cursor); hasMore = history.hasMore
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
         guard let actualChannel = channelID else { return }
@@ -1036,6 +1044,7 @@ public final class ChatModel {
 
     private func open(channelID: String?, displayName: String, preservingPending: Bool, prepared: ChatHistory?) async {
         lastOpen = (channelID, displayName)
+        isPreview = false
         let preservingTimeline = preservingPending && self.channelID == channelID
         generation += 1
         let requestGeneration = generation
@@ -1076,15 +1085,21 @@ public final class ChatModel {
             spaceID = history.space?.id
             self.channelID = resolvedChannelID
             let firstRefreshed = history.messages.first?.seq
-            let canRetain = preservingTimeline && firstRefreshed.map {
-                guard let ordering = try? Sequence.compare($0, preservedCursor) else { return false }
-                return ordering != .orderedDescending || Sequence.isSuccessor($0, of: preservedCursor)
-            } == true
+            let canRetain = preservingTimeline && Self.refreshAccountsForMissingEvents(
+                messages: history.messages,
+                after: preservedCursor,
+                through: history.cursor
+            )
             if canRetain {
                 // Include HTTP confirmations received while refresh was pending.
                 merge(history.messages) // The refreshed representation wins overlapping IDs.
             } else {
-                messages = history.messages
+                // Preserve a newer reaction revision on overlapping rows, but
+                // discard snapshots for rows no longer in the fresh window.
+                reactionSnapshots.seed(history.messages)
+                messages = history.messages.map { reactionSnapshots.overlay($0) }
+                reactionSnapshots.reset()
+                reactionSnapshots.seed(messages)
             }
             delivery.reset(cursor: history.cursor, preservingPending: preservingPending)
             let retainedOlderPrefix = canRetain && firstRefreshed.map { first in
@@ -1094,6 +1109,23 @@ public final class ChatModel {
             channelName = history.channel?.name ?? "general"
             spaceName = history.space?.name ?? "Caper"
             session = chatSession
+            if CaperRuntime.isChatPreview("reaction-chips"), let ownID = chatSession?.author.id, !messages.isEmpty {
+                let fixtureEmoji = ["👍", "❤️", "😂", "🎉", "🚀", "👀", "🔥", "✅", "👏", "🤔", "💯", "🙌", "😄", "🥳", "🤝", "✨", "💚", "😮", "🤯", "👩‍💻"]
+                messages[0].reactions = fixtureEmoji.enumerated().map {
+                    MessageReaction(emoji: $0.element, authorIds: $0.offset == 0 ? [ownID, "fixture-other"] : ["fixture-other"])
+                }
+                messages[0].reactionSeq = history.cursor
+                if messages.count > 1 {
+                    messages[1].reactions = []
+                } else {
+                    let source = messages[0]
+                    messages.append(ChatMessage(id: "reaction-empty-fixture", channelId: source.channelId, seq: source.seq,
+                                                author: source.author, content: ChatContent(version: 1, type: "text", text: "No reactions yet"),
+                                                createdAt: source.createdAt, clientMessageId: "reaction-empty-fixture", reactions: [],
+                                                reactionSeq: history.cursor))
+                }
+                reactionSnapshots.seed(messages)
+            }
             guard let actualChannel = resolvedChannelID else { throw APIError(status: 502, message: "Channel metadata is missing.") }
             let newSubscription = await gateway.subscribeChat(channelID: actualChannel, after: delivery.cursor) { [weak self] event in
                 self?.receive(event, generation: requestGeneration, channelID: actualChannel)
@@ -1119,6 +1151,23 @@ public final class ChatModel {
             loadFailed = messages.isEmpty
         }
         if generation == requestGeneration { loading = false }
+    }
+
+    private static func refreshAccountsForMissingEvents(messages: [ChatMessage], after oldCursor: String, through newCursor: String) -> Bool {
+        guard !messages.isEmpty, let cursorOrder = try? Sequence.compare(newCursor, oldCursor) else { return false }
+        if cursorOrder == .orderedSame { return true }
+        guard cursorOrder == .orderedDescending else { return false }
+
+        let freshSequences = messages.map(\.seq).filter {
+            (try? Sequence.compare($0, oldCursor)) == .orderedDescending &&
+                (try? Sequence.compare($0, newCursor)) != .orderedDescending
+        }.sorted { (try? Sequence.compare($0, $1)) == .orderedAscending }
+        var accountedCursor = oldCursor
+        for sequence in freshSequences {
+            guard Sequence.isSuccessor(sequence, of: accountedCursor) else { return false }
+            accountedCursor = sequence
+        }
+        return accountedCursor == newCursor
     }
 
     /// Web's Retry session.
@@ -1192,6 +1241,32 @@ public final class ChatModel {
         sending = false
     }
 
+    public func setReaction(messageID: String, emoji: String, active: Bool) async {
+        guard !isPreview, let channelID, let session, !reactionSaving.contains(messageID) else { return }
+        let requestGeneration = generation
+        reactionSaving.insert(messageID)
+        defer { if generation == requestGeneration { reactionSaving.remove(messageID) } }
+        do {
+            let event = try await api.setReaction(channelID: channelID, messageID: messageID, sessionToken: session.token, emoji: emoji, active: active)
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            applyReactions(event, clearsOwnFailure: true)
+        } catch {
+            guard generation == requestGeneration, self.channelID == channelID else { return }
+            if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status) {
+                onAccessRevoked?(channelID)
+                await stop()
+                return
+            }
+            reactionErrors[messageID] = "Couldn’t save reaction. Retry."
+            failedReactions[messageID] = (emoji, active)
+        }
+    }
+
+    public func retryReaction(messageID: String) async {
+        guard let failed = failedReactions[messageID] else { return }
+        await setReaction(messageID: messageID, emoji: failed.emoji, active: failed.active)
+    }
+
     @discardableResult public func discardRejected(edit: Bool = false) -> Bool {
         guard !sending, delivery.rejected, !edit || draft.isEmpty else { return false }
         guard let text = delivery.discardRejected() else { return false }
@@ -1239,6 +1314,27 @@ public final class ChatModel {
             receiveTyping(author: author, typing: typing, revision: revision)
             return
         }
+        if type == "message.reactions" {
+            guard let data = try? JSONSerialization.data(withJSONObject: event),
+                  let reactionEvent = try? JSONDecoder().decode(MessageReactionsEvent.self, from: data),
+                  reactionEvent.isValid,
+                  let seq = ReactionEvent.sequence(event, channelID: eventChannelID),
+                  delivery.receive(seq: seq) else {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            applyReactions(reactionEvent)
+            onReadCursor?()
+            if reactionSnapshots.unseenOverflowed {
+                requestResync(generation: eventGeneration, channelID: eventChannelID)
+                return
+            }
+            if let subscriptionID {
+                let cursor = delivery.cursor
+                Task { await gateway.updateCursor(subscription: subscriptionID, after: cursor) }
+            }
+            return
+        }
         if type == "message.created", let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw), let message = try? JSONDecoder().decode(ChatMessage.self, from: data) {
             guard message.channelId == eventChannelID,
                   event["seq"] as? String == message.seq,
@@ -1264,11 +1360,23 @@ public final class ChatModel {
     }
 
     private func requestResync(generation expectedGeneration: Int, channelID expectedChannelID: String) {
+        let preview = isPreview
         let name = session?.author.name ?? "Guest"
         error = "Messages changed while reconnecting. Refreshing…"
         Task { [weak self] in
             guard let self, self.generation == expectedGeneration, self.channelID == expectedChannelID else { return }
-            await self.open(channelID: expectedChannelID, displayName: name, preservingPending: true, prepared: nil)
+            if preview {
+                do {
+                    let history = try await self.api.history(channelID: expectedChannelID)
+                    guard self.generation == expectedGeneration, self.channelID == expectedChannelID, self.isPreview else { return }
+                    await self.preview(history: history)
+                } catch {
+                    guard self.generation == expectedGeneration, self.channelID == expectedChannelID, self.isPreview else { return }
+                    self.error = error.localizedDescription
+                }
+            } else {
+                await self.open(channelID: expectedChannelID, displayName: name, preservingPending: true, prepared: nil)
+            }
         }
     }
 
@@ -1277,6 +1385,8 @@ public final class ChatModel {
         typingTask = nil; typingIdleTask = nil; typingExpiryTask = nil
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
+        reactionSnapshots.reset(); reactionSaving = []; reactionErrors = [:]; failedReactions = [:]
+        isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         channelName = "general"; spaceName = "Caper"; error = nil
         loadingOlder = false; olderError = nil
@@ -1284,9 +1394,20 @@ public final class ChatModel {
     }
 
     private func merge(_ incoming: [ChatMessage]) {
+        reactionSnapshots.seed(incoming)
         var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        incoming.forEach { byID[$0.id] = $0 }
+        incoming.forEach { byID[$0.id] = reactionSnapshots.overlay($0) }
+        byID = byID.mapValues { reactionSnapshots.overlay($0) }
         messages = byID.values.sorted { (try? Sequence.compare($0.seq, $1.seq)) == .orderedAscending }
+    }
+
+    private func applyReactions(_ event: MessageReactionsEvent, clearsOwnFailure: Bool = false) {
+        if clearsOwnFailure {
+            reactionErrors[event.messageId] = nil
+            failedReactions[event.messageId] = nil
+        }
+        guard reactionSnapshots.apply(messageID: event.messageId, seq: event.seq, reactions: event.reactions) else { return }
+        messages = messages.map { reactionSnapshots.overlay($0) }
     }
 
     private func flushTyping() {

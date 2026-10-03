@@ -17,6 +17,54 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GatewayClientTest {
+    @Test fun `reaction protocol validates shape channel and sequence`() {
+        fun event(seq: String = "2", channel: String = "channel") = Json.parseToJsonElement(
+            """{"type":"message.reactions","schemaVersion":1,"channelId":"$channel","seq":"$seq","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author"]}]}""",
+        ).jsonObject
+        assertEquals("2", reactionSequence(event(), "channel"))
+        assertEquals("duplicate frames remain valid", "2", reactionSequence(event(), "channel"))
+        assertEquals("gap handling uses the parsed sequence", "4", reactionSequence(event("4"), "channel"))
+        assertThrows(IllegalArgumentException::class.java) { reactionSequence(event(channel = "other"), "channel") }
+        assertThrows(IllegalArgumentException::class.java) { reactionSequence(event("02"), "channel") }
+        assertThrows(IllegalArgumentException::class.java) {
+            reactionSequence(Json.parseToJsonElement("""{"type":"message.reactions","schemaVersion":1,"channelId":"channel","seq":"2","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author","author"]}]}""").jsonObject, "channel")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            reactionSequence(Json.parseToJsonElement("""{"type":"message.reactions","schemaVersion":2,"channelId":"channel","seq":"2","messageId":"message","reactions":[]}""").jsonObject, "channel")
+        }
+    }
+
+    @Test fun `reaction followed by message advances stream exactly once`() {
+        val server = MockWebServer()
+        val incoming = ArrayBlockingQueue<String>(4)
+        val opened = ArrayBlockingQueue<WebSocket>(1)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { opened.add(webSocket); webSocket.send("""{"type":"hello","serverTime":1}""") }
+            override fun onMessage(webSocket: WebSocket, text: String) { incoming.add(text) }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+        }))
+        val deliveries = ArrayBlockingQueue<String>(4)
+        val gateway = GatewayClient(server.url("/").toString().trimEnd('/'), null, "channel", "0",
+            onMessage = { deliveries.add("message:${it.seq}") }, onReaction = { deliveries.add("reaction:${it.seq}") },
+            onAccessDenied = {}, onResync = {})
+        var socket: WebSocket? = null
+        try {
+            gateway.start()
+            socket = opened.poll(2, TimeUnit.SECONDS) ?: throw AssertionError("socket did not open")
+            val subscription = Json.parseToJsonElement(incoming.poll(2, TimeUnit.SECONDS)!!).jsonObject
+            val id = subscription.getValue("id").jsonPrimitive.content
+            socket.send("""{"type":"event","id":"$id","event":{"type":"message.reactions","schemaVersion":1,"channelId":"channel","seq":"1","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author"]}]}}""")
+            socket.send("""{"type":"event","id":"$id","event":{"type":"message.created","seq":"2","message":{"id":"message00000002","channelId":"channel","seq":"2","author":{"id":"author","name":"A","isGuest":false},"content":{"version":1,"type":"text","text":"hi"},"createdAt":"2026-01-01T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000001"}}}""")
+            assertEquals("reaction:1", deliveries.poll(2, TimeUnit.SECONDS))
+            assertEquals("message:2", deliveries.poll(2, TimeUnit.SECONDS))
+            assertNull(deliveries.poll(250, TimeUnit.MILLISECONDS))
+        } finally {
+            socket?.close(1000, "done")
+            gateway.close()
+            server.close()
+        }
+    }
+
     @Test fun `mixed handoffs wait for replay suppress duplicates and retain live state`() {
         val server = MockWebServer()
         val sockets = ArrayBlockingQueue<WebSocket>(4)
@@ -34,10 +82,12 @@ class GatewayClientTest {
             }))
         }
         val messages = ArrayBlockingQueue<String>(4)
+        val reactions = ArrayBlockingQueue<String>(4)
         val rosters = ArrayBlockingQueue<String>(4)
         val resets = AtomicInteger()
         val gateway = GatewayClient(
             server.url("/").toString().trimEnd('/'), "account-secret", "chat00000001", "7", { messages.add(it.seq) },
+            onReaction = { reactions.add(it.seq) },
             onMedia = { _, people -> rosters.add(people.single().name) }, onMediaDisconnected = { resets.incrementAndGet() },
             onAccessDenied = { fail("handoff is not revocation") }, onResync = { fail("handoff must not resync") },
         )
@@ -55,6 +105,7 @@ class GatewayClientTest {
         }
         fun WebSocket.roster(id: String, revision: Int) = send("""{"type":"event","id":"$id","event":{"type":"snapshot","revision":$revision,"participants":[{"id":"speaker","name":"revision-$revision","muted":false,"deafened":false}]}}""")
         fun WebSocket.message(id: String, seq: String) = send("""{"type":"event","id":"$id","event":{"type":"message.created","seq":"$seq","message":{"id":"message-$seq","channelId":"chat00000001","seq":"$seq","clientMessageId":"00000000-0000-4000-8000-00000000000$seq","createdAt":"2026-10-03T00:00:00Z","author":{"id":"author","name":"Author","isGuest":false},"content":{"version":1,"type":"text","text":"message $seq"}}}}""")
+        fun WebSocket.reaction(id: String, seq: String) = send("""{"type":"event","id":"$id","event":{"type":"message.reactions","schemaVersion":1,"channelId":"chat00000001","seq":"$seq","messageId":"message-7","reactions":[{"emoji":"👍","authorIds":["author"]}]}}""")
         try {
             gateway.watchMedia(listOf("voice000001"), false); gateway.start()
             val old = sockets.poll(2, TimeUnit.SECONDS)!!; val (chat, media) = subscriptions("7")
@@ -64,13 +115,13 @@ class GatewayClientTest {
             val candidate = sockets.poll(2, TimeUnit.SECONDS)!!; assertEquals(chat to media, subscriptions("7"))
             candidate.ready(chat, media, "7"); candidate.roster(media, 4)
             assertNull(closed.poll(250, TimeUnit.MILLISECONDS))
-            old.message(chat, "8"); old.roster(media, 6)
-            assertEquals("8", messages.poll(2, TimeUnit.SECONDS)); assertEquals("revision-6", rosters.poll(2, TimeUnit.SECONDS))
+            old.reaction(chat, "8"); old.roster(media, 6)
+            assertEquals("8", reactions.poll(2, TimeUnit.SECONDS)); assertEquals("revision-6", rosters.poll(2, TimeUnit.SECONDS))
             candidate.roster(media, 6)
             assertNull("media alone cannot promote a chat stream still behind", closed.poll(250, TimeUnit.MILLISECONDS))
-            candidate.message(chat, "8")
-            assertSame("last replay message must re-evaluate promotion", old, closed.poll(2, TimeUnit.SECONDS))
-            assertNull("replay must not deliver the same message twice", messages.poll(250, TimeUnit.MILLISECONDS))
+            candidate.reaction(chat, "8")
+            assertSame("last replay reaction must re-evaluate promotion", old, closed.poll(2, TimeUnit.SECONDS))
+            assertNull("replay must not deliver the same reaction twice", reactions.poll(250, TimeUnit.MILLISECONDS))
             assertNull("equal media revision is deduplicated", rosters.poll(250, TimeUnit.MILLISECONDS))
             assertEquals(GatewayStatus.LIVE, gateway.status.value); assertEquals(0, resets.get())
             candidate.send("""{"type":"migrating"}""")

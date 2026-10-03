@@ -81,7 +81,9 @@ targets:
     platform: macOS
     sources:
       - path: Sources/CaperCore
-        excludes: [InvitationAssets]
+        excludes: [EmojiAssets, InvitationAssets]
+      - path: Sources/CaperCore/EmojiAssets
+        buildPhase: resources
       - path: Sources/CaperCore/InvitationAssets
         buildPhase: resources
       - path: ../../web/public/audio/effects
@@ -106,7 +108,9 @@ targets:
     platform: iOS
     sources:
       - path: Sources/CaperCore
-        excludes: [InvitationAssets]
+        excludes: [EmojiAssets, InvitationAssets]
+      - path: Sources/CaperCore/EmojiAssets
+        buildPhase: resources
       - path: Sources/CaperCore/InvitationAssets
         buildPhase: resources
       - path: ../../web/public/audio/effects

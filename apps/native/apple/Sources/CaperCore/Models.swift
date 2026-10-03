@@ -193,6 +193,34 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public let content: ChatContent
     public let createdAt: String
     public let clientMessageId: String
+    public var reactions: [MessageReaction]? = nil
+    public var reactionSeq: String? = nil
+}
+
+public struct MessageReaction: Codable, Equatable, Sendable, Identifiable {
+    public let emoji: String
+    public let authorIds: [String]
+    public var id: String { emoji }
+}
+
+public struct MessageReactionsEvent: Codable, Equatable, Sendable {
+    public let type: String
+    public let schemaVersion: Int
+    public let channelId: String
+    public let seq: String
+    public let messageId: String
+    public let reactions: [MessageReaction]
+
+    public var isValid: Bool {
+        type == "message.reactions" && schemaVersion == 1 && !channelId.isEmpty && !messageId.isEmpty
+            && (try? Sequence.compare(seq, "0")) != nil
+            && Set(reactions.map(\.emoji)).count == reactions.count
+            && reactions.allSatisfy {
+                !$0.emoji.isEmpty && !$0.authorIds.isEmpty
+                    && Set($0.authorIds).count == $0.authorIds.count
+                    && $0.authorIds.allSatisfy { !$0.isEmpty }
+            }
+    }
 }
 
 public struct ChatHistory: Codable, Sendable {
@@ -338,6 +366,63 @@ public struct ChatDeliveryState: Sendable {
     public mutating func reset(cursor: String = "0", preservingPending: Bool = false) {
         self.cursor = cursor
         if !preservingPending { pending = nil; rejected = false }
+    }
+}
+
+enum ReactionEvent {
+    static func sequence(_ event: [String: Any], channelID: String) -> String? {
+        guard event["schemaVersion"] as? Int == 1,
+              event["channelId"] as? String == channelID,
+              let messageID = event["messageId"] as? String, !messageID.isEmpty,
+              let reactions = event["reactions"] as? [[String: Any]],
+              reactions.allSatisfy({ reaction in
+                  guard let emoji = reaction["emoji"] as? String, !emoji.isEmpty,
+                        let authorIDs = reaction["authorIds"] as? [String], !authorIDs.isEmpty else { return false }
+                  return Set(authorIDs).count == authorIDs.count && authorIDs.allSatisfy { !$0.isEmpty }
+              }), Set(reactions.compactMap { $0["emoji"] as? String }).count == reactions.count,
+              let seq = event["seq"] as? String, (try? Sequence.compare(seq, "0")) != nil else { return nil }
+        return seq
+    }
+}
+
+/// Keeps each message's reaction snapshot monotonic independently of the
+/// channel delivery cursor. This lets delayed HTTP acknowledgements and older
+/// history pages fill missing messages without reverting a newer replay.
+struct ReactionSnapshots: Sendable {
+    private var values: [String: (seq: String, reactions: [MessageReaction])] = [:]
+    private var knownMessageIDs: Set<String> = []
+    private(set) var unseenOverflowed = false
+    static let maximumUnseen = 256
+
+    mutating func apply(messageID: String, seq: String?, reactions: [MessageReaction]) -> Bool {
+        guard let seq, (try? Sequence.compare(seq, "0")) != nil else { return false }
+        if let current = values[messageID], (try? Sequence.compare(seq, current.seq)) != .orderedDescending { return false }
+        let unseenCount = values.keys.filter { !knownMessageIDs.contains($0) }.count
+        guard knownMessageIDs.contains(messageID) || values[messageID] != nil || unseenCount < Self.maximumUnseen else {
+            unseenOverflowed = true
+            return false
+        }
+        values[messageID] = (seq, reactions)
+        return true
+    }
+
+    mutating func seed(_ messages: [ChatMessage]) {
+        knownMessageIDs.formUnion(messages.map(\.id))
+        for message in messages { _ = apply(messageID: message.id, seq: message.reactionSeq, reactions: message.reactions ?? []) }
+    }
+
+    func overlay(_ message: ChatMessage) -> ChatMessage {
+        guard let snapshot = values[message.id] else { return message }
+        var result = message
+        result.reactions = snapshot.reactions
+        result.reactionSeq = snapshot.seq
+        return result
+    }
+
+    mutating func reset() {
+        values.removeAll(keepingCapacity: false)
+        knownMessageIDs.removeAll(keepingCapacity: false)
+        unseenOverflowed = false
     }
 }
 

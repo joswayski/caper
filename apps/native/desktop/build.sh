@@ -48,6 +48,9 @@ install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$package_dir/Caper-li
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$native/voice-spike/licenses/"* "$package_dir/Caper-linux-x64/"
+for notice in "$root/shared/emoji/"*.txt; do
+  install -m 0644 "$notice" "$package_dir/Caper-linux-x64/EMOJI-$(basename "$notice")"
+done
 install -m 0755 "$CAPER_ONNXRUNTIME_LIBRARY" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$ort_dir/LICENSE" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-LICENSE"
 install -m 0644 "$ort_dir/ThirdPartyNotices.txt" "$package_dir/Caper-linux-x64/ONNX-RUNTIME-THIRD-PARTY-NOTICES.txt"
@@ -68,6 +71,9 @@ install -m 0644 "$native/resources/caper.svg" "$deb/usr/share/icons/hicolor/scal
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$deb/usr/share/doc/caper-desktop/"
 install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$deb/usr/share/doc/caper-desktop/"
 install -m 0644 "$native/voice-spike/licenses/"* "$deb/usr/share/doc/caper-desktop/"
+for notice in "$root/shared/emoji/"*.txt; do
+  install -m 0644 "$notice" "$deb/usr/share/doc/caper-desktop/EMOJI-$(basename "$notice")"
+done
 size="$(du -sk "$deb" | cut -f1)"
 cat > "$deb/DEBIAN/control" <<EOF
 Package: caper-desktop

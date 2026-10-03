@@ -1,6 +1,6 @@
 use crate::model::{
     Account, Channel, ChatSession, DirectConversation, DirectConversations, History, Member,
-    Members, Message, Space, SpaceDetail, Spaces,
+    Members, Message, ReactionUpdate, Space, SpaceDetail, Spaces,
 };
 use reqwest::blocking::{Client, Response};
 use reqwest::{Method, StatusCode, redirect::Policy};
@@ -429,6 +429,24 @@ impl Api {
             token,
             Some(chat_token),
             Some(json!({"clientMessageId":client_id,"text":text})),
+        )
+    }
+
+    pub fn react(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        channel: &str,
+        message: &str,
+        emoji: &str,
+        active: bool,
+    ) -> Result<ReactionUpdate, ApiError> {
+        self.request(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{message}/reactions"),
+            token,
+            Some(chat_token),
+            Some(json!({"emoji":emoji,"active":active})),
         )
     }
 

@@ -1,8 +1,8 @@
 import Foundation
 
-@MainActor enum CaperRuntime {
+@MainActor public enum CaperRuntime {
     static func isChatPreview(_ name: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard name == "chat-rejected", environment["CAPER_TEST_MODE"] == "parity",
+        guard ["chat-rejected", "reaction-chips"].contains(name), environment["CAPER_TEST_MODE"] == "parity",
               environment["CAPER_UI_FIXTURE"] == name,
               let rawURL = environment["CAPER_API_BASE_URL"], let baseURL = URL(string: rawURL),
               ["localhost", "127.0.0.1", "::1"].contains(baseURL.host?.lowercased() ?? "") else { return false }
@@ -38,7 +38,7 @@ import Foundation
         )
     }
 
-    static func makeModel(environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
+    public static func makeModel(environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
         guard environment["CAPER_TEST_MODE"] == "parity",
               let rawURL = environment["CAPER_API_BASE_URL"],
               let baseURL = URL(string: rawURL),

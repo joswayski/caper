@@ -27,6 +27,10 @@ unverified. Visual
 matching, audio controls, platform lifecycle behavior, and physical-device
 acceptance remain in progress.
 
+All native clients provide searchable emoji reactions, counted chips, and
+own-reaction highlighting. Channel previews display reactions without allowing
+mutations until the user joins.
+
 First launch without a valid session opens email sign-in, not a Guest workspace.
 New accounts finish their profile, then name their first space. Existing accounts
 restore their saved session and open their spaces; logging out returns to sign-in.
