@@ -131,11 +131,14 @@ test('send is idempotent, conflicts on changed payload, and history uses stable 
   const send = (clientMessageId, text) => request(`/api/chat/channels/${ids.demo}/messages`, {
     method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId, text },
   });
-  const id = randomUUID();
+  const id = 'AB12CD34-EF56-4789-8ABC-DEF012345678';
+  const canonicalId = 'ab12cd34-ef56-4789-8abc-def012345678';
   const first = await send(id, '  preserved  ');
   assert.equal(first.response.status, 200); assert.equal(first.value.content.text, '  preserved  ');
+  assert.equal(first.value.clientMessageId, canonicalId, 'match Rust UUID serialization instead of echoing Swift casing');
   assert.equal((await send(id, '  preserved  ')).value.id, first.value.id);
-  assert.equal((await send(id, 'changed')).response.status, 409);
+  assert.equal((await send(canonicalId, '  preserved  ')).value.id, first.value.id, 'UUID casing cannot create a second message');
+  assert.equal((await send(canonicalId, 'changed')).response.status, 409);
   assert.equal((await send('not-a-uuid', 'text')).response.status, 400);
   for (let index = 0; index < 48; index++) await send(randomUUID(), `message ${index}`);
   const latest = await request(`/api/chat/channels/${ids.demo}/messages`);
@@ -160,12 +163,16 @@ test('loopback WebSocket replays, delivers live messages/typing/presence, failur
 
   const session = await request('/api/chat/session', { method: 'POST', body: { name: 'Socket Guest' } });
   const sent = await request(`/api/chat/channels/${ids.demo}/messages`, { method: 'POST',
-    headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: randomUUID(), text: 'live' } });
-  assert.equal((await stream.next()).event.message.id, sent.value.id);
-  stream.ws.send(JSON.stringify({ type: 'command', id: randomUUID(), issuedAt: Date.now(), method: 'typing', channelId: ids.demo,
+    headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: 'AB12CD34-EF56-4789-8ABC-DEF012345678', text: 'live' } });
+  const liveMessage = (await stream.next()).event.message;
+  assert.equal(liveMessage.id, sent.value.id);
+  assert.equal(liveMessage.clientMessageId, 'ab12cd34-ef56-4789-8abc-def012345678');
+  stream.ws.send(JSON.stringify({ type: 'command', id: 'BC23DE45-FA67-489A-9BCD-EF0123456789', issuedAt: Date.now(), method: 'typing', channelId: ids.demo,
     chatToken: session.value.token, body: { typing: true } }));
   assert.equal((await stream.next()).event.type, 'typing.updated');
-  assert.equal((await stream.next()).status, 204);
+  const result = await stream.next();
+  assert.equal(result.status, 204);
+  assert.equal(result.id, 'bc23de45-fa67-489a-9bcd-ef0123456789', 'command results also serialize a Rust UUID');
 
   stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'presence', kind: 'presence', spaceId: ids.space, userIds: [ids.owner, ids.other] }));
   assert.deepEqual((await stream.next()).event.members.map(({ status }) => status), ['online', 'idle']);
