@@ -248,12 +248,17 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(generalVoice.frame.minY, general.frame.maxY, "Voice stays below the channel name")
         XCTAssertLessThanOrEqual(generalVoice.frame.minY - general.frame.maxY, 2, "No extra gap separates the voice action from its channel")
         XCTAssertEqual(generalVoice.frame.width, designVoice.frame.width, "Actions share one stable slot")
+        XCTAssertEqual(generalVoice.frame.width, 108, "The whole reserved action slot is accessible, not just its text")
         #if os(iOS)
         XCTAssertGreaterThanOrEqual(general.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(design.frame.height, 44)
         XCTAssertGreaterThanOrEqual(generalVoice.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(designVoice.frame.height, 44)
         #else
         XCTAssertEqual(general.frame.height, 32)
+        XCTAssertEqual(design.frame.height, 32)
         XCTAssertEqual(generalVoice.frame.height, 28)
+        XCTAssertEqual(designVoice.frame.height, 28)
         #endif
 
         let generalFrame = general.frame
@@ -273,7 +278,9 @@ final class CaperParityUITests: XCTestCase {
         let settings = app.descendants(matching: .any)["Channel settings"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 3))
         settings.tap()
-        assertStaticText("Channel settings", in: app, timeout: 3)
+        assertStaticText("Overview", in: app, timeout: 3)
+        XCTAssertEqual(app.textFields["project-updates"].value as? String, "general", "The menu opens its own channel's editor")
+        capture("channel-settings-from-menu", app: app)
     }
 
     func testSpectatorRosterCollapsesAndVoiceTargetDoesNotChangeChat() async throws {
@@ -434,12 +441,12 @@ final class CaperParityUITests: XCTestCase {
         saved.doubleClick()
     }
 
-    func testInlineJoinAndProfileBackdropDismissal() {
+    func testSeparateVoiceRowAndProfileBackdropDismissal() {
         let app = launch()
         let channel = app.buttons["channel-chan00000001"]
         let join = app.buttons["join-voice-chan00000001"]
         XCTAssertTrue(join.waitForExistence(timeout: 10))
-        XCTAssertEqual(join.frame.midY, channel.frame.midY, accuracy: 2, "Join stays on the channel's row")
+        XCTAssertEqual(join.frame.minY, channel.frame.maxY, accuracy: 2, "Join stays directly below the channel's row")
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.isHittable)
         XCTAssertLessThan(settings.frame.maxX, app.descendants(matching: .any)["channel-sidebar-resize"].frame.midX)
@@ -871,7 +878,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(submit.isEnabled)
     }
 
-    func testRejectedMessageActionsRenderWithoutSending() {
+    func testRejectedMessageActionsRenderWithoutSending() async throws {
         let app = launch(fixture: "chat-rejected")
         assertStaticText("Fixture message that was rejected", in: app)
         let edit = app.buttons["Edit"]
@@ -881,6 +888,33 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Dismiss"].exists)
         XCTAssertFalse(app.buttons["send-message-button"].isEnabled)
         capture("chat-rejected-fixture", app: app)
+
+        // Another message changing the history must not scroll to the last
+        // committed row and hide the rejected row's Edit/Dismiss controls.
+        var sessionRequest = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/session")!)
+        sessionRequest.httpMethod = "POST"
+        sessionRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        sessionRequest.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        sessionRequest.httpBody = Data(#"{"name":"Fixture Owner"}"#.utf8)
+        let (data, sessionResponse) = try await URLSession.shared.data(for: sessionRequest)
+        XCTAssertEqual((sessionResponse as? HTTPURLResponse)?.statusCode, 200)
+        let session = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let token = try XCTUnwrap(session["token"] as? String)
+        let message = "TEST FIXTURE live delivery while rejected \(UUID().uuidString)"
+        var send = URLRequest(url: URL(string: "http://127.0.0.1:3001/api/chat/channels/chan00000001/messages")!)
+        send.httpMethod = "POST"
+        send.setValue("application/json", forHTTPHeaderField: "content-type")
+        send.setValue("Bearer fixture-owner-token", forHTTPHeaderField: "authorization")
+        send.setValue(token, forHTTPHeaderField: "x-caper-chat-token")
+        send.httpBody = try JSONSerialization.data(withJSONObject: ["clientMessageId": UUID().uuidString.lowercased(), "text": message])
+        let (_, sent) = try await URLSession.shared.data(for: send)
+        XCTAssertEqual((sent as? HTTPURLResponse)?.statusCode, 200)
+        assertStaticText(message, in: app, timeout: 15)
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["chat-timeline"].frame.contains(edit.frame), "Live delivery keeps rejected actions in the visible viewport")
+        XCTAssertTrue(app.buttons["Dismiss"].exists)
+        XCTAssertFalse(app.buttons["send-message-button"].isEnabled)
+        capture("chat-rejected-after-live-fixture", app: app)
         edit.tap()
         XCTAssertFalse(app.buttons["Dismiss"].waitForExistence(timeout: 1))
         XCTAssertEqual(app.descendants(matching: .any)["message-composer"].value as? String,

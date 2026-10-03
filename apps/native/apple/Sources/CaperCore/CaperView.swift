@@ -668,6 +668,7 @@ private struct ChannelSidebarItem: View {
                     #endif
                     .background(model.selectedChannelID == channel.id ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
                 }.buttonStyle(.plain)
                     .modifier(NavigationPrefetchModifier {
                         if let space = model.detail?.space { model.prefetch(space: space, channelID: channel.id) }
@@ -797,6 +798,7 @@ private struct ChannelVoiceSlot: View {
                         #else
                         .frame(minWidth: 42, minHeight: 28, alignment: .leading)
                         #endif
+                        .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover())
                         .accessibilityLabel("\(occupants.count) in voice in \(channel.name). \(collapsed ? "Show" : "Hide") who is in voice")
                         .accessibilityIdentifier("voice-stack-\(channel.id)")
@@ -861,6 +863,7 @@ private struct QuietVoiceActionButton: ButtonStyle {
             #endif
             .background(configuration.isPressed ? CaperTheme.border.opacity(0.55) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.45).modifier(ControlHover())
     }
 }
@@ -1453,7 +1456,10 @@ private struct ChatView: View {
                     return .handled
                 }
                 #endif
-                .onChange(of: chat.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onChange(of: chat.messages.last?.id) { _, id in
+                    if chat.pendingMessage != nil { revealPending(proxy) }
+                    else if let id { proxy.scrollTo(id, anchor: .bottom) }
+                }
                 .onChange(of: chat.pendingMessage?.id, initial: true) { _, _ in revealPending(proxy) }
                 // A rejection adds the "Not sent" line with Edit and Dismiss after
                 // the first scroll, so the row grows below the viewport; reveal it again.
