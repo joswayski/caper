@@ -2786,6 +2786,61 @@ Run the focused browser regression against local Vite with
 The native parity fixture now supplies saved avatar IDs in account, member, chat
 and voice responses rather than testing only initials.
 
+### Rotating site and runtime app icons
+
+Supported icon surfaces choose one of the 800 bundled v3 avatars per UTC day,
+remember it locally, and exclude the preceding choice. This cosmetic choice does
+not change account avatars. Rotation runs on launch/resume or while the client is
+running; it is not an exact midnight job while closed, suspended or throttled.
+There are no alarms, background services, icon-change prompts or new dependencies.
+
+| Surface | Behavior and validation |
+| --- | --- |
+| Desktop/mobile browser tabs | SVG plus generated 32/192px PNG favicons; localStorage persists the daily choice across reloads and tabs. Checks every minute and on focus/visibility/storage events. Clock-controlled Chromium tests cover UTC rollover, timer refresh, same-day reload/SPA navigation, shared-tab assignment, PNG/SVG pixels and desktop/narrow asset inspection. Safari/Firefox and physical mobile browsers remain unverified. |
+| Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
+| Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
+| Native Android | Switches bundled launcher aliases on resume and every 15 minutes while foregrounded. Android 13+ switches atomically; older supported versions enable the new entry before disabling the old one. The original default alias and application icon remain available. Generation checks all 800 resources; Kotlin tests and APK/physical-launcher checks are pending because this orb has no Java/Android SDK. OEM icon caches, duplicate-entry transitions and upgrades require device acceptance. |
+| Native macOS | The running Dock icon rotates through `NSApplication.applicationIconImage`, checking activation and every 15 minutes. Finder/package icons remain original. Swift tests are added but require Apple CI/Xcode and a real Dock check; neither is available in this Linux orb. |
+| Rust desktop | Runtime window icons rotate, with a 60-second check and eframe persistence. Windows/taskbar and Linux X11 surfaces depend on the shell honoring runtime icons; installer, pinned-shortcut and Wayland package identities remain original. Rust tests cover rollover, all IDs, nonrepeat and straight-alpha pixels. An actual X11/Openbox window published the expected 256px saved-avatar icon and retained it across a same-day restart. Windows/Wayland remain unverified. |
+
+Deterministic native parity/Android fixture runs retain the original icon. The web
+test uses a labelled clock/storage fixture, not a physical home-screen test:
+`node scripts/test-favicons.mjs http://localhost:31095 .amp/in/artifacts`.
+Static fallback exports use `node scripts/generate-favicons.mjs` (ImageMagick 7 and
+librsvg); launcher declarations use
+`node scripts/generate-android-launcher-aliases.mjs --check`. Native clients reuse
+their already-bundled vector resources. Docker is unavailable; web production
+build stages and the Rust desktop build were checked directly. Application-only
+desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
+existing vendored WebRTC safety-documentation warnings.
+
+#### Rotating-icon deployment order
+
+1. No infrastructure, secrets/configuration, database migration, API/gateway or
+   SFU deployment is needed. Saved avatar assignments and vector artwork stay
+   unchanged. Orb renderer/X11 packages are development-only prerequisites.
+2. After merge and the merged commit's immutable web image is available, deploy
+   web explicitly; merging does not deploy it:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   curl -I https://caper.chat/site.webmanifest
+   curl -I https://caper.chat/icons/caper-main-v3-180.png
+   curl -I https://caper.chat/images/avatars/v3/799.svg
+   ```
+   Expect HTTP 200 and correct MIME types. Verify a tab keeps its avatar on
+   reload, and newly added iOS/Android shortcuts use the original mascot.
+3. Release Android, macOS and Rust desktop independently through the normal
+   native workflows only after platform build/device checks. No iOS release is
+   required for icon behavior; its shared tests may run with the Apple build.
+   Native rotation does not depend on web deploying first.
+4. Roll back only the affected web image or native release if needed. Re-run the
+   web workflow with the previous known-good SHA and wait for rollout; there is
+   no database/configuration rollback. Icon caches can outlive a rollout. Test
+   Android upgrade/rollback from an enabled avatar alias before releasing.
+
 ### Saved default avatars
 
 An avatar is the user's profile picture, not a separate cosmetic identity. The

@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import chat.caper.android.model.*
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
@@ -69,13 +70,38 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CaperViewModel by viewModels()
+    private val launcherAvatar by lazy { LauncherAvatarRotator(applicationContext) }
+    private var launcherAvatarJob: Job? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CaperEffects.init(applicationContext)
         setContent { CaperTheme { CaperApp(viewModel) } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (BuildConfig.FIXTURE_MODE) return
+        launcherAvatarJob?.cancel()
+        launcherAvatarJob = lifecycleScope.launch {
+            while (isActive) {
+                launcherAvatar.update()
+                delay(15 * 60 * 1000L)
+            }
+        }
+    }
+
+    override fun onPause() {
+        launcherAvatarJob?.cancel()
+        launcherAvatarJob = null
+        super.onPause()
     }
 }
 

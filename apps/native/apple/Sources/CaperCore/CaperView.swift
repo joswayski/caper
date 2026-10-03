@@ -1123,7 +1123,7 @@ extension CaperAvatar {
         return UIImage(named: "caper-avatar-\(index)", in: caperResourceBundle, compatibleWith: nil)
     }
     #else
-    @MainActor static func image(for avatarID: Int?) -> NSImage? {
+    @MainActor public static func image(for avatarID: Int?) -> NSImage? {
         guard let index = index(for: avatarID) else { return nil }
         return caperResourceBundle.image(forResource: NSImage.Name("caper-avatar-\(index)"))
     }
