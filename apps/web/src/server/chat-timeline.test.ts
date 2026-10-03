@@ -35,3 +35,77 @@ test("an HTTP send merges immediately but only its matching event advances repla
   assert.equal(timeline.cursor, "6");
   assert.equal(timeline.messages.length, 1, "the event deduplicates the HTTP response by message id");
 });
+
+test("message snapshots retain identity until visible contents change", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("1")], "1");
+  const snapshot = timeline.messages;
+
+  assert.strictEqual(timeline.messages, snapshot);
+  assert.equal(timeline.applyEvent(message("1")), "duplicate");
+  assert.strictEqual(timeline.messages, snapshot, "duplicate events do not invalidate the snapshot");
+  assert.equal(timeline.applyEvent(message("3")), "buffered");
+  assert.strictEqual(timeline.messages, snapshot, "buffered events are not visible yet");
+});
+
+test("prepend, send, gap draining, and reset invalidate message snapshots", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("2")], "2");
+
+  const initial = timeline.messages;
+  timeline.prepend([message("1")]);
+  const prepended = timeline.messages;
+  assert.notStrictEqual(prepended, initial);
+
+  timeline.mergeSent(message("5"));
+  const sent = timeline.messages;
+  assert.notStrictEqual(sent, prepended);
+
+  assert.equal(timeline.applyEvent(message("4")), "buffered");
+  assert.strictEqual(timeline.messages, sent);
+  assert.equal(timeline.applyEvent(message("3")), "applied");
+  const drained = timeline.messages;
+  assert.notStrictEqual(drained, sent);
+  assert.deepEqual(drained.map(({ seq }) => seq), ["1", "2", "3", "4", "5"]);
+
+  timeline.reset([], "9");
+  assert.notStrictEqual(timeline.messages, drained);
+  assert.deepEqual(timeline.messages, []);
+});
+
+test("cached snapshots preserve BigInt ordering, id tie breaks, and immutability", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([
+    message("9007199254740993", "z"),
+    message("9007199254740992", "middle"),
+    message("9007199254740993", "a"),
+  ], "9007199254740993");
+  const snapshot = timeline.messages;
+
+  assert.deepEqual(snapshot.map(({ id }) => id), ["middle", "a", "z"]);
+  timeline.mergeSent(message("9007199254740994", "later"));
+  assert.deepEqual(snapshot.map(({ id }) => id), ["middle", "a", "z"], "previous snapshots must not mutate");
+  assert.deepEqual(timeline.messages.map(({ id }) => id), ["middle", "a", "z", "later"]);
+});
+
+test("sorted snapshots are reused until visible messages change and never mutate previous snapshots", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("12"), message("10")], "12");
+  const initial = timeline.messages;
+  assert.deepEqual(initial.map((value) => value.seq), ["10", "12"]);
+  assert.equal(timeline.messages, initial, "reading must not repeatedly allocate and sort history");
+  timeline.applyEvent(message("12"));
+  timeline.applyEvent(message("14"));
+  assert.equal(timeline.messages, initial, "duplicates and buffered events leave the visible snapshot intact");
+  timeline.prepend([message("9")]);
+  const paginated = timeline.messages;
+  assert.deepEqual(paginated.map((value) => value.seq), ["9", "10", "12"]);
+  timeline.mergeSent(message("15"));
+  assert.deepEqual(timeline.messages.map((value) => value.seq), ["9", "10", "12", "15"]);
+  timeline.applyEvent(message("13"));
+  assert.deepEqual(timeline.messages.map((value) => value.seq), ["9", "10", "12", "13", "14", "15"]);
+  assert.deepEqual(initial.map((value) => value.seq), ["10", "12"]);
+  assert.deepEqual(paginated.map((value) => value.seq), ["9", "10", "12"]);
+  timeline.reset([], "0");
+  assert.deepEqual(timeline.messages, [], "reset must invalidate even when no messages are merged");
+});

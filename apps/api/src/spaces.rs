@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 
+mod joining;
+pub(crate) use joining::channel_participation;
+use joining::{add_channel_member, remove_channel_member};
+#[cfg(test)]
+mod joining_tests;
+
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Limits {
@@ -66,7 +72,7 @@ fn limit(value: Option<String>, default: i64, name: &str) -> Result<i64, String>
 pub(crate) struct ChannelAccess {
     pub(crate) id: i64,
     pub(crate) last_seq: i64,
-    pub(crate) space_id: i64,
+    pub(crate) space_id: Option<i64>,
 }
 
 fn database_error(_: sqlx::Error) -> ApiError {
@@ -107,17 +113,34 @@ pub(crate) async fn channel_access(
     channel: &str,
     user: Option<i64>,
 ) -> Result<ChannelAccess, ApiError> {
-    sqlx::query_as::<_, (i64, i64, i64)>(
+    check_channel_access(pool, channel, user, false).await
+}
+
+async fn check_channel_access(
+    pool: &PgPool,
+    channel: &str,
+    user: Option<i64>,
+    require_join: bool,
+) -> Result<ChannelAccess, ApiError> {
+    sqlx::query_as::<_, (i64, i64, Option<i64>)>(
         "SELECT c.id, c.last_seq, s.id
          FROM public.channels c JOIN public.spaces s ON s.id = c.space_id
          WHERE c.external_id = $1 AND c.deleted_at IS NULL AND s.deleted_at IS NULL
            AND NOT s.demo AND $2::bigint IS NOT NULL
                  AND EXISTS (SELECT 1 FROM public.space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)
                  AND (s.owner_id = $2 OR NOT c.private OR
-                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))",
+                      EXISTS (SELECT 1 FROM public.channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2))
+                 AND (NOT $3 OR EXISTS(SELECT 1 FROM public.channel_joins cj WHERE cj.channel_id=c.id AND cj.user_id=$2))
+         UNION ALL
+         SELECT c.id,c.last_seq,NULL::bigint FROM public.channels c
+         JOIN public.direct_conversations d ON d.channel_id=c.id
+         JOIN public.users lo ON lo.id=d.low_user_id JOIN public.users hi ON hi.id=d.high_user_id
+         WHERE c.external_id=$1 AND c.space_id IS NULL AND c.deleted_at IS NULL
+           AND $2 IN (d.low_user_id,d.high_user_id) AND lo.deleted_at IS NULL AND hi.deleted_at IS NULL",
     )
     .bind(channel)
     .bind(user)
+    .bind(require_join)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
@@ -144,6 +167,7 @@ struct Channel {
     space_id: String,
     name: String,
     private: bool,
+    joined: bool,
 }
 
 #[derive(Serialize)]
@@ -188,12 +212,29 @@ pub(crate) fn routes() -> Router<AppState> {
             patch(update_channel).delete(delete_channel),
         )
         .route(
+            "/api/spaces/{space}/channels/{channel}/membership",
+            post(joining::join_channel).delete(joining::leave_channel),
+        )
+        .route(
+            "/api/spaces/{space}/channels/{channel}/invitation",
+            post(joining::accept_channel_invitation).delete(joining::decline_channel_invitation),
+        )
+        .route(
             "/api/spaces/{space}/members",
             get(list_members).post(add_space_member),
         )
         .route(
             "/api/spaces/{space}/members/{user}",
             delete(remove_space_member),
+        )
+        .route("/api/spaces/{space}/invitations", get(list_invitations))
+        .route(
+            "/api/spaces/{space}/invitations/{user}",
+            delete(cancel_invitation),
+        )
+        .route(
+            "/api/spaces/{space}/invitation",
+            post(accept_invitation).delete(decline_invitation),
         )
         .route(
             "/api/spaces/{space}/channels/{channel}/members",
@@ -247,8 +288,26 @@ async fn list_spaces(
     .into_iter()
     .map(|(id, name, owner_id)| Space { id, name, owner_id })
     .collect();
+    // Owners are the only inviters; share their public identity, never the member list.
+    let invitations: Vec<Value> = sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT s.external_id,s.name,o.external_id,o.username,o.display_name FROM public.space_invitations i
+         JOIN public.spaces s ON s.id=i.space_id JOIN public.users o ON o.id=s.owner_id
+         WHERE i.user_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days'
+           AND s.deleted_at IS NULL AND NOT s.demo
+         ORDER BY i.updated_at DESC,s.id",
+    )
+    .bind(principal.user.id)
+    .fetch_all(pool(&state)?)
+    .await
+    .map_err(database_error)?
+    .into_iter()
+    .map(|(id, name, owner_id, username, display_name)| {
+        json!({"id":id,"name":name,"ownerId":owner_id,
+            "inviter":{"username":username,"displayName":display_name}})
+    })
+    .collect();
     Ok(Json(
-        json!({"spaces":spaces,"limits":state.config.space_limits}),
+        json!({"spaces":spaces,"invitations":invitations,"limits":state.config.space_limits}),
     ))
 }
 
@@ -291,9 +350,15 @@ async fn create_space(
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
-    sqlx::query("INSERT INTO public.channels (external_id,space_id,name) VALUES ($1,$2,'general')")
+    let general: i64 = sqlx::query_scalar("INSERT INTO public.channels (external_id,space_id,name) VALUES ($1,$2,'general') RETURNING id")
         .bind(random_id(12))
         .bind(internal)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(database_error)?;
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(general)
+        .bind(principal.user.id)
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
@@ -326,8 +391,10 @@ async fn get_space(
     .await
     .map_err(database_error)?
     .ok_or_else(not_found)?;
-    let channels: Vec<Channel> = sqlx::query_as::<_, (String, String, String, bool)>(
-        "SELECT c.external_id,s.external_id,c.name,c.private FROM public.channels c
+    let channels: Vec<Channel> = sqlx::query_as::<_, (String, String, String, bool, bool)>(
+        "SELECT c.external_id,s.external_id,c.name,c.private,
+         EXISTS(SELECT 1 FROM public.channel_joins WHERE channel_id=c.id AND user_id=$2)
+         FROM public.channels c
          JOIN public.spaces s ON s.id=c.space_id
          WHERE c.space_id=$1 AND c.deleted_at IS NULL
            AND (s.owner_id=$2 OR NOT c.private OR EXISTS (SELECT 1 FROM public.channel_members WHERE channel_id=c.id AND user_id=$2))
@@ -339,11 +406,20 @@ async fn get_space(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|(id, space_id, name, private)| Channel { id, space_id, name, private })
+    .map(|(id, space_id, name, private, joined)| Channel { id, space_id, name, private, joined })
     .collect();
+    let invitations: Vec<Value> = sqlx::query_as::<_,(String,String,String,String)>(
+        "SELECT c.external_id,c.name,u.username,u.display_name FROM public.channel_invitations i
+         JOIN public.channels c ON c.id=i.channel_id JOIN public.spaces s ON s.id=c.space_id
+         JOIN public.users u ON u.id=s.owner_id
+         WHERE c.space_id=$1 AND i.user_id=$2 AND c.private AND c.deleted_at IS NULL
+           AND i.status='pending' AND i.updated_at > now()-interval '7 days'
+         ORDER BY i.updated_at,c.id"
+    ).bind(row.0).bind(principal.user.id).fetch_all(pool).await.map_err(database_error)?
+        .into_iter().map(|(id,name,username,display_name)|json!({"channel":Channel{id,space_id:space.clone(),name,private:true,joined:false},"inviter":{"username":username,"displayName":display_name}})).collect();
     let members = members(pool, row.0).await?;
     Ok(Json(
-        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members}),
+        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3},"channels":channels,"members":members,"channelInvitations":invitations}),
     ))
 }
 
@@ -410,16 +486,22 @@ async fn create_channel(
         return Err(conflict("channel limit reached"));
     }
     let id = random_id(12);
-    sqlx::query(
-        "INSERT INTO public.channels (external_id,space_id,name,private) VALUES ($1,$2,$3,$4)",
+    let internal: i64 = sqlx::query_scalar(
+        "INSERT INTO public.channels (external_id,space_id,name,private) VALUES ($1,$2,$3,$4) RETURNING id",
     )
     .bind(&id)
     .bind(space_id)
     .bind(name)
     .bind(input.private)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|error| constraint_or_database(error, "channel name already exists"))?;
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+        .bind(internal)
+        .bind(principal.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok((
         StatusCode::CREATED,
@@ -428,6 +510,7 @@ async fn create_channel(
             space_id: space,
             name: name.to_owned(),
             private: input.private,
+            joined: true,
         }),
     ))
 }
@@ -446,12 +529,19 @@ async fn update_channel(
     if changed.rows_affected() != 1 {
         return Err(not_found());
     }
+    let joined: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.channel_joins cj JOIN public.channels c ON c.id=cj.channel_id WHERE c.external_id=$1 AND cj.user_id=$2)")
+        .bind(&channel).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if !input.private {
+        sqlx::query("UPDATE public.channel_invitations SET status='revoked',updated_at=now() WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND status='pending'")
+            .bind(&channel).execute(&mut *tx).await.map_err(database_error)?;
+    }
     tx.commit().await.map_err(database_error)?;
     Ok(Json(Channel {
         id: channel,
         space_id: space,
         name: name.to_owned(),
         private: input.private,
+        joined,
     }))
 }
 
@@ -486,11 +576,18 @@ async fn add_space_member(
     Path(space): Path<String>,
     Json(input): Json<MemberInput>,
 ) -> Result<(StatusCode, Json<Member>), ApiError> {
-    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let pool = pool(&state)?;
+    // Authorize before revealing account lookup errors. Charge attempts outside
+    // the invite transaction so errors/rollbacks cannot bypass the shared limit.
+    let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo)")
+        .bind(&space).bind(principal.user.id).fetch_one(pool).await.map_err(database_error)?;
+    if !owns {
+        return Err(not_found());
+    }
+    invite_rate_limit(pool, principal.user.id).await?;
+    let mut tx = pool.begin().await.map_err(database_error)?;
     let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
     let member = find_user_for_update(&mut tx, &input.username).await?;
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id=sm.space_id WHERE sm.user_id=$1 AND s.deleted_at IS NULL")
-        .bind(member.0).fetch_one(&mut *tx).await.map_err(database_error)?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2)",
     )
@@ -499,24 +596,47 @@ async fn add_space_member(
     .fetch_one(&mut *tx)
     .await
     .map_err(database_error)?;
-    if !exists && count >= state.config.space_limits.total_spaces {
-        return Err(conflict("membership limit reached"));
+    if exists {
+        return Err(conflict("user already in space"));
     }
-    if !exists {
-        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
-            .bind(space_id)
-            .bind(member.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
+    let previous: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT status,updated_at > now()-interval '7 days',updated_at > now()-interval '24 hours'
+         FROM public.space_invitations WHERE space_id=$1 AND user_id=$2",
+    )
+    .bind(space_id)
+    .bind(member.0)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    if let Some((status, live, recent)) = previous {
+        if status == "pending" && live {
+            return Err(conflict("user already invited"));
+        }
+        if status != "pending" && recent {
+            return Err(conflict("invitation cooldown; try again after 24 hours"));
+        }
     }
+    let (received,sent): (i64,i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE i.user_id=$1),count(*) FILTER (WHERE i.space_id=$2)
+         FROM public.space_invitations i JOIN public.spaces s ON s.id=i.space_id
+         WHERE i.status='pending' AND i.updated_at > now()-interval '7 days' AND s.deleted_at IS NULL
+           AND (i.user_id=$1 OR i.space_id=$2)",
+    ).bind(member.0).bind(space_id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if received >= 50 || sent >= 100 {
+        return Err(conflict("pending invitation limit reached"));
+    }
+    sqlx::query(
+        "INSERT INTO public.space_invitations(space_id,user_id,status) VALUES($1,$2,'pending')
+        ON CONFLICT(space_id,user_id) DO UPDATE SET status='pending',updated_at=now()",
+    )
+    .bind(space_id)
+    .bind(member.0)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok((
-        if exists {
-            StatusCode::OK
-        } else {
-            StatusCode::CREATED
-        },
+        StatusCode::CREATED,
         Json(Member {
             id: member.1,
             avatar_id: member.2,
@@ -525,6 +645,136 @@ async fn add_space_member(
             owner: member.0 == principal.user.id,
         }),
     ))
+}
+
+async fn invite_rate_limit(pool: &PgPool, user: i64) -> Result<(), ApiError> {
+    let attempts: i32 = sqlx::query_scalar(
+        "INSERT INTO public.space_invite_limits(user_id) VALUES($1)
+         ON CONFLICT(user_id) DO UPDATE SET
+           attempts=CASE WHEN space_invite_limits.window_start <= now()-interval '10 minutes' THEN 1
+                         ELSE LEAST(space_invite_limits.attempts+1,21) END,
+           window_start=CASE WHEN space_invite_limits.window_start <= now()-interval '10 minutes' THEN now()
+                             ELSE space_invite_limits.window_start END
+         RETURNING attempts",
+    ).bind(user).fetch_one(pool).await.map_err(database_error)?;
+    if attempts > 20 {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many invitation attempts; try again in 10 minutes",
+        ));
+    }
+    Ok(())
+}
+
+async fn list_invitations(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let id = owner_space(&mut tx, &space, principal.user.id).await?;
+    let rows: Vec<Member> = sqlx::query_as::<_, (String, i16, String, String)>(
+        "SELECT u.external_id,u.avatar_id,u.username,u.display_name FROM public.space_invitations i
+         JOIN public.users u ON u.id=i.user_id WHERE i.space_id=$1 AND i.status='pending'
+           AND i.updated_at > now()-interval '7 days' AND u.deleted_at IS NULL
+         ORDER BY i.updated_at,u.id",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(database_error)?
+    .into_iter()
+    .map(|(id, avatar_id, username, display_name)| Member {
+        id,
+        avatar_id,
+        username,
+        display_name,
+        owner: false,
+    })
+    .collect();
+    Ok(Json(json!({"members":rows})))
+}
+
+async fn accept_invitation(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+) -> Result<Json<Space>, ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    // The same space -> recipient lock order as invitation/removal operations.
+    let (id,name,owner_id): (i64,String,String) = sqlx::query_as(
+        "SELECT s.id,s.name,o.external_id FROM public.spaces s JOIN public.users o ON o.id=s.owner_id
+         WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo FOR UPDATE OF s",
+    ).bind(&space).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
+    lock_onboarded_user(&mut tx, principal.user.id).await?;
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.space_invitations WHERE space_id=$1 AND user_id=$2 AND status='pending' AND updated_at > now()-interval '7 days')")
+        .bind(id).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if !pending {
+        return Err(not_found());
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM public.space_members sm JOIN public.spaces s ON s.id=sm.space_id WHERE sm.user_id=$1 AND s.deleted_at IS NULL")
+        .bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if count >= state.config.space_limits.total_spaces {
+        return Err(conflict("membership limit reached"));
+    }
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(id)
+        .bind(principal.user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE space_id=$1 AND NOT private AND deleted_at IS NULL ORDER BY (name='general') DESC,id LIMIT 1")
+        .bind(id).bind(principal.user.id).execute(&mut *tx).await.map_err(database_error)?;
+    sqlx::query("UPDATE public.space_invitations SET status='accepted',updated_at=now() WHERE space_id=$1 AND user_id=$2")
+        .bind(id).bind(principal.user.id).execute(&mut *tx).await.map_err(database_error)?;
+    tx.commit().await.map_err(database_error)?;
+    Ok(Json(Space {
+        id: space,
+        name,
+        owner_id,
+    }))
+}
+
+async fn decline_invitation(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(space): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM public.spaces WHERE external_id=$1 AND deleted_at IS NULL AND NOT demo FOR UPDATE")
+        .bind(space).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
+    let changed = sqlx::query("UPDATE public.space_invitations SET status='declined',updated_at=now()
+        WHERE space_id=$1 AND user_id=$2 AND status='pending' AND updated_at > now()-interval '7 days'")
+        .bind(id).bind(principal.user.id).execute(&mut *tx).await.map_err(database_error)?;
+    if changed.rows_affected() != 1 {
+        return Err(not_found());
+    }
+    tx.commit().await.map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn cancel_invitation(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path((space, user)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
+    let id = owner_space(&mut tx, &space, principal.user.id).await?;
+    let changed = sqlx::query(
+        "UPDATE public.space_invitations i SET status='revoked',updated_at=now()
+        FROM public.users u WHERE i.space_id=$1 AND i.user_id=u.id AND u.external_id=$2
+        AND i.status='pending' AND i.updated_at > now()-interval '7 days'",
+    )
+    .bind(id)
+    .bind(user)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    if changed.rows_affected() != 1 {
+        return Err(not_found());
+    }
+    tx.commit().await.map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn remove_space_member(
@@ -557,6 +807,10 @@ async fn remove_space_member(
     }
     sqlx::query("DELETE FROM public.channel_members cm USING public.channels c WHERE cm.channel_id=c.id AND c.space_id=$1 AND cm.user_id=$2")
         .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
+    sqlx::query("DELETE FROM public.channel_joins cj USING public.channels c WHERE cj.channel_id=c.id AND c.space_id=$1 AND cj.user_id=$2")
+        .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
+    sqlx::query("UPDATE public.channel_invitations i SET status='revoked',updated_at=now() FROM public.channels c WHERE i.channel_id=c.id AND c.space_id=$1 AND i.user_id=$2 AND i.status IN ('pending','accepted')")
+        .bind(space_id).bind(target).execute(&mut *tx).await.map_err(database_error)?;
     let changed = sqlx::query("DELETE FROM public.space_members WHERE space_id=$1 AND user_id=$2")
         .bind(space_id)
         .bind(target)
@@ -566,6 +820,15 @@ async fn remove_space_member(
     if changed.rows_affected() != 1 {
         return Err(not_found());
     }
+    sqlx::query(
+        "INSERT INTO public.space_invitations(space_id,user_id,status) VALUES($1,$2,'revoked')
+        ON CONFLICT(space_id,user_id) DO UPDATE SET status='revoked',updated_at=now()",
+    )
+    .bind(space_id)
+    .bind(target)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -599,79 +862,13 @@ async fn list_channel_members(
         owner,
     })
     .collect();
-    Ok(Json(json!({"members":rows})))
-}
-
-async fn add_channel_member(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    Path((space, channel)): Path<(String, String)>,
-    Json(input): Json<MemberInput>,
-) -> Result<(StatusCode, Json<Member>), ApiError> {
-    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
-    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
-    let channel_id = channel_for_update(&mut tx, space_id, &channel).await?;
-    let member = find_user_for_update(&mut tx, &input.username).await?;
-    let belongs: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM public.space_members WHERE space_id=$1 AND user_id=$2)",
-    )
-    .bind(space_id)
-    .bind(member.0)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(database_error)?;
-    if !belongs {
-        return Err(not_found());
-    }
-    let changed=sqlx::query("INSERT INTO public.channel_members(channel_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING").bind(channel_id).bind(member.0).execute(&mut *tx).await.map_err(database_error)?;
-    tx.commit().await.map_err(database_error)?;
-    Ok((
-        if changed.rows_affected() == 1 {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(Member {
-            id: member.1,
-            avatar_id: member.2,
-            username: member.3,
-            display_name: member.4,
-            owner: member.0 == principal.user.id,
-        }),
-    ))
-}
-
-async fn remove_channel_member(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    Path((space, channel, user)): Path<(String, String, String)>,
-) -> Result<StatusCode, ApiError> {
-    let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
-    let space_id = owner_space(&mut tx, &space, principal.user.id).await?;
-    let channel_id = channel_for_update(&mut tx, space_id, &channel).await?;
-    let target: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM public.users WHERE external_id=$1 AND deleted_at IS NULL",
-    )
-    .bind(user)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(database_error)?;
-    let target = target.ok_or_else(not_found)?;
-    if target == principal.user.id {
-        return Err(conflict("owner cannot be removed"));
-    }
-    let changed =
-        sqlx::query("DELETE FROM public.channel_members WHERE channel_id=$1 AND user_id=$2")
-            .bind(channel_id)
-            .bind(target)
-            .execute(&mut *tx)
-            .await
-            .map_err(database_error)?;
-    if changed.rows_affected() != 1 {
-        return Err(not_found());
-    }
-    tx.commit().await.map_err(database_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    let invitations: Vec<Value> = sqlx::query_as::<_,(String,i16,String,String)>(
+        "SELECT u.external_id,u.avatar_id,u.username,u.display_name FROM public.channel_invitations i
+         JOIN public.users u ON u.id=i.user_id JOIN public.space_members sm ON sm.user_id=u.id AND sm.space_id=$2
+         WHERE i.channel_id=$1 AND i.status='pending' AND i.updated_at > now()-interval '7 days' AND u.deleted_at IS NULL ORDER BY i.updated_at,u.id"
+    ).bind(channel_id).bind(space_id).fetch_all(pool).await.map_err(database_error)?
+        .into_iter().map(|(id,avatar_id,username,display_name)|json!(Member{id,avatar_id,username,display_name,owner:false})).collect();
+    Ok(Json(json!({"members":rows,"invitations":invitations})))
 }
 
 async fn lock_onboarded_user(
@@ -732,8 +929,13 @@ async fn find_user_for_update(
     tx: &mut Transaction<'_, Postgres>,
     username: &str,
 ) -> Result<(i64, String, i16, String, String), ApiError> {
+    let username = username.trim().to_ascii_lowercase();
+    if !crate::accounts::valid_username(&username) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid username"));
+    }
     sqlx::query_as("SELECT id,external_id,avatar_id,username,display_name FROM public.users WHERE username=$1 AND deleted_at IS NULL AND display_name IS NOT NULL FOR UPDATE")
-        .bind(username).fetch_optional(&mut **tx).await.map_err(database_error)?.ok_or_else(not_found)
+        .bind(username).fetch_optional(&mut **tx).await.map_err(database_error)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "user not found"))
 }
 
 async fn members(pool: &PgPool, space: i64) -> Result<Vec<Member>, ApiError> {
@@ -1124,8 +1326,8 @@ mod tests {
             1
         );
 
-        // Membership creation locks the target user, so only one seventh active
-        // membership can be added by concurrent owners.
+        // Invitations don't consume membership quota. Concurrent acceptances
+        // lock the recipient, so only one can consume the seventh active slot.
         for index in 0..6 {
             let id:i64=sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,$2,$3) RETURNING id")
                 .bind(random_id(12)).bind(format!("membership {index}")).bind(owner.user.id).fetch_one(&pool).await.unwrap();
@@ -1147,21 +1349,31 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let one = add_space_member(
+        for destination in &destinations {
+            assert_eq!(
+                add_space_member(
+                    State(state.clone()),
+                    Extension(owner.clone()),
+                    Path(destination.clone()),
+                    Json(MemberInput {
+                        username: "target".into()
+                    })
+                )
+                .await
+                .unwrap()
+                .0,
+                StatusCode::CREATED
+            );
+        }
+        let one = accept_invitation(
             State(state.clone()),
-            Extension(owner.clone()),
+            Extension(target.clone()),
             Path(destinations[0].clone()),
-            Json(MemberInput {
-                username: "target".into(),
-            }),
         );
-        let two = add_space_member(
-            State(state),
-            Extension(owner),
+        let two = accept_invitation(
+            State(state.clone()),
+            Extension(target.clone()),
             Path(destinations[1].clone()),
-            Json(MemberInput {
-                username: "target".into(),
-            }),
         );
         let (one, two) = tokio::join!(one, two);
         assert_eq!(
@@ -1170,6 +1382,365 @@ mod tests {
                 .filter(|ok| *ok)
                 .count(),
             1
+        );
+
+        // Consent lifecycle, privacy and duplicate races on a separate destination.
+        let consent = random_id(12);
+        let consent_id: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Consent',$2) RETURNING id")
+            .bind(&consent).bind(owner.user.id).fetch_one(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(consent_id)
+            .bind(owner.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let consent_channel = random_id(12);
+        sqlx::query(
+            "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'general')",
+        )
+        .bind(&consent_channel)
+        .bind(consent_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let invite = |username: &str| {
+            add_space_member(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path(consent.clone()),
+                Json(MemberInput {
+                    username: username.into(),
+                }),
+            )
+        };
+        for (username, status, message) in [
+            ("bad name!", StatusCode::BAD_REQUEST, "invalid username"),
+            ("missing_user", StatusCode::NOT_FOUND, "user not found"),
+            ("owner", StatusCode::CONFLICT, "user already in space"),
+        ] {
+            let error = invite(username).await.err().unwrap();
+            assert_eq!((error.status, error.message), (status, message));
+        }
+        // A non-owner cannot use the invite endpoint as an account directory.
+        assert_eq!(
+            add_space_member(
+                State(state.clone()),
+                Extension(outsider.clone()),
+                Path(consent.clone()),
+                Json(MemberInput {
+                    username: "missing_user".into()
+                })
+            )
+            .await
+            .err()
+            .unwrap()
+            .message,
+            "resource not found"
+        );
+        let (first, duplicate) = tokio::join!(invite(" MEMBER "), invite("member"));
+        assert_eq!(
+            usize::from(first.is_ok()) + usize::from(duplicate.is_ok()),
+            1
+        );
+        assert_eq!(
+            first.err().or_else(|| duplicate.err()).unwrap().message,
+            "user already invited"
+        );
+        sqlx::query("UPDATE public.users SET display_name='Space Host' WHERE id=$1")
+            .bind(owner.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let listed = list_spaces(State(state.clone()), Extension(member.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert!(
+            !listed["spaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|space| space["id"] == consent)
+        );
+        assert_eq!(
+            listed["invitations"][0],
+            json!({"id":consent,"name":"Consent","ownerId":owner.user.external_id,
+                "inviter":{"username":"owner","displayName":"Space Host"}})
+        );
+        assert_eq!(members(&pool, consent_id).await.unwrap().len(), 1);
+        assert_eq!(
+            get_space(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            channel_access(&pool, &consent_channel, Some(member.user.id))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            list_invitations(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            accept_invitation(
+                State(state.clone()),
+                Extension(outsider.clone()),
+                Path(consent.clone())
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            decline_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            invite("member").await.err().unwrap().status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            accept_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        sqlx::query("UPDATE public.space_invitations SET updated_at=now()-interval '24 hours' WHERE space_id=$1")
+            .bind(consent_id).execute(&pool).await.unwrap();
+        assert_eq!(invite("member").await.unwrap().0, StatusCode::CREATED);
+        cancel_invitation(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path((consent.clone(), member.user.external_id.clone())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            accept_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            invite("member").await.err().unwrap().status,
+            StatusCode::CONFLICT
+        );
+        sqlx::query("UPDATE public.space_invitations SET updated_at=now()-interval '24 hours' WHERE space_id=$1")
+            .bind(consent_id).execute(&pool).await.unwrap();
+        assert_eq!(invite("member").await.unwrap().0, StatusCode::CREATED);
+        // Expiry excludes the invite and blocks acceptance, but permits a fresh invite.
+        sqlx::query("UPDATE public.space_invitations SET updated_at=now()-interval '7 days' WHERE space_id=$1")
+            .bind(consent_id).execute(&pool).await.unwrap();
+        assert_eq!(
+            list_spaces(State(state.clone()), Extension(member.clone()))
+                .await
+                .unwrap()
+                .0["invitations"],
+            json!([])
+        );
+        assert_eq!(
+            accept_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+            .await
+            .err()
+            .unwrap()
+            .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(invite("member").await.unwrap().0, StatusCode::CREATED);
+        let (accepted, repeated) = tokio::join!(
+            accept_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            ),
+            accept_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+        );
+        assert_eq!(
+            usize::from(accepted.is_ok()) + usize::from(repeated.is_ok()),
+            1
+        );
+        assert!(
+            channel_access(&pool, &consent_channel, Some(member.user.id))
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            invite("member").await.err().unwrap().message,
+            "user already in space"
+        );
+        remove_space_member(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path((consent.clone(), member.user.external_id.clone())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            invite("member").await.err().unwrap().status,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            channel_access(&pool, &consent_channel, Some(member.user.id))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            list_spaces(State(state.clone()), Extension(member.clone()))
+                .await
+                .unwrap()
+                .0["spaces"],
+            json!([])
+        );
+
+        // A concurrent decline must not report success after acceptance commits.
+        sqlx::query("UPDATE public.space_invitations SET updated_at=now()-interval '24 hours' WHERE space_id=$1")
+            .bind(consent_id).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE public.space_invite_limits SET window_start=now()-interval '10 minutes' WHERE user_id=$1")
+            .bind(owner.user.id).execute(&pool).await.unwrap();
+        assert_eq!(invite("member").await.unwrap().0, StatusCode::CREATED);
+        let (accepted, declined) = tokio::join!(
+            accept_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            ),
+            decline_invitation(
+                State(state.clone()),
+                Extension(member.clone()),
+                Path(consent.clone())
+            )
+        );
+        assert_eq!(
+            usize::from(accepted.is_ok()) + usize::from(declined.is_ok()),
+            1
+        );
+        let (status, belongs): (String, bool) = sqlx::query_as(
+            "SELECT i.status,EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=i.space_id AND sm.user_id=i.user_id)
+             FROM public.space_invitations i WHERE i.space_id=$1 AND i.user_id=$2",
+        ).bind(consent_id).bind(member.user.id).fetch_one(&pool).await.unwrap();
+        assert_eq!(belongs, accepted.is_ok());
+        assert_eq!(
+            status,
+            if accepted.is_ok() {
+                "accepted"
+            } else {
+                "declined"
+            }
+        );
+        if accepted.is_ok() {
+            remove_space_member(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path((consent.clone(), member.user.external_id.clone())),
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            accepted.err().or_else(|| declined.err()).unwrap().status,
+            StatusCode::NOT_FOUND
+        );
+
+        // Every failed attempt is durable, and the 20th/21st boundary is atomic.
+        sqlx::query("UPDATE public.space_invite_limits SET attempts=19 WHERE user_id=$1")
+            .bind(owner.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (one, two) = tokio::join!(invite("missing_one"), invite("missing_two"));
+        let statuses = [one.err().unwrap().status, two.err().unwrap().status];
+        assert!(statuses.contains(&StatusCode::NOT_FOUND));
+        assert!(statuses.contains(&StatusCode::TOO_MANY_REQUESTS));
+        assert_eq!(
+            invite("missing_user").await.err().unwrap().status,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        sqlx::query("UPDATE public.space_invite_limits SET window_start=now()-interval '10 minutes' WHERE user_id=$1")
+            .bind(owner.user.id).execute(&pool).await.unwrap();
+        assert_eq!(
+            invite("missing_user").await.err().unwrap().status,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i32>(
+                "SELECT attempts FROM public.space_invite_limits WHERE user_id=$1"
+            )
+            .bind(owner.user.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+
+        // Recipient cap serializes concurrent senders even across different spaces.
+        sqlx::query("WITH destinations AS (INSERT INTO public.spaces(external_id,name,owner_id)
+            SELECT 'cap'||lpad(n::text,9,'0'),'Cap fixture',$1 FROM generate_series(1,49) n RETURNING id)
+            INSERT INTO public.space_invitations(space_id,user_id,status) SELECT id,$2,'pending' FROM destinations")
+            .bind(owner.user.id).bind(member.user.id).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE public.space_invitations SET updated_at=now()-interval '24 hours' WHERE space_id=$1 AND user_id=$2")
+            .bind(consent_id).bind(member.user.id).execute(&pool).await.unwrap();
+        let another = add_space_member(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(destinations[0].clone()),
+            Json(MemberInput {
+                username: "member".into(),
+            }),
+        );
+        let (one, two) = tokio::join!(invite("member"), another);
+        assert_eq!(usize::from(one.is_ok()) + usize::from(two.is_ok()), 1);
+        assert_eq!(
+            one.err().or_else(|| two.err()).unwrap().message,
+            "pending invitation limit reached"
         );
 
         pool.close().await;

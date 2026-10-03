@@ -85,6 +85,8 @@ try {
   assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-account .account-profile")).cursor'), 'grabbing');
   browser('mouse', 'up', 'left');
   assert.equal(evaluate('return document.querySelector(".live-stage").hasAttribute("data-dragging")'), false);
+  // The drag can leave the pointer over a roster row with its normal hover fill.
+  browser('mouse', 'move', '0', '0');
   assert.equal(evaluate('return document.querySelector(".sim-composer").tagName'), 'DIV');
   assert.equal(evaluate('return document.querySelectorAll(".sim-demo :is(button, a, input, textarea, [role=button])").length'), 0, 'Join is the only action; the room is read-only');
   assert.equal(evaluate('return document.querySelectorAll(".live-stage a").length'), 1);
@@ -180,8 +182,37 @@ try {
   wait('document.querySelector("#email")');
   assert.equal(evaluate('return location.pathname'), '/login');
   const login = evaluate('return document.querySelector("main").textContent');
+  assert.equal(evaluate('return document.querySelector("h1").textContent'), 'Welcome to Caper');
   assert.ok(login.includes('We’ll send a code to your email.'));
   assert.ok(!/WELCOME TO CAPER|We only send a code when you ask|No password needed/.test(login));
+  browser('network', 'route', '**/api/auth/email/request', '--body', JSON.stringify({ challengeId: 'layout-fixture' }));
+  const loginGaps = () => evaluate(`
+    const heading = document.querySelector('h1');
+    const input = document.querySelector('input');
+    return [
+      heading.nextElementSibling.getBoundingClientRect().top - heading.getBoundingClientRect().bottom,
+      document.querySelector('button[type=submit]').getBoundingClientRect().top - input.getBoundingClientRect().bottom,
+    ];
+  `);
+  for (const width of [1280, 390]) {
+    browser('set', 'viewport', String(width), '844', '2');
+    evaluate('await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));');
+    assert.deepEqual(loginGaps(), [4, 12], `Email entry gaps at ${width}px`);
+    const action = evaluate(`
+      const input = document.querySelector('#email').getBoundingClientRect();
+      const button = document.querySelector('button[type=submit]').getBoundingClientRect();
+      return { right: button.right - input.right, width: button.width, inputWidth: input.width };
+    `);
+    assert.equal(action.right, 0, `Email action aligns with input's right edge at ${width}px`);
+    assert.ok(action.width < action.inputWidth, `Email action is compact at ${width}px`);
+    browser('fill', '#email', 'layout@example.test');
+    browser('click', 'button[type=submit]');
+    wait('document.querySelector("#code")');
+    assert.deepEqual(loginGaps(), [4, 12], `Verification gaps at ${width}px`);
+    browser('click', 'button[type=button]');
+    wait('document.querySelector("#email")');
+  }
+  console.log('PASS: email/verification title gaps are 4px and input/action gaps are 12px at desktop and narrow widths');
   browser('set', 'viewport', '390', '844', '2');
   // Navigation clicks must not race the card's arrival/idle animation. Motion
   // and dragging were exercised above; use the stable view for account fixtures.

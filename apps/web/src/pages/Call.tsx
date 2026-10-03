@@ -210,7 +210,9 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
 export interface VoiceSlot { summary: ReactNode; list: ReactNode }
 
 interface CallProps {
-  channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean };
+  channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean; direct?: boolean; joined?: boolean };
+  onReadCursor?: (seq: string) => void;
+  channelActions?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
   onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
@@ -234,7 +236,7 @@ interface CallProps {
   onChatOnlineChange?: (online: boolean) => void;
 }
 
-export default function Call({ channel, voiceChannels, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
+export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -274,7 +276,8 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
-  const available = availability[mediaRoot];
+  const channelJoined = channel?.joined !== false;
+  const available = channelJoined ? availability[mediaRoot] : false;
   const clientRoot = useRef(mediaRoot);
   const rootFor = (channelId?: string) => !channelId || channel?.demo ? "/api/media" : `/api/channels/${encodeURIComponent(channelId)}/media`;
   const createClient = (root = mediaRoot) => {
@@ -404,7 +407,9 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   }, [signedIn, settingsOpen]);
 
   useEffect(() => {
+    if (!channelJoined) return;
     let current = true;
+    if (channel?.direct) return;
     fetch(`${mediaRoot}/status`, { credentials: "same-origin", signal: AbortSignal.timeout(10_000) })
       .then(async (response) => response.ok ? response.json() as Promise<{ enabled: boolean }> : { enabled: false })
       .then((result) => {
@@ -413,7 +418,13 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       })
       .catch(() => { if (current) setAvailability((previous) => ({ ...previous, [mediaRoot]: false })); });
     return () => { current = false; };
-  }, [mediaRoot]);
+  }, [mediaRoot, channelJoined, channel?.direct]);
+
+  useEffect(() => {
+    if (voiceChannel?.id && voiceChannels && !voiceChannels.some((item) => item.id === voiceChannel.id)) {
+      clientRef.current?.leaveImmediately();
+    }
+  }, [voiceChannel?.id, voiceChannels]);
 
   useEffect(() => {
     // Download/compile only; never a permission prompt. Deferred for embedded
@@ -507,6 +518,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   const joinBlocked = !identityReady || state.phase === "leaving" || available !== true || actionPending;
   /** Join (or switch voice to) any listed channel without leaving the one being read. */
   const joinChannel = (channelId?: string) => {
+    if (channel?.direct && (!channelId || channelId === channel.id)) return;
     const target = channelId === channel?.id ? channel : channel && channelId ? {
       ...channel, id: channelId, name: voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice",
     } : channel;
@@ -668,6 +680,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
   // on request. Connected channels reserve the action slot; leave lives in the dock.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
+    if (channel?.direct || (channelId === channel?.id && !channelJoined)) return null;
     const { people, own } = rosterFor(channelId);
     if (own) rosterPlaced = true;
     const key = voiceChannelKey(channelId);
@@ -721,7 +734,7 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
       {!embedded && <header className="call-header">
         <Wordmark />
       </header>}
-      <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`}>
+      <section className={`call-room${channel ? " spaces-room" : ""}${navigationOpen ? " navigation-open" : ""}`} data-direct={channel?.direct ? "" : undefined}>
         {spaceRail}
         <ChannelSidebar>
           <div className="sidebar-channels">
@@ -795,8 +808,9 @@ export default function Call({ channel, voiceChannels, spaceRail, channelNavigat
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady && engaged} messageSounds={engaged} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
+          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
             {!audioPanel && actionError && <div className="room-error chat-refresh-error" role="alert">{actionError}</div>}
+            {channelJoined && channelActions}
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />

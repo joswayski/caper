@@ -10,22 +10,24 @@ membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
 Web channel names and owner-only `⋯` actions have a separate row above voice
-activity. Join, Joining, Leave and Switch here reuse one fixed-width button;
-voice actions are neutral until hover/focus, and empty channels have no voice
+activity. Join, Joining and Switch here use one fixed-width action slot;
+connected channels reserve that space without an inline Leave action.
+Disconnect lives in the bottom voice dock beside the account.
+Voice actions are neutral until hover/focus, and empty channels have no voice
 status text. Only occupied channels show a voice count. Hover and connection/roster
 updates do not shift the action target. The Channels count stays beside its label
 in both owned and shared spaces. Selecting a channel
 opens text without switching voice. Participant lists start collapsed and expand
 from the voice count. Channel actions open the existing privacy/member settings;
-no invite controls are added. At the minimum sidebar width, counts take priority
-over avatars; narrow web layouts retain 44px action targets.
+at the minimum sidebar width, counts take priority over avatars; narrow web
+layouts retain 44px action targets.
 Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
 against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
 owner permissions, settings focus return, voice switching and pending/error/cancel
 states. This is browser UI coverage, not live SFU or physical-device validation.
-The web-only layout replaces its sliding controls; Android, Apple and Rust desktop
-retain their independent native channel controls. No shared protocol or native
-release is required; browser checks do not establish native rendering parity.
+Web, Android, Apple and Rust desktop implement these stable rows independently.
+No shared protocol change is required, but updated native binaries must be
+released separately; browser checks do not establish native rendering parity.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
@@ -537,9 +539,11 @@ that space, not to anonymous visitors or unrelated accounts. Private channels
 are visible to their explicitly selected space members and the owner. The public
 demo cannot be managed through these APIs.
 
-Owners add existing accounts by exact username and can remove them. This is a
-direct membership change, not an invitation awaiting acceptance. There are no
-invite links, custom roles, ownership transfers or public space discovery yet.
+Owners invite existing accounts by exact username and can remove members or
+cancel pending invitations. Invitees must accept before becoming members.
+Existing memberships are unchanged; the migration does not retroactively ask
+existing members to accept. There are no invite links, custom roles, ownership
+transfers or public space discovery yet.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed.
 Counts include active resources only. Defaults are 20 owned spaces per
@@ -564,12 +568,84 @@ soft delete: it removes access and frees the quota, but retained message rows
 are not physically purged by this feature. There is no restore UI.
 
 The account APIs live at `/api/spaces`, `/api/spaces/{space}`, and their
-`/channels`, `/members`, and `/channels/{channel}/members` subresources. Browser
-cookies or account bearer authentication are required. Only owners manage these
-resources, except a member removing their own membership. Text history and
+`/channels`, `/members`, `/invitations`, `/invitation`, and
+`/channels/{channel}/members` subresources. Browser cookies or account bearer
+authentication are required. Only owners manage resources, except a member
+removing their own membership or an invitee accepting/declining their own invite.
+Text history and
 commands use `/api/chat/channels/{channel}/...`;
 WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
 paths check membership and channel visibility, including replay and live delivery.
+
+### Invitation consent and abuse limits
+
+`GET /api/spaces` returns active `spaces`, metadata-only pending `invitations`
+(space ID, name, owner ID and `inviter: {username, displayName}`), and `limits`.
+Only owners can invite; inviter metadata uses the owner's current public profile,
+not a snapshot at send time. Clients also accept older metadata without `inviter`.
+This additive response needs no migration beyond the invitation tables below.
+Pending invitations live in
+`space_invitations`, not `space_members`: they grant no space-detail, membership,
+channel, history, presence, WebSocket or media access. Acceptance alone inserts
+membership and checks the current total-membership quota under database locks.
+No private-channel grants are implicit. Existing authorization remains based on
+active membership, not invitation status.
+
+| Operation | Route | Result |
+| --- | --- | --- |
+| Owner sends an invitation | `POST /api/spaces/{space}/members` with `{username}` | 201 with invitee member metadata; not an active member |
+| Owner lists pending invitees | `GET /api/spaces/{space}/invitations` | `{members: [...]}` |
+| Owner cancels an invitation | `DELETE /api/spaces/{space}/invitations/{user}` | 204 |
+| Invitee accepts | `POST /api/spaces/{space}/invitation` | 200 with space metadata |
+| Invitee declines | `DELETE /api/spaces/{space}/invitation` | 204 |
+
+Username fields normalize like profile selection: lowercase ASCII letters,
+digits and underscores, 3–32 characters. The API trims/lowercases and rejects
+invalid syntax (400 `invalid username`); it does not silently strip punctuation.
+An authorized owner gets 404 `user not found` for a missing account, or 409
+`user already in space` / `user already invited`. Authorization precedes account
+lookup. Unauthorized/missing spaces and expired/cancelled invitations retain
+generic 404s; the client says “This space is no longer available” without
+revealing whether the space exists for somebody else.
+
+Invitation attempts use a durable Postgres fixed-window counter, shared across
+replicas: **20 per owner per 10 minutes across all spaces**, including invalid
+usernames, failed lookups and duplicates. Attempt 21 and subsequent attempts
+return 429 until the window resets. Each invite expires after **7 days**. Decline,
+cancel and member removal impose a **24-hour cooldown** on the space/user pair.
+At most **50 live pending invites per recipient** and **100 per space** are
+allowed; reaching either cap returns 409. Expired/deleted-space invitations do
+not count. One row per pair retains state/cooldown, rather than an invitation
+event log. These are fixed product limits, not new configuration/secrets.
+
+The browser opens an inert empty shell behind a blurred consent dialog; it never
+downloads private content to blur it. Consent shows the space name and inviter's
+display name and `@username`, without explanatory paragraphs. Expired invites disappear
+from pending lists and cannot be accepted; accepted memberships do not expire.
+Decline has initial keyboard focus. Owners
+see pending invitees separately from active members and can cancel them. Browser
+space lists refresh on focus/visibility and every 15 seconds while visible;
+revocation removes the rail entry, invalidates cached navigation and clears the
+selected space. An outage is not treated as revocation. Native clients use their
+existing blocking/dimmed consent modals without loading the invited space;
+they currently discover invites at account load and prune stale spaces when
+navigation returns 404, rather than using the browser's periodic list refresh.
+Server access checks apply identically to every client.
+
+Space consent uses “You’re invited!” and the same 32px decorative Twemoji
+incoming-envelope artwork on web, Android, Apple and Rust desktop. The canonical
+PNG and CC BY 4.0 attribution are in `apps/web/public/images/invitation`.
+Android/Apple resource copies are checked byte-for-byte by the web test suite;
+desktop embeds the canonical PNG. Native layouts retain their existing modal
+patterns. This presentation change adds no API, migration, secret or reaction
+dependency. Keep the Apple invitation asset catalog and attribution resources
+when integrating other native resource changes.
+
+The separate message-reactions work must not be merged blindly into channel
+participation: reaction mutation authorization must require `channel_joins`,
+including for cross-channel tokens and mutations queued behind leave. Preview
+history reads must remain available. Borrowing this fixed artwork does not
+import reaction behavior or resolve that integration requirement.
 
 Account voice uses `/api/channels/{channel}/media/*`, with the same operation
 names as the guest `/api/media/*` endpoints. Every request needs a valid account
@@ -655,6 +731,162 @@ revoke the new channel rooms. The migration replaces the channel-name unique
 constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
+
+### Invitation rollout and validation (September 30, 2026)
+
+The invitation migration is additive and preserves existing memberships. The
+disposable-Postgres spaces test covers privacy, concurrent duplicate invitations
+and acceptances, membership quotas, expiry, cooldown, and atomic rate/cap limits:
+
+```bash
+CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+cargo test -p caper-api spaces::tests::authorization_self_leave_soft_deletion_and_quota_races -- --ignored
+# With the web dev server running; API calls are explicitly mocked:
+SPACES_TEST_WEB_URL=http://localhost:5174/spaces \
+node scripts/test-space-invitations.mjs
+```
+
+| Platform/check | Invitation validation |
+| --- | --- |
+| API | Real disposable Postgres 15 lifecycle/privacy/concurrency and current-owner inviter metadata test passed; default Rust tests and clippy passed |
+| Browser | Build/287 unit tests passed; Chromium at 1280px and 390px exercised normalization, missing/duplicate/member/429 errors, cancel, inviter/expiry, long names, legacy metadata, consent retry/decline/accept and focus-triggered revocation. DOM confirms no private requests before acceptance; screenshots inspected |
+| Rust desktop (Linux; shared source with Windows) | Native unit tests and Linux build; consent/pending-owner desktop and narrow fixtures rendered and inspected separately from browser. Not Windows execution or live SFU evidence |
+| Apple iOS/macOS | Consent, pending/cancel, validation and 404 cleanup implemented; Swift/Xcode tests and device rendering unavailable in this Linux orb |
+| Android | Consent, pending/cancel, validation and 404 cleanup implemented. Initial PR CI found a MemberManager callback compile error; fixed with explicit callback arguments in the follow-up. JDK/Android SDK tests and physical-device rendering unavailable in this orb; platform CI must verify the fix |
+| Docker/production/live media | No Docker daemon available; image build stages validated directly. No shared database migration, deployment, live SFU or physical-device test performed |
+
+Use the combined **Deployment order** under
+[Channel participation and private consent](#channel-participation-and-private-consent)
+below for space invitations and channel joining. Merge space-invitation consent
+first, but do not deploy it separately: the cumulative API applies both pending
+migrations before the gateway and clients roll out. Merging does not deploy.
+
+### Channel participation and private consent
+
+Channel access and participation are separate. `channel_members` remains the
+private authorization grant; `channel_joins` records the conversations a member
+has chosen. The sidebar shows joined channels. Browse channels searches the
+accessible directory and opens read-only previews without joining, preparing
+voice, or requesting a microphone. Public history and live text subscriptions
+remain readable before joining; sending, typing and every channel media
+operation require participation. Joining a channel never enters its voice call.
+The current quota remains 100 channels per space; this does not raise it to
+thousands or introduce server-side directory pagination.
+
+`Channel.joined` is returned by space details and channel mutations. New clients
+default a missing field to true for compatibility with older APIs. Public
+join/leave uses POST/DELETE
+`/api/spaces/{space}/channels/{channel}/membership`. Public leave removes the
+sidebar entry but preserves preview/rejoin access. Private non-owner leave also
+removes the authorization grant and warns that another invitation is required;
+the owner keeps implicit administration and can rejoin from the directory.
+Leaving a channel stops its local call, not an unrelated call. SFU cleanup after
+authorization ends is asynchronous, as above.
+
+Owner POST `/api/spaces/{space}/channels/{channel}/members` now sends a private
+invitation, not a grant. GET returns active `members` and separate pending
+`invitations`; DELETE `/members/{user}` cancels a pending invite or removes a
+grant and participation. The recipient's space detail adds `channelInvitations`
+containing only channel metadata and the current owner's public `inviter`
+identity. The pending channel is absent from the accessible directory, and its
+history/media stay unauthorized. POST/DELETE `/invitation` accepts/declines;
+acceptance grants and joins in one transaction. A stale, revoked, declined or
+expired invitation cannot be accepted. Unauthorized resources retain generic
+404 responses.
+
+Channel invitations expire after seven days and retain a 24-hour pair cooldown
+after decline, cancellation or removal. They share the space-invitation attempt
+budget (20 per owner per ten minutes), with separate live-pending limits of 50
+channel invitations per recipient and 100 per channel. Invitees must already
+belong to the space. These are fixed policies, not new secrets/configuration.
+
+Migration `202610010001_channel_joining.sql` joins existing members to all their
+currently accessible non-demo channels, preserving conversations during rollout.
+New space acceptance joins only one public starter, preferring `general`, if
+available. Creating a channel joins its creator, not every space member. Space
+removal clears participation and revokes channel invitations. No Valkey/SFU
+schema change or data reset is needed.
+
+Validation commands (disposable local services only):
+
+```bash
+DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+cargo test --workspace -- --ignored --test-threads=1
+node --test tests/native-parity-fixture.test.mjs
+CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-joining.mjs
+```
+
+| Platform | Channel participation validation / limits |
+| --- | --- |
+| API | Disposable Postgres migration/backfill, concurrent join, public read versus participation, private consent/expiry/cooldown/cancellation and removal tests; SQL sends and gateway/media authorization enforce joins |
+| Browser | Build/typecheck and unit tests; explicitly mocked Chromium desktop/390px search, preview, retry, persistence, accept/decline and leave. DOM/request assertions verify no private history before consent and zero microphone requests; representative captures inspected |
+| Rust desktop | Independent membership/directory/preview/consent implementation, Linux unit tests/fmt/clippy/build and rendered labelled desktop/narrow preview, directory/private consent and starter-channel disclosure fixtures inspected. Not Windows execution, physical audio, or live SFU evidence |
+| Apple iOS/macOS | Independent implementation and DTO/route tests added. No Swift/Xcode execution or device rendering in this Linux orb; platform CI and device acceptance remain required |
+| Android | Independent implementation and DTO/route tests added. Earlier channel PR CI built the APK and passed five instrumentation tests, but UI smoke expected the retired guest demo. Reconciliation retains current main's sign-in smoke fix; exact-head platform CI and device acceptance remain required. No JDK/Android SDK execution or physical-device rendering in this orb |
+| Native refresh | Invitations/joins are discovered on account/space reload and after mutations. Browser additionally refreshes on focus/visibility and every 15 seconds. Native clients do not claim browser-equivalent periodic discovery; server authorization applies immediately |
+| Docker/live | No Docker daemon available; validate web/API image build stages directly. No deployment, shared database writes, live SFU or physical-device acceptance performed |
+
+**Deployment order** for space invitations and channel joining (operator actions
+only; merge does not deploy):
+
+1. Merge space-invitation consent (#234), retarget the stacked channel change
+   (#238) to `main` and merge it, then retarget and merge the invitation-presentation
+   follow-up. A separate #234 or #238 deployment is unnecessary;
+   deploy the final cumulative images once. No new infrastructure, secrets or
+   configuration is required. Existing direct `MIGRATION_DATABASE_URL`, runtime
+   `DATABASE_URL` and shared `VALKEY_URL` must already be configured. Keep one
+   desired API replica. Use a maintenance window for channel/invitation mutations;
+   do not serve them from mixed old/new API versions, since older versions grant
+   private access without consent. Set `BACKEND_SHA` to the full merged #238 SHA
+   whose `api-$BACKEND_SHA` image is published; set `CLIENT_SHA` to the final
+   merged #241 SHA whose web image and native checks succeed. API image builds
+   are path-filtered, so presentation-only #241 may not publish an API tag.
+   API and gateway must use the same backend SHA. One SHA is valid only if that
+   exact revision has the required published API and web images and native checks.
+2. Deploy API first; startup uses the existing direct
+   `MIGRATION_DATABASE_URL` to apply every pending embedded migration, including
+   `202609300002_space_invitations.sql` and `202610010001_channel_joining.sql`,
+   before granting runtime table privileges. The channel migration backfills
+   existing active members, not pending space invitees. Already-applied migrations
+   are skipped. No manual migration/backfill/reset is required. Wait for workflow
+   success, readiness and all API pods using the new image before continuing.
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$BACKEND_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. Deploy gateway next so typing/media commands enforce participation too. The
+   API and gateway must both be updated before exposing channel-joining clients;
+   no Valkey/SFU schema migration/reset is required. Do not close healthy tracks
+   for this rollout. Wait for workflow success and readiness. The workflow/app
+   key is `caper-gateway`; the Kubernetes Deployment is `caper-chat-gateway`.
+   ```bash
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$BACKEND_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. Deploy web, then release native clients after their exact-head platform tests
+   succeed. Web and native releases can proceed independently after steps 2–3.
+   Older clients cannot join newly discovered channels or accept private channel
+   invitations and may misleadingly display a pending invite as an active member;
+   update owner clients before using private invitations. Wait for each workflow
+   to succeed before checking rollout.
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$CLIENT_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$CLIENT_SHA"
+   ```
+5. Verify with two owned test accounts: old conversations remain joined, a new
+   member cannot read space/channel history or use media before accepting the
+   space invite and starts in one channel afterward; public preview cannot
+   send/use voice; join does not enter voice; private metadata precedes acceptance;
+   cancellation blocks stale acceptance; public/private leave have distinct
+   re-entry behavior. Verify inviter/expiry, accept/decline/cancel and an unrelated
+   active call surviving navigation/leave. Treat provider cleanup as asynchronous.
+   Prefer a forward fix. Client rollback is possible against the new services,
+   with the limitations above; do not roll API/gateway back across the consent
+   or participation boundary or drop membership/invitation tables as rollback.
 
 ## Shared call state and rolling deployments
 
@@ -1195,25 +1427,62 @@ live ingestion into the user's dataset has not been verified.
 ## Deployment behavior
 
 - Web-only deployments do not reload already-open tabs; production media control
-  requests route straight to Rust. Keep API changes compatible with old tabs and
-  future native clients, which will not all update at deployment time.
-- API rolling updates start a replacement and wait for its readiness probe before
-  terminating the old pod. This removes the deliberate stop-before-start gap,
-  **not** today's call interruptions from separate in-memory registries.
-- On SIGTERM, Rust ends SSE streams, stops accepting connections and gives in-flight HTTP requests
-  up to 30 seconds to finish, then spends up to 20 seconds on existing provider
-  cleanup. If HTTP draining exceeds its deadline, the process exits without
-  provider cleanup rather than racing cleanup against unfinished mutations.
-  As with a crash, provider cleanup is not guaranteed and TURN expiry still applies.
-- A database connection alone does not make calls survive deployments. Future
-  work must persist capabilities, SFU sessions/tracks/subscriptions and leases;
-  coordinate participant mutations and cleanup across pods; and replace
-  process-exit call teardown with session handoff and expiry-based cleanup.
-  Database migrations must remain compatible with both overlapping versions.
-- Deploy the infrastructure grace-period change before the new API image. The
-  infrastructure repository's `docs/operations.md` describes Flux reconciliation;
-  image deployment commands are below. No live rolling-call validation has been
-  performed for these changes; client recovery tests use mocked media/API responses.
+  requests route straight to Rust. Keep API/gateway changes compatible with old
+  tabs and native clients, which will not all update at deployment time.
+- The production infrastructure manifests configure **both API and gateway** with
+  two replicas, `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `/readyz`, a
+  five-second `preStop`, and 65-second termination grace. This is the desired
+  configuration, not proof of the live cluster's state. All overlapping API and
+  gateway pods must use the same `VALKEY_URL` and compatible state schema.
+- Gateway SIGTERM makes `/readyz` fail and rejects new sockets/commands. Existing
+  sockets receive `migrating` and keep delivering chat/media updates for 20 seconds.
+  The browser opens a replacement without closing the old socket, resumes chat
+  from its applied Postgres sequence, and waits for all subscriptions to catch up,
+  including a current media snapshot, before switching. Failed candidates retry
+  while the old socket remains usable. Overlapping messages are deduplicated.
+  Accepted commands finish after socket loss and cache their results in Valkey;
+  retries keep the same command identity. The gateway keeps its runtime alive for
+  36 seconds before HTTP draining so those commands can finish.
+- An API-only rollout does not restart the separately deployed gateway or its
+  sockets. Account/chat state remains in Postgres and active voice state remains
+  in Valkey. API SIGTERM rejects new media commands and drains in-flight HTTP
+  requests for up to 30 seconds. **Shared-mode shutdown does not remove voice
+  participants, close Cloudflare tracks, or revoke their TURN credentials.**
+  Legacy opt-in SSE streams use the ten-second overlap described above. Healthy
+  audio stays client ↔ Cloudflare, independent of API/gateway connections.
+- Memory-only development does not have that voice guarantee: shutdown removes
+  local participants and spends up to 20 seconds on provider cleanup. If HTTP
+  draining exceeds its deadline, the process exits without provider cleanup
+  rather than racing cleanup against unfinished mutations. Do not mix local-mode
+  and shared-mode pods; use the staged Valkey cutover before adding replicas.
+- Updated Android, Apple, and Rust desktop clients also overlap sockets on
+  `migrating`. Chat replay resumes from the applied cursor; promotion requires
+  subscription acknowledgments, the chat replay checkpoint, current media
+  revisions, and any watched presence snapshot. Messages and media snapshots
+  delivered by both sockets are deduplicated. Failed or stalled candidates retry
+  without clearing the old stream's chat/voice state. In-call roster streams keep
+  the existing media capability and do not rejoin the call during handoff.
+  Older installed native versions still briefly reconnect; release the updated
+  clients independently against the existing compatible API/gateway protocol.
+- Deploy the matching API image successfully before the gateway image; the
+  infrastructure gateway workflow verifies that API rollout before changing its
+  pin. Keep infrastructure lifecycle settings in place and migrations compatible
+  with both overlapping versions. Merging application code does not deploy it.
+- Regression coverage uses real local WebSockets, Postgres and Valkey for replay,
+  chat delivery through drain overlap, admission rejection, and accepted-command
+  recovery. Shared-media tests replace both API instances and assert unchanged
+  provider session mappings and zero shutdown track closes/TURN revocations.
+  Browser tests cover repeated mixed chat/media handoffs, failed candidates, stale
+  snapshots, deduplication, and unchanged mocked voice peers after gateway loss.
+  Android JVM tests and Rust desktop tests exercise native handoffs with real
+  local WebSockets. Swift actor tests use an injected transport, compiled and
+  run in a Linux harness; Xcode/macOS/iOS and Windows builds remain separate CI
+  validation. No physical-device handoff acceptance is claimed. Cloudflare is
+  mocked; these checks do **not** prove live-cluster routing or continuous audio.
+  Run the live two-client replacement checks in
+  [Activation and verification](#activation-and-verification) before claiming that.
+  A crash, replacement outage beyond the handoff window, or expired lease can
+  still interrupt updates or force voice recovery.
 
 ## Limits and lifecycle
 
@@ -2608,7 +2877,7 @@ native development build workflow.
 **Stable channel controls, October 3, 2026:** web, Android, shared iOS/macOS
 SwiftUI, and Rust Windows/Linux desktop use separate channel-name/settings and
 voice rows. Owners get a permanent channel-options menu opening existing privacy
-and member settings; no invite controls are implemented. Quiet speaking-icon
+and member settings. Quiet speaking-icon
 actions keep their slot through Join voice, Joining, and Switch here. Connected
 channels reserve that space without a duplicate Leave action: disconnect lives
 only in the voice-connected dock beside the account. Desktop name/voice rows are
@@ -2622,6 +2891,8 @@ occupancy; iOS uses 44pt targets; macOS and Rust desktop use 28pt/28px voice
 targets. Apple and Rust desktop drop summary avatars before crowding the count
 at narrow sidebar widths. Rust desktop may shorten `N in voice` to `N` at its
 220px minimum; its accessible name retains the complete occupancy description.
+Android's channel menu also contains Leave channel for joined account channels;
+this changes membership and is separate from disconnecting voice in the dock.
 
 Local acceptance: Android unit tests, lint and four-ABI debug packaging, Rust
 desktop unit/accessibility-geometry tests and a Linux fixture render, plus web
@@ -2850,6 +3121,61 @@ Run the focused browser regression against local Vite with
 `MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:31740/spaces node scripts/test-space-controls.mjs`.
 The native parity fixture now supplies saved avatar IDs in account, member, chat
 and voice responses rather than testing only initials.
+
+### Rotating site and runtime app icons
+
+Supported icon surfaces choose one of the 800 bundled v3 avatars per UTC day,
+remember it locally, and exclude the preceding choice. This cosmetic choice does
+not change account avatars. Rotation runs on launch/resume or while the client is
+running; it is not an exact midnight job while closed, suspended or throttled.
+There are no alarms, background services, icon-change prompts or new dependencies.
+
+| Surface | Behavior and validation |
+| --- | --- |
+| Desktop/mobile browser tabs | SVG plus generated 32/192px PNG favicons; localStorage persists the daily choice across reloads and tabs. Checks every minute and on focus/visibility/storage events. Clock-controlled Chromium tests cover UTC rollover, timer refresh, same-day reload/SPA navigation, shared-tab assignment, PNG/SVG pixels and desktop/narrow asset inspection. Safari/Firefox and physical mobile browsers remain unverified. |
+| Website home-screen shortcuts | Dedicated original-mascot Apple touch and manifest PNGs at 180/192/512px. Explicit standalone launches skip favicon rotation. Browsers/OSes cache installed icons; no reliable scheduled refresh is available. The manifest uses `display: browser`; no offline service worker or background capability is added. Existing shortcuts may need re-adding, and browser-specific icon selection needs device validation. |
+| Native iOS | Original packaged dark-green icon; no alternate-icon calls or alerts. No iOS icon behavior is changed. |
+| Native Android | Switches bundled launcher aliases on resume and every 15 minutes while foregrounded. Android 13+ switches atomically; older supported versions enable the new entry before disabling the old one. The original default alias and application icon remain available. Generation checks all 800 resources; Kotlin tests and APK/physical-launcher checks are pending because this orb has no Java/Android SDK. OEM icon caches, duplicate-entry transitions and upgrades require device acceptance. |
+| Native macOS | The running Dock icon rotates through `NSApplication.applicationIconImage`, checking activation and every 15 minutes. Finder/package icons remain original. Swift tests are added but require Apple CI/Xcode and a real Dock check; neither is available in this Linux orb. |
+| Rust desktop | Runtime window icons rotate, with a 60-second check and eframe persistence. Windows/taskbar and Linux X11 surfaces depend on the shell honoring runtime icons; installer, pinned-shortcut and Wayland package identities remain original. Rust tests cover rollover, all IDs, nonrepeat and straight-alpha pixels. An actual X11/Openbox window published the expected 256px saved-avatar icon and retained it across a same-day restart. Windows/Wayland remain unverified. |
+
+Deterministic native parity/Android fixture runs retain the original icon. The web
+test uses a labelled clock/storage fixture, not a physical home-screen test:
+`node scripts/test-favicons.mjs http://localhost:31095 .amp/in/artifacts`.
+Static fallback exports use `node scripts/generate-favicons.mjs` (ImageMagick 7 and
+librsvg); launcher declarations use
+`node scripts/generate-android-launcher-aliases.mjs --check`. Native clients reuse
+their already-bundled vector resources. Docker is unavailable; web production
+build stages and the Rust desktop build were checked directly. Application-only
+desktop Clippy passes with `--no-deps`; full native-workspace Clippy still fails on
+existing vendored WebRTC safety-documentation warnings.
+
+#### Rotating-icon deployment order
+
+1. No infrastructure, secrets/configuration, database migration, API/gateway or
+   SFU deployment is needed. Saved avatar assignments and vector artwork stay
+   unchanged. Orb renderer/X11 packages are development-only prerequisites.
+2. After merge and the merged commit's immutable web image is available, deploy
+   web explicitly; merging does not deploy it:
+   ```sh
+   MERGED_SHA=REPLACE_WITH_FULL_40_CHARACTER_MERGE_SHA
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   # Wait for the workflow to succeed, then:
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   curl -I https://caper.chat/site.webmanifest
+   curl -I https://caper.chat/icons/caper-main-v3-180.png
+   curl -I https://caper.chat/images/avatars/v3/799.svg
+   ```
+   Expect HTTP 200 and correct MIME types. Verify a tab keeps its avatar on
+   reload, and newly added iOS/Android shortcuts use the original mascot.
+3. Release Android, macOS and Rust desktop independently through the normal
+   native workflows only after platform build/device checks. No iOS release is
+   required for icon behavior; its shared tests may run with the Apple build.
+   Native rotation does not depend on web deploying first.
+4. Roll back only the affected web image or native release if needed. Re-run the
+   web workflow with the previous known-good SHA and wait for rollout; there is
+   no database/configuration rollback. Icon caches can outlive a rollout. Test
+   Android upgrade/rollback from an enabled avatar alias before releasing.
 
 ### Saved default avatars
 
@@ -3114,3 +3440,179 @@ Provider-specific staging results are obsolete. PlanetScale connectivity, physic
 desktop/mobile account access, and live authenticated SFU voice remain untested.
 Earlier media results above predate account-backed participant display names and do
 not validate that integration.
+
+## Account-global direct messages and optional mobile push
+
+One-to-one DMs belong to two accounts, not to a space. Start by exact username;
+the canonical pair has one conversation even when both people start it at once.
+The list appears below channels in every space, including accounts with no spaces.
+Web pins it above the account controls; narrow web and mobile clients expose it in
+Browse navigation. Leaving or deleting a space does not delete DMs. Space owners
+have no special DM access. This is server-authorized privacy, not end-to-end
+encryption. Group DMs, attachments, message deletion, blocking, and DM voice are
+not implemented. Existing text length, send limits, typing, history pagination,
+idempotent sends, outbox and gateway replay rules apply unchanged.
+
+API contracts (account authentication required):
+
+- `GET /api/dms` → `{conversations:[{id,peer:{id,username,displayName},lastSeq,readSeq}]}`.
+- `POST /api/dms` with `{username}` returns that pair's conversation.
+- `POST /api/dms/{id}/read` with `{seq}` monotonically advances the caller's read
+  cursor, bounded to the durable channel head. Sequences are decimal strings.
+- Message history/send/typing and gateway chat subscriptions use the existing
+  channel endpoints with the DM ID. History sets `channel.direct=true` and an
+  empty `space.id`. Only the pair can access it; media endpoints reject DMs.
+
+Lists refresh every 15 seconds; the open conversation receives live gateway
+messages. Unread means the durable head is beyond the account's read cursor.
+Read state is account-wide, not device-wide. New conversations are limited to
+20/minute and 1,000 per initiating account. Exact usernames are discoverable by
+starting a conversation; membership in a shared space is not required.
+
+### Push is optional and requires provider acceptance
+
+`GET /api/push/config` returns supported platforms (`fcm`, `apns`, `apnsSandbox`).
+Authenticated `POST`/`DELETE /api/push/devices` accept `{platform,token}`.
+Registrations are bound to a valid account session and hashed device token; raw
+tokens are submitted to SNS, not retained in Postgres. Endpoint ARNs are private
+server data. Users explicitly opt in; clients hide the control for unavailable
+platforms. Browser Web Push, macOS push and Rust desktop OS notifications are
+intentionally not included. Android requires its Firebase build configuration;
+iOS requires a signed device with the matching APS entitlement.
+
+SNS uses its standard AWS workload-identity/region provider chain. Configure any
+subset of `PUSH_FCM_APPLICATION_ARN`, `PUSH_APNS_APPLICATION_ARN` and
+`PUSH_APNS_SANDBOX_APPLICATION_ARN` in the API's private runtime configuration.
+Blank disables that provider; all blank starts no push worker and requires no
+additional AWS access. The gateway needs no SNS configuration. Do not supply
+provider keys to the browser or API; SNS holds the FCM service-account/APNs key.
+
+Each committed DM enqueues one peer notification in the message transaction.
+The API worker expands valid devices, claims with `SKIP LOCKED`, retries temporary
+errors up to eight attempts, and abandons notifications after 24 hours or session
+revocation/account reassignment. SNS acceptance is not proof of device receipt.
+Crash recovery can deliver duplicates; this is at-least-once best effort, not
+exactly-once. Notifications contain only opaque conversation/message IDs and
+generic copy: **Caper / You have a new direct message.** No sender or message text
+is sent to the provider. Android uses data-only FCM v1 messages so local opt-out
+can suppress display; APNs uses a standard alert, not PushKit/incoming-call push.
+Already submitted provider notifications cannot be recalled after logout.
+Opening a notification still requires current account authorization.
+Logout clears local account/conversation state and push opt-in without waiting
+for provider cleanup. iOS unregisters locally and relies on session revocation;
+Android starts session revocation independently of its best-effort, ten-second
+push unregister attempt. Offline remote revocation can still fail.
+
+Provider provisioning is an operator action, not part of merging this PR. On a
+trusted operator machine, disable shell tracing, use `umask 077`, and prepare
+private SNS attribute JSON files outside this checkout:
+
+- FCM: `{"PlatformCredential":"<contents of Firebase service-account JSON as a string>"}`.
+- APNs: `PlatformPrincipal` = signing key ID, `PlatformCredential` = `.p8`
+  contents, `ApplePlatformTeamID` = team ID, `ApplePlatformBundleID` = registered
+  iOS bundle ID. Use the same attributes for production and sandbox applications.
+
+```sh
+aws sns create-platform-application --region us-east-1 --name CaperAndroid \
+  --platform GCM --attributes file:///secure/caper/fcm-attributes.json \
+  --query PlatformApplicationArn --output text
+aws sns create-platform-application --region us-east-1 --name CaperIOS \
+  --platform APNS --attributes file:///secure/caper/apns-attributes.json \
+  --query PlatformApplicationArn --output text
+aws sns create-platform-application --region us-east-1 --name CaperIOSSandbox \
+  --platform APNS_SANDBOX --attributes file:///secure/caper/apns-attributes.json \
+  --query PlatformApplicationArn --output text
+```
+
+Use approved credentials/profile for the target account. Only provision desired
+platforms, and retain the returned ARNs securely. The API role needs only
+`sns:CreatePlatformEndpoint`, `sns:SetEndpointAttributes`, and `sns:Publish`, not
+platform-application administration or endpoint deletion. SNS registration actions
+do not support resource-level IAM permissions; use `Resource: "*"` with the
+approved region/account constraints, and review direct-publish permissions with
+the infrastructure owner. There is no user-controlled ARN or unrestricted SNS
+proxy. Follow AWS's [FCM v1 setup](https://docs.aws.amazon.com/sns/latest/dg/sns-fcm-authentication-methods.html),
+[APNs attributes](https://docs.aws.amazon.com/sns/latest/api/API_SetPlatformApplicationAttributes.html),
+and [IAM action support](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonsns.html).
+
+### Deployment order
+
+1. **Prerequisites/infrastructure:** existing account auth, Postgres, Valkey and
+   compatible shared-mode API/gateway must be healthy. No DNS/SFU/TURN changes are
+   needed for DMs. Keep the existing API replica policy. Push may stay disabled:
+   no SNS/IAM/Firebase/APNs changes are then necessary. If enabling it, first
+   provision the selected applications and reviewed API IAM permissions above.
+2. **Secrets/configuration:** if enabling push, securely merge returned ARN keys
+   into `production/apps/caper` (never replace its other keys) and ensure they are
+   projected into the API environment. From a trusted machine with an already
+   reviewed complete replacement JSON file:
+   `aws secretsmanager put-secret-value --region us-east-1 --secret-id production/apps/caper --secret-string file:///secure/caper/reviewed-runtime.json`.
+   Do not print its contents. Native Firebase/APNs setup follows each native
+   README. No additional configuration is needed with push disabled.
+3. **Database/API:** after image builds, deploy the exact merged SHA. API startup
+   applies `202610030001_direct_messages.sql` and `202610030002_push.sql` through
+   the migration role and grants runtime table/sequence access. No separate SQL
+   job or manual migration is required. Back up the database first; never reset it.
+   These versions follow the already-published channel-joining
+   migration; never rename or edit migrations already recorded in a shared ledger.
+   Inspect the ledger before rollout. If a non-disposable database ran the earlier
+   feature branch's conflicting DM versions, stop for a migration-history
+   compatibility plan rather than renaming or deleting applied records.
+   ```sh
+   psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+     -c 'SELECT version, description, success FROM public._sqlx_migrations ORDER BY version;'
+   MERGED_SHA=<reviewed-merge-sha>
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+4. **Gateway before clients:** the new participant access query must be on every
+   gateway pod before exposing DMs. Older gateway images deny DM subscriptions.
+   ```sh
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+5. **Web/native clients:** deploy web after both backend roles are healthy.
+   Android, iOS/macOS and Rust desktop releases can then ship independently.
+   Do not release uncompiled native changes: run their build/test scripts on
+   Android/Apple toolchains and inspect real affected layouts first.
+   ```sh
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   ./apps/native/android/build.sh
+   ./apps/native/apple/build.sh macos
+   ./apps/native/apple/build.sh ios
+   ```
+6. **Verify/rollback:** with two owned accounts, create in both directions, send,
+   reconnect, page history, switch spaces and check unread/read state; a third
+   account must get 404 for history/send/socket. Verify opted-in physical Android
+   and signed iOS devices, sandbox/production APNs, background/terminated taps,
+   denied permission, token rotation, logout and account switching before enabling
+   those providers broadly. To stop push, blank its ARN keys through the reviewed
+   configuration path and restart the API. Rolling back web/native removes the
+   entry points. Keep the API on an image containing the applied migrations:
+   SQLx validates the database's migration history, so a pre-migration API image
+   is not a safe rollback. An API rollback requires a reviewed build retaining
+   those migrations and disabling the feature, not deleting migration records.
+   Gateway rollback can disable DM subscriptions while preserving durable data.
+   Leave the additive migrations in place; do not drop DM/message/push data or
+   restore a database without a separate recovery review. Merging does not deploy.
+
+### Validation boundary
+
+Run the disposable DB/gateway and fake-provider tests in addition to the ordinary
+Rust suite (never point these at shared databases):
+
+```sh
+DATABASE_URL='postgres://user@127.0.0.1:55432/postgres' \
+CHAT_TEST_DATABASE_URL='postgres://user@127.0.0.1:55432/postgres' \
+CHAT_TEST_VALKEY_URL='redis://127.0.0.1:6379' \
+TEST_VALKEY_URL='redis://127.0.0.1:6379' \
+  cargo test --locked -p caper-api -- --ignored --skip tests::shared
+```
+
+The loopback UI fixture provides `fixture_alex` / `TEST FIXTURE Alex`, not a real
+account or push provider. Browser checks do not prove native rendering or device
+push. Android/Apple compilation, physical device layouts, APNs/FCM credential
+validation and sustained/offline notification delivery remain release acceptance
+requirements. Notifications currently have no scheduled pruning; operators must
+review storage growth and provider endpoint lifecycle before a large rollout.

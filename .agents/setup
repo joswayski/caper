@@ -33,16 +33,22 @@ packages=(
   libegl1-mesa-dev
   libglib2.0-dev
   libpulse0
+  librsvg2-bin
   libssl-dev
   libwayland-dev
   libx11-dev
   libxcursor-dev
   libxi-dev
   libxkbcommon-dev
+  libxkbcommon-x11-0
   libxrandr-dev
   lld-21
   pkg-config
   postgresql
+  openbox
+  x11-utils
+  xauth
+  xvfb
 )
 missing_packages=()
 for package in "${packages[@]}"; do

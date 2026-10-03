@@ -6,10 +6,33 @@ import {
   channelNameError,
   createChannel,
   createSpace,
+  createDirectConversation,
+  listDirectConversations,
+  readDirectConversation,
+  directUnread,
   deleteSpace,
   normalizeChannelName,
   spaceNameError,
 } from "../spaces/client.ts";
+
+test("DM requests are global and unread comparisons preserve large sequence values", async (t) => {
+  const calls: Array<{ path: string; body?: string }> = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ path: String(input), body: init?.body as string | undefined });
+    return init?.method === "POST" && String(input).endsWith("/read") ? new Response(null, { status: 204 }) : Response.json({ conversations: [] });
+  });
+  await listDirectConversations();
+  await createDirectConversation(" @Mira ");
+  await readDirectConversation("direct000001", "9007199254740993");
+  assert.deepEqual(calls, [
+    { path: "/api/dms", body: undefined },
+    { path: "/api/dms", body: '{"username":"@Mira"}' },
+    { path: "/api/dms/direct000001/read", body: '{"seq":"9007199254740993"}' },
+  ]);
+  const peer = { id: "account00002", username: "mira", displayName: "Mira" };
+  assert.equal(directUnread({ id: "direct000001", peer, lastSeq: "9007199254740993", readSeq: "9007199254740992" }), true);
+  assert.equal(directUnread({ id: "direct000001", peer, lastSeq: "9007199254740992", readSeq: "9007199254740993" }), false);
+});
 
 test("space and channel names enforce the browser-visible API rules", () => {
   assert.equal(spaceNameError("  Studio  "), undefined);

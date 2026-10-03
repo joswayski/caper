@@ -39,13 +39,14 @@ export function createSpaceNavigation() {
         forget(spaceId);
         throw new SpacesApiError(404, "This channel is no longer accessible.");
       }
-      const channel = detail.channels.find((item) => item.id === (channelId ?? previous?.channelId)) ?? detail.channels[0];
+      const channel = detail.channels.find((item) => item.id === (channelId ?? previous?.channelId) && (channelId !== undefined || item.joined !== false))
+        ?? detail.channels.find((item) => item.joined !== false);
       let history: GeneralChatHistory | undefined;
       let historyError: string | undefined;
       try {
         // Visited channels resume live replay from their saved cursor. Keep
         // their messages on screen instead of fetching the first page again.
-        history = previous?.history ?? (channel ? await loadChatHistory(channel.id) : undefined);
+        history = channel && previous?.history?.channel.id === channel.id ? previous.history : (channel ? await loadChatHistory(channel.id) : undefined);
       } catch (error) {
         if (error instanceof ChatHistoryError && [401, 403, 404].includes(error.status)) throw error;
         // Messaging being unavailable must not hide space settings/navigation.

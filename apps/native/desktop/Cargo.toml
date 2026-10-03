@@ -36,7 +36,7 @@ egui_extras = { version = "0.33.3", default-features = false, features = ["svg",
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 keyring = { version = "3.6.3", default-features = false }
 libwebrtc = { path = "voice-spike/vendor/libwebrtc" }
-nnnoiseless = "=0.5.2"
+nnnoiseless = { version = "=0.5.2", default-features = false }
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
 reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rodio = { version = "=0.21.1", default-features = false, features = ["playback", "wav"] }

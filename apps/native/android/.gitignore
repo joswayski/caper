@@ -6,4 +6,5 @@ local.properties
 dist/
 *.jks
 *.keystore
+google-services.json
 .cxx/

@@ -36,13 +36,27 @@ The build first invokes `scripts/native_fonts.py`, which downloads and verifies 
 
 The API defaults to `https://caper.chat`. Override it at build time with `-PcaperApiBaseUrl=https://host.example` (HTTPS is required by the manifest).
 
+### Optional Firebase DM notifications
+
+Firebase is build-time opt-in. Download the Android app's `google-services.json` from Firebase Console and place it at `apps/native/android/app/google-services.json` (the path is ignored by Git), then build normally:
+
+```bash
+cp /secure/path/google-services.json apps/native/android/app/google-services.json
+./apps/native/android/build.sh
+```
+
+Without that file, `FIREBASE_ENABLED` is false, no notification opt-in is shown, and ordinary builds continue to work. Never commit the file or service credentials. The server must return `fcm` from `GET /api/push/config` and accept the authenticated device registration routes. After login, the user must explicitly choose **Enable DM notifications** and grant Android 13+ notification permission. Registration is refreshed on FCM token rotation and removed before logout. Push payloads must contain only `conversationId` and `messageId`; Android supplies the privacy-safe title/body locally. A tap is retained through authentication and opens the matching global DM.
+
+Real-device FCM delivery, denied/revoked notification permission, token rotation, notification taps from killed/background processes, and registration removal during poor connectivity remain physical-device validation gaps; this orb has no KVM or attached Android device.
+
 Release tasks fail when signing is absent instead of producing an unsigned or debug-signed release. To sign a release, set all four variables: `CAPER_ANDROID_KEYSTORE`, `CAPER_ANDROID_KEYSTORE_PASSWORD`, `CAPER_ANDROID_KEY_ALIAS`, and `CAPER_ANDROID_KEY_PASSWORD`. Never commit those values.
 
 ## Implemented
 
-- Guest access to the public General conversation before sign-in, followed by the web-equivalent account entry, verification, profile onboarding, session restore, and logout flows.
+- Signed-out first launch opens the web-equivalent account entry, verification, and profile onboarding, with no Guest/General fallback. Session restoration failures stay on sign-in with an error; valid saved sessions open account spaces, and logout returns to sign-in.
 - Account bearer token encrypted with AES-GCM; the non-exportable AES-256 key lives in Android Keystore. Chat and media capabilities stay in process memory.
 - Adaptive space rail, channel navigation, toggleable member panel, owner space/channel/member/private-grant management, paginated presence, typing, grouped messages, history pagination, and narrow-layout Browse navigation. Colors, dimensions, and bundled Satoshi typography follow the working web client.
+- Account-global one-to-one DMs in the permanent channel sidebar, including exact-username start, unread/read cursors, foreground and 15-second refresh, no-space accounts, and reuse of the channel history/send/typing/gateway pipeline.
 - Idempotent HTTP sends and multiplexed gateway chat with heartbeat watchdog, durable cursor replay, reconnect backoff, fresh-history resync, and visible connection/error state.
 - Access revocation and channel/logout generation guards clear prior messages and reject late results. HTTP send confirmation does not advance the gateway replay cursor. Unknown send outcomes retain their UUID and text; a matching gateway event confirms them, while definitive rejection unlocks a new operation.
 - Native WebRTC voice is available from the default Android UI after explicit microphone permission. It implements Cloudflare SFU join/publish/subscribe, roster snapshots, lease renewal, mute/deafen with prior intent restored, Android communication-route selection, input/output gain, per-remote local mute/gain, bounded DPDFNet-8 HR with RNNoise fallback and voice shaping, prejoin/in-call local mic comparison, sanitized debug-gated processing diagnostics, connection statistics, TURN renewal, restart-ICE/ack recovery, call replacement, and an ongoing microphone foreground service. These mechanisms are not a claim of live or device-verified parity.
@@ -68,7 +82,7 @@ adb reverse tcp:3001 tcp:3001
 python3 apps/native/android/smoke.py
 ```
 
-Only port 3001 is needed by Android; it serves both API requests and `/api/chat/events` WebSockets. The smoke run resets the labeled local test fixture, installs `dist/Caper-android-fixture-debug.apk`, exercises guest conversation, login, one-shot actionable 503, verification, signed-in space selection, private-channel management, desktop and narrow Browse states, and writes screenshots plus UI hierarchies under `dist/ui/`. The fixture credentials are `fixture@example.test` / `ABC234`. This emulator workflow is structural visual and interaction evidence, not physical-device or live-media validation.
+Only port 3001 is needed by Android; it serves both API requests and `/api/chat/events` WebSockets. The smoke run resets the labeled local test fixture, installs `dist/Caper-android-fixture-debug.apk`, exercises fresh-install login, one-shot actionable 503, verification, failed/successful session restoration, signed-in space selection, private-channel management, desktop and narrow Browse states, and writes screenshots plus UI hierarchies under `dist/ui/`. The fixture credentials are `fixture@example.test` / `ABC234`. This emulator workflow is structural visual and interaction evidence, not physical-device or live-media validation.
 
 ## Security notes
 

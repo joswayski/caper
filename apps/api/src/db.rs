@@ -156,7 +156,16 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
             "GRANT SELECT, INSERT, UPDATE ON public.spaces, public.channels, public.chat_sessions, public.messages, public.channel_events TO {role}"
         ),
         format!(
-            "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members TO {role}"
+            "GRANT SELECT, INSERT, DELETE ON public.space_members, public.channel_members, public.channel_joins TO {role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON public.space_invitations, public.space_invite_limits, public.channel_invitations TO {role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.direct_conversations, public.direct_reads, public.push_devices, public.push_notifications, public.push_deliveries TO {role}"
+        ),
+        format!(
+            "GRANT USAGE ON SEQUENCE public.push_devices_id_seq, public.push_notifications_id_seq TO {role}"
         ),
         format!(
             "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq TO {role}"
@@ -205,9 +214,113 @@ mod tests {
     }
 
     #[test]
+    fn embedded_migration_versions_are_unique_and_increasing() {
+        let versions: Vec<_> = sqlx::migrate!("./migrations")
+            .iter()
+            .map(|migration| migration.version)
+            .collect();
+        assert!(
+            versions.windows(2).all(|pair| pair[0] < pair[1]),
+            "migration versions must be unique and increasing: {versions:?}"
+        );
+    }
+
+    #[test]
     fn runtime_role_is_quoted_as_a_postgres_identifier() {
         assert_eq!(quote_identifier("caper-runtime"), r#""caper-runtime""#);
         assert_eq!(quote_identifier("quoted\"role"), r#""quoted""role""#);
+    }
+
+    #[sqlx::test(migrations = false)]
+    #[ignore = "requires disposable Postgres DATABASE_URL"]
+    async fn dm_migrations_upgrade_channel_joining_without_rewriting_history(pool: PgPool) {
+        let mut before = sqlx::migrate!("./migrations");
+        before.migrations = std::borrow::Cow::Owned(
+            before
+                .iter()
+                .filter(|migration| migration.version < 202610030001)
+                .cloned()
+                .collect(),
+        );
+        before.run(&pool).await.unwrap();
+        let ledger: Vec<(i64, Vec<u8>)> =
+            sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ledger.last().unwrap().0, 202610010001);
+        pool.execute(
+            "INSERT INTO users(external_id) VALUES('upgrade-owner'),('upgrade-peer');
+             INSERT INTO spaces(external_id,name,owner_id)
+                SELECT 'upgrade-space','Retained space',id FROM users WHERE external_id='upgrade-owner';
+             INSERT INTO channels(external_id,space_id,name,last_seq)
+                SELECT 'upgrade-room',id,'general',1 FROM spaces WHERE external_id='upgrade-space';
+             INSERT INTO channel_joins(channel_id,user_id)
+                SELECT c.id,u.id FROM channels c,users u
+                WHERE c.external_id='upgrade-room' AND u.external_id='upgrade-owner';
+             INSERT INTO space_invitations(space_id,user_id,status)
+                SELECT s.id,u.id,'pending' FROM spaces s,users u
+                WHERE s.external_id='upgrade-space' AND u.external_id='upgrade-peer';
+             INSERT INTO chat_sessions(external_id,token_hash,name)
+                VALUES('upgrade-chat',decode('01','hex'),'Retained author');
+             INSERT INTO messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload)
+                SELECT 'upgrade-msg',c.id,s.id,'00000000-0000-4000-8000-000000000001',decode('02','hex'),1,
+                    '{\"content\":{\"text\":\"Retained message\"}}'::jsonb
+                FROM channels c,chat_sessions s
+                WHERE c.external_id='upgrade-room' AND s.external_id='upgrade-chat';",
+        )
+        .await
+        .unwrap();
+        let after = sqlx::migrate!("./migrations");
+        after.run(&pool).await.unwrap();
+        after.run(&pool).await.unwrap();
+        assert_eq!(
+            sqlx::query_as::<_, (i64, Vec<u8>)>(
+                "SELECT version,checksum FROM _sqlx_migrations WHERE version < 202610030001 ORDER BY version",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap(),
+            ledger,
+            "applied versions and checksums must not change",
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT payload->'content'->>'text' FROM messages WHERE external_id='upgrade-msg'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "Retained message",
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM channel_joins")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM space_invitations WHERE status='pending'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1,
+        );
+        pool.execute(
+            "INSERT INTO channels(external_id,name,private) VALUES('upgrade-dm','Direct',true)",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM push_devices")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0,
+        );
     }
 
     #[tokio::test]

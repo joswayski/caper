@@ -132,6 +132,67 @@ test("candidate gaps or failure cannot kill a healthy active stream", (t) => {
   assert.deepEqual(delivered, ["3"]);
 });
 
+test("repeated deployments keep chat and media online through a failed candidate and delayed snapshots", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = setup(t);
+  let cursor = "5";
+  const delivered: string[] = [];
+  const revisions: number[] = [];
+  const chatStatus: boolean[] = [];
+  const mediaStatus: boolean[] = [];
+  const chat = f.gateway.subscribe({ kind: "chat", channelId: "general", after: cursor }, {
+    cursor: () => cursor,
+    status: (online) => chatStatus.push(online),
+    event: (event) => {
+      const seq = (event as { seq?: string }).seq;
+      if (seq && BigInt(seq) > BigInt(cursor)) { cursor = seq; delivered.push(seq); }
+    },
+  });
+  const media = f.gateway.subscribe({ kind: "media", channelId: "voice", token: "existing-session" }, {
+    status: (online) => mediaStatus.push(online),
+    event: (event) => revisions.push((event as { revision: number }).revision),
+  });
+  t.after(() => { chat.unsubscribe(); media.unsubscribe(); });
+  f.hello(0);
+  f.sockets[0].frame({ type: "event", id: chat.id, event: { type: "ready", cursor } });
+  f.sockets[0].frame({ type: "subscribed", id: chat.id });
+  f.sockets[0].frame({ type: "event", id: media.id, event: { type: "snapshot", revision: 8, participants: [] } });
+  f.sockets[0].frame({ type: "subscribed", id: media.id });
+
+  f.sockets[0].frame({ type: "migrating" });
+  f.sockets[1].fail();
+  f.sockets[0].frame({ type: "event", id: chat.id, event: { type: "message.created", seq: "6" } });
+  assert.equal(f.sockets[0].closed, false, "replacement failure leaves the draining socket usable");
+  t.mock.timers.tick(188);
+  assert.equal(f.sockets.length, 3);
+
+  for (const [activeIndex, candidateIndex, seq, revision] of [[0, 2, "7", 9], [2, 3, "8", 10]] as const) {
+    if (activeIndex !== 0) f.sockets[activeIndex].frame({ type: "migrating" });
+    f.hello(candidateIndex);
+    const active = f.sockets[activeIndex];
+    const candidate = f.sockets[candidateIndex];
+    assert.equal(f.subscribe(candidateIndex).after, cursor, "each handoff resumes at the applied cursor");
+    assert.equal(f.subscribe(candidateIndex, 1).token, "existing-session", "media keeps the same capability");
+    candidate.frame({ type: "event", id: chat.id, event: { type: "ready", cursor } });
+    active.frame({ type: "event", id: chat.id, event: { type: "message.created", seq } });
+    candidate.frame({ type: "subscribed", id: chat.id });
+    candidate.frame({ type: "event", id: chat.id, event: { type: "message.created", seq } });
+    candidate.frame({ type: "event", id: media.id, event: { type: "snapshot", revision: revision - 2, participants: [] } });
+    candidate.frame({ type: "subscribed", id: media.id });
+    assert.equal(active.closed, false, "chat catch-up cannot promote a stale media subscription");
+    active.frame({ type: "event", id: media.id, event: { type: "snapshot", revision, participants: [] } });
+    candidate.frame({ type: "event", id: media.id, event: { type: "snapshot", revision: revision - 1, participants: [] } });
+    assert.equal(active.closed, false, "the old stream continues carrying newer state during catch-up");
+    candidate.frame({ type: "event", id: media.id, event: { type: "snapshot", revision, participants: [] } });
+    assert.equal(active.closed, true);
+    assert.equal(candidate.closed, false);
+  }
+  assert.deepEqual(delivered, ["6", "7", "8"], "overlap neither loses nor duplicates chat messages");
+  assert.deepEqual(revisions, [8, 9, 10], "stale candidate snapshots never overwrite current media state");
+  assert.deepEqual(chatStatus, [false, true, true, true], "handoffs do not mark established chat offline");
+  assert.deepEqual(mediaStatus, [false, true, true, true], "handoffs do not mark established media offline");
+});
+
 test("pending commands retry with identical identity on reconnect, command_pending, and gateway draining", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = setup(t);

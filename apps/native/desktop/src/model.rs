@@ -17,10 +17,18 @@ pub struct Account {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Inviter {
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Space {
     pub id: String,
     pub name: String,
     pub owner_id: String,
+    pub inviter: Option<Inviter>,
     #[serde(default)]
     pub demo: bool,
 }
@@ -32,6 +40,42 @@ pub struct Channel {
     pub space_id: String,
     pub name: String,
     pub private: bool,
+    /// Older servers predate explicit channel membership; their channels were joined.
+    #[serde(default = "default_joined")]
+    pub joined: bool,
+}
+
+fn default_joined() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelInvitation {
+    pub channel: Channel,
+    pub inviter: Inviter,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectPeer {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectConversation {
+    pub id: String,
+    pub peer: DirectPeer,
+    pub last_seq: String,
+    pub read_seq: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DirectConversations {
+    pub conversations: Vec<DirectConversation>,
 }
 
 /// Spectators receive identity and status, never media track capabilities.
@@ -61,6 +105,8 @@ pub struct Member {
 pub struct Spaces {
     pub spaces: Vec<Space>,
     #[serde(default)]
+    pub invitations: Vec<Space>,
+    #[serde(default)]
     pub limits: Option<SpaceLimits>,
 }
 
@@ -77,6 +123,8 @@ pub struct SpaceDetail {
     pub space: Space,
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub channel_invitations: Vec<ChannelInvitation>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -151,6 +199,8 @@ pub struct Presence {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Members {
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub invitations: Vec<Member>,
 }
 
 #[derive(Default)]
@@ -251,6 +301,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn spaces_default_missing_invitations_to_empty() {
+        let spaces: Spaces = serde_json::from_value(serde_json::json!({
+            "spaces": [],
+            "limits": null
+        }))
+        .unwrap();
+        assert!(spaces.invitations.is_empty());
+    }
+
+    #[test]
+    fn invitation_decodes_inviter_and_legacy_metadata() {
+        let legacy: Space = serde_json::from_value(serde_json::json!({
+            "id": "space", "name": "Studio", "ownerId": "owner"
+        }))
+        .unwrap();
+        assert!(legacy.inviter.is_none());
+        let invitation: Space = serde_json::from_value(serde_json::json!({
+            "id": "space", "name": "Studio", "ownerId": "owner",
+            "inviter": { "username": "host_user", "displayName": "Space Host" }
+        }))
+        .unwrap();
+        let inviter = invitation.inviter.unwrap();
+        assert_eq!(inviter.username, "host_user");
+        assert_eq!(inviter.display_name, "Space Host");
+    }
+
+    #[test]
+    fn channel_membership_and_invitation_defaults_decode_safely() {
+        let detail: SpaceDetail = serde_json::from_value(serde_json::json!({
+            "space": {"id":"s", "name":"Studio", "ownerId":"owner"},
+            "channels": [{"id":"c", "spaceId":"s", "name":"general", "private":false}],
+            "members": []
+        }))
+        .unwrap();
+        assert!(detail.channels[0].joined);
+        assert!(detail.channel_invitations.is_empty());
+        let members: Members = serde_json::from_value(serde_json::json!({"members":[]})).unwrap();
+        assert!(members.invitations.is_empty());
+    }
+
+    #[test]
     fn avatar_id_is_optional_json() {
         let old: Account = serde_json::from_str(r#"{"id":"old"}"#).unwrap();
         let saved: Account = serde_json::from_str(r#"{"id":"saved","avatarId":16}"#).unwrap();
@@ -345,5 +436,16 @@ mod tests {
             Apply::Applied
         );
         assert_eq!(timeline.cursor(), "12");
+    }
+
+    #[test]
+    fn direct_conversation_contract_uses_string_sequences_and_camel_case_peer() {
+        let payload = r#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"fixture_alex","displayName":"TEST FIXTURE Alex"},"lastSeq":"12","readSeq":"9"}]}"#;
+        let parsed: DirectConversations = serde_json::from_str(payload).unwrap();
+        let direct = &parsed.conversations[0];
+        assert_eq!(direct.id, "dm0000000001");
+        assert_eq!(direct.peer.display_name, "TEST FIXTURE Alex");
+        assert_eq!(sequence(&direct.last_seq), Ok(12));
+        assert_eq!(sequence(&direct.read_seq), Ok(9));
     }
 }

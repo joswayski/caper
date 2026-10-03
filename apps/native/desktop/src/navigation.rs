@@ -278,4 +278,24 @@ mod tests {
         );
         assert!(cache.take_prefetch(&target(1), now).is_none());
     }
+
+    #[test]
+    fn direct_conversation_target_is_global_and_not_resolved_through_a_space() {
+        let mut cache = NavigationCache::default();
+        let direct = Target {
+            space: None,
+            channel: Some("dm0000000001".into()),
+        };
+        let mut direct_history = history(1, "4");
+        direct_history.space.id.clear();
+        direct_history.space.name = "Direct messages".into();
+        direct_history.channel.id = "dm0000000001".into();
+        cache.remember(direct.clone(), direct_history);
+
+        assert_eq!(cache.resolve(&direct), direct);
+        assert_eq!(
+            cache.history(&direct).unwrap().space.name,
+            "Direct messages"
+        );
+    }
 }

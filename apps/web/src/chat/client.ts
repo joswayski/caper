@@ -93,6 +93,8 @@ export class ChatClient {
   private connection?: ChatConnection;
   private readonly controller = new AbortController();
   private generation = 0;
+  private sessionGeneration = 0;
+  private loadingHistory = false;
   private name = "Guest";
   private session?: ChatSession;
   private sending = false;
@@ -124,7 +126,7 @@ export class ChatClient {
   setSounds(enabled: boolean) { this.sounds = enabled; }
 
   snapshotHistory(): GeneralChatHistory | undefined {
-    if (this.state.phase !== "ready" || !this.spaceId || !this.state.channelId) return;
+    if (this.state.phase !== "ready" || this.spaceId === undefined || !this.state.channelId) return;
     return {
       space: { id: this.spaceId, name: this.state.spaceName },
       channel: { id: this.state.channelId, name: this.state.channelName },
@@ -211,18 +213,20 @@ export class ChatClient {
   }
 
   async loadOlder() {
-    if (this.state.phase !== "ready" || !this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length || this.controller.signal.aborted) return;
+    if (this.loadingHistory || this.state.phase !== "ready" || !this.state.channelId || !this.state.hasMore || this.state.loadingOlder || !this.state.messages.length || this.controller.signal.aborted) return;
     const generation = this.generation;
+    const channelId = this.state.channelId;
     this.update({ loadingOlder: true, olderError: undefined });
     try {
       const before = this.state.messages[0].seq;
-      const response = await fetch(`/api/chat/channels/${encodeURIComponent(this.state.channelId)}/messages?before=${encodeURIComponent(before)}`, {
+      const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages?before=${encodeURIComponent(before)}`, {
         cache: "no-store", signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
       });
       if (!response.ok) throw await apiError(response, "Older messages could not be loaded.");
       const history: unknown = await response.json();
       if (!validHistory(history, false)) throw new Error("The chat service returned invalid history.");
       if (generation !== this.generation) return;
+      if (history.messages.some((message) => message.channelId !== channelId)) throw new Error("The chat service returned messages from another channel.");
       this.timeline.prepend(history.messages);
       this.update({ messages: this.timeline.messages, hasMore: history.hasMore, loadingOlder: false });
     } catch (error) {
@@ -295,6 +299,7 @@ export class ChatClient {
 
   private async loadInitial(prepared?: GeneralChatHistory) {
     const generation = ++this.generation;
+    this.loadingHistory = true;
     const previous = this.state.phase === "ready" ? this.snapshotHistory() : undefined;
     this.connection?.stop();
     this.connection = undefined;
@@ -307,6 +312,7 @@ export class ChatClient {
       const history = prepared ?? await loadChatHistory(this.channelId, this.controller.signal);
       if (!validHistory(history, true)) throw new Error("The chat service returned invalid history.");
       if (this.channelId && history.channel.id !== this.channelId) throw new Error("The chat service returned the wrong channel.");
+      if (history.messages.some((message) => message.channelId !== history.channel.id)) throw new Error("The chat service returned messages from another channel.");
       if (generation !== this.generation) return;
       this.spaceId = history.space.id;
       // Retain older pages only when the fresh page joins the saved range.
@@ -316,7 +322,8 @@ export class ChatClient {
       const retainedOlder = previous?.messages[0] && history.messages[0]
         && contiguous
         && sequence(previous.messages[0].seq) < sequence(history.messages[0].seq);
-      this.timeline.reset([...(contiguous ? previous.messages : []), ...history.messages], history.cursor);
+      // reset deduplicates by first occurrence: fresh author metadata wins.
+      this.timeline.reset([...history.messages, ...(contiguous ? this.timeline.messages : [])], history.cursor);
       this.update({
         phase: "ready", spaceName: history.space.name, channelId: history.channel.id,
         channelName: history.channel.name, messages: this.timeline.messages, hasMore: retainedOlder ? previous.hasMore : history.hasMore,
@@ -354,10 +361,14 @@ export class ChatClient {
           error: error instanceof Error ? error.message : "Messages are unavailable.",
         });
       }
+    } finally {
+      if (generation === this.generation) this.loadingHistory = false;
     }
   }
 
   private async createSession() {
+    if (this.controller.signal.aborted) return;
+    const generation = ++this.sessionGeneration;
     this.update({ sessionError: undefined });
     try {
       const response = await fetch("/api/chat/session", {
@@ -367,11 +378,12 @@ export class ChatClient {
       const session = await response.json() as Partial<ChatSession>;
       if (typeof session.token !== "string" || !session.token || !session.author || typeof session.author.id !== "string"
         || typeof session.author.name !== "string" || typeof session.author.isGuest !== "boolean") throw new Error("The chat service returned an invalid session.");
+      if (this.controller.signal.aborted || generation !== this.sessionGeneration) return;
       this.session = session as ChatSession;
       try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* The in-memory response still permits this page to render. */ }
       this.update({ author: session.author, sessionError: undefined });
     } catch (error) {
-      if (!this.controller.signal.aborted) this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
+      if (!this.controller.signal.aborted && generation === this.sessionGeneration) this.update({ sessionError: error instanceof Error ? error.message : "Guest messaging is unavailable." });
     }
   }
 

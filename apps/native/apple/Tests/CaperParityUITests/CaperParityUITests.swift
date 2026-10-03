@@ -485,15 +485,20 @@ final class CaperParityUITests: XCTestCase {
     #endif
 
     func testLogin() {
-        let app = launch(fixture: "login", signedIn: false)
-        assertStaticText("Come on in.", in: app)
+        // Exercise normal session restoration, not a forced login presentation.
+        let app = launch(signedIn: false)
+        assertStaticText("Welcome to Caper", in: app)
+        XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         let email = app.textFields["Email address"]
+        XCTAssertFalse(app.descendants(matching: .any)["message-composer"].exists)
+        XCTAssertFalse(app.buttons["Create space"].exists)
         XCTAssertTrue(app.windows.firstMatch.frame.contains(email.frame), "Login must fit the viewport")
         capture("login", app: app)
         email.tap(); email.typeText("owner@example.test")
         app.buttons["Email me a code"].tap()
         XCTAssertTrue(app.textFields["Sign-in code"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.windows.firstMatch.frame.contains(app.textFields["Sign-in code"].frame))
+        XCTAssertEqual(staticTexts("WELCOME TO CAPER", in: app).count, 0)
         assertStaticText("Enter the six-character code sent to owner@example.test. It expires in 10 minutes.", in: app)
         XCTAssertTrue(app.buttons["Use a different email"].exists)
         capture("login-code", app: app)

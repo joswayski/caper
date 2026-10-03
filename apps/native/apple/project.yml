@@ -81,6 +81,9 @@ targets:
     platform: macOS
     sources:
       - path: Sources/CaperCore
+        excludes: [InvitationAssets]
+      - path: Sources/CaperCore/InvitationAssets
+        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]
@@ -103,6 +106,9 @@ targets:
     platform: iOS
     sources:
       - path: Sources/CaperCore
+        excludes: [InvitationAssets]
+      - path: Sources/CaperCore/InvitationAssets
+        buildPhase: resources
       - path: ../../web/public/audio/effects
         buildPhase: resources
         excludes: [README.md]
@@ -234,6 +240,7 @@ targets:
         # crypto: declare exempt so each TestFlight build skips the compliance prompt.
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
+        CaperAPNsEnvironment: $(CAPER_APNS_ENVIRONMENT)
         UIAppFonts: [Satoshi-Regular.otf, Satoshi-Medium.otf, Satoshi-Bold.otf, Satoshi-Black.otf]
         UIBackgroundModes: [audio]
         UILaunchScreen: {}
@@ -247,6 +254,13 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+      configs:
+        Debug:
+          CAPER_APNS_ENVIRONMENT: development
+          CODE_SIGN_ENTITLEMENTS: Configuration/iOS-Debug.entitlements
+        Release:
+          CAPER_APNS_ENVIRONMENT: production
+          CODE_SIGN_ENTITLEMENTS: Configuration/iOS-Release.entitlements
   CaperCoreTests:
     type: bundle.unit-test
     platform: macOS

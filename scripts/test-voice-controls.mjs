@@ -47,6 +47,7 @@ async function fixture() {
   const respond = async (input, options = {}) => {
     const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
     if (path === '/api/account/me') return Response.json(account);
+    if (path === '/api/dms') return Response.json({ conversations: [] });
     if (path === '/api/spaces') return Response.json({ spaces: [space], limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 } });
     if (path === '/api/spaces/workspace123') return Response.json({ space, channels, members: [{ ...account, owner: true }] });
     if (path === '/api/spaces/workspace123/channels/private00000/members') return Response.json({ members: [account] });
