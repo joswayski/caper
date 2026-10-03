@@ -520,9 +520,11 @@ that space, not to anonymous visitors or unrelated accounts. Private channels
 are visible to their explicitly selected space members and the owner. The public
 demo cannot be managed through these APIs.
 
-Owners add existing accounts by exact username and can remove them. This is a
-direct membership change, not an invitation awaiting acceptance. There are no
-invite links, custom roles, ownership transfers or public space discovery yet.
+Owners invite existing accounts by exact username and can remove members or
+cancel pending invitations. Invitees must accept before becoming members.
+Existing memberships are unchanged; the migration does not retroactively ask
+existing members to accept. There are no invite links, custom roles, ownership
+transfers or public space discovery yet.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed.
 Counts include active resources only. Defaults are 20 owned spaces per
@@ -547,12 +549,84 @@ soft delete: it removes access and frees the quota, but retained message rows
 are not physically purged by this feature. There is no restore UI.
 
 The account APIs live at `/api/spaces`, `/api/spaces/{space}`, and their
-`/channels`, `/members`, and `/channels/{channel}/members` subresources. Browser
-cookies or account bearer authentication are required. Only owners manage these
-resources, except a member removing their own membership. Text history and
+`/channels`, `/members`, `/invitations`, `/invitation`, and
+`/channels/{channel}/members` subresources. Browser cookies or account bearer
+authentication are required. Only owners manage resources, except a member
+removing their own membership or an invitee accepting/declining their own invite.
+Text history and
 commands use `/api/chat/channels/{channel}/...`;
 WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
 paths check membership and channel visibility, including replay and live delivery.
+
+### Invitation consent and abuse limits
+
+`GET /api/spaces` returns active `spaces`, metadata-only pending `invitations`
+(space ID, name, owner ID and `inviter: {username, displayName}`), and `limits`.
+Only owners can invite; inviter metadata uses the owner's current public profile,
+not a snapshot at send time. Clients also accept older metadata without `inviter`.
+This additive response needs no migration beyond the invitation tables below.
+Pending invitations live in
+`space_invitations`, not `space_members`: they grant no space-detail, membership,
+channel, history, presence, WebSocket or media access. Acceptance alone inserts
+membership and checks the current total-membership quota under database locks.
+No private-channel grants are implicit. Existing authorization remains based on
+active membership, not invitation status.
+
+| Operation | Route | Result |
+| --- | --- | --- |
+| Owner sends an invitation | `POST /api/spaces/{space}/members` with `{username}` | 201 with invitee member metadata; not an active member |
+| Owner lists pending invitees | `GET /api/spaces/{space}/invitations` | `{members: [...]}` |
+| Owner cancels an invitation | `DELETE /api/spaces/{space}/invitations/{user}` | 204 |
+| Invitee accepts | `POST /api/spaces/{space}/invitation` | 200 with space metadata |
+| Invitee declines | `DELETE /api/spaces/{space}/invitation` | 204 |
+
+Username fields normalize like profile selection: lowercase ASCII letters,
+digits and underscores, 3–32 characters. The API trims/lowercases and rejects
+invalid syntax (400 `invalid username`); it does not silently strip punctuation.
+An authorized owner gets 404 `user not found` for a missing account, or 409
+`user already in space` / `user already invited`. Authorization precedes account
+lookup. Unauthorized/missing spaces and expired/cancelled invitations retain
+generic 404s; the client says “This space is no longer available” without
+revealing whether the space exists for somebody else.
+
+Invitation attempts use a durable Postgres fixed-window counter, shared across
+replicas: **20 per owner per 10 minutes across all spaces**, including invalid
+usernames, failed lookups and duplicates. Attempt 21 and subsequent attempts
+return 429 until the window resets. Each invite expires after **7 days**. Decline,
+cancel and member removal impose a **24-hour cooldown** on the space/user pair.
+At most **50 live pending invites per recipient** and **100 per space** are
+allowed; reaching either cap returns 409. Expired/deleted-space invitations do
+not count. One row per pair retains state/cooldown, rather than an invitation
+event log. These are fixed product limits, not new configuration/secrets.
+
+The browser opens an inert empty shell behind a blurred consent dialog; it never
+downloads private content to blur it. Consent shows the space name and inviter's
+display name and `@username`, without explanatory paragraphs. Expired invites disappear
+from pending lists and cannot be accepted; accepted memberships do not expire.
+Decline has initial keyboard focus. Owners
+see pending invitees separately from active members and can cancel them. Browser
+space lists refresh on focus/visibility and every 15 seconds while visible;
+revocation removes the rail entry, invalidates cached navigation and clears the
+selected space. An outage is not treated as revocation. Native clients use their
+existing blocking/dimmed consent modals without loading the invited space;
+they currently discover invites at account load and prune stale spaces when
+navigation returns 404, rather than using the browser's periodic list refresh.
+Server access checks apply identically to every client.
+
+Space consent uses “You’re invited!” and the same 32px decorative Twemoji
+incoming-envelope artwork on web, Android, Apple and Rust desktop. The canonical
+PNG and CC BY 4.0 attribution are in `apps/web/public/images/invitation`.
+Android/Apple resource copies are checked byte-for-byte by the web test suite;
+desktop embeds the canonical PNG. Native layouts retain their existing modal
+patterns. This presentation change adds no API, migration, secret or reaction
+dependency. Keep the Apple invitation asset catalog and attribution resources
+when integrating other native resource changes.
+
+The separate message-reactions work must not be merged blindly into channel
+participation: reaction mutation authorization must require `channel_joins`,
+including for cross-channel tokens and mutations queued behind leave. Preview
+history reads must remain available. Borrowing this fixed artwork does not
+import reaction behavior or resolve that integration requirement.
 
 Account voice uses `/api/channels/{channel}/media/*`, with the same operation
 names as the guest `/api/media/*` endpoints. Every request needs a valid account
@@ -638,6 +712,162 @@ revoke the new channel rooms. The migration replaces the channel-name unique
 constraint with an active-channel partial index. Old API/gateway startup seed
 queries are incompatible with that index, so do not restart or roll back to a
 pre-spaces image after migration; complete the forward rollout instead.
+
+### Invitation rollout and validation (September 30, 2026)
+
+The invitation migration is additive and preserves existing memberships. The
+disposable-Postgres spaces test covers privacy, concurrent duplicate invitations
+and acceptances, membership quotas, expiry, cooldown, and atomic rate/cap limits:
+
+```bash
+CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+cargo test -p caper-api spaces::tests::authorization_self_leave_soft_deletion_and_quota_races -- --ignored
+# With the web dev server running; API calls are explicitly mocked:
+SPACES_TEST_WEB_URL=http://localhost:5174/spaces \
+node scripts/test-space-invitations.mjs
+```
+
+| Platform/check | Invitation validation |
+| --- | --- |
+| API | Real disposable Postgres 15 lifecycle/privacy/concurrency and current-owner inviter metadata test passed; default Rust tests and clippy passed |
+| Browser | Build/287 unit tests passed; Chromium at 1280px and 390px exercised normalization, missing/duplicate/member/429 errors, cancel, inviter/expiry, long names, legacy metadata, consent retry/decline/accept and focus-triggered revocation. DOM confirms no private requests before acceptance; screenshots inspected |
+| Rust desktop (Linux; shared source with Windows) | Native unit tests and Linux build; consent/pending-owner desktop and narrow fixtures rendered and inspected separately from browser. Not Windows execution or live SFU evidence |
+| Apple iOS/macOS | Consent, pending/cancel, validation and 404 cleanup implemented; Swift/Xcode tests and device rendering unavailable in this Linux orb |
+| Android | Consent, pending/cancel, validation and 404 cleanup implemented. Initial PR CI found a MemberManager callback compile error; fixed with explicit callback arguments in the follow-up. JDK/Android SDK tests and physical-device rendering unavailable in this orb; platform CI must verify the fix |
+| Docker/production/live media | No Docker daemon available; image build stages validated directly. No shared database migration, deployment, live SFU or physical-device test performed |
+
+Use the combined **Deployment order** under
+[Channel participation and private consent](#channel-participation-and-private-consent)
+below for space invitations and channel joining. Merge space-invitation consent
+first, but do not deploy it separately: the cumulative API applies both pending
+migrations before the gateway and clients roll out. Merging does not deploy.
+
+### Channel participation and private consent
+
+Channel access and participation are separate. `channel_members` remains the
+private authorization grant; `channel_joins` records the conversations a member
+has chosen. The sidebar shows joined channels. Browse channels searches the
+accessible directory and opens read-only previews without joining, preparing
+voice, or requesting a microphone. Public history and live text subscriptions
+remain readable before joining; sending, typing and every channel media
+operation require participation. Joining a channel never enters its voice call.
+The current quota remains 100 channels per space; this does not raise it to
+thousands or introduce server-side directory pagination.
+
+`Channel.joined` is returned by space details and channel mutations. New clients
+default a missing field to true for compatibility with older APIs. Public
+join/leave uses POST/DELETE
+`/api/spaces/{space}/channels/{channel}/membership`. Public leave removes the
+sidebar entry but preserves preview/rejoin access. Private non-owner leave also
+removes the authorization grant and warns that another invitation is required;
+the owner keeps implicit administration and can rejoin from the directory.
+Leaving a channel stops its local call, not an unrelated call. SFU cleanup after
+authorization ends is asynchronous, as above.
+
+Owner POST `/api/spaces/{space}/channels/{channel}/members` now sends a private
+invitation, not a grant. GET returns active `members` and separate pending
+`invitations`; DELETE `/members/{user}` cancels a pending invite or removes a
+grant and participation. The recipient's space detail adds `channelInvitations`
+containing only channel metadata and the current owner's public `inviter`
+identity. The pending channel is absent from the accessible directory, and its
+history/media stay unauthorized. POST/DELETE `/invitation` accepts/declines;
+acceptance grants and joins in one transaction. A stale, revoked, declined or
+expired invitation cannot be accepted. Unauthorized resources retain generic
+404 responses.
+
+Channel invitations expire after seven days and retain a 24-hour pair cooldown
+after decline, cancellation or removal. They share the space-invitation attempt
+budget (20 per owner per ten minutes), with separate live-pending limits of 50
+channel invitations per recipient and 100 per channel. Invitees must already
+belong to the space. These are fixed policies, not new secrets/configuration.
+
+Migration `202610010001_channel_joining.sql` joins existing members to all their
+currently accessible non-demo channels, preserving conversations during rollout.
+New space acceptance joins only one public starter, preferring `general`, if
+available. Creating a channel joins its creator, not every space member. Space
+removal clears participation and revokes channel invitations. No Valkey/SFU
+schema change or data reset is needed.
+
+Validation commands (disposable local services only):
+
+```bash
+DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+CHAT_TEST_DATABASE_URL=<disposable-loopback-postgres-admin-url> \
+CHAT_TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+TEST_VALKEY_URL=redis://127.0.0.1:6379 \
+cargo test --workspace -- --ignored --test-threads=1
+node --test tests/native-parity-fixture.test.mjs
+CHANNEL_TEST_WEB_URL=http://localhost:5174/spaces node scripts/test-channel-joining.mjs
+```
+
+| Platform | Channel participation validation / limits |
+| --- | --- |
+| API | Disposable Postgres migration/backfill, concurrent join, public read versus participation, private consent/expiry/cooldown/cancellation and removal tests; SQL sends and gateway/media authorization enforce joins |
+| Browser | Build/typecheck and unit tests; explicitly mocked Chromium desktop/390px search, preview, retry, persistence, accept/decline and leave. DOM/request assertions verify no private history before consent and zero microphone requests; representative captures inspected |
+| Rust desktop | Independent membership/directory/preview/consent implementation, Linux unit tests/fmt/clippy/build and rendered labelled desktop/narrow preview, directory/private consent and starter-channel disclosure fixtures inspected. Not Windows execution, physical audio, or live SFU evidence |
+| Apple iOS/macOS | Independent implementation and DTO/route tests added. No Swift/Xcode execution or device rendering in this Linux orb; platform CI and device acceptance remain required |
+| Android | Independent implementation and DTO/route tests added. Earlier channel PR CI built the APK and passed five instrumentation tests, but UI smoke expected the retired guest demo. Reconciliation retains current main's sign-in smoke fix; exact-head platform CI and device acceptance remain required. No JDK/Android SDK execution or physical-device rendering in this orb |
+| Native refresh | Invitations/joins are discovered on account/space reload and after mutations. Browser additionally refreshes on focus/visibility and every 15 seconds. Native clients do not claim browser-equivalent periodic discovery; server authorization applies immediately |
+| Docker/live | No Docker daemon available; validate web/API image build stages directly. No deployment, shared database writes, live SFU or physical-device acceptance performed |
+
+**Deployment order** for space invitations and channel joining (operator actions
+only; merge does not deploy):
+
+1. Merge space-invitation consent (#234), retarget the stacked channel change
+   (#238) to `main` and merge it, then retarget and merge the invitation-presentation
+   follow-up. A separate #234 or #238 deployment is unnecessary;
+   deploy the final cumulative images once. No new infrastructure, secrets or
+   configuration is required. Existing direct `MIGRATION_DATABASE_URL`, runtime
+   `DATABASE_URL` and shared `VALKEY_URL` must already be configured. Keep one
+   desired API replica. Use a maintenance window for channel/invitation mutations;
+   do not serve them from mixed old/new API versions, since older versions grant
+   private access without consent. Set `BACKEND_SHA` to the full merged #238 SHA
+   whose `api-$BACKEND_SHA` image is published; set `CLIENT_SHA` to the final
+   merged #241 SHA whose web image and native checks succeed. API image builds
+   are path-filtered, so presentation-only #241 may not publish an API tag.
+   API and gateway must use the same backend SHA. One SHA is valid only if that
+   exact revision has the required published API and web images and native checks.
+2. Deploy API first; startup uses the existing direct
+   `MIGRATION_DATABASE_URL` to apply every pending embedded migration, including
+   `202609300002_space_invitations.sql` and `202610010001_channel_joining.sql`,
+   before granting runtime table privileges. The channel migration backfills
+   existing active members, not pending space invitees. Already-applied migrations
+   are skipped. No manual migration/backfill/reset is required. Wait for workflow
+   success, readiness and all API pods using the new image before continuing.
+   ```bash
+   gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$BACKEND_SHA"
+   kubectl -n default rollout status deployment/caper-api --timeout=15m
+   ```
+3. Deploy gateway next so typing/media commands enforce participation too. The
+   API and gateway must both be updated before exposing channel-joining clients;
+   no Valkey/SFU schema migration/reset is required. Do not close healthy tracks
+   for this rollout. Wait for workflow success and readiness. The workflow/app
+   key is `caper-gateway`; the Kubernetes Deployment is `caper-chat-gateway`.
+   ```bash
+   gh workflow run deploy-caper-gateway.yml --repo joswayski/infrastructure --ref main -f git_sha="$BACKEND_SHA"
+   kubectl -n default rollout status deployment/caper-chat-gateway --timeout=15m
+   ```
+4. Deploy web, then release native clients after their exact-head platform tests
+   succeed. Web and native releases can proceed independently after steps 2–3.
+   Older clients cannot join newly discovered channels or accept private channel
+   invitations and may misleadingly display a pending invite as an active member;
+   update owner clients before using private invitations. Wait for each workflow
+   to succeed before checking rollout.
+   ```bash
+   gh workflow run deploy-caper-web.yml --repo joswayski/infrastructure --ref main -f git_sha="$CLIENT_SHA"
+   kubectl -n default rollout status deployment/caper-web --timeout=15m
+   gh workflow run release.yml --repo joswayski/caper --ref main -f git_sha="$CLIENT_SHA"
+   ```
+5. Verify with two owned test accounts: old conversations remain joined, a new
+   member cannot read space/channel history or use media before accepting the
+   space invite and starts in one channel afterward; public preview cannot
+   send/use voice; join does not enter voice; private metadata precedes acceptance;
+   cancellation blocks stale acceptance; public/private leave have distinct
+   re-entry behavior. Verify inviter/expiry, accept/decline/cancel and an unrelated
+   active call surviving navigation/leave. Treat provider cleanup as asynchronous.
+   Prefer a forward fix. Client rollback is possible against the new services,
+   with the limitations above; do not roll API/gateway back across the consent
+   or participation boundary or drop membership/invitation tables as rollback.
 
 ## Shared call state and rolling deployments
 
@@ -2588,6 +2818,27 @@ feature parity and platform acceptance remain incomplete. No backend migration,
 provider secret, production restart, or infrastructure change is required by the
 native development build workflow.
 
+**Apple chat confirmation/recovery correction, October 3, 2026:** Swift sends
+lowercase message and gateway-command UUIDs to match Rust's canonical result IDs.
+Opaque channel, author, and subscription IDs remain case-sensitive. The native
+fixture now canonicalizes UUIDs too, including retry keys; echoing uppercase
+request IDs previously hid invalid-message/duplicate-pending-row failures. This
+complements the mobile workspace correction's pending-socket/retry protections:
+transient disconnections use connection status, while genuine send/subscription
+errors remain visible. Recovery cannot confirm or erase uncertain sends.
+
+Local validation: ten compiled Swift delivery checks and five HTTP/model checks
+against the disposable fixture passed; the latter stubbed Keychain/audio and drove
+gateway-state callbacks manually. All six fixture tests and 295 web tests passed,
+as did `npm run check`. Full Apple XCTest/UI execution and physical iPhone checks
+remain pending: this Linux Swift runtime's libcurl does not support WebSockets,
+and the orb has no Xcode. Native tests cover canonical HTTP/gateway confirmation
+and real socket disconnect → replay → warning removal. Android, web, and Rust
+desktop already generate lowercase UUIDs and require no client changes for this
+correction; their native/device behavior is not established by these Swift checks.
+Release updated iOS/macOS clients after platform checks; no API/gateway/web
+deployment, migration, new secret, or infrastructure apply is required.
+
 **Download a build after merge:** relevant `main` pushes run **Native development
 builds** automatically. To request a new build and retrieve its artifacts:
 
@@ -2748,6 +2999,44 @@ uploads are included. This controls UI visibility, not access to privileged serv
 data. OpenFeature is an evaluation API/provider standard, not a required database
 or service; this single allowlist intentionally has no flag SDK or table.
 
+### Mobile workspace behavior and validation
+
+At narrow widths, web, Apple and Android navigation uses an inset, rounded channel
+surface and one account bar below both the space rail and channel column. The rail
+has no full-height divider. Member panels have an explicit Close action and an
+outside-tap backdrop; Android Back closes the visible panel before navigation.
+Long member lists scroll without losing the Close action. Desktop/tablet layouts
+keep their existing columns; Rust desktop is unchanged by this mobile pass.
+
+Apple custom dialogs are siblings of the disabled/accessibility-hidden workspace,
+and only their background consumes empty-space taps. Exact-username entry disables
+autocorrection/capitalization and supports keyboard submission on web, Apple and
+Android. Web and Apple guard pending submissions; Android's IME action respects its
+existing busy state. Android workspace content also applies IME padding so the
+composer can move above the software keyboard.
+
+Apple's gateway now keeps one owner for authorization/socket setup and reconnect
+backoff. Adding another subscription while authorization is pending cannot replace
+the connection task. Failed sockets are cancelled before retry. Transient transport
+errors use the existing connection status instead of becoming persistent chat or
+member error banners; genuine subscription/history/send errors remain visible.
+This does not establish the cause of every production disconnect or validate
+cellular/Wi-Fi transitions.
+
+| Platform/check | Coverage for this mobile pass |
+| --- | --- |
+| Web, Chromium desktop/narrow/short viewport | Executed mocked API/gateway checks for exact-username add/Enter/pending protection, dialog geometry, navigation/account alignment, member Close/outside dismissal and scrolling; inspected rendered states. Not iPhone Safari or touch evidence. |
+| Apple iOS simulator/macOS ARM | CI run `36819347315` passed: all-800 bundled-avatar lookup, representative SwiftUI colored-pixel rendering and pending-connection regression. iPhone 16 simulator parity passed 17 tests, including editable exact-username add, Close/outside dismissal and navigation bounds; inspected native captures. This is fixture/simulator evidence, not a physical iPhone or production-network check. |
+| Apple macOS Intel | Bundled-avatar lookup passed, but the SwiftUI pixel test crashed hosted Metal initialization. Follow-up uses CPU rasterization of the same resolved NSImage on Intel, retaining SwiftUI rendering on iOS/ARM; the follow-up requires native CI. No native toolchain is available in this Linux orb. |
+| Android | CI run `36819347315` built the APK and passed six instrumented tests, including all-800 resource lookup and representative VectorDrawable pixels. Smoke reached real Compose send/HTTP/gateway delivery, then failed an old exact-author expectation missing `avatarId`; the expectation now includes the saved ID without weakening assertions. Full follow-up smoke and physical keyboard/Back/navigation checks remain required before release. |
+| Rust desktop | No UI changes. Root Rust tests/format/Clippy ran; these do not validate native mobile clients. |
+| Production networks/voice | Not exercised. Sustained voice, background/resume and Wi-Fi/cellular/TURN checks remain separate acceptance gates. |
+
+Run the focused browser regression against local Vite with
+`MODALS_ONLY=1 SPACES_TEST_WEB_URL=http://localhost:31740/spaces node scripts/test-space-controls.mjs`.
+The native parity fixture now supplies saved avatar IDs in account, member, chat
+and voice responses rather than testing only initials.
+
 ### Saved default avatars
 
 An avatar is the user's profile picture, not a separate cosmetic identity. The
@@ -2791,6 +3080,10 @@ account's saved avatar, not a client-supplied ID. Existing shared voice state is
 backward-compatible: absent IDs render initials until the participant rejoins.
 Web, Android, Apple (iOS/macOS) and Rust desktop use the same saved design. Missing or
 invalid IDs render initials; presence dots and speaking rings remain separate.
+Apple also resolves the platform image from the framework/package resource bundle
+explicitly, preserves original colors and shows initials if asset lookup fails.
+The reported blank iPhone avatars have not been reproduced on a device; the new
+native resource/pixel tests must run before treating that report as resolved.
 
 Custom photo/GIF uploads, avatar selection and a public collection page are future
 work. A future validated uploaded-media reference should replace the displayed
@@ -3117,9 +3410,11 @@ and [IAM action support](https://docs.aws.amazon.com/service-authorization/lates
    Do not print its contents. Native Firebase/APNs setup follows each native
    README. No additional configuration is needed with push disabled.
 3. **Database/API:** after image builds, deploy the exact merged SHA. API startup
-   applies `202610010001_direct_messages.sql` and `202610010002_push.sql` through
+   applies `202610030001_direct_messages.sql` and `202610030002_push.sql` through
    the migration role and grants runtime table/sequence access. No separate SQL
    job or manual migration is required. Back up the database first; never reset it.
+   These unreleased versions follow the already-published channel-joining
+   migration; never rename or edit migrations already recorded in a shared ledger.
    ```sh
    MERGED_SHA=<reviewed-merge-sha>
    gh workflow run deploy-caper-api.yml --repo joswayski/infrastructure --ref main -f git_sha="$MERGED_SHA"

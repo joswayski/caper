@@ -210,9 +210,10 @@ function AudioOutput({ stream, muted, name, output, volume }: { stream: MediaStr
 export interface VoiceSlot { summary: ReactNode; list: ReactNode }
 
 interface CallProps {
-  channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean; direct?: boolean };
+  channel?: { id: string; name: string; spaceName: string; spaceId?: string; demo?: boolean; direct?: boolean; joined?: boolean };
   onReadCursor?: (seq: string) => void;
-  membersPanel?: ReactNode;
+  channelActions?: ReactNode;
+  membersPanel?: (onClose: () => void) => ReactNode;
   onVoiceChannelOpen?: (channelId: string, spaceId?: string) => void;
   spaceRail?: ReactNode;
   /** Channels in the current space, whose voice rosters appear under them. */
@@ -235,7 +236,7 @@ interface CallProps {
   onChatOnlineChange?: (online: boolean) => void;
 }
 
-export default function Call({ channel, onReadCursor, voiceChannels, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
+export default function Call({ channel, onReadCursor, channelActions, voiceChannels, spaceRail, channelNavigation, membersPanel, onVoiceChannelOpen, navigationOpen = false, onNavigationToggle, initialAccount, initialHistory, initialHistoryError, onHistoryChange, embedded = false, engaged = true, onChatOnlineChange }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
@@ -275,7 +276,8 @@ export default function Call({ channel, onReadCursor, voiceChannels, spaceRail, 
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
   const mediaRoot = channel && !channel.demo ? `/api/channels/${encodeURIComponent(channel.id)}/media` : "/api/media";
-  const available = availability[mediaRoot];
+  const channelJoined = channel?.joined !== false;
+  const available = channelJoined ? availability[mediaRoot] : false;
   const clientRoot = useRef(mediaRoot);
   const rootFor = (channelId?: string) => !channelId || channel?.demo ? "/api/media" : `/api/channels/${encodeURIComponent(channelId)}/media`;
   const createClient = (root = mediaRoot) => {
@@ -399,6 +401,7 @@ export default function Call({ channel, onReadCursor, voiceChannels, spaceRail, 
   }, [signedIn, settingsOpen]);
 
   useEffect(() => {
+    if (!channelJoined) return;
     let current = true;
     if (channel?.direct) return;
     fetch(`${mediaRoot}/status`, { credentials: "same-origin", signal: AbortSignal.timeout(10_000) })
@@ -409,7 +412,13 @@ export default function Call({ channel, onReadCursor, voiceChannels, spaceRail, 
       })
       .catch(() => { if (current) setAvailability((previous) => ({ ...previous, [mediaRoot]: false })); });
     return () => { current = false; };
-  }, [mediaRoot, channel?.direct]);
+  }, [mediaRoot, channelJoined, channel?.direct]);
+
+  useEffect(() => {
+    if (voiceChannel?.id && voiceChannels && !voiceChannels.some((item) => item.id === voiceChannel.id)) {
+      clientRef.current?.leaveImmediately();
+    }
+  }, [voiceChannel?.id, voiceChannels]);
 
   useEffect(() => {
     // Download/compile only; never a permission prompt. Deferred for embedded
@@ -667,6 +676,7 @@ export default function Call({ channel, onReadCursor, voiceChannels, spaceRail, 
   // When the name leaves no room, both wrap onto an indented row beneath it.
   let rosterPlaced = false;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
+    if (channelId === channel?.id && !channelJoined) return null;
     const { people, own } = rosterFor(channelId);
     if (own) rosterPlaced = true;
     const key = voiceChannelKey(channelId);
@@ -795,13 +805,17 @@ export default function Call({ channel, onReadCursor, voiceChannels, spaceRail, 
         </ChannelSidebar>
         <div className="stage">
           {state.remoteMedia.map((media) => <AudioOutput key={media.trackId} stream={media.stream} muted={state.deafened || mutedParticipants.has(media.participantId)} output={output} volume={outputVolume * (participantVolumes[media.participantId] ?? 100) / 100} name={state.participants.find((person) => person.id === media.participantId)?.name ?? "Guest"} />)}
-          <Chat key={channel?.id ?? "general"} name={name} signedIn={!!account} identityReady={identityReady && engaged} messageSounds={engaged} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} direct={channel?.direct} onReadCursor={onReadCursor} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
+          <Chat key={`${channel?.id ?? "general"}:${channelJoined}`} name={name} signedIn={!!account} identityReady={identityReady && engaged} direct={channel?.direct} onReadCursor={onReadCursor} readOnly={!channelJoined} composerNotice={channelActions} messageSounds={engaged && channelJoined} onOnlineChange={onChatOnlineChange} channelId={channel?.id} channelName={channel?.name} initialHistory={initialHistory} initialHistoryError={initialHistoryError} onHistoryChange={onHistoryChange} showTitle={!!channel || embedded} onAuthorChange={setChatAuthor} onLocalPresenceChange={accountPresence ? undefined : setLocalPresence} headerActions={<div className="voice-actions">
             {!audioPanel && actionError && <div className="room-error chat-refresh-error" role="alert">{actionError}</div>}
+            {channelJoined && channelActions}
             {onNavigationToggle && <button className="navigation-toggle" type="button" aria-expanded={navigationOpen} onClick={onNavigationToggle}><Menu aria-hidden="true" />Browse</button>}
             {membersPanel && <Tooltip content={membersVisible ? "Hide member list" : "Show member list"}><button type="button" className="member-list-toggle" aria-label={membersVisible ? "Hide member list" : "Show member list"} aria-expanded={membersVisible} aria-controls={membersVisible ? "space-member-list" : undefined} onClick={() => setMembersVisible(!membersVisible)}><Users aria-hidden="true" /></button></Tooltip>}
           </div>} />
         </div>
-        {membersVisible && membersPanel}
+        {membersVisible && membersPanel && <>
+          <button type="button" className="member-list-backdrop" aria-label="Close member list" onClick={() => setMembersVisible(false)} />
+          {membersPanel(() => setMembersVisible(false))}
+        </>}
       </section>
       <dialog ref={profileDialog} className="audio-dialog profile-dialog" aria-labelledby="profile-dialog-title" onCancel={(event) => { event.preventDefault(); setProfileOpen(false); }}>
         <div className="audio-dialog-heading">

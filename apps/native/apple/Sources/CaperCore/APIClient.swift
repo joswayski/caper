@@ -40,7 +40,16 @@ private struct ChannelInput: Encodable {
 private struct UsernameInput: Encodable { let username: String }
 private struct ReadInput: Encodable { let seq: String }
 private struct PushDeviceInput: Encodable { let platform: String; let token: String }
-private struct MembersResponse: Decodable { let members: [Member] }
+public struct MembersResponse: Decodable, Sendable {
+    public let members: [Member]
+    public let invitations: [Member]
+    private enum CodingKeys: String, CodingKey { case members, invitations }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        members = try values.decode([Member].self, forKey: .members)
+        invitations = try values.decodeIfPresent([Member].self, forKey: .invitations) ?? []
+    }
+}
 
 public actor APIClient {
     public let baseURL: URL
@@ -159,6 +168,23 @@ public actor APIClient {
         try await request("api/spaces/\(try pathID(spaceID))/members", method: "POST", body: UsernameInput(username: username))
     }
 
+    public func spaceInvitations(spaceID: String) async throws -> [Member] {
+        let response: MembersResponse = try await request("api/spaces/\(try pathID(spaceID))/invitations")
+        return response.members
+    }
+
+    public func cancelSpaceInvitation(spaceID: String, userID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invitations/\(try pathID(userID))", method: "DELETE")
+    }
+
+    public func acceptSpaceInvitation(spaceID: String) async throws -> Space {
+        try await request("api/spaces/\(try pathID(spaceID))/invitation", method: "POST")
+    }
+
+    public func declineSpaceInvitation(spaceID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invitation", method: "DELETE")
+    }
+
     public func removeSpaceMember(spaceID: String, memberID: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/members/\(try pathID(memberID))", method: "DELETE")
     }
@@ -168,12 +194,33 @@ public actor APIClient {
         return response.members
     }
 
+    public func channelInvitations(spaceID: String, channelID: String) async throws -> [Member] {
+        let response: MembersResponse = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members")
+        return response.invitations
+    }
+
     public func addChannelMember(spaceID: String, channelID: String, username: String) async throws -> Member {
         try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members", method: "POST", body: UsernameInput(username: username))
     }
 
     public func removeChannelMember(spaceID: String, channelID: String, memberID: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/members/\(try pathID(memberID))", method: "DELETE")
+    }
+
+    public func joinChannel(spaceID: String, channelID: String) async throws -> Channel {
+        try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/membership", method: "POST")
+    }
+
+    public func leaveChannel(spaceID: String, channelID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/membership", method: "DELETE")
+    }
+
+    public func acceptChannelInvitation(spaceID: String, channelID: String) async throws -> Channel {
+        try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/invitation", method: "POST")
+    }
+
+    public func declineChannelInvitation(spaceID: String, channelID: String) async throws {
+        let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/channels/\(try pathID(channelID))/invitation", method: "DELETE")
     }
 
     public func history(channelID: String? = nil, before: String? = nil) async throws -> ChatHistory {

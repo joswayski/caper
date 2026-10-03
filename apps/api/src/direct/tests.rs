@@ -115,6 +115,33 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
             .status,
         StatusCode::NOT_FOUND
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM channel_joins")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0,
+        "DM participants do not join space channels",
+    );
+    for (sender, expected) in [
+        ("chat-alice", StatusCode::NO_CONTENT),
+        ("chat-bob", StatusCode::NO_CONTENT),
+        ("chat-outsider", StatusCode::NOT_FOUND),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                &format!("/api/chat/channels/{id}/typing"),
+                None,
+                Some(sender),
+                json!({"typing":true}),
+            )
+            .await
+            .0,
+            expected,
+        );
+    }
     let path = format!("/api/chat/channels/{id}/messages");
     assert_eq!(
         request(&app, "GET", &path, Some("outsider"), None, Value::Null)

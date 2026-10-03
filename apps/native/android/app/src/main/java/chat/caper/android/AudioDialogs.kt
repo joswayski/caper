@@ -81,7 +81,7 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
     val preferences = remember(context) { context.getSharedPreferences("audio", android.content.Context.MODE_PRIVATE) }
     var open by remember { mutableStateOf(false) }
     Box {
-        IconButton({ open = true }, Modifier.size(width = 18.dp, height = 30.dp)) {
+        IconButton({ open = true }, Modifier.size(width = 32.dp, height = 40.dp)) {
             Icon(painterResource(R.drawable.lucide_chevron_down), if (input) "Input Options" else "Output Options", Modifier.size(12.dp), tint = TextMuted)
         }
         DropdownMenu(open, { open = false }, Modifier.width(280.dp), containerColor = SurfaceRaised) {

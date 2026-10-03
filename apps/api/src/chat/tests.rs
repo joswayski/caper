@@ -152,6 +152,8 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel).bind(user).execute(&pool).await.unwrap();
     assert_eq!(channel.len(), 12);
     let seeded_name: String =
         sqlx::query_scalar("SELECT name FROM public.channels WHERE external_id=$1")
@@ -532,6 +534,12 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel)
+        .bind(logout_user)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO public.chat_sessions (external_id, token_hash, name, user_id, account_session_hash) VALUES ($1,$2,'Not authoritative',$3,$4)")
         .bind(random_id(12)).bind(Sha256::digest(b"account-chat").as_slice()).bind(logout_user).bind(b"parent-session".as_slice()).execute(&pool).await.unwrap();
     let account_message = persist(&pool, &channel, "account-chat", Uuid::new_v4(), "signed in")
@@ -777,6 +785,12 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(member)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     let cookie = "member-account-cookie";
@@ -811,6 +825,60 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         .unwrap();
     assert_eq!(first_message["seq"], "1");
     assert_eq!(second_message["seq"], "1");
+    assert!(
+        history_page(&pool, &public, None, Some(member))
+            .await
+            .is_ok(),
+        "public preview can read without joining"
+    );
+    assert_eq!(
+        persist(
+            &pool,
+            &public,
+            chat_token,
+            Uuid::new_v4(),
+            "preview cannot send"
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&public).bind(member).execute(&pool).await.unwrap();
+    assert_eq!(
+        persist(
+            &pool,
+            &public,
+            chat_token,
+            Uuid::new_v4(),
+            "explicitly joined"
+        )
+        .await
+        .unwrap()["seq"],
+        "1"
+    );
+    sqlx::query("DELETE FROM public.channel_joins WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND user_id=$2")
+        .bind(&public).bind(member).execute(&pool).await.unwrap();
+    assert!(
+        history_page(&pool, &public, None, Some(member))
+            .await
+            .is_ok(),
+        "leaving public retains preview access"
+    );
+    assert_eq!(
+        persist(
+            &pool,
+            &public,
+            chat_token,
+            Uuid::new_v4(),
+            "left cannot send"
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         persist(&pool, &first, outsider_chat, Uuid::new_v4(), "denied")
             .await
@@ -937,7 +1005,8 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
     let (mut public_socket, _) = tokio_tungstenite::connect_async(public_request)
         .await
         .unwrap();
-    assert_eq!(event(&mut public_socket).await["cursor"], "0");
+    assert_eq!(event(&mut public_socket).await["type"], "message.created");
+    assert_eq!(event(&mut public_socket).await["cursor"], "1");
     sqlx::query("UPDATE public.channels SET private=true WHERE external_id=$1")
         .bind(&public)
         .execute(&pool)

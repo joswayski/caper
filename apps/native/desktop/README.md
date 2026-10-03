@@ -5,7 +5,8 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 
 ## Available now
 
-- Passwordless email request/verification and first-account profile onboarding.
+- Signed-out first launch opens passwordless email request/verification and
+  first-account profile onboarding, with no Guest/General fallback.
 - Bearer sessions stored in Windows Credential Manager or the Linux Secret
   Service. If the vault is unavailable, the session remains in memory only and
   the UI warns that sign-in will not survive restart. There is no plaintext
@@ -24,7 +25,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Unified `/api/chat/events` gateway subscriptions with ordered replay,
   deduplication, gap resync, heartbeat handling, reconnect status, and stale
   result isolation across logout/channel changes.
-- Guest General, account spaces, private-channel grants, pagination, typing,
+- Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
 - Global two-person direct messages, including exact-username conversation

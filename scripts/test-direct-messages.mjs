@@ -94,7 +94,12 @@ try {
   screenshot('dm-narrow-browse');
   browser('click', '.direct-select');
   wait('!document.querySelector(".spaces-room.navigation-open")');
+  browser('fill', '.chat-composer textarea', 'A global draft survives losing a space.');
   await control({ noSpaces: true });
+  evaluate('window.dispatchEvent(new Event("focus"))');
+  wait('!new URL(location.href).searchParams.has("space") && new URL(location.href).searchParams.get("dm") === "dm0000000001" && document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex")');
+  assert.equal(evaluate('document.querySelector(".chat-composer textarea").value'), 'A global draft survives losing a space.');
+  assert.ok(evaluate('document.querySelector(".chat-messages").textContent.includes("A live reply from Alex.")'), 'Space revocation must not clear global DM history');
   browser('open', `${web}/spaces?dm=dm0000000001`);
   wait('document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex")');
   screenshot('dm-no-spaces');
