@@ -3,6 +3,7 @@
 mod api;
 mod avatar_images;
 mod credentials;
+mod daily_icon;
 mod effects;
 mod emoji;
 mod gateway;
@@ -154,6 +155,7 @@ struct PendingReaction {
 }
 
 struct CaperApp {
+    daily_icon: Option<daily_icon::DailyIcon>,
     worker: Worker,
     voice: Voice,
     effects: Effects,
@@ -255,6 +257,7 @@ impl CaperApp {
         let worker = Worker::new(api, context.clone());
         let now = Instant::now();
         let mut app = Self {
+            daily_icon: None,
             worker,
             voice,
             effects: Effects::new(fixture.is_none()),
@@ -2271,6 +2274,10 @@ impl eframe::App for CaperApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(icon) = &self.daily_icon {
+            storage.set_string("daily-icon-day-v1", icon.day.clone());
+            storage.set_string("daily-icon-index-v1", icon.index.to_string());
+        }
         if self.persist_preferences {
             storage.set_string("sidebar-width-v1", self.sidebar_width.to_string());
             storage.set_string("sound-effects-v1", self.sound_effects.to_string());
@@ -2283,6 +2290,12 @@ impl eframe::App for CaperApp {
     }
 
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
+        if let Some(icon) = &mut self.daily_icon {
+            context.request_repaint_after(Duration::from_secs(60));
+            if icon.refresh(chrono::Utc::now()) {
+                set_runtime_icon(context, icon.index);
+            }
+        }
         if context.input(|input| !input.events.is_empty()) {
             self.worker.send(Command::Activity);
         }
@@ -2573,12 +2586,19 @@ impl CaperApp {
 
     fn login_page(&mut self, context: &egui::Context) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BLACKOUT))
+            .frame(
+                egui::Frame::new()
+                    .fill(BLACKOUT)
+                    .inner_margin(egui::Margin::symmetric(20, 0)),
+            )
             .show(context, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.set_max_width(440.0);
+                    let width = ui.available_width().min(440.0);
+                    ui.set_max_width(width);
                     ui.add_space(100.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        // This form controls its own gaps; don't add egui's item spacing too.
+                        ui.spacing_mut().item_spacing.y = 0.0;
                         ui.add(egui::Image::new(egui::include_image!(
                             "../../../web/public/caper-wordmark.svg"
                         )).fit_to_exact_size(egui::vec2(132.0, 35.0)));
@@ -2588,7 +2608,7 @@ impl CaperApp {
                         } else {
                             "Welcome to Caper"
                         }).size(40.0));
-                        ui.add_space(8.0);
+                        ui.add_space(4.0);
                         ui.label(
                             RichText::new(if self.challenge.is_some() {
                                 format!(
@@ -2602,18 +2622,18 @@ impl CaperApp {
                             .size(16.0)
                             .color(MUTED),
                         );
-                        ui.add_space(28.0);
+                        ui.add_space(20.0);
                         if self.challenge.is_some() {
                             ui.label(bold("Sign-in code").size(14.0));
-                            ui.add_space(4.0);
+                            ui.add_space(8.0);
                             let exhausted = self.attempts_remaining == Some(0);
                             let response = ui.add_enabled(
                                 !exhausted,
                                 egui::TextEdit::singleline(&mut self.code)
                                     .vertical_align(egui::Align::Center)
                                     .char_limit(6)
-                                    .min_size(egui::vec2(440.0, 52.0))
-                                    .desired_width(440.0),
+                                    .min_size(egui::vec2(width, 52.0))
+                                    .desired_width(width),
                             );
                             self.code.make_ascii_uppercase();
                             self.code.retain(|character| {
@@ -2629,7 +2649,7 @@ impl CaperApp {
                                     bold("One attempt left. Check the code carefully.").size(14.0),
                                 );
                             }
-                            ui.add_space(20.0);
+                            ui.add_space(12.0);
                             if exhausted {
                                 if login_action(
                                     ui,
@@ -2683,9 +2703,9 @@ impl CaperApp {
                             }
                         } else {
                             ui.label(bold("Email address").size(14.0));
-                            ui.add_space(4.0);
+                            ui.add_space(8.0);
                             let response = ui.add_sized(
-                                [440.0, 52.0],
+                                [width, 52.0],
                                 egui::TextEdit::singleline(&mut self.email)
                                     .vertical_align(egui::Align::Center)
                                     .hint_text("you@example.com"),
@@ -2694,7 +2714,7 @@ impl CaperApp {
                                 ui.add_space(12.0);
                                 login_error_frame(ui, error);
                             }
-                            ui.add_space(20.0);
+                            ui.add_space(12.0);
                             let submit = login_action(
                                 ui,
                                 if self.loading { "Sending…" } else { "Email me a code" },
@@ -6281,7 +6301,7 @@ fn login_error_frame(ui: &mut egui::Ui, error: &str) {
         .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(12, 14))
         .show(ui, |ui| {
-            ui.set_width(414.0);
+            ui.set_width(ui.available_width().min(414.0));
             ui.label(RichText::new(error).size(13.0).color(ERROR));
         });
 }
@@ -7311,18 +7331,67 @@ fn main() -> eframe::Result {
             if let Some(storage) = creation.storage {
                 app.restore_preferences(storage);
             }
+            if fixture.is_none() {
+                let icon = daily_icon::DailyIcon::load(creation.storage);
+                set_runtime_icon(&creation.egui_ctx, icon.index);
+                app.daily_icon = Some(icon);
+            }
             Ok(Box::new(app))
         }),
     )
+}
+
+fn set_runtime_icon(context: &egui::Context, index: usize) {
+    context.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(
+        avatar_icon(index),
+    ))));
+}
+
+fn avatar_icon(index: usize) -> egui::IconData {
+    let image = egui_extras::image::load_svg_bytes(avatar_images::SVG[index], &Default::default())
+        .expect("bundled Caper avatar is valid SVG");
+    let rgba = image
+        .pixels
+        .iter()
+        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
+        .collect();
+    egui::IconData {
+        rgba,
+        width: image.width() as u32,
+        height: image.height() as u32,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         CaperApp, ConnectionReport, Dialog, GatewayEvent, PendingReaction, PendingSend, Phase,
-        endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
+        avatar_icon, endpoint, media, member_page_ids, normalize_channel, permanent_send_rejection,
         take_date_divider, timestamp_parts, voice,
     };
+
+    #[test]
+    fn daily_avatar_icon_has_correct_colors_and_unpremultiplied_edges() {
+        for (index, background) in [(0, [70, 33, 61]), (799, [41, 24, 60])] {
+            let icon = avatar_icon(index);
+            assert_eq!((icon.width, icon.height), (256, 256));
+            assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+            assert_eq!(&icon.rgba[..4], &[0, 0, 0, 0]);
+            let top = ((2 * icon.width + 128) * 4) as usize;
+            assert_eq!(&icon.rgba[top..top + 3], &background);
+            assert_eq!(icon.rgba[top + 3], 255);
+            assert!(
+                icon.rgba.chunks_exact(4).any(|pixel| {
+                    (64..=192).contains(&pixel[3])
+                        && pixel[..3]
+                            .iter()
+                            .zip(background)
+                            .all(|(&channel, expected)| channel.abs_diff(expected) <= 2)
+                }),
+                "translucent circular crop must keep straight-alpha background colors"
+            );
+        }
+    }
     use crate::model::{
         Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
         SpaceDetail, Spaces,
@@ -9313,6 +9382,86 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         text_position(&output, "Welcome to Caper");
         text_position(&output, "Email me a code");
+    }
+
+    #[test]
+    fn login_spacing_does_not_add_automatic_gaps_to_explicit_spacers() {
+        for (width, verifying) in [
+            (1440.0, false),
+            (1440.0, true),
+            (390.0, false),
+            (390.0, true),
+        ] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("signed-out"),
+            );
+            app.email = "fixture@example.test".into();
+            if verifying {
+                app.challenge = Some("fixture-challenge".into());
+                app.code = "ABC234".into();
+            }
+            let mut frame = || {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 844.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame();
+            let output = frame();
+            let text_rect = |label: &str| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == label => {
+                            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {label}"))
+            };
+            let heading = text_rect(if verifying {
+                "Check your email."
+            } else {
+                "Welcome to Caper"
+            });
+            let description = text_rect(if verifying {
+                "Enter the six-character code sent to fixture@example.test. It expires in 10 minutes."
+            } else {
+                "Use your email to create an account or return to one. We’ll send a code to your email."
+            });
+            assert_eq!(description.top() - heading.bottom(), 4.0);
+            let control_rect = |height: f32| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.rect.width() > 200.0 && rect.rect.height() == height =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {height}px control"))
+            };
+            assert_eq!(control_rect(58.0).top() - control_rect(52.0).bottom(), 12.0);
+            for rect in [heading, description, control_rect(52.0), control_rect(58.0)] {
+                assert!(
+                    rect.left() >= 8.0 && rect.right() <= width - 8.0,
+                    "clipped: {rect:?}"
+                );
+            }
+        }
     }
 
     #[test]

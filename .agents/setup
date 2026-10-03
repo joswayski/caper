@@ -34,6 +34,7 @@ packages=(
   libgl1-mesa-dri
   libglib2.0-dev
   libpulse0
+  librsvg2-bin
   libssl-dev
   libwayland-dev
   libx11-dev
@@ -45,6 +46,7 @@ packages=(
   lld-21
   pkg-config
   postgresql
+  openbox
   x11-utils
   xauth
   xdotool
