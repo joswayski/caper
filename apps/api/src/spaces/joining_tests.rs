@@ -172,7 +172,7 @@ async fn joining_consent_and_migration_preserve_access_without_silent_joins() {
     assert_eq!(invited.avatar_id, 37);
     assert_eq!(invited.username, "other");
     assert_eq!(invited.display_name, "other");
-    let Json(managed) = channel_members(
+    let Json(managed) = list_channel_members(
         State(state.clone()),
         Extension(owner.clone()),
         Path(private_target.clone()),
