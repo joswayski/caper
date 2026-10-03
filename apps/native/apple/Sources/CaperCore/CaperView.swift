@@ -1348,8 +1348,8 @@ private struct ChatView: View {
     @State private var joinError: String?
     @State private var confirmLeave = false
 
-    /// Scroll the unsent message into view after the current layout pass, so a
-    /// row that just grew (its error and actions appeared) is fully visible.
+    /// Reveal the unsent row, including its error and actions. Layout changes
+    /// below repeat this scroll once the lazy timeline's height is updated.
     private func revealPending(_ proxy: ScrollViewProxy) {
         guard chat.pendingMessage != nil else { return }
         Task { @MainActor in
@@ -1444,6 +1444,12 @@ private struct ChatView: View {
                             }.padding(.top, 80)
                         }
                         Color.clear.frame(height: 1).id("chat-timeline-bottom")
+                    }
+                    // State notifications can precede layout, and lazy rows can
+                    // replace estimated heights while scrolling. Follow the
+                    // measured content height so rejected actions stay visible.
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in
+                        revealPending(proxy)
                     }
                 }
                 .accessibilityIdentifier("chat-timeline")

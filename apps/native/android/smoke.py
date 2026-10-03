@@ -337,9 +337,13 @@ def main() -> None:
         assert find(desktop, contains=required) is not None, f"Populated shell is missing {required!r}"
     assert find(desktop, text="caper") is None, "The workspace must not have a web-style branding header"
     general = find(desktop, text="general")
-    join = find(desktop, text="Join")
+    join = find(desktop, description="Join voice in #general")
     assert general is not None and join is not None
-    assert abs(center(general)[1] - center(join)[1]) <= 4, "Join must share the channel row"
+    left, top, right, bottom = map(int, re.findall(r"\d+", join.attrib["bounds"]))
+    channel_bottom = int(re.findall(r"\d+", general.attrib["bounds"])[3])
+    assert top >= channel_bottom, "Join voice must be on a separate row below the channel name"
+    # viewport() sets density 320: 48dp is 96 physical pixels.
+    assert right - left >= 96 and bottom - top >= 96, "Join voice must have a 48dp touch target"
 
     # Hide the list while reading a non-default channel: collapsing must not
     # silently select General, disconnect chat, or expose hidden row actions.
@@ -500,7 +504,7 @@ def main() -> None:
     wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
     initial_roster = capture("caper-android-voice-roster-initial", "4 in voice in design. Show who is in voice")
     assert find(initial_roster, text="Fixture Voice 1") is None, "Occupied rosters must start collapsed"
-    assert find(initial_roster, text="4 in voice") is not None, "Occupancy remains readable beside Join"
+    assert find(initial_roster, text="4 in voice") is not None, "Occupancy remains readable beside Join voice"
     tap(description="4 in voice in design. Show who is in voice")
     roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
     assert find(roster, text="Fixture Voice 1") is not None
@@ -574,8 +578,8 @@ def main() -> None:
     # Exercise the actual default voice entry and Android permission controller.
     # Only notifications are pre-granted; microphone denial and approval happen
     # through the system UI. The loopback fixture rejects join, never fakes audio.
-    # Web joins voice from the channel list only; the chat header has no Join.
-    assert find(delivered, text="Join") is None, "Chat header must not duplicate the channel-list Join"
+    # Web joins voice from the channel list only; the chat header has no Join voice.
+    assert find(delivered, contains="Join voice") is None, "Chat header must not duplicate the channel-list Join voice"
     tap(text="Browse")
     join = "Join voice in #general"
     voice_ready = capture("caper-android-voice-ready", join)
