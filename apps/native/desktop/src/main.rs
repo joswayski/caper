@@ -7659,7 +7659,7 @@ mod tests {
         }
     }
     use crate::model::{
-        Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
+        self, Account, Author, ChatSession, Content, History, HistoryPlace, Member, Message, Space,
         SpaceDetail, Spaces,
     };
     use crate::worker::LoadError;
@@ -10091,6 +10091,8 @@ mod tests {
                     kind: "text".into(),
                     text: "sent".into(),
                 },
+                reactions: Vec::new(),
+                reaction_seq: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);
