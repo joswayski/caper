@@ -192,7 +192,7 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(chat.draft, "")
         chat.draft = "new next draft"
         let payload: [String: Any] = [
-            "id": "message-one", "channelId": channel, "seq": "1", "clientMessageId": command.id,
+            "id": "message-one", "channelId": channel, "seq": "1", "clientMessageId": command.id.lowercased(),
             "author": ["id": "self", "name": "Me", "isGuest": false],
             "content": ["version": 1, "type": "text", "text": command.text], "createdAt": "2026-01-01T00:00:00Z",
         ]
@@ -238,11 +238,12 @@ final class APIClientTests: XCTestCase {
         let command = try XCTUnwrap(chat.pendingMessage)
         chat.draft = "different new draft"
         let response = Data("""
-        {"id":"m1","channelId":"\(channel)","seq":"1","clientMessageId":"\(command.id)","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"submitted first"},"createdAt":"2026-01-01T00:00:00Z"}
+        {"id":"m1","channelId":"\(channel)","seq":"1","clientMessageId":"\(command.id.lowercased())","author":{"id":"self","name":"Me","isGuest":false},"content":{"version":1,"type":"text","text":"submitted first"},"createdAt":"2026-01-01T00:00:00Z"}
         """.utf8)
         held?.respond(status: 200, data: response)
         await send.value
         XCTAssertNil(chat.pendingMessage)
+        XCTAssertNil(chat.error, "a canonical UUID response is a successful send, not an invalid message")
         XCTAssertEqual(chat.draft, "different new draft")
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: response) as? [String: Any])
         chat.receive(["type": "message.created", "seq": "1", "message": payload], generation: 1, channelID: channel)
