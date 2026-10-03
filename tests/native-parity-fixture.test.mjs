@@ -10,7 +10,7 @@ async function setup(t) {
   const request = async (path, { auth = false, body, ...init } = {}) => {
     const response = await fetch(base + path, {
       ...init,
-      headers: { ...(auth ? { authorization: 'Bearer fixture-owner-token' } : {}),
+      headers: { ...(auth ? { authorization: `Bearer ${auth === true ? 'fixture-owner-token' : auth}` } : {}),
         ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...init.headers },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -68,7 +68,7 @@ test('persistent navigation failure survives prefetch until explicitly cleared',
   assert.equal((await request(path, { auth: true })).response.status, 200, 'ordinary failures remain one-shot');
 });
 
-test('space, channel, and member CRUD enforce production-shaped validation and idempotency', async (t) => {
+test('space invitation consent and channel grants enforce distinct access contracts', async (t) => {
   const { request } = await setup(t);
   assert.equal((await request('/api/spaces', { method: 'POST', auth: true, body: { name: 'bad\nname' } })).response.status, 400);
   const created = await request('/api/spaces', { method: 'POST', auth: true, body: { name: '  Field Notes  ' } });
@@ -76,14 +76,53 @@ test('space, channel, and member CRUD enforce production-shaped validation and i
   const spaceId = created.value.id;
   const added = await request(`/api/spaces/${spaceId}/members`, { method: 'POST', auth: true, body: { username: 'maya' } });
   assert.equal(added.response.status, 201);
-  assert.equal((await request(`/api/spaces/${spaceId}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 200);
+  assert.equal((await request(`/api/spaces/${spaceId}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 409);
+  assert.equal((await request(`/api/spaces/${spaceId}/invitations`, { auth: true })).value.members[0].id, ids.member);
+  assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
+  const pending = await request('/api/spaces', { auth: 'fixture-member-token' });
+  assert.deepEqual(pending.value.invitations.map(({ id }) => id), [spaceId]);
+  assert.deepEqual(pending.value.invitations[0].inviter, { username: 'fixture_owner', displayName: 'Fixture Owner' });
+  assert.ok(!pending.value.spaces.some(({ id }) => id === spaceId));
   const channel = await request(`/api/spaces/${spaceId}/channels`, { method: 'POST', auth: true, body: { name: 'private-notes', private: true } });
   assert.equal(channel.response.status, 201);
   assert.equal((await request(`/api/spaces/${spaceId}/channels`, { method: 'POST', auth: true, body: { name: 'private-notes', private: false } })).response.status, 409);
   assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { method: 'POST', auth: true, body: { username: 'alex' } })).response.status, 404);
+  assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 404);
+  assert.equal((await request(`/api/spaces/${spaceId}/invitation`, { method: 'POST', auth: 'fixture-member-token' })).response.status, 200);
+  assert.equal((await request(`/api/spaces/${spaceId}/invitation`, { method: 'POST', auth: 'fixture-member-token' })).response.status, 404);
   assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { method: 'POST', auth: true, body: { username: 'maya' } })).response.status, 201);
   assert.equal((await request(`/api/spaces/${spaceId}/members/${ids.member}`, { method: 'DELETE', auth: true })).response.status, 204);
   assert.equal((await request(`/api/spaces/${spaceId}/channels/${channel.value.id}/members`, { auth: true })).value.members.some(({ id }) => id === ids.member), false);
+  assert.equal((await request(`/api/spaces/${spaceId}`, { auth: 'fixture-member-token' })).response.status, 404);
+});
+
+test('public preview stays readable without participation; private consent grants and joins together', async (t) => {
+  const { request } = await setup(t);
+  const publicRoot = `/api/spaces/${ids.space}/channels/${ids.design}`;
+  const privateRoot = `/api/spaces/${ids.space}/channels/${ids.private}`;
+  const member = { auth: 'fixture-member-token' };
+  assert.equal((await request(`${publicRoot}/membership`, { ...member, method: 'DELETE' })).response.status, 204);
+  assert.equal((await request(`/api/chat/channels/${ids.design}/messages`, member)).response.status, 200);
+  assert.equal((await request(`/api/channels/${ids.design}/media/status`, member)).response.status, 404);
+  assert.equal((await request(`/api/chat/channels/${ids.design}/messages`, { ...member, method: 'POST', body: { text: 'not joined' } })).response.status, 404);
+  assert.equal((await request(`/api/spaces/${ids.space}`, member)).value.channels.find(channel => channel.id === ids.design).joined, false);
+  assert.equal((await request(`${publicRoot}/membership`, { ...member, method: 'POST' })).value.joined, true);
+
+  assert.equal((await request(`${privateRoot}/members/${ids.member}`, { auth: true, method: 'DELETE' })).response.status, 204);
+  // Reset only the disposable fixture's invitation tombstone to exercise a new invitation.
+  await request('/__fixture/control', { method: 'POST', body: { reset: true } });
+  const created = await request(`/api/spaces/${ids.space}/channels`, { auth: true, method: 'POST', body: { name: 'private-consent', private: true } });
+  const root = `/api/spaces/${ids.space}/channels/${created.value.id}`;
+  assert.equal((await request(`${root}/members`, { auth: true, method: 'POST', body: { username: 'maya' } })).response.status, 201);
+  const before = (await request(`/api/spaces/${ids.space}`, member)).value;
+  assert.ok(!before.channels.some(channel => channel.id === created.value.id));
+  assert.equal(before.channelInvitations[0].inviter.username, 'fixture_owner');
+  assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 404);
+  assert.equal((await request(`${root}/membership`, { ...member, method: 'POST' })).response.status, 404);
+  assert.equal((await request(`${root}/invitation`, { ...member, method: 'POST' })).value.joined, true);
+  assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 200);
+  assert.equal((await request(`${root}/membership`, { ...member, method: 'DELETE' })).response.status, 204);
+  assert.equal((await request(`/api/chat/channels/${created.value.id}/messages`, member)).response.status, 404);
 });
 
 test('send is idempotent, conflicts on changed payload, and history uses stable head cursor pagination', async (t) => {
@@ -92,11 +131,14 @@ test('send is idempotent, conflicts on changed payload, and history uses stable 
   const send = (clientMessageId, text) => request(`/api/chat/channels/${ids.demo}/messages`, {
     method: 'POST', headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId, text },
   });
-  const id = randomUUID();
+  const id = 'AB12CD34-EF56-4789-8ABC-DEF012345678';
+  const canonicalId = 'ab12cd34-ef56-4789-8abc-def012345678';
   const first = await send(id, '  preserved  ');
   assert.equal(first.response.status, 200); assert.equal(first.value.content.text, '  preserved  ');
+  assert.equal(first.value.clientMessageId, canonicalId, 'match Rust UUID serialization instead of echoing Swift casing');
   assert.equal((await send(id, '  preserved  ')).value.id, first.value.id);
-  assert.equal((await send(id, 'changed')).response.status, 409);
+  assert.equal((await send(canonicalId, '  preserved  ')).value.id, first.value.id, 'UUID casing cannot create a second message');
+  assert.equal((await send(canonicalId, 'changed')).response.status, 409);
   assert.equal((await send('not-a-uuid', 'text')).response.status, 400);
   for (let index = 0; index < 48; index++) await send(randomUUID(), `message ${index}`);
   const latest = await request(`/api/chat/channels/${ids.demo}/messages`);
@@ -121,12 +163,16 @@ test('loopback WebSocket replays, delivers live messages/typing/presence, failur
 
   const session = await request('/api/chat/session', { method: 'POST', body: { name: 'Socket Guest' } });
   const sent = await request(`/api/chat/channels/${ids.demo}/messages`, { method: 'POST',
-    headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: randomUUID(), text: 'live' } });
-  assert.equal((await stream.next()).event.message.id, sent.value.id);
-  stream.ws.send(JSON.stringify({ type: 'command', id: randomUUID(), issuedAt: Date.now(), method: 'typing', channelId: ids.demo,
+    headers: { 'x-caper-chat-token': session.value.token }, body: { clientMessageId: 'AB12CD34-EF56-4789-8ABC-DEF012345678', text: 'live' } });
+  const liveMessage = (await stream.next()).event.message;
+  assert.equal(liveMessage.id, sent.value.id);
+  assert.equal(liveMessage.clientMessageId, 'ab12cd34-ef56-4789-8abc-def012345678');
+  stream.ws.send(JSON.stringify({ type: 'command', id: 'BC23DE45-FA67-489A-9BCD-EF0123456789', issuedAt: Date.now(), method: 'typing', channelId: ids.demo,
     chatToken: session.value.token, body: { typing: true } }));
   assert.equal((await stream.next()).event.type, 'typing.updated');
-  assert.equal((await stream.next()).status, 204);
+  const result = await stream.next();
+  assert.equal(result.status, 204);
+  assert.equal(result.id, 'bc23de45-fa67-489a-9bcd-ef0123456789', 'command results also serialize a Rust UUID');
 
   stream.ws.send(JSON.stringify({ type: 'subscribe', id: 'presence', kind: 'presence', spaceId: ids.space, userIds: [ids.owner, ids.other] }));
   assert.deepEqual((await stream.next()).event.members.map(({ status }) => status), ['online', 'idle']);

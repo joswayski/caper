@@ -7,9 +7,13 @@ public final class AppModel {
     public var phase: Phase = .loading
     public var account: Account?
     public var spaces: [Space] = []
+    public var invitations: [Space] = []
+    public var pendingMembers: [Member] = []
     public var detail: SpaceDetail?
     public var selectedSpaceID: String?
     public var selectedChannelID: String?
+    public var previewingChannel: Bool { selectedChannel?.joined == false }
+    public var selectedChannel: Channel? { detail?.channels.first { $0.id == selectedChannelID } }
     public var error: String?
     public var busy = false
     public var challengeID: String? { didSet { if challengeID != oldValue { loginAttemptsRemaining = nil } } }
@@ -158,7 +162,8 @@ public final class AppModel {
         voiceJoinGeneration += 1
         clearNavigationCache()
         voice.leaveImmediately()
-        account = nil; spaces = []; detail = nil; spacesLoaded = false; spacesError = nil
+        account = nil; spaces = []; invitations = []; pendingMembers = []; detail = nil
+        spacesLoaded = false; spacesError = nil
         selectedSpaceID = nil; selectedChannelID = nil; challengeID = nil
         navigationGeneration += 1
         navigationTarget = nil; navigationError = nil
@@ -186,6 +191,7 @@ public final class AppModel {
             guard self.generation == attempt else { return }
             self.limits = response.limits
             self.spaces = response.spaces
+            self.invitations = response.invitations
             self.spacesLoaded = true
             if let selected = self.spaces.first(where: { $0.id == self.selectedSpaceID })
                 ?? self.spaces.first(where: { $0.id == self.preferredInitialSpaceID })
@@ -287,7 +293,7 @@ public final class AppModel {
             spaceVerified = true
             let restoredChannelID = channelID ?? prepared?.channelID ?? lastChannelBySpace[space.id]
             let restoredChannel = restoredChannelID.flatMap { id in detail.channels.first { $0.id == id } }
-            let channel = channelID == nil ? (restoredChannel ?? detail.channels.first) : restoredChannel
+            let channel = channelID == nil ? (restoredChannel?.joined == true ? restoredChannel : detail.channels.first { $0.joined }) : restoredChannel
             if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
             let history: ChatHistory?
             if let channel {
@@ -313,7 +319,8 @@ public final class AppModel {
             navigationTarget = nil
             if let history {
                 remember(PreparedNavigation(detail: detail, channelID: channel?.id, history: history))
-                await chat.open(history: history, displayName: account?.displayName ?? "Guest")
+                if channel?.joined == true { await chat.open(history: history, displayName: account?.displayName ?? "Guest") }
+                else { await chat.preview(history: history) }
             }
             else { await chat.stop() }
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else {
@@ -326,11 +333,17 @@ public final class AppModel {
             if detail.space.demo == true { await self.presence.stop() }
             else { await self.presence.watch(spaceID: detail.space.id, members: detail.members) }
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
-            await voicePresence.watch(spaceID: detail.space.id, channels: detail.channels, demo: detail.space.demo == true)
+            await voicePresence.watch(spaceID: detail.space.id, channels: detail.channels.filter(\.joined), demo: detail.space.demo == true)
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
         } catch {
             guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
-            navigationError = error.localizedDescription
+            let missingSpace = (error as? APIError)?.status == 404 && !spaceVerified
+            navigationError = missingSpace ? "This space is no longer available." : error.localizedDescription
+            if missingSpace {
+                spaces.removeAll { $0.id == space.id }
+                invitations.removeAll { $0.id == space.id }
+                invalidateNavigation(spaceID: space.id)
+            }
             if let apiError = error as? APIError, [401, 403, 404].contains(apiError.status),
                selectedSpaceID == space.id, !spaceVerified || channelID == nil || selectedChannelID == channelID {
                 if !spaceVerified { detail = nil; selectedSpaceID = nil }
@@ -416,7 +429,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.spaceNameError(name) { throw APIError(status: 400, message: error) }
         let updated = try await api.updateSpace(id: detail.space.id, name: name)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        replace(detail: SpaceDetail(space: updated, channels: detail.channels, members: detail.members))
+        replace(detail: SpaceDetail(space: updated, channels: detail.channels, members: detail.members, channelInvitations: detail.channelInvitations))
     }
 
     public func deleteCurrentSpace() async throws {
@@ -440,13 +453,45 @@ public final class AppModel {
     }
 
     public func addSpaceMember(username: String) async throws {
-        guard var detail else { return }
-        clearNavigationCache()
+        guard let detail else { return }
+        if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         let attempt = generation
         let member = try await api.addSpaceMember(spaceID: detail.space.id, username: username)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id } + [member])
-        replace(detail: detail)
+        pendingMembers.removeAll { $0.id == member.id }
+        pendingMembers.append(member)
+    }
+
+    public func loadSpaceInvitations() async throws {
+        guard let id = detail?.space.id, isOwner else { pendingMembers = []; return }
+        let attempt = generation
+        let members = try await api.spaceInvitations(spaceID: id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        pendingMembers = members
+    }
+
+    public func cancelSpaceInvitation(_ member: Member) async throws {
+        guard let id = detail?.space.id else { return }
+        let attempt = generation
+        try await api.cancelSpaceInvitation(spaceID: id, userID: member.id)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        pendingMembers.removeAll { $0.id == member.id }
+    }
+
+    public func acceptInvitation(_ invitation: Space) async throws {
+        let attempt = generation
+        let accepted = try await api.acceptSpaceInvitation(spaceID: invitation.id)
+        guard generation == attempt else { throw CancellationError() }
+        invitations.removeAll { $0.id == invitation.id }
+        spaces.removeAll { $0.id == accepted.id }; spaces.append(accepted)
+        await select(space: accepted)
+    }
+
+    public func declineInvitation(_ invitation: Space) async throws {
+        let attempt = generation
+        try await api.declineSpaceInvitation(spaceID: invitation.id)
+        guard generation == attempt else { throw CancellationError() }
+        invitations.removeAll { $0.id == invitation.id }
     }
 
     public func removeSpaceMember(_ member: Member) async throws {
@@ -455,7 +500,7 @@ public final class AppModel {
         let attempt = generation
         try await api.removeSpaceMember(spaceID: detail.space.id, memberID: member.id)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id })
+        detail = SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.filter { $0.id != member.id }, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
     }
 
@@ -468,7 +513,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
         let channel = try await api.createChannel(spaceID: detail.space.id, name: clean, privateChannel: privateChannel)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels + [channel], members: detail.members)
+        detail = SpaceDetail(space: detail.space, channels: detail.channels + [channel], members: detail.members, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
         await select(channel: channel)
         return channel
@@ -482,7 +527,7 @@ public final class AppModel {
         if let error = WorkspaceValidation.channelNameError(clean) { throw APIError(status: 400, message: error) }
         let updated = try await api.updateChannel(spaceID: detail.space.id, channelID: channel.id, name: clean, privateChannel: privateChannel)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
-        detail = SpaceDetail(space: detail.space, channels: detail.channels.map { $0.id == updated.id ? updated : $0 }, members: detail.members)
+        detail = SpaceDetail(space: detail.space, channels: detail.channels.map { $0.id == updated.id ? updated : $0 }, members: detail.members, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
         return updated
     }
@@ -495,10 +540,10 @@ public final class AppModel {
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
         if voice.isActive(channelID: channel.id) { voice.leaveImmediately() }
         voicePresence.revoke(channelID: channel.id)
-        detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id }, members: detail.members)
+        detail = SpaceDetail(space: detail.space, channels: detail.channels.filter { $0.id != channel.id }, members: detail.members, channelInvitations: detail.channelInvitations)
         replace(detail: detail)
         if selectedChannelID == channel.id {
-            if let first = detail.channels.first { await select(channel: first) }
+            if let first = detail.channels.first(where: \.joined) { await select(channel: first) }
             else { selectedChannelID = nil; await chat.stop() }
         }
     }
@@ -511,8 +556,17 @@ public final class AppModel {
         return members
     }
 
+    public func channelInvitations(_ channel: Channel) async throws -> [Member] {
+        guard let spaceID = detail?.space.id else { return [] }
+        let attempt = generation
+        let invitations = try await api.channelInvitations(spaceID: spaceID, channelID: channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        return invitations
+    }
+
     public func addChannelMember(_ channel: Channel, username: String) async throws -> Member {
         guard let spaceID = detail?.space.id else { throw APIError(status: 400, message: "No space is selected.") }
+        if let error = WorkspaceValidation.usernameError(username) { throw APIError(status: 400, message: error) }
         clearNavigationCache()
         let attempt = generation
         let member = try await api.addChannelMember(spaceID: spaceID, channelID: channel.id, username: username)
@@ -528,13 +582,75 @@ public final class AppModel {
         guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
     }
 
+    public func joinChannel(_ channel: Channel) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        clearNavigationCache()
+        _ = try await api.joinChannel(spaceID: spaceID, channelID: channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: channel.id)
+    }
+
+    public func leaveChannel(_ channel: Channel) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        let navigation = navigationGeneration
+        clearNavigationCache()
+        try await api.leaveChannel(spaceID: spaceID, channelID: channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        if voice.isActive(channelID: channel.id) { voice.leaveImmediately() }
+        voicePresence.revoke(channelID: channel.id)
+        let selecting = selectedChannelID == channel.id ? nil : selectedChannelID
+        if let current = detail {
+            let channels = current.channels.compactMap { item -> Channel? in
+                guard item.id == channel.id else { return item }
+                if item.private && !isOwner { return nil }
+                return Channel(id: item.id, spaceId: item.spaceId, name: item.name, private: item.private, joined: false)
+            }
+            replace(detail: SpaceDetail(space: current.space, channels: channels, members: current.members, channelInvitations: current.channelInvitations))
+        }
+        if selectedChannelID == channel.id { selectedChannelID = nil; await chat.stop() }
+        guard generation == attempt, navigationGeneration == navigation, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: selecting)
+    }
+
+    public func acceptChannelInvitation(_ invitation: ChannelInvitation) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        clearNavigationCache()
+        _ = try await api.acceptChannelInvitation(spaceID: spaceID, channelID: invitation.channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: invitation.channel.id)
+    }
+
+    public func declineChannelInvitation(_ invitation: ChannelInvitation) async throws {
+        guard let spaceID = detail?.space.id else { return }
+        let attempt = generation
+        clearNavigationCache()
+        try await api.declineChannelInvitation(spaceID: spaceID, channelID: invitation.channel.id)
+        guard generation == attempt, detail?.space.id == spaceID else { throw CancellationError() }
+        try await refreshDetail(spaceID: spaceID, selecting: selectedChannelID)
+    }
+
+    private func refreshDetail(spaceID: String, selecting channelID: String?) async throws {
+        let attempt = generation
+        let navigation = navigationGeneration
+        let refreshed = try await api.space(spaceID)
+        guard generation == attempt, navigationGeneration == navigation, detail?.space.id == spaceID else { throw CancellationError() }
+        replace(detail: refreshed)
+        let retained = channelID.flatMap { id in refreshed.channels.first { $0.id == id } }
+        if let retained { await select(channel: retained) }
+        else if let first = refreshed.channels.first(where: \.joined) { await select(channel: first) }
+        else { selectedChannelID = nil; await chat.stop() }
+    }
+
     private func replace(detail: SpaceDetail) {
         self.detail = detail
         spaces = spaces.map { $0.id == detail.space.id ? detail.space : $0 }
         let attempt = generation
         Task { [weak self] in
             guard let self, self.generation == attempt, self.detail?.space.id == detail.space.id else { return }
-            await self.voicePresence.watch(spaceID: detail.space.id, channels: detail.channels, demo: detail.space.demo == true)
+            await self.voicePresence.watch(spaceID: detail.space.id, channels: detail.channels.filter(\.joined), demo: detail.space.demo == true)
         }
     }
 
@@ -569,7 +685,7 @@ public final class AppModel {
     /// change the call, and a stale/private channel must not evict a healthy one.
     /// The media root voice uses for the viewed channel, as web keys its availability.
     public var viewedVoiceRoot: String? {
-        guard let detail, let channelID = selectedChannelID else { return nil }
+        guard let detail, let channelID = selectedChannelID, selectedChannel?.joined == true else { return nil }
         return detail.space.demo == true ? "general" : channelID
     }
 
@@ -587,7 +703,7 @@ public final class AppModel {
     /// keeps the session 8 s, so reissue at most every 4 s. The public demo
     /// creates on join; failures only mean an ordinary join.
     public func prepareVoiceJoin(channel: Channel) {
-        guard account != nil, let detail, detail.space.demo != true, voiceAvailable == true,
+        guard account != nil, let detail, detail.space.demo != true, channel.joined, voiceAvailable == true,
               detail.channels.contains(where: { $0.id == channel.id }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         let now = ContinuousClock.now
@@ -597,7 +713,7 @@ public final class AppModel {
     }
 
     public func joinVoice(channel: Channel) async {
-        guard let detail, detail.channels.contains(where: { $0.id == channel.id }),
+        guard let detail, channel.joined, detail.channels.contains(where: { $0.id == channel.id && $0.joined }),
               voice.context?.channelID != channel.id || voice.phase == .idle || voice.phase == .failed else { return }
         voiceJoinGeneration += 1
         let joinAttempt = voiceJoinGeneration
@@ -608,7 +724,7 @@ public final class AppModel {
             if space.demo != true {
                 let verified = try await api.space(space.id)
                 guard voiceJoinGeneration == joinAttempt, generation == accountGeneration else { return }
-                guard verified.space.id == space.id, verified.channels.contains(where: { $0.id == channel.id }) else {
+                guard verified.space.id == space.id, verified.channels.contains(where: { $0.id == channel.id && $0.joined }) else {
                     voicePresence.revoke(channelID: channel.id)
                     return
                 }
@@ -621,7 +737,7 @@ public final class AppModel {
             }
             guard voiceJoinGeneration == joinAttempt, generation == accountGeneration,
                   account?.id == ownerID, self.detail?.space.id == space.id,
-                  self.detail?.channels.contains(where: { $0.id == channel.id }) == true else { return }
+                  self.detail?.channels.contains(where: { $0.id == channel.id && $0.joined }) == true else { return }
             if voice.phase != .idle && voice.phase != .failed { voice.leaveImmediately() }
             await voice.join(channelID: space.demo == true ? nil : channel.id,
                              context: VoiceContext(channelID: channel.id, channelName: channel.name,
@@ -742,6 +858,30 @@ public final class ChatModel {
 
     public func open(history: ChatHistory, displayName: String) async {
         await open(channelID: history.channel?.id, displayName: displayName, preservingPending: false, prepared: history)
+    }
+
+    public func preview(history: ChatHistory) async {
+        lastOpen = nil
+        generation += 1
+        let requestGeneration = generation
+        let oldSubscription = subscriptionID
+        subscriptionID = nil
+        clearLocal(preservingPending: false)
+        if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
+        guard generation == requestGeneration else { return }
+        channelID = history.channel?.id; spaceID = history.space?.id
+        messages = history.messages; delivery.reset(cursor: history.cursor); hasMore = history.hasMore
+        channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
+        session = nil; loading = false; loadFailed = false; sessionError = nil
+        guard let actualChannel = channelID else { return }
+        let subscription = await gateway.subscribeChat(channelID: actualChannel, after: delivery.cursor) { [weak self] event in
+            self?.receive(event, generation: requestGeneration, channelID: actualChannel)
+        }
+        guard generation == requestGeneration, channelID == actualChannel else {
+            await gateway.unsubscribe(subscription)
+            return
+        }
+        subscriptionID = subscription
     }
 
     private var lastOpen: (channelID: String?, displayName: String)?

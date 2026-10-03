@@ -239,6 +239,63 @@ impl Api {
         .map(|_| ())
     }
 
+    pub fn join_channel(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/membership"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn leave_channel(&self, token: &str, space: &str, channel: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/channels/{channel}/membership"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn accept_channel_invitation(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<Channel, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/channels/{channel}/invitation"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn decline_channel_invitation(
+        &self,
+        token: &str,
+        space: &str,
+        channel: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/channels/{channel}/invitation"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
     pub fn members(
         &self,
         token: &str,
@@ -270,6 +327,48 @@ impl Api {
             None,
             Some(json!({"username":username})),
         )
+    }
+
+    pub fn invitations(&self, token: &str, space: &str) -> Result<Members, ApiError> {
+        self.request(
+            Method::GET,
+            &format!("api/spaces/{space}/invitations"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn cancel_invitation(&self, token: &str, space: &str, user: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/invitations/{user}"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
+    }
+
+    pub fn accept_invitation(&self, token: &str, space: &str) -> Result<Space, ApiError> {
+        self.request(
+            Method::POST,
+            &format!("api/spaces/{space}/invitation"),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
+    pub fn decline_invitation(&self, token: &str, space: &str) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::DELETE,
+            &format!("api/spaces/{space}/invitation"),
+            Some(token),
+            None,
+            None,
+        )?)
+        .map(|_| ())
     }
 
     pub fn remove_member(
