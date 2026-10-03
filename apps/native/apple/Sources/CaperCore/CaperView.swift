@@ -1348,8 +1348,8 @@ private struct ChatView: View {
     @State private var joinError: String?
     @State private var confirmLeave = false
 
-    /// Scroll the unsent message into view after the current layout pass, so a
-    /// row that just grew (its error and actions appeared) is fully visible.
+    /// Defer the scroll request; content geometry repeats it when the timeline
+    /// finishes measuring, including history above the unsent message.
     private func revealPending(_ proxy: ScrollViewProxy) {
         guard let pendingID = chat.pendingMessage?.id else { return }
         Task { @MainActor in
@@ -1397,42 +1397,46 @@ private struct ChatView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 0) {
-                        if !chat.loadFailed { HStack(spacing: 6) {
-                            if chat.olderError != nil {
-                                Text("Couldn’t load older messages.")
-                                Button("Retry") { Task { await chat.loadOlder() } }.disabled(chat.loadingOlder)
-                                    .accessibilityIdentifier("load-older-messages")
-                            } else if chat.hasMore {
-                                Button(chat.loadingOlder ? "Loading…" : "Load older messages") {
-                                    Task { await chat.loadOlder() }
-                                }.disabled(chat.loadingOlder)
-                                    .accessibilityIdentifier("load-older-messages")
+                    VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
+                            if !chat.loadFailed { HStack(spacing: 6) {
+                                if chat.olderError != nil {
+                                    Text("Couldn’t load older messages.")
+                                    Button("Retry") { Task { await chat.loadOlder() } }.disabled(chat.loadingOlder)
+                                        .accessibilityIdentifier("load-older-messages")
+                                } else if chat.hasMore {
+                                    Button(chat.loadingOlder ? "Loading…" : "Load older messages") {
+                                        Task { await chat.loadOlder() }
+                                    }.disabled(chat.loadingOlder)
+                                        .accessibilityIdentifier("load-older-messages")
+                                }
+                                else { Text("Beginning of conversation") }
+                            }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
+                            if chat.loading && chat.messages.isEmpty {
+                                Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
                             }
-                            else { Text("Beginning of conversation") }
-                        }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted).frame(height: 44) }
-                        if chat.loading && chat.messages.isEmpty {
-                            Text("Loading messages…").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).padding(.top, 80)
-                        }
-                        ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
-                            if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
-                                ChatDateDivider(createdAt: message.createdAt)
+                            ForEach(Array(chat.messages.enumerated()), id: \.element.id) { index, message in
+                                VStack(spacing: 0) {
+                                    if index == 0 || !ChatDateDivider.sameLocalDay(chat.messages[index - 1].createdAt, message.createdAt) {
+                                        ChatDateDivider(createdAt: message.createdAt)
+                                    }
+                                    MessageRow(message: message, chat: chat)
+                                }.id(message.id)
                             }
-                            MessageRow(message: message, chat: chat).id(message.id)
                         }
+                        // Keep the scroll target eager even when lazy history
+                        // has not yet resolved the heights of preceding rows.
                         if let pending = chat.pendingMessage {
-                            if chat.messages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
-                                ChatDateDivider(createdAt: pending.createdAt)
-                            }
-                            PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
-                                              rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
-                                              retry: { Task { await chat.send() } },
-                                              edit: { _ = chat.discardRejected(edit: true) },
-                                              dismiss: { _ = chat.discardRejected() })
-                                .id("pending-\(pending.id)")
-                                // Lazy layout can measure this row after the
-                                // model-change scroll; repeat at its actual size.
-                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
+                            VStack(spacing: 0) {
+                                if chat.messages.last.map({ ChatDateDivider.sameLocalDay($0.createdAt, pending.createdAt) }) != true {
+                                    ChatDateDivider(createdAt: pending.createdAt)
+                                }
+                                PendingMessageRow(pending: pending, author: chat.currentAuthor, error: chat.error,
+                                                  rejected: chat.sendRejected, canEdit: chat.draft.isEmpty,
+                                                  retry: { Task { await chat.send() } },
+                                                  edit: { _ = chat.discardRejected(edit: true) },
+                                                  dismiss: { _ = chat.discardRejected() })
+                            }.id("pending-\(pending.id)")
                         }
                         if chat.loadFailed, let error = chat.error {
                             // Web's failed first load: the error with Try again, in place of the conversation.
@@ -1448,6 +1452,9 @@ private struct ChatView: View {
                             }.padding(.top, 80)
                         }
                     }
+                    // Preceding history can move the pending row without
+                    // changing that row's own height; observe the whole extent.
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                 }
                 .accessibilityIdentifier("chat-timeline")
                 #if os(macOS)
