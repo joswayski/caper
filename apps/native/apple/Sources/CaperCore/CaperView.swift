@@ -1664,8 +1664,9 @@ private struct LoginPage: View {
                     CaperField(title: "Email address", text: $email, placeholder: "you@example.com")
                     if let error = model.error { LoginError(message: error).padding(.top, 18) }
                     Button { Task { await model.requestCode(email: email) } } label: {
-                        HStack { Text(model.busy ? "Sending…" : "Email me a code"); Spacer(); Image(systemName: "arrow.right") }
-                    }.buttonStyle(LoginActionButton()).disabled(model.busy || email.isEmpty).padding(.top, 12)
+                        HStack(spacing: 12) { Text(model.busy ? "Sending…" : "Email me a code"); Image(systemName: "arrow.right") }
+                    }.buttonStyle(LoginActionButton(fullWidth: false)).disabled(model.busy || email.isEmpty)
+                        .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
                 } else {
                     CaperField(title: "Sign-in code", text: $code)
                         .disabled(model.loginAttemptsRemaining == 0)
@@ -1720,10 +1721,11 @@ private struct LoginError: View {
 }
 
 private struct LoginActionButton: ButtonStyle {
+    var fullWidth = true
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(CaperTheme.font(16, weight: .medium)).foregroundStyle(.white)
-            .padding(.horizontal, 20).frame(maxWidth: .infinity).frame(height: 58)
+            .padding(.horizontal, 20).frame(maxWidth: fullWidth ? .infinity : nil).frame(height: 58)
             .background(configuration.isPressed ? CaperTheme.terracottaBright : CaperTheme.terracotta)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .opacity(isEnabled ? 1 : 0.45)

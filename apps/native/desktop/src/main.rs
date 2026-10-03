@@ -2596,11 +2596,22 @@ impl CaperApp {
                                 login_error_frame(ui, error);
                             }
                             ui.add_space(12.0);
-                            let submit = login_action(
-                                ui,
-                                if self.loading { "Sending…" } else { "Email me a code" },
-                                self.loading || !self.email.contains('@'),
-                            );
+                            let submit = ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                                let width = ui.painter().layout_no_wrap(
+                                    "Email me a code".into(),
+                                    egui::FontId::new(16.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                                    TEXT,
+                                ).size().x + 84.0;
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(width, 58.0),
+                                    egui::Layout::top_down(egui::Align::LEFT),
+                                    |ui| login_action(
+                                        ui,
+                                        if self.loading { "Sending…" } else { "Email me a code" },
+                                        self.loading || !self.email.contains('@'),
+                                    ),
+                                ).inner
+                            }).inner;
                             if submit.clicked()
                                 || (response.lost_focus()
                                     && ui.input(|input| input.key_pressed(egui::Key::Enter)))
@@ -9029,7 +9040,7 @@ mod tests {
                     .iter()
                     .find_map(|shape| match &shape.shape {
                         egui::Shape::Rect(rect)
-                            if rect.rect.width() > 200.0 && rect.rect.height() == height =>
+                            if rect.rect.width() > 80.0 && rect.rect.height() == height =>
                         {
                             Some(rect.rect)
                         }
@@ -9038,6 +9049,10 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing {height}px control"))
             };
             assert_eq!(control_rect(58.0).top() - control_rect(52.0).bottom(), 12.0);
+            if !verifying {
+                assert_eq!(control_rect(58.0).right(), control_rect(52.0).right());
+                assert!(control_rect(58.0).width() < control_rect(52.0).width());
+            }
             for rect in [heading, description, control_rect(52.0), control_rect(58.0)] {
                 assert!(
                     rect.left() >= 8.0 && rect.right() <= width - 8.0,
