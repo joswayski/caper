@@ -2,6 +2,7 @@
 // WebSocket and WebRTC. This is UI regression coverage, not live SFU validation.
 // Run against Vite: node scripts/test-voice-controls.mjs [http://localhost:5174]
 // Focus only on channel transitions with VOICE_TEST_CHANNEL_MOTION=1.
+// Focus only on avatar borders with VOICE_TEST_AVATARS=1 (use /privacy to avoid the hidden homepage simulation).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -34,7 +35,7 @@ async function fixture() {
   for (const element of document.body.children) element.hidden = true;
   const mount = document.createElement('div'); document.body.append(mount);
   const f = window.voiceFixture = { people: [], sockets: [], captures: [], devices: [], recorders: [], commands: [], revision: 0 };
-  const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture', debugEnabled: true };
+  const account = { id: 'fixture-user', username: 'fixture', displayName: 'UI fixture', avatarId: 0, debugEnabled: true };
   const space = { id: 'workspace123', name: 'Test space', ownerId: account.id };
   const channels = ['alpha', 'beta'].map(name => ({ id: name.padEnd(12, '0'), name, spaceId: space.id, private: false }));
   const author = { id: account.id, name: account.displayName, isGuest: false };
@@ -63,7 +64,7 @@ async function fixture() {
     if (path === '/api/media/status') return Response.json({ enabled: true });
     if (path === '/api/media/presence' || path === '/api/media/snapshot') return Response.json(snapshot());
     if (path === '/api/media/join') {
-      f.people = [{ id: 'self', name: account.displayName, muted: false, deafened: false, tracks: [] }]; f.revision++;
+      f.people = [{ id: 'self', name: account.displayName, avatarId: account.avatarId, muted: false, deafened: false, tracks: [] }]; f.revision++;
       return Response.json({ token: 'fixture-voice', id: 'self', iceServers: [] });
     }
     if (path === '/api/media/publish') return Response.json({ sessionDescription: { type: 'answer', sdp: 'v=0' } });
@@ -207,7 +208,32 @@ try {
   browser('wait', '1500');
   evaluate(`await (${fixture.toString()})();`);
   wait(`document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.voice-button[aria-disabled="false"]')`);
-  if (process.env.VOICE_TEST_CHANNEL_MOTION === '1') {
+  if (process.env.VOICE_TEST_AVATARS === '1') {
+    evaluate(`voiceFixture.showSpaces();`);
+    wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
+    click('Mute microphone');
+    click('Join voice');
+    wait(`document.querySelector('[aria-label="Leave voice"]')`);
+    evaluate(`voiceFixture.addRemoteAudio(); await document.fonts.ready;`);
+    wait(`document.querySelectorAll('.voice-occupants .avatar.quiet').length === 2`);
+    for (const width of [1280, 390]) {
+      browser('set', 'viewport', String(width), '900', '2');
+      if (width === 390) browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+      evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
+      assert.deepEqual(evaluate(`return [...document.querySelectorAll('.voice-occupants .avatar')].map(el => { const s = getComputedStyle(el); return [s.borderTopColor, s.boxShadow, s.width, s.height]; });`), Array(2).fill(['rgba(0, 0, 0, 0)', 'none', '20px', '20px']), 'Idle image and initial avatars have no visible border or halo, without resizing');
+      assert.deepEqual(evaluate(`return [...document.querySelectorAll('.voice-occupants .avatar > span')].map(el => el.getAttribute('data-avatar-id'));`), ['0', null], 'Exercise both image artwork and the initials fallback');
+      screenshot(`voice-avatars-idle-${width}`);
+      click('Unmute microphone');
+      wait(`document.querySelector('.voice-occupants .avatar.speaking')`);
+      assert.equal(evaluate(`return getComputedStyle(document.querySelector('.voice-occupants .avatar.speaking')).borderTopColor;`), 'rgb(99, 122, 67)', 'Speaking retains the green indicator');
+      assert.notEqual(evaluate(`return getComputedStyle(document.querySelector('.voice-occupants .avatar.speaking')).boxShadow;`), 'none');
+      screenshot(`voice-avatars-speaking-${width}`);
+      click('Mute microphone');
+      wait(`document.querySelectorAll('.voice-occupants .avatar.quiet').length === 2`);
+    }
+    evaluate(`await voiceFixture.cleanup();`);
+    console.log('PASS borderless idle image/initial avatars and green speaking indicator at 1280px and 390px (mock signaling/WebRTC)');
+  } else if (process.env.VOICE_TEST_CHANNEL_MOTION === '1') {
     evaluate(`voiceFixture.showSpaces();`);
     wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
     evaluate(`await document.fonts.ready;`);
