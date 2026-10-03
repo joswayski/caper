@@ -753,6 +753,81 @@ test("resync retains visible messages through transient failures but clears them
   assert.equal(f.client.snapshotHistory(), undefined);
 });
 
+test("older history from another channel is rejected without contaminating the saved timeline", async (t) => {
+  const f = await paginationFixture(t);
+  const loading = f.client.loadOlder();
+  f.requests[0].resolve(Response.json({
+    messages: [f.message(2), { ...f.message(3), channelId: "other-channel" }],
+    cursor: f.message(5).seq, hasMore: false,
+  }));
+  await loading;
+  assert.deepEqual(f.state.messages, [4, 5].map(f.message), "reject the whole page, including valid rows");
+  assert.match(f.state.olderError!, /another channel/);
+  assert.equal(f.state.loadingOlder, false);
+  assert.equal(f.state.hasMore, true, "the failed page must remain retryable");
+  assert.deepEqual(f.client.snapshotHistory()?.messages, [4, 5].map(f.message));
+});
+
+test("prepared history receives the same channel isolation checks as fetched history", async (t) => {
+  const sockets = installBrowser(t);
+  let state!: ChatViewState;
+  const client = new ChatClient((next) => { state = next; }, "general");
+  t.after(() => client.stop());
+  client.start({
+    space: { id: "space", name: "Caper" }, channel: { id: "general", name: "general" },
+    messages: [{ ...committed({ clientMessageId: "foreign", text: "Wrong channel" }, "1"), channelId: "other-channel" }],
+    cursor: "1", hasMore: false,
+  });
+  assert.equal(state.phase, "error");
+  assert.match(state.error!, /another channel/);
+  assert.deepEqual(state.messages, []);
+  assert.equal(sockets.length, 0);
+});
+
+for (const status of [200, 503]) {
+  test(`an obsolete session response (${status}) cannot overwrite a newer identity or error state`, async (t) => {
+    installBrowser(t);
+    const requests: Array<(response: Response) => void> = [];
+    t.mock.method(globalThis, "fetch", () => new Promise<Response>((resolve) => requests.push(resolve)));
+    let state!: ChatViewState;
+    const client = new ChatClient((next) => { state = next; });
+    t.after(() => client.stop());
+    client.identify("Old", true);
+    client.identify("Current", true);
+    const current = { token: "current", author: { id: "current", name: "Current", isGuest: false } };
+    requests[1](Response.json(current));
+    await tick();
+    requests[0](status === 200
+      ? Response.json({ token: "obsolete", author: { id: "old", name: "Old", isGuest: false } })
+      : Response.json({ error: "Obsolete session failure" }, { status }));
+    await tick();
+    assert.deepEqual(state.author, current.author);
+    assert.equal(state.sessionError, undefined);
+    assert.deepEqual(JSON.parse(localStorage.getItem("caper.chat.session")!), current);
+  });
+}
+
+test("stopped clients cannot persist a late session or start a session retry", async (t) => {
+  installBrowser(t);
+  let finish!: (response: Response) => void;
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", () => {
+    requests++;
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  });
+  const states: ChatViewState[] = [];
+  const client = new ChatClient((state) => states.push(state));
+  client.identify("Departed", true);
+  client.stop();
+  const updatesBeforeCompletion = states.length;
+  finish(Response.json({ token: "obsolete", author: { id: "departed", name: "Departed", isGuest: false } }));
+  await tick();
+  client.retrySession();
+  assert.equal(localStorage.getItem("caper.chat.session"), null);
+  assert.equal(states.length, updatesBeforeCompletion);
+  assert.equal(requests, 1);
+});
+
 test("resync keeps paginated history while refreshing overlapping author metadata", async (t) => {
   const f = await paginationFixture(t);
   const older = f.client.loadOlder();

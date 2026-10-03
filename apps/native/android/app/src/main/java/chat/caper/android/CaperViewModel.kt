@@ -579,15 +579,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val old = typers[author.id]
         if (old != null && next <= old.revision) return
         if (old == null && typers.size >= 64) return
-        if (active) typers[author.id] = TypingAuthor(author, next, System.currentTimeMillis() + 6_000)
-        else typers.remove(author.id)
+        // Keep stop revisions until expiry so delayed starts cannot revive typing.
+        typers[author.id] = TypingAuthor(author, next, System.currentTimeMillis() + 6_000, active)
         refreshTypers()
     }
 
     private fun refreshTypers() {
         val now = System.currentTimeMillis()
         typers.entries.removeAll { it.value.expiresAt <= now }
-        mutable.value = mutable.value.copy(typingAuthors = typers.values.filter { it.expiresAt > now }.map { it.author })
+        mutable.value = mutable.value.copy(typingAuthors = typers.values.filter { it.typing && it.author.id != chatAuthor?.id }.map { it.author })
         typingExpiry?.cancel()
         val next = typers.values.minOfOrNull { it.expiresAt } ?: return
         typingExpiry = viewModelScope.launch { delay((next - now).coerceAtLeast(1)); refreshTypers() }

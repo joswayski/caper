@@ -138,6 +138,7 @@ enum Dialog {
 #[derive(Clone)]
 struct Typer {
     author: Author,
+    typing: bool,
     revision: u64,
     expires: Instant,
 }
@@ -499,6 +500,7 @@ impl CaperApp {
                                 name: "Maya".into(),
                                 is_guest: false,
                             },
+                            typing: true,
                             revision: 1,
                             expires: Instant::now() + Duration::from_secs(3_600),
                         },
@@ -1650,7 +1652,10 @@ impl CaperApp {
                 self.selected_channel.as_deref(),
             ) =>
             {
-                self.live = if online { "Live".into() } else { detail }
+                self.live = if online { "Live".into() } else { detail };
+                if !online {
+                    self.typers.clear();
+                }
             }
             GatewayEvent::Message {
                 generation,
@@ -1675,10 +1680,19 @@ impl CaperApp {
                     .session
                     .as_ref()
                     .is_some_and(|session| session.author.id != message.author.id);
+                let author_id = message.author.id.clone();
                 match self.timeline.apply(*message) {
                     Ok(model::Apply::Applied) if remote => {
+                        if let Some(typer) = self.typers.get_mut(&author_id) {
+                            typer.typing = false;
+                        }
                         self.effects.play(Effect::Message);
                         self.mark_selected_direct_read();
+                    }
+                    Ok(model::Apply::Applied | model::Apply::Buffered) => {
+                        if let Some(typer) = self.typers.get_mut(&author_id) {
+                            typer.typing = false;
+                        }
                     }
                     Ok(model::Apply::Resync) | Err(_) => self.reload_channel(),
                     _ => {}
@@ -1698,33 +1712,27 @@ impl CaperApp {
             ) =>
             {
                 let revision = model::sequence(&revision).unwrap_or(0);
-                if typing
-                    && author.id
-                        != self
-                            .session
-                            .as_ref()
-                            .map_or("", |session| session.author.id.as_str())
+                if author.id
+                    != self
+                        .session
+                        .as_ref()
+                        .map_or("", |session| session.author.id.as_str())
                 {
                     let replace = self
                         .typers
                         .get(&author.id)
                         .is_none_or(|entry| revision > entry.revision);
-                    if replace {
+                    if replace && (self.typers.contains_key(&author.id) || self.typers.len() < 64) {
                         self.typers.insert(
                             author.id.clone(),
                             Typer {
                                 author,
+                                typing,
                                 revision,
                                 expires: Instant::now() + Duration::from_secs(6),
                             },
                         );
                     }
-                } else if self
-                    .typers
-                    .get(&author.id)
-                    .is_some_and(|entry| revision > entry.revision)
-                {
-                    self.typers.remove(&author.id);
                 }
             }
             GatewayEvent::Presence {
@@ -5019,6 +5027,7 @@ impl CaperApp {
                     let names: Vec<_> = self
                         .typers
                         .values()
+                        .filter(|typer| typer.typing)
                         .map(|typer| typer.author.name.as_str())
                         .collect();
                     if !names.is_empty() {
@@ -9576,6 +9585,119 @@ mod tests {
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
+    }
+
+    #[test]
+    fn typing_tombstones_reject_stale_events_and_clear_on_message_or_disconnect() {
+        use std::time::{Duration, Instant};
+
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("signed-out"),
+        );
+        app.selected_channel = Some("channel".into());
+        app.session = Some(ChatSession {
+            token: "token".into(),
+            author: Author {
+                id: "self".into(),
+                avatar_id: None,
+                name: "Self".into(),
+                is_guest: false,
+            },
+        });
+        let author = Author {
+            id: "other".into(),
+            avatar_id: None,
+            name: "Other".into(),
+            is_guest: false,
+        };
+        let typing = |author: Author, typing, revision: &str| GatewayEvent::Typing {
+            generation: 1,
+            channel: "channel".into(),
+            author,
+            typing,
+            revision: revision.into(),
+        };
+
+        app.gateway(typing(author.clone(), true, "4"));
+        app.gateway(typing(author.clone(), false, "6"));
+        app.gateway(typing(author.clone(), true, "5"));
+        app.gateway(typing(author.clone(), false, "6"));
+        let tombstone = app.typers.get("other").unwrap();
+        assert!(!tombstone.typing);
+        assert_eq!(tombstone.revision, 6);
+        assert!(app.typers.values().filter(|entry| entry.typing).count() == 0);
+
+        app.gateway(typing(
+            app.session.as_ref().unwrap().author.clone(),
+            true,
+            "7",
+        ));
+        assert!(!app.typers.contains_key("self"), "own typing stays hidden");
+
+        app.typers.get_mut("other").unwrap().expires = Instant::now() - Duration::from_millis(1);
+        app.periodic(&context);
+        assert!(!app.typers.contains_key("other"), "stop tombstones expire");
+
+        app.gateway(typing(author.clone(), true, "8"));
+        app.gateway(GatewayEvent::Message {
+            generation: 1,
+            channel: "channel".into(),
+            message: Box::new(Message {
+                id: "message".into(),
+                channel_id: "channel".into(),
+                seq: "1".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                client_message_id: "client-message".into(),
+                author: author.clone(),
+                content: Content {
+                    version: 1,
+                    kind: "text".into(),
+                    text: "sent".into(),
+                },
+            }),
+        });
+        assert!(!app.typers.get("other").unwrap().typing);
+
+        app.gateway(typing(author, true, "9"));
+        app.gateway(GatewayEvent::Status {
+            generation: 1,
+            channel: "channel".into(),
+            online: false,
+            detail: "Offline".into(),
+        });
+        assert!(app.typers.is_empty());
+    }
+
+    #[test]
+    fn typing_stop_tombstones_are_not_rendered() {
+        for stopped in [false, true] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-typing"),
+            );
+            if stopped {
+                let author = app.typers.values().next().unwrap().author.clone();
+                app.gateway(GatewayEvent::Typing {
+                    generation: app.generation,
+                    channel: app.selected_channel.clone().unwrap(),
+                    author,
+                    typing: false,
+                    revision: "2".into(),
+                });
+                assert_eq!(app.typers.len(), 1, "the stop revision stays retained");
+            }
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let visible = output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Maya is typing…")
+            });
+            assert_eq!(visible, !stopped);
+        }
     }
 
     #[test]
