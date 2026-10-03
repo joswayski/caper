@@ -243,6 +243,7 @@ try {
     wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`);
     evaluate(`await document.fonts.ready;`);
     const geometry = () => evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => [...line.querySelectorAll('.channel-select, .channel-manage, .channel-join')].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }));`);
+    const countPosition = () => evaluate(`const r = document.querySelector('.channel-section-toggle .section-count').getBoundingClientRect(); return [r.x, r.y];`);
     for (const width of [1280, 390]) {
       browser('set', 'viewport', String(width), '900', '2');
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
@@ -363,11 +364,25 @@ try {
         assert.ok(before.every(row => row[1][2] >= 44 && row[1][3] >= 44 && row[2][3] >= 44), 'Narrow controls need 44px tap targets');
       }
     }
+    const ownerNarrowCount = countPosition();
+    browser('set', 'viewport', '1280', '900', '2');
+    evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
+    const ownerDesktopCount = countPosition();
+    browser('hover', '.channel-section-heading');
+    browser('mouse', 'move', '5', '5');
+    assert.deepEqual(countPosition(), ownerDesktopCount, 'Revealing owner section actions cannot shift the count');
+    screenshot('channel-1280-owner');
     evaluate(`voiceFixture.showSpaces(false);`);
     wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && !document.querySelector('.channel-manage')`);
     assert.equal(evaluate(`return document.querySelectorAll('.channel-join').length;`), 3, 'Members retain voice actions without owner management controls');
+    assert.deepEqual(countPosition(), ownerDesktopCount, 'Owned and shared spaces keep the channel count in the same position');
+    screenshot('channel-1280-member');
+    browser('set', 'viewport', '390', '900', '2');
+    browser('find', 'role', 'button', 'click', '--name', 'Browse', '--exact');
+    assert.deepEqual(countPosition(), ownerNarrowCount, 'Narrow owned and shared spaces also align the count');
+    screenshot('channel-390-member');
     evaluate(`await voiceFixture.cleanup();`);
-    console.log('PASS stable channel rows at 1280px/390px and 220px sidebar, empty/live/private channels, owner menu and focus return, join/leave/switch/cancel, browsing preserves voice, busy guard, reduced motion and member permissions (mock signaling/WebRTC)');
+    console.log('PASS stable channel rows at 1280px/390px and 220px sidebar, owned/shared count alignment, empty/live/private channels, owner menu and focus return, join/leave/switch/cancel, browsing preserves voice, busy guard, reduced motion and member permissions (mock signaling/WebRTC)');
   } else {
   for (const label of ['Input Options', 'Output Options', 'User Settings']) {
     click(label);

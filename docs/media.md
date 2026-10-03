@@ -11,7 +11,8 @@ Participants use their account display name and saved Caper avatar. This is not 
 No camera, screen sharing, or server-side voice recording.
 Web channel names and owner-only `⋯` actions have a separate row above voice
 activity. Join, Joining, Leave and Switch here reuse one fixed-width button;
-hover and connection/roster updates do not shift its target. Selecting a channel
+hover and connection/roster updates do not shift its target. The Channels count
+stays beside its label in both owned and shared spaces. Selecting a channel
 opens text without switching voice. Participant lists start collapsed and expand
 from the voice count. Channel actions open the existing privacy/member settings;
 no invite controls are added. At the minimum sidebar width, counts take priority
