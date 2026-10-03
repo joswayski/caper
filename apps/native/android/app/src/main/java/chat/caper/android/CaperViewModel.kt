@@ -31,6 +31,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private var typingExpiry: Job? = null
     private val typers = mutableMapOf<String, TypingAuthor>()
     private var generation = 0L
+    private var durableReplayCursor: String? = null
+    private var refreshingHistory = false
     private var accountGeneration = 0L
     private var spaceAccessGeneration = 0L
     internal val accountEpoch: Long get() = accountGeneration
@@ -339,7 +341,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val channel = mutable.value.selectedChannel ?: return
         val before = mutable.value.messages.firstOrNull()?.seq ?: return
         val request = generation
-        if (!mutable.value.hasMoreMessages || mutable.value.loadingOlder) return
+        if (refreshingHistory || !mutable.value.hasMoreMessages || mutable.value.loadingOlder) return
         mutable.value = mutable.value.copy(loadingOlder = true, olderError = null)
         viewModelScope.launch {
             try {
@@ -519,9 +521,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun retrySession() { viewModelScope.launch { createChatSession(accountGeneration) } }
 
     private fun openGateway(channel: String, cursor: String, request: Long, participating: Boolean = true) {
+        durableReplayCursor = cursor
         val connection = GatewayClient(
             baseUrl = api.baseUrl, token = accountToken, channelId = channel, initialCursor = cursor,
-            onMessage = { value -> viewModelScope.launch { if (generation == request) addMessage(value) } },
+            onMessage = { value -> viewModelScope.launch {
+                if (generation == request) {
+                    durableReplayCursor = value.seq
+                    addMessage(value)
+                }
+            } },
             onTyping = { author, active, revision -> viewModelScope.launch { if (participating && generation == request) receiveTyping(author, active, revision) } },
             onPresence = { snapshot -> viewModelScope.launch {
                 if (participating && generation == request) mutable.value = mutable.value.copy(presence = snapshot.members.associate { it.userId to it.status })
@@ -606,9 +614,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun resyncChannel(channelId: String) {
         val channel = mutable.value.selectedChannel?.takeIf { it.id == channelId } ?: return
+        val previousCursor = durableReplayCursor ?: return
         val request = ++generation
         val previous = mutable.value
         closeChannel(clearPending = false)
+        // closeChannel normally discards channel replay state; a failed refresh must remain retryable.
+        durableReplayCursor = previousCursor
+        refreshingHistory = true
         // Keep the conversation readable while it reloads, as the web does.
         mutable.value = mutable.value.copy(
             selectedChannel = channel, selectedDirectId = previous.selectedDirectId,
@@ -620,7 +632,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val history = api.history(accountToken, channel.id)
                 if (generation != request || mutable.value.selectedChannel?.id != channel.id) return@launch
                 history.messages.forEach(::confirmPending)
-                mutable.value = mutable.value.copy(messages = history.messages, hasMoreMessages = history.hasMore, busy = false)
+                val recovered = recoverHistory(mutable.value.messages, previous.hasMoreMessages, previousCursor, history)
+                mutable.value = mutable.value.copy(
+                    messages = recovered.messages, hasMoreMessages = recovered.hasMore, busy = false,
+                )
                 openGateway(channel.id, history.cursor, request, channel.joined)
                 if (channel.direct) markDirectRead(channel.id, history.cursor)
             } catch (error: Throwable) {
@@ -628,6 +643,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     if (error is ApiException && error.status in listOf(401, 403, 404)) revokeChannel()
                     else mutable.value = mutable.value.copy(busy = false, refreshError = message(error))
                 }
+            } finally {
+                if (generation == request) refreshingHistory = false
             }
         }
     }
@@ -832,6 +849,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun closeChannel(clearPending: Boolean) {
         gateway?.close(); gateway = null
+        durableReplayCursor = null
+        refreshingHistory = false
         gatewayStatus?.cancel(); gatewayStatus = null
         typingExpiry?.cancel(); typingExpiry = null; typers.clear()
         if (clearPending) pendingSends.clear()

@@ -87,3 +87,25 @@ test("cached snapshots preserve BigInt ordering, id tie breaks, and immutability
   assert.deepEqual(snapshot.map(({ id }) => id), ["middle", "a", "z"], "previous snapshots must not mutate");
   assert.deepEqual(timeline.messages.map(({ id }) => id), ["middle", "a", "z", "later"]);
 });
+
+test("sorted snapshots are reused until visible messages change and never mutate previous snapshots", () => {
+  const timeline = new ChatTimeline();
+  timeline.reset([message("12"), message("10")], "12");
+  const initial = timeline.messages;
+  assert.deepEqual(initial.map((value) => value.seq), ["10", "12"]);
+  assert.equal(timeline.messages, initial, "reading must not repeatedly allocate and sort history");
+  timeline.applyEvent(message("12"));
+  timeline.applyEvent(message("14"));
+  assert.equal(timeline.messages, initial, "duplicates and buffered events leave the visible snapshot intact");
+  timeline.prepend([message("9")]);
+  const paginated = timeline.messages;
+  assert.deepEqual(paginated.map((value) => value.seq), ["9", "10", "12"]);
+  timeline.mergeSent(message("15"));
+  assert.deepEqual(timeline.messages.map((value) => value.seq), ["9", "10", "12", "15"]);
+  timeline.applyEvent(message("13"));
+  assert.deepEqual(timeline.messages.map((value) => value.seq), ["9", "10", "12", "13", "14", "15"]);
+  assert.deepEqual(initial.map((value) => value.seq), ["10", "12"]);
+  assert.deepEqual(paginated.map((value) => value.seq), ["9", "10", "12"]);
+  timeline.reset([], "0");
+  assert.deepEqual(timeline.messages, [], "reset must invalidate even when no messages are merged");
+});
